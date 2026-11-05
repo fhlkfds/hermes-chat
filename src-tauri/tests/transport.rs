@@ -450,6 +450,7 @@ fn stub_routes() -> Router {
         .route("/api/skills/toggle", put(echo_write))
         .route("/api/skills/content", put(echo_write))
         .route("/api/skills/hub/install", post(echo_write))
+        .route("/api/learning/node", put(echo_write).post(echo_write))
         .route("/api/cron/jobs", post(echo_write))
         .route("/api/sessions/import", post(echo_write))
         .route("/api/cron/jobs/{id}", put(echo_write))
@@ -760,14 +761,43 @@ async fn relays_the_two_skill_writes_with_exactly_their_fields() {
     let body = json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/skills/content?profile=spare", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got["body"], json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n"}));
+    // A copy into another profile (ADR 0057): the profile in the query, the body as sent.
+    let body = json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n", "category": "writing"}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("POST", "api/skills?profile=spare", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], json!("/api/skills?profile=spare"));
+    assert_eq!(got["body"], json!({"name": "notes", "content": "---\nname: notes\n---\nBody\n", "category": "writing"}));
+}
+
+#[tokio::test]
+async fn relays_a_memory_entry_edit_for_any_profile_and_nothing_else_there() {
+    let dashboard = signed_in().await;
+    let body = json!({"id": "memory:profile:3:0123456789ab", "content": "Works in UTC+1."}).to_string();
+    let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/learning/node?profile=spare", Some(body)).await.unwrap()).unwrap();
+    assert_eq!(got["uri"], json!("/api/learning/node?profile=spare"));
+    assert_eq!(got["body"], json!({"id": "memory:profile:3:0123456789ab", "content": "Works in UTC+1."}));
+    for body in [
+        // A skill's id is its name: skill edits go through api/skills/content only.
+        r#"{"id":"notes","content":"x"}"#,
+        r#"{"id":"memory:profile:3:0123456789ab","content":"x","profile":"other"}"#,
+        r#"{"id":"memory:profile:3","content":"x"}"#,
+    ] {
+        let err = dashboard.request("PUT", "api/learning/node", Some(body.into())).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{body}: {err:?}");
+    }
+    assert!(matches!(dashboard.request("POST", "api/learning/node", Some(r#"{"id":"memory:memory:0:0123456789ab"}"#.into())).await, Err(TransportError::NotRelayed(_))));
 }
 
 #[tokio::test]
 async fn relays_no_other_skill_write() {
     let dashboard = signed_in().await;
     for (method, path, body) in [
-        // Creating a skill, and the hub's routes, which fetch and run code from elsewhere.
-        ("POST", "api/skills", r#"{"name":"x","content":"y"}"#),
+        // Creating a skill other than as a copy's exact fields (ADR 0057), and the hub's routes, which fetch and run
+        // code from elsewhere.
+        ("POST", "api/skills", r#"{"name":"x","content":"y","profile":"other"}"#),
+        ("POST", "api/skills", r#"{"name":"../x","content":"y"}"#),
+        ("POST", "api/skills", r#"{"name":"X","content":"y"}"#),
+        ("POST", "api/skills", r#"{"name":"x","content":"y","category":"a/b"}"#),
+        ("POST", "api/skills", r#"{"name":"x"}"#),
         ("POST", "api/skills/hub/install", r#"{"identifier":"github/x"}"#),
         ("POST", "api/skills/toggle", r#"{"name":"x","enabled":true}"#),
         ("PUT", "api/skills/lock", r#"{"name":"x","locked":true}"#),

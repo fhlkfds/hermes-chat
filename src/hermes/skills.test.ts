@@ -367,3 +367,117 @@ describe("turning a skill on or off", () => {
     expect(await api.setEnabled("default", "github", false)).toMatchObject({ confirmed: true, lost: { kind: "disconnected" } });
   });
 });
+
+describe("copying and archiving across profiles (ADR 0057)", () => {
+  const row = async (api: SkillsApi, profile: string, name: string) => (await api.list(profile)).skills.find((s) => s.name === name)!;
+
+  it("copies SKILL.md to another profile as a new Local skill in the same category, and reads it back there", async () => {
+    const { server, api } = await signedIn();
+    const file = await api.copy("default", "spare", await row(api, "default", "release-notes"), LISTED);
+    expect(file).toEqual({ name: "release-notes", path: `${SPARE}/skills/writing/release-notes/SKILL.md`, content: NOTES });
+    expect(server.skills.file(`${SPARE}/skills/writing/release-notes`)).toBe(NOTES);
+    // Only SKILL.md goes: the original's other files stay where they are.
+    expect(server.managedFiles.nodes[`${SPARE}/skills/writing/release-notes/references/style.md`]).toBeUndefined();
+    expect(server.managedFiles.nodes[`${HOME}/skills/writing/release-notes/references/style.md`]).toBeDefined();
+    const post = server.restRequests.find((r) => r.method === "POST" && r.path === "/api/skills")!;
+    expect(post.query.get("profile")).toBe("spare");
+    expect(post.body).toEqual({ name: "release-notes", content: NOTES, category: "writing" });
+    // The source is untouched.
+    expect((await api.list("default")).skills.map((s) => s.name)).toContain("release-notes");
+    expect((await api.list("spare")).skills.find((s) => s.name === "release-notes")).toMatchObject({ source: "agent", category: "writing" });
+  });
+
+  it("passes on Hermes's refusal when the other profile already has a skill by that name, and writes nothing", async () => {
+    const { server, api } = await signedIn();
+    server.skills.add("spare", { dir: `${SPARE}/skills/github`, source: "bundled" }, skill("github", "The spare profile's own copy."));
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "github"), LISTED));
+    expect(e).toBeInstanceOf(SkillsError);
+    expect(e!.kind).toBe("refused");
+    expect(e!.message).toContain("A skill named 'github' already exists");
+    expect(server.skills.file(`${SPARE}/skills/github`)).toContain("The spare profile's own copy.");
+  });
+
+  it("settles a copy whose answer was lost by reading it back from the other profile", async () => {
+    const { server, api } = await signedIn();
+    server.skills.createLost = "Can't reach the Hermes dashboard: connection reset";
+    const file = await api.copy("default", "spare", await row(api, "default", "house-style"), LISTED);
+    expect(file.path).toBe(`${SPARE}/skills/house-style/SKILL.md`);
+  });
+
+  it("refuses a name Hermes wouldn't take for a new skill before sending it", async () => {
+    const { server, api } = await signedIn();
+    server.skills.add("default", { dir: `${HOME}/skills/Loud`, source: "agent" }, skill("Loud", "Capital letters."));
+    const before = server.restRequests.filter((r) => r.method === "POST").length;
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "Loud"), [...LISTED, "Loud"]));
+    expect(e!.kind).toBe("refused");
+    expect(e!.unsent).toBe(true);
+    expect(server.restRequests.filter((r) => r.method === "POST").length).toBe(before);
+  });
+
+  it("refuses to copy or move a skill whose category Hermes wouldn't take for a new one, rather than drop the category", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    server.skills.add("default", { dir: `${HOME}/skills/DevOps/deploy`, source: "agent", category: "DevOps" }, skill("deploy", "Deploy."));
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "deploy"), [...LISTED, "deploy"]));
+    expect(e!.kind).toBe("refused");
+    expect(e!.unsent).toBe(true);
+    expect(e!.message).toContain(`the category "DevOps"`);
+    expect(server.restRequests.some((r) => r.method === "POST")).toBe(false);
+    expect((await api.list("spare")).skills.map((s) => s.name)).not.toContain("deploy");
+  });
+
+  it("archives a Local skill, confirmed by its going from the list read back", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    const view = await api.archive("default", "release-notes");
+    expect(view.skills.map((s) => s.name)).not.toContain("release-notes");
+    expect(server.skills.archived.default.map((s) => s.dir)).toEqual([`${HOME}/skills/writing/release-notes`]);
+    const del = server.restRequests.find((r) => r.method === "DELETE")!;
+    expect(`${del.path}?${del.query}`).toBe("/api/learning/node?profile=default");
+    expect(del.body).toEqual({ id: "release-notes" });
+  });
+
+  it("passes on Hermes's refusal to archive a built-in, Skills Hub, external or pinned skill", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    server.skills.pinned.spare = new Set(["scratch"]);
+    expect((await rejection(api.archive("default", "github")))!.message).toContain("is a bundled built-in");
+    expect((await rejection(api.archive("default", "house-style")))!.message).toContain("external skills are read-only");
+    expect((await rejection(api.archive("spare", "scratch")))!.message).toContain("is pinned");
+    expect((await api.list("default")).skills).toHaveLength(3);
+  });
+
+  it("never sends a name Hermes would read as a memory entry, or one that leaves the skills folders", async () => {
+    const { server, api } = await signedIn();
+    for (const name of ["memory:memory:0:0123456789ab", "../x"]) expect((await rejection(api.archive("default", name)))!.unsent).toBe(true);
+    expect(server.restRequests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("never archives a skill listed by its path, which Hermes finds only by the name it declares", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    const e = await rejection(api.archive("default", "writing/release-notes"));
+    expect(e!.kind).toBe("refused");
+    expect(e!.unsent).toBe(true);
+    expect(server.restRequests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("keeps switching and editing skills on a server whose copy route is missing", async () => {
+    const { server, hermes, api } = await signedIn();
+    server.skills.createRoute = false;
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "release-notes"), LISTED));
+    expect(e!.kind).toBe("unsupported");
+    expect(hermes.capabilities.get("skills").state).not.toBe("unsupported");
+    const r = await api.setEnabled("default", "github", false);
+    expect(r.confirmed).toBe(true);
+  });
+
+  it("says a server without the archive route can't archive, and changes nothing", async () => {
+    const { server, api } = await signedIn();
+    expect(server.learningRoutes).toBe(false);
+    const e = await rejection(api.archive("default", "release-notes"));
+    expect(e!.kind).toBe("unsupported");
+    expect(e!.message).toContain("DELETE /api/learning/node");
+    expect((await api.list("default")).skills.map((s) => s.name)).toContain("release-notes");
+  });
+});

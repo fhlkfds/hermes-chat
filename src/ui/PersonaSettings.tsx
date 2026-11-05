@@ -5,9 +5,12 @@
 // (persona.ts). An unsaved edit is kept on this computer, so leaving, closing the app, or a crash doesn't lose it, and
 // each version a save replaced is kept to put back (personaStore.ts). The text is the owner's, but it is treated as
 // untrusted: it is only ever a textarea's value, never rendered.
+//
+// The shown profile's saved SOUL.md can be copied over another profile's, through the same check-first, read-back save
+// (ADR 0057).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
-import { asReadBack, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";
+import { Copy, FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
+import { asReadBack, certainlyUnwritten, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";
 import { LeavePersona } from "./LeavePersona";
 import { EARLIER_KEPT, type EarlierSoul, type PersonaDraft, type PersonaStore } from "../hermes/personaStore";
 
@@ -128,6 +131,8 @@ export function PersonaPage({
         connected={connected}
         store={store}
         storeKey={keyOf(picked)}
+        profiles={listed}
+        storeKeyFor={keyOf}
         onDirty={report}
         now={now}
       />
@@ -185,6 +190,8 @@ export function PersonaSettings({
   storeKey,
   onDirty,
   now = Date.now,
+  profiles,
+  storeKeyFor,
 }: {
   api: PersonaApi;
   where: PersonaWhere;
@@ -192,6 +199,10 @@ export function PersonaSettings({
   inUse?: string;
   /** Shown in place of the profile's name, to pick another (PersonaPage). */
   picker?: ReactNode;
+  /** Every profile Hermes lists, once read: where this SOUL.md can be copied. */
+  profiles?: readonly string[];
+  /** Where another profile's edits and earlier versions are kept, for a copy over its SOUL.md. Without it, no copying. */
+  storeKeyFor?: (profile: string) => string;
   connected: boolean;
   store: PersonaStore;
   /** Where this connection and profile's edits are kept (personaStore.ts `personaKey`). */
@@ -229,6 +240,11 @@ export function PersonaSettings({
   const [recover, setRecover] = useState<PersonaDraft | undefined>(() => store.draft(storeKey));
   const [earlier, setEarlier] = useState<EarlierSoul[]>(() => store.earlier(storeKey));
   const [viewing, setViewing] = useState<number>();
+  /** Copying to another profile: where to, and its SOUL.md as read just now (or why it couldn't be). */
+  const [copyTo, setCopyTo] = useState<string>();
+  const [copyAsk, setCopyAsk] = useState<{ to: string; target?: Soul; problem?: string }>();
+  const [copying, setCopying] = useState(false);
+  const [copyNotice, setCopyNotice] = useState<{ ok: boolean; text: string }>();
   // Results that come back after this has closed, or for a read since replaced, are dropped.
   const seq = useRef(0);
   const alive = useRef(true);
@@ -431,6 +447,97 @@ export function PersonaSettings({
     if (!loaded.base.exists) setCreating(true);
     setText(v.content);
     setViewing(undefined);
+  };
+
+  const targets = (profiles ?? []).filter((p) => p !== profile);
+  const target = copyTo && targets.includes(copyTo) ? copyTo : targets[0];
+
+  // Typing in the editor while the question is open drops it: the copy is SOUL.md as Hermes has it saved.
+  useEffect(() => {
+    if (dirty || recover) setCopyAsk(undefined);
+  }, [dirty, recover]);
+
+  /** Reads the target's SOUL.md, to say what the copy replaces; the save checks Hermes still has it. */
+  const askCopy = async (to: string) => {
+    if (!storeKeyFor) return;
+    setCopyNotice(undefined);
+    setCopyAsk({ to });
+    try {
+      // A save to that profile still under way (its editor was left while saving) lands first, so the copy is checked
+      // against what it left, and can't be overwritten by it.
+      await store.saveUnderWay(storeKeyFor(to))?.catch(() => {});
+      const soul = await api.read(to);
+      if (alive.current) setCopyAsk((a) => (a?.to === to ? { to, target: soul } : a));
+    } catch (e) {
+      if (alive.current) setCopyAsk((a) => (a?.to === to ? { to, problem: messageOf(e) } : a));
+    }
+  };
+
+  /** Writes this profile's SOUL.md, as Hermes has it now, over `to`'s, if `to` still has what was read. */
+  const copy = async () => {
+    if (!copyAsk?.target || !loaded || !storeKeyFor || copying || wasDirty.current || recover) return;
+    const { to, target: base } = copyAsk;
+    const key = storeKeyFor(to);
+    // One write to a profile's SOUL.md at a time, as its own editor keeps (ADR 0014).
+    if (store.saveUnderWay(key)) {
+      setCopyAsk(undefined);
+      setCopyNotice({ ok: false, text: `A save to ${to}'s persona is still under way, so nothing was copied. Copy again once it's done.` });
+      return;
+    }
+    setCopying(true);
+    setCopyNotice(undefined);
+    try {
+      const source = await api.read(profile);
+      if (!alive.current) return;
+      if (wasDirty.current) {
+        setCopyAsk(undefined);
+        setCopyNotice({ ok: false, text: "You started editing, so nothing was copied: the copy is SOUL.md as Hermes has it saved. Save or discard your changes, then copy." });
+        return;
+      }
+      if (!sameSoul(source, loaded.server)) {
+        setCopyAsk(undefined);
+        setCopyNotice({ ok: false, text: `${profile}'s SOUL.md changed on the server since it was read here, so nothing was copied. Reload it, check it, then copy again.` });
+        return;
+      }
+      if (store.saveUnderWay(key)) {
+        setCopyAsk(undefined);
+        setCopyNotice({ ok: false, text: `A save to ${to}'s persona started meanwhile, so nothing was copied. Copy again once it's done.` });
+        return;
+      }
+      const saving = api.save(to, base, source.content);
+      store.trackSave(key, saving);
+      let r: Awaited<typeof saving>;
+      try {
+        r = await saving;
+      } catch (e) {
+        if (!(e instanceof PersonaError) || certainlyUnwritten(e)) throw e;
+        // Hermes may have written it: what the target had is kept, as a save from its own editor keeps it.
+        store.addEarlier(key, base, now());
+        if (!alive.current) return;
+        setCopyAsk(undefined);
+        setCopyNotice({
+          ok: false,
+          text: `Hermes may have written the copy to ${to}, but it couldn't be confirmed: ${e.message} What ${to} had before is kept under Earlier versions in its Persona. Open ${to}'s persona once connected to see what Hermes has.`,
+        });
+        return;
+      }
+      if (r.kind !== "conflict") store.addEarlier(key, r.previous, now());
+      if (!alive.current) return;
+      setCopyAsk(undefined);
+      setCopyNotice(
+        r.kind === "saved"
+          ? { ok: true, text: `Copied to ${to}, and read back from Hermes. Chats started on ${to} from now on use it. What ${to} had before is under Earlier versions in its Persona.` }
+          : r.kind === "conflict"
+            ? { ok: false, text: `${to}'s SOUL.md changed on the server since it was read, so nothing was written. Pick Copy again to see what it has now.` }
+            : r.kind === "changed"
+              ? { ok: false, text: `Hermes wrote the copy, but reading ${to}'s SOUL.md back found other text: something else changed it at the same time.` }
+              : { ok: false, text: `Hermes may have written the copy, but reading ${to}'s SOUL.md back failed: ${r.problem.message}` },
+      );
+    } catch (e) {
+      if (alive.current) setCopyNotice({ ok: false, text: `Nothing was copied: ${messageOf(e)}` });
+    } finally {
+      if (alive.current) setCopying(false);
+    }
   };
 
   const file = home?.path ? `${home.path.replace(/\/+$/, "")}/SOUL.md` : undefined;
@@ -675,6 +782,65 @@ export function PersonaSettings({
           </>
         )}
       </section>
+
+      {loaded && loaded.server.exists && storeKeyFor && targets.length > 0 && (
+        <section aria-labelledby="persona-copy-heading">
+          <h2 id="persona-copy-heading">
+            <Copy size={14} /> Copy to another profile
+          </h2>
+          <p className="muted small">
+            Replaces another profile's SOUL.md with the {profile} profile's, as Hermes has it saved. Chats started on that profile afterwards use it;
+            the {profile} profile doesn't change.
+          </p>
+          <div className="persona-copy">
+            <label className="field">
+              <span className="field-label">To profile</span>
+              <select className="mono" value={target} disabled={copying} onChange={(e) => (setCopyTo(e.target.value), setCopyAsk(undefined), setCopyNotice(undefined))}>
+                {targets.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="btn"
+              disabled={!connected || copying || dirty || !!recover || !target}
+              title={dirty || recover ? "Save or discard your changes first: the copy is SOUL.md as Hermes has it saved." : undefined}
+              onClick={() => target && void askCopy(target)}
+            >
+              <Copy size={14} /> Copy…
+            </button>
+          </div>
+          {copyAsk && (
+            <div className="confirm persona-confirm" role="alertdialog" aria-label={`Replace ${copyAsk.to}'s SOUL.md?`}>
+              <span className="confirm-msg">
+                {copyAsk.problem
+                  ? `Couldn't read ${copyAsk.to}'s SOUL.md to check it first, so nothing can be copied: ${copyAsk.problem}`
+                  : !copyAsk.target
+                    ? `Reading ${copyAsk.to}'s SOUL.md…`
+                    : copyAsk.target.exists
+                      ? `Replace ${copyAsk.to}'s SOUL.md (${chars(copyAsk.target.content.length)}) with ${profile}'s (${chars(loaded.server.content.length)})? What ${copyAsk.to} has now is kept under Earlier versions in its Persona, on this computer.`
+                      : `${copyAsk.to} has no SOUL.md. Create one there with ${profile}'s (${chars(loaded.server.content.length)})?`}
+                {storeKeyFor && store.draft(storeKeyFor(copyAsk.to)) && ` Changes to ${copyAsk.to}'s persona you didn't save are kept on this computer; they stay, and show as made to an older SOUL.md.`}
+              </span>
+              <div className="confirm-actions">
+                <button className="btn" autoFocus onClick={() => setCopyAsk(undefined)}>
+                  Cancel
+                </button>
+                <button className="btn danger" disabled={!connected || copying || !copyAsk.target || dirty || !!recover} onClick={() => void copy()}>
+                  {copying ? "Copying…" : copyAsk.target?.exists === false ? `Create in ${copyAsk.to}` : `Replace ${copyAsk.to}'s`}
+                </button>
+              </div>
+            </div>
+          )}
+          {copyNotice && (
+            <p className={`small persona-note ${copyNotice.ok ? "muted" : "sign-in-error"}`} role={copyNotice.ok ? "status" : "alert"}>
+              {copyNotice.text}
+            </p>
+          )}
+        </section>
+      )}
 
       {earlier.length > 0 && (
         <section>

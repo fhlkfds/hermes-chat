@@ -47,6 +47,7 @@ import { BackupSection, type BackupWiring } from "./Backup";
 import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
+import { ProfilePicker } from "./ProfilePicker";
 
 type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "persona" | "memory" | "skills" | "diagnostics";
 /**
@@ -100,7 +101,8 @@ export const signInText = (route?: Route) =>
 
 /**
  * Settings → Persona's wiring: the API, where each profile's edits are kept on this computer (`keyOf`), and where it
- * starts: `where.profile` is the profile in use.
+ * starts: `where.profile` is the profile in use. Persona lists and picks profiles itself (ADR 0056), and copies the shown
+ * SOUL.md to another profile (ADR 0057).
  */
 export type PersonaWiring = { api: PersonaApi; store: PersonaStore; keyOf: (profile: string) => string; where: PersonaWhere };
 
@@ -163,6 +165,7 @@ export function SettingsScreen({
   openGuide = () => {},
   showDiagnostics,
   connectionManager,
+  listProfiles,
 }: {
   status: ConnectionStatus;
   route?: Route;
@@ -230,6 +233,11 @@ export function SettingsScreen({
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
   onPersonaDirty?: PersonaDirty;
+  /**
+   * Every profile on the server (`GET /api/profiles`). With it, Skills and Memory each pick which profile they show, and
+   * skills can be copied between profiles (ADR 0057). Persona lists them itself (ADR 0056).
+   */
+  listProfiles?: () => Promise<string[]>;
   /** Runs `go`, once the owner agrees to leave an unsaved persona, memory or skill edit behind, if there is one. */
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
@@ -274,6 +282,29 @@ export function SettingsScreen({
   const [memProfiles, setMemProfiles] = useState<string[]>();
   /** Picking a memory file or profile leaves any unsaved memory edit, so it asks first, as switching tabs does. */
   const pickMem = (id: string) => memKey(memSel) !== id && guard(() => setMemSel(memSelOf(id)));
+  // Which profile Skills and Memory each show (ADR 0057): the app's own until the owner picks another, and the app's own
+  // again when the app switches profile. Picking one leaves an unsaved edit, so it asks first. Persona picks its own
+  // (PersonaPage, ADR 0056).
+  const [profiles, setProfiles] = useState<string[]>();
+  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, of: profile });
+  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, of: profile };
+  useEffect(() => setShownIn({ skills: profile, memory: profile, of: profile }), [profile]);
+  const connected = status === "connected";
+  useEffect(() => {
+    if (!listProfiles || !connected) return;
+    let live = true;
+    listProfiles().then(
+      (names) => live && setProfiles(names),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [listProfiles, connected]);
+  const pickProfile = (which: "skills" | "memory", p: string) =>
+    p !== tabProfile[which] && guard(() => setShownIn((cur) => ({ ...(cur.of === profile ? cur : tabProfile), [which]: p })));
+  const picker = (which: "skills" | "memory", label: string) =>
+    listProfiles && <ProfilePicker value={tabProfile[which]} shown={profile} profiles={profiles} label={label} onPick={(p) => pickProfile(which, p)} />;
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
@@ -594,15 +625,16 @@ export function SettingsScreen({
                 {gated(
                   "memory",
                   <MemorySettings
-                    key={profile}
+                    key={tabProfile.memory}
                     api={memory}
-                    profile={profile}
+                    profile={tabProfile.memory}
                     status={status}
                     server={routeLabel(route) ?? "not known until connected"}
                     onDirtyChange={onEntriesDirty}
                     discardSignal={memoryDiscards}
                     source={memSel.kind === "file" ? memSel.source : undefined}
                     files={false}
+                    picker={picker("memory", "Profile whose memory is shown")}
                   />,
                 )}
               </div>
@@ -632,7 +664,17 @@ export function SettingsScreen({
           skills &&
           gated(
             "skills",
-            <SkillSettings key={profile} api={skills} profile={profile} status={status} server={routeLabel(route) ?? "not known until connected"} onDirtyChange={onSkillDirty} discardSignal={skillDiscards} />,
+            <SkillSettings
+              key={tabProfile.skills}
+              api={skills}
+              profile={tabProfile.skills}
+              status={status}
+              server={routeLabel(route) ?? "not known until connected"}
+              onDirtyChange={onSkillDirty}
+              discardSignal={skillDiscards}
+              picker={picker("skills", "Profile whose skills are shown")}
+              profiles={profiles}
+            />,
           )
         );
       case "appearance":

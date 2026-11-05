@@ -1563,7 +1563,7 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup .field input:read-only { opacity: 0.6; }
 
 /* settings → memory */
-.memory-identity { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 16px; font-size: calc(12.5rem / 14); }
+.memory-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; margin: 0 0 16px; font-size: calc(12.5rem / 14); }
 .memory-identity div { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
 .memory-identity dt { color: var(--faint); }
 .memory-identity dd { margin: 0; overflow-wrap: anywhere; }
@@ -1676,12 +1676,46 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); white-space: pre-line;
 }
 @media (hover: hover) { .skill-desc:hover .skill-desc-tip { display: block; } }
-.skill-category { white-space: nowrap; }
+.skill-category { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .skill-row .toolset-hint { margin-top: 6px; }
 @container settings (max-width: 820px) {
   .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
   .skill-desc, .skill-category { grid-column: 1 / -1; }
 }
+/* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0057), in place of the profile's name. */
+.profile-pick {
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 6px; outline: none; color: var(--text);
+  font-size: calc(12.5rem / 14); max-width: 260px;
+}
+.profile-pick:focus-visible { border-color: var(--line-3); }
+/* Select mode in Skills and Memory: the bar, the question before a change, and what became of each item. */
+.skills-select, .memory-select { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px; }
+.skills-select-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--raised-2); font-size: calc(12.5rem / 14);
+}
+.skills-select-count { font-weight: 500; }
+.skills-select-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.skills-select .confirm, .memory-select .confirm { max-width: 640px; }
+.skills-bulk-ask .field { max-width: 280px; }
+.skill-pick, .memory-pick input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--text); }
+.skill-row.picked { background: var(--raised-2); }
+label.memory-pick { cursor: pointer; }
+.skills-bulk-result {
+  margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--ok); border-radius: var(--radius);
+  font-size: calc(12.5rem / 14); line-height: 1.5;
+}
+.skills-bulk-result.warn { border-left-color: var(--warn); }
+.skills-bulk-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-weight: 500; }
+.skills-bulk-result ul { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.skills-bulk-result li { overflow-wrap: anywhere; }
+.skills-bulk-result li svg { vertical-align: -1px; }
+.skills-bulk-result li.ok svg { color: var(--ok); }
+.skills-bulk-result li.failed svg { color: var(--warn); }
+.skills-bulk-result .memory-entry-text { display: inline; white-space: normal; }
+.settings .skills-bulk-result p { margin: 4px 0 0; }
+.persona-copy { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-bottom: 8px; }
+.persona-copy .field { flex: 0 1 280px; min-width: 180px; }
 .skills-editor > .back { align-self: flex-start; }
 .skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
 .skills-text { min-height: 240px; }
@@ -1694,7 +1728,7 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 /* The memory question shares the persona one's box (below), wider than a plain .confirm. */
 .leave-overlay .leave-dialog { max-width: 420px; }
 /* Settings → Persona (PersonaSettings.tsx) and the question before leaving an unsaved edit (LeavePersona.tsx) */
-.persona-where { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
+.persona-where { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
 .persona-where dt { color: var(--muted); }
 .persona-where dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .persona-where:has(.persona-picker) { align-items: baseline; }

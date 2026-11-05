@@ -2592,6 +2592,7 @@ export function Main({
             persona={persona}
             onPersonaDirty={onPersonaDirty}
             guard={guard}
+            listProfiles={listProfiles}
           />
         ) : usageOpen ? (
           <UsageAnalytics

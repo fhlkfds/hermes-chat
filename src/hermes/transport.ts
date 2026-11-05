@@ -845,6 +845,7 @@ export class Hermes {
   readonly memory: MemoryApi = memoryApi({
     rpc: (method, params) => this.request(method, params),
     get: (pathAndQuery) => this.rest("GET", pathAndQuery),
+    send: (method, pathAndQuery, body) => this.rest(method, pathAndQuery, body),
   });
   /**
    * Settings → Memory's external memory (memoryProviders.ts, ADR 0045). Each call names its profile, and goes only over a
