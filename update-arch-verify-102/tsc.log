@@ -1,0 +1,3 @@
+npm notice run hermes-chat@0.1.0 npx
+npm notice run 'tsc' --noEmit
+tsc exit 0

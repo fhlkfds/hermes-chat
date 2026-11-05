@@ -1,0 +1,80 @@
+[2026-11-04T18:56:24-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/pkgs/hermes-chat-git-r564.6017fa6-1-x86_64.pkg.tar.zst'
+[2026-11-04T18:56:24-0600] [ALPM] transaction started
+[2026-11-04T18:56:24-0600] [ALPM] downgraded hermes-chat-git (r622.af77a05-1 -> r564.6017fa6-1)
+[2026-11-04T18:56:25-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T18:56:25-0600] [ALPM] transaction completed
+[2026-11-04T18:56:25-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T18:56:25-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T18:56:25-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T18:56:25-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T18:56:25-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:02:18-0600] [PACMAN] Running '/usr/bin/pacman --noconfirm -U /tmp/hc102/checkout/packaging/aur/build/hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:02:18-0600] [ALPM] transaction started
+[2026-11-04T19:02:18-0600] [ALPM] upgraded hermes-chat-git (r564.6017fa6-1 -> r622.af77a05-1)
+[2026-11-04T19:02:19-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:02:19-0600] [ALPM] transaction completed
+[2026-11-04T19:02:19-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:02:19-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:02:19-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:02:19-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:02:19-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:18:19-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/branchpkg/hermes-chat-git-r599.568fea0-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:18:19-0600] [ALPM] transaction started
+[2026-11-04T19:18:19-0600] [ALPM] downgraded hermes-chat-git (r622.af77a05-1 -> r599.568fea0-1)
+[2026-11-04T19:18:19-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:18:19-0600] [ALPM] transaction completed
+[2026-11-04T19:18:19-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:18:20-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:18:20-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:18:20-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:18:20-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:18:59-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/checkout/packaging/aur/build/hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:18:59-0600] [ALPM] transaction started
+[2026-11-04T19:18:59-0600] [ALPM] upgraded hermes-chat-git (r599.568fea0-1 -> r622.af77a05-1)
+[2026-11-04T19:18:59-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:18:59-0600] [ALPM] transaction completed
+[2026-11-04T19:18:59-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:18:59-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:18:59-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:18:59-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:18:59-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:20:27-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/branchpkg/hermes-chat-git-r599.568fea0-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:20:27-0600] [ALPM] transaction started
+[2026-11-04T19:20:27-0600] [ALPM] downgraded hermes-chat-git (r622.af77a05-1 -> r599.568fea0-1)
+[2026-11-04T19:20:27-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:20:27-0600] [ALPM] transaction completed
+[2026-11-04T19:20:27-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:20:27-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:20:27-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:20:27-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:20:27-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:21:07-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/checkout/packaging/aur/build/hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:21:07-0600] [ALPM] transaction started
+[2026-11-04T19:21:07-0600] [ALPM] upgraded hermes-chat-git (r599.568fea0-1 -> r622.af77a05-1)
+[2026-11-04T19:21:07-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:21:07-0600] [ALPM] transaction completed
+[2026-11-04T19:21:07-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:21:07-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:21:07-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:21:07-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:21:07-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:21:37-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/branchpkg/hermes-chat-git-r599.568fea0-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:21:37-0600] [ALPM] transaction started
+[2026-11-04T19:21:37-0600] [ALPM] downgraded hermes-chat-git (r622.af77a05-1 -> r599.568fea0-1)
+[2026-11-04T19:21:37-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:21:37-0600] [ALPM] transaction completed
+[2026-11-04T19:21:37-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:21:37-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:21:37-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:21:37-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:21:37-0600] [ALPM] running 'update-desktop-database.hook'...
+[2026-11-04T19:24:00-0600] [PACMAN] Running 'pacman -U --noconfirm /tmp/hc102/checkout/packaging/aur/build/hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst'
+[2026-11-04T19:24:00-0600] [ALPM] transaction started
+[2026-11-04T19:24:00-0600] [ALPM] upgraded hermes-chat-git (r599.568fea0-1 -> r622.af77a05-1)
+[2026-11-04T19:24:00-0600] [ALPM-SCRIPTLET] ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+[2026-11-04T19:24:00-0600] [ALPM] transaction completed
+[2026-11-04T19:24:00-0600] [ALPM] running '35-systemd-update.hook'...
+[2026-11-04T19:24:00-0600] [ALPM-SCRIPTLET] touch: setting times of '/usr': Permission denied
+[2026-11-04T19:24:00-0600] [ALPM] running 'gtk-update-icon-cache.hook'...
+[2026-11-04T19:24:00-0600] [ALPM-SCRIPTLET] gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+[2026-11-04T19:24:00-0600] [ALPM] running 'update-desktop-database.hook'...

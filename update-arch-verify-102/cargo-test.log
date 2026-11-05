@@ -1,0 +1,371 @@
+   Compiling hermes-chat v0.1.0 (/home/liam/.t3/worktrees/hermes-chat/t3-abde3888/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.30s
+     Running unittests src/lib.rs (target/debug/deps/hermes_chat-04f552ffed79ac74)
+
+running 88 tests
+test backup::tests::names_are_flat_json_files ... ok
+test backup::tests::round_trips_and_keeps_the_file_private ... ok
+test defaults_file::tests::keeps_each_file_apart ... ok
+test backup::tests::never_writes_through_a_file_planted_beside_it ... ok
+test defaults_file::tests::swaps_only_over_what_was_read ... ok
+test display::tests::refuses_a_ticket_that_isnt_one ... ok
+test display::tests::a_socket_kept_after_close_all_is_closed_instead ... ok
+test fonts::tests::each_family_once_sorted_without_hidden_ones ... ok
+test links::tests::a_link_is_handed_out_once_and_a_newer_one_replaces_it ... ok
+test links::tests::the_last_link_on_the_command_line_is_taken ... ok
+test links::tests::only_the_scheme_and_a_sane_length_count_as_a_link ... ok
+test backup::tests::keeps_only_the_newest_recovery_backups ... ok
+test repo_git::tests::only_reads_are_tried_again_and_only_after_a_drop_before_login ... ok
+test saved_password::tests::an_id_cant_name_another_entry ... ok
+test remote::tests::an_unhandled_request_expires_after_two_minutes ... ok
+test saved_password::tests::each_connection_has_its_own_entries ... ok
+test server_page::tests::a_socket_path_that_could_split_the_forward_is_refused ... ok
+test server_page::tests::a_target_that_could_be_an_option_or_more_than_one_argument_is_refused ... ok
+test server_page::tests::errors_reach_the_webview_with_a_kind ... ok
+test remote::tests::reads_what_the_command_line_asks_a_running_app_for ... ok
+test repo_git::tests::ssh_failures_are_told_apart ... ok
+test server_page::tests::folders_left_by_an_app_that_is_gone_are_swept_and_nothing_else ... ok
+test server_page::tests::loopback_web_addresses_are_server_pages ... ok
+test server_page::tests::real_ssh_forwards_to_the_servers_loopback_and_cleans_up ... ignored, needs a real sshd: HERMES_REAL_SSH and HERMES_REAL_SSH_TARGET
+test saved_password::tests::the_migrated_connection_keeps_its_old_entries ... ok
+test server_page::tests::no_ssh_target_is_refused_before_ssh_runs ... ok
+test server_page::tests::anything_else_is_refused_and_says_why ... ok
+test repo_git::tests::errors_serialize_with_their_kind ... ok
+test repo_git::tests::requests_carry_only_their_own_fields ... ok
+test remote::tests::peeking_preserves_a_request_until_a_live_window_acknowledges_it ... ok
+test server_page::tests::ssh_arguments_are_fixed_options_one_forward_and_the_target_last ... ok
+test server_page::tests::the_frame_loads_the_same_page_on_the_local_end ... ok
+test defaults_file::tests::lets_one_of_many_racing_writers_win ... ok
+test server_page::tests::socket_folders_are_private_new_and_removed ... ok
+test server_page::tests::a_page_closed_before_rust_heard_of_it_never_starts ... ok
+test summon::tests::removes_the_old_shortcut_setting_and_leaves_everything_else ... ok
+test backup::tests::writes_nothing_a_restore_would_refuse ... ok
+test terminal::tests::refuses_a_target_ssh_would_read_as_an_option ... ok
+test terminal::tests::closing_ends_the_program_and_still_reports_the_end ... ok
+test remote::tests::a_second_launch_reaches_the_first_while_it_is_still_starting ... ok
+test transport::tests::only_a_skill_copy_creates_a_skill ... ok
+test tests::a_transcript_is_read_whole_only_when_it_is_small_utf8_text ... ok
+test transport::tests::only_memory_entries_are_edited_through_the_learning_route ... ok
+test terminal::tests::what_is_typed_reaches_the_program ... ok
+test terminal::tests::resizing_reaches_the_program ... ok
+test terminal::tests::runs_in_a_terminal_of_the_given_size_and_reports_the_exit_status ... ok
+test transport::tests::only_provider_key_names ... ok
+test tray::tests::a_hidden_window_comes_back_when_the_tray_goes_away ... ok
+test transport::tests::only_the_automations_writes ... ok
+test tray::tests::a_slow_or_single_missed_check_doesnt_count_as_the_tray_going_away ... ok
+test transport::tests::only_the_memory_provider_writes ... ok
+test tray::tests::closing_hides_only_when_asked_and_the_icon_is_on_screen ... ok
+test tray::tests::either_check_finding_a_tray_is_enough_and_silence_decides_nothing ... ok
+test tray::tests::the_inbox_line_is_a_count_only ... ok
+test remote::tests::a_link_reaches_the_running_app_and_anything_else_is_refused_on_the_bus ... ok
+test update::tests::install_serializes_for_the_webview ... ok
+test update::tests::reads_the_version_from_pacman_query ... ok
+test update::tests::finds_the_screenshots_saved_outboxes_attach ... ok
+test update::tests::a_failed_save_leaves_nothing_to_put_back ... ok
+test tray::tests::the_setting_is_off_unless_the_file_says_on_and_survives_a_round_trip ... ok
+test update::tests::restarts_without_asking_for_a_screenshot_or_to_show_a_window ... ok
+test update::tests::restarts_without_the_chat_link_it_was_started_for ... ok
+test update::tests::saves_the_drafts_private_and_whole ... ok
+test update::tests::setting_aside_never_replaces_an_earlier_copy ... ok
+test web_page::tests::counts_a_source_that_could_be_the_app_as_no_refusal ... ok
+test update::tests::tells_an_unreadable_copy_from_a_missing_or_blocked_one ... ok
+test web_page::tests::accepts_only_http_pages_without_credentials ... ok
+test web_page::tests::says_which_header_refused ... ok
+test web_page::tests::refuses_as_webkitgtk_did ... ok
+test tray::tests::the_inbox_icon_is_the_tray_icon_with_a_dot_top_right ... ok
+test backup::tests::refuses_what_it_would_never_write ... ok
+test tests::a_replaced_transfer_leaves_its_replacements_cancel_in_place ... ok
+test repo_git::tests::ssh_refuses_a_target_that_could_be_an_option ... ok
+test repo_git::tests::the_remote_command_is_constant_and_quotes_nothing_from_outside ... ok
+test backup::tests::an_entry_past_the_limit_is_refused ... ok
+test server_page::tests::closing_a_page_while_ssh_connects_ends_ssh_at_once ... ok
+test server_page::tests::a_close_racing_its_own_open_always_ends_it ... ok
+test server_page::tests::ssh_failing_says_what_ssh_said ... ok
+test server_page::tests::leaving_the_server_while_a_page_connects_ends_it_and_says_why ... ok
+test server_page::tests::ssh_ending_on_its_own_tells_the_page ... ok
+test terminal::tests::the_local_shell_is_a_login_shell_in_the_home_folder ... ok
+test server_page::tests::a_port_nothing_listens_on_says_so_and_leaves_nothing_running ... ok
+test server_page::tests::a_page_opens_through_ssh_on_its_own_local_port_and_closing_it_ends_ssh ... ok
+test server_page::tests::leaving_the_server_closes_its_pages_and_says_why ... ok
+test server_page::tests::ssh_outlives_the_thread_that_asked_for_it ... ok
+test remote::tests::of_apps_starting_at_once_exactly_one_owns_the_name ... ok
+test server_page::tests::several_pages_open_at_once_up_to_the_limit ... ok
+test server_page::tests::an_https_page_opens_without_plain_text_being_sent_to_it ... ok
+
+test result: ok. 87 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running unittests src/main.rs (target/debug/deps/hermes_chat-2ec3cf532d04bda0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/media.rs (target/debug/deps/media-4af51ba71b15a9a4)
+
+running 4 tests
+test tauri_localhost_over_http_counts_only_where_wry_serves_the_app_there ... ok
+test the_dev_server_counts_only_when_given ... ok
+test the_bundled_app_page_may_use_the_microphone ... ok
+test any_other_page_may_not ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/repo_git.rs (target/debug/deps/repo_git-66f78a9619658342)
+
+running 68 tests
+test a_pull_request_is_refused_when_the_remote_now_names_another_github_repository ... ok
+test a_hook_mentioning_403_is_still_a_hook ... ok
+test a_held_index_lock_changes_nothing ... ok
+test a_file_changed_after_it_was_read_is_not_staged ... ok
+test a_missing_identity_is_its_own_failure ... ok
+test a_merge_conflict_is_reported_with_its_stages ... ok
+test a_concurrent_commit_stops_the_commit ... ok
+test a_deleted_file_is_staged_as_deleted ... ok
+test a_commit_is_refused_when_another_branch_was_checked_out_at_the_same_commit ... ok
+test a_configured_remote_named_like_an_option_is_refused ... ok
+test a_failing_hook_refuses_the_commit_and_says_why ... ok
+test a_commit_during_a_merge_is_refused ... ok
+test a_concurrent_change_to_the_index_stops_the_commit ... ok
+test a_commit_without_the_previewed_branch_is_refused ... ok
+test a_commit_that_fails_for_another_reason_isnt_blamed_on_a_hook ... ok
+test a_server_without_python_is_unsupported ... ok
+test a_push_from_a_moved_head_is_refused ... ok
+test a_deleted_file_is_still_staged_as_deleted_and_a_link_as_a_link ... ok
+test a_branch_tracking_main_is_never_pushed_to_main ... ok
+test a_hunk_from_a_diff_with_no_context_applies_too ... ok
+test a_hunk_from_a_diff_that_changed_is_refused ... ok
+test a_hunk_that_isnt_there_is_refused ... ok
+test a_push_is_refused_when_the_remote_now_points_somewhere_else ... ok
+test a_pull_request_is_refused_when_the_local_branch_or_commit_moved ... ok
+test a_mode_change_after_reading_is_a_change ... ok
+test a_push_to_an_unreachable_remote_is_a_network_failure ... ok
+test ahead_and_behind_come_from_the_upstream ... ok
+test a_push_never_takes_tags_along ... ok
+test a_staged_rename_keeps_its_old_path ... ok
+test a_separate_push_destination_is_asked_not_assumed ... ok
+test a_push_is_checked_where_it_went_not_where_fetches_come_from ... ok
+test credentials_in_a_remote_url_never_come_back_in_output ... ok
+test a_remote_that_pushes_to_two_places_is_refused ... ok
+test an_empty_message_is_refused ... ok
+test names_that_could_be_options_are_refused ... ok
+test a_new_branch_on_commits_the_remote_has_can_still_be_pushed ... ok
+test a_server_side_refusal_and_a_pre_push_hook_are_told_apart ... ok
+test an_interrupted_commit_that_landed_leaves_the_index_matching_it ... ok
+test a_push_sends_exactly_the_commit_shown_and_reads_the_remote_back ... ok
+test bad_folders_are_told_apart ... ok
+test nothing_is_staged_when_the_index_moved_meanwhile ... ok
+test paths_are_literal_never_patterns ... ok
+test nothing_another_agent_stages_during_the_commit_gets_in ... ok
+test folders_and_submodules_are_never_staged_whole ... ok
+test a_rejected_push_is_never_forced ... ok
+test hunks_apply_under_the_owners_whitespace_and_prefix_settings ... ok
+test nothing_staged_commits_nothing_rather_than_everything ... ok
+test pull_requests_need_a_github_remote_and_never_push ... ok
+test hook_output_is_kept_and_a_hook_that_changes_the_commit_is_reported ... ok
+test publish_info_names_the_remote_branch_and_the_commits_to_push ... ok
+test publish_info_still_offers_push_when_gh_is_missing ... ok
+test a_staged_submodule_is_previewed_even_when_config_says_to_ignore_submodules ... ok
+test push_recurse_submodules_config_neither_replaces_nor_adds_to_the_push ... ok
+test what_a_login_script_prints_first_is_ignored ... ok
+test the_context_asked_for_is_the_context_shown ... ok
+test the_owners_diff_settings_dont_change_what_is_shown ... ok
+test staging_takes_only_the_files_named ... ok
+test unstaging_leaves_the_working_tree_alone ... ok
+test staged_and_unstaged_changes_in_one_file_have_their_own_diffs ... ok
+test the_mode_staged_is_the_one_read_even_if_a_filter_changes_it ... ok
+test the_preview_is_exactly_what_the_commit_holds ... ok
+test push_remote_settings_choose_the_remote ... ok
+test paths_outside_the_checkout_are_refused ... ok
+test a_pull_request_made_but_slow_to_read_back_keeps_its_link ... ok
+test untracked_and_binary_files_are_marked ... ok
+test unstaging_works_before_the_first_commit ... ok
+test one_hunk_can_be_staged_and_unstaged_on_its_own ... ok
+test publish_info_still_offers_push_when_gh_is_too_slow ... ok
+
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.61s
+
+     Running tests/repo_worktree.rs (target/debug/deps/repo_worktree-2f4278769333f66d)
+
+running 25 tests
+test two_creations_for_the_same_folder_cant_both_be_recorded ... ok
+test a_new_branch_worktree_is_made_beside_the_repository_from_the_base_shown ... ok
+test a_dirty_source_checkout_stays_where_it_is_and_setup_copies_only_what_worktreeinclude_names ... ok
+test a_failing_post_checkout_hook_leaves_the_worktree_recorded_with_retry ... ok
+test a_submodule_branch_no_remote_has_blocks_removal_even_with_head_published ... ok
+test removal_keeps_what_was_staged_apart_from_the_working_files_and_ignored_files_added_with_force ... ok
+test an_ignored_setup_link_doesnt_stop_changes_being_kept ... ok
+test failed_setup_keeps_the_worktree_and_retry_finishes_it ... ok
+test a_detached_head_with_commits_no_branch_has_is_kept ... ok
+test edits_an_index_flag_hides_are_listed_and_kept ... ok
+test a_removal_that_fails_leaves_a_failed_setup_failed ... ok
+test ids_and_tokens_from_the_webview_are_checked ... ok
+test an_ignored_file_or_a_staging_after_the_preview_makes_it_stale ... ok
+test a_clean_worktree_is_removed_without_force_and_keeps_nothing ... ok
+test an_edit_deep_in_an_ignored_folder_after_the_preview_makes_it_stale ... ok
+test paths_are_checked_before_anything_is_made ... ok
+test a_worktree_from_the_first_design_is_not_taken_for_one_made_here ... ok
+test submodules_with_work_block_removal_and_clean_ones_dont ... ok
+test protected_main_unmanaged_and_foreign_locked_worktrees_cant_be_removed ... ok
+test an_existing_branch_is_checked_out_only_once_and_new_names_must_be_new ... ok
+test removal_keeps_dirty_untracked_files_and_unpushed_commits_and_never_deletes_the_branch ... ok
+test an_attached_chat_or_a_process_in_the_folder_blocks_removal_however_quiet ... ok
+test a_second_task_cant_change_the_record_while_another_holds_it ... ok
+test two_retries_of_setup_cant_both_run ... ok
+test a_creation_cut_off_part_way_is_found_and_can_be_finished_or_forgotten ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.31s
+
+     Running tests/screenshot.rs (target/debug/deps/screenshot-81f905c654068a15)
+
+running 19 tests
+test explains_portal_errors ... ok
+test names_captures_plainly ... ok
+test a_reused_process_slot_never_overwrites_an_outbox_capture ... ok
+test discards_only_its_own_captures ... ok
+test errors_reach_the_webview_as_kind_and_message ... ok
+test knows_a_scratch_file_from_the_desktops_own_copy ... ok
+test reads_the_command_line_flag ... ok
+test cleanup_never_follows_linked_instances_or_retargeted_outbox_ancestors ... ok
+test picks_slurp_and_grim_on_wlroots_compositors_and_the_portal_elsewhere ... ok
+test reads_what_slurp_answers ... ok
+test reads_the_portal_answer ... ok
+test reads_what_grim_answers ... ok
+test outlines_the_windows_on_screen_for_slurp ... ok
+test refuses_a_captures_folder_someone_else_could_open ... ok
+test outbox_captures_survive_exit_and_startup_until_the_message_leaves_the_outbox ... ok
+test shutdown_before_retention_ipc_preserves_bytes_for_startup_reconciliation ... ok
+test stages_captures_privately_and_deletes_the_portals_scratch_copy ... ok
+test sweeps_captures_left_by_a_process_that_is_gone ... ok
+test counts_only_a_running_hermes_chat_as_alive ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/transport.rs (target/debug/deps/transport-3e5e3ea8dc252348)
+
+running 112 tests
+test a_direct_url_to_an_ip_address_needs_no_lookup ... ok
+test a_binary_local_file_comes_back_without_its_bytes ... ok
+test a_pasted_file_name_stays_a_plain_basename ... ok
+test a_connection_test_says_when_nothing_answers ... ok
+test a_direct_ws_url_is_signed_in_to_over_http ... ok
+test a_download_never_takes_over_a_file_already_named_like_its_part_file ... ok
+test a_connection_test_says_the_password_was_wrong_and_keeps_the_status ... ok
+test a_limited_get_reports_errors_like_any_rest_call ... ok
+test a_gateways_refusal_never_shows_the_header_values_it_turned_down ... ok
+test a_connection_test_stops_at_a_redirect_to_another_site ... ok
+test a_limited_get_relays_an_answer_within_the_limit_with_the_sign_in_cookies ... ok
+test a_connection_test_stops_where_a_gateway_turns_it_away ... ok
+test a_failed_rest_call_reports_status_and_body ... ok
+test a_limited_get_refuses_an_answer_over_the_limit ... ok
+test a_chat_connection_closed_with_a_header_value_never_shows_it ... ok
+test a_connection_test_reads_the_status_signs_in_and_waits_for_hermes ... ok
+test builds_extra_headers_and_marks_their_values_sensitive ... ok
+test a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it ... ok
+test a_limited_get_stays_under_api ... ok
+test a_server_without_the_audio_routes_says_so ... ok
+test a_connection_test_sends_the_extra_headers_on_every_request ... ok
+test a_refusal_carries_hermess_reason ... ok
+test a_sign_in_redirected_to_another_site_stops_there ... ok
+test a_download_names_its_path_as_a_query_and_stays_on_the_file_route ... ok
+test a_voice_refusal_never_shows_a_header_value_even_cut_short ... ok
+test a_provider_key_never_follows_a_redirect_to_another_site ... ok
+test local_preview_refuses_fifos_and_devices_without_waiting_for_a_writer ... ok
+test local_image_preview_keeps_the_picked_handle_and_checks_its_content_and_size ... ok
+test an_artifact_write_refuses_credential_files_odd_paths_and_too_much_text ... ok
+test an_expired_sign_in_is_signed_out_for_voice_too ... ok
+test only_files_picked_in_the_open_dialog_can_be_read_for_the_preview ... ok
+test a_refused_or_broken_download_leaves_the_destination_as_it_was ... ok
+test previews_only_images ... ok
+test an_expired_sign_in_is_signed_out ... ok
+test an_upload_that_would_replace_a_file_is_refused_unless_asked ... ok
+test reads_a_staged_image_for_its_preview ... ok
+test a_failed_key_save_never_shows_the_key_or_part_of_it ... ok
+test a_server_without_voice_has_neither_route ... ok
+test a_direct_url_whose_name_does_not_resolve_is_unreachable ... ok
+test refuses_a_direct_url_that_is_not_http_or_ws ... ok
+test refuses_a_folder_a_missing_file_or_a_relative_path_for_the_preview ... ok
+test hearing_no_speech_is_an_empty_transcript ... ok
+test refuses_extra_headers_that_are_malformed_reserved_or_set_twice ... ok
+test reads_the_start_of_a_local_file_for_the_preview ... ok
+test extra_headers_follow_a_redirect_within_the_dashboard_only ... ok
+test keeps_cookies_the_dashboard_rotates ... ok
+test refuses_to_preview_a_missing_or_oversized_image ... ok
+test passes_on_hermess_whole_reason_for_having_no_transcriber ... ok
+test a_password_never_follows_a_cross_origin_307_or_308_without_extra_headers ... ok
+test never_relays_a_change_to_the_servers_files ... ok
+test a_redirect_loop_never_shows_the_key_or_a_header_value_it_put_in_the_url ... ok
+test opens_the_socket_for_the_profile ... ok
+test rate_limited_sign_in_is_reported ... ok
+test nothing_listening_is_unreachable ... ok
+test never_uploads_to_a_credential_file_or_more_than_hermes_takes ... ok
+test extra_headers_go_with_the_sign_in_rest_calls_and_the_socket ... ok
+test reads_the_voice_setup_without_passing_on_any_key ... ok
+test reads_a_reply_aloud_as_audio_bytes ... ok
+test downloads_a_server_file_in_place_of_the_destination_and_reports_progress ... ok
+test refuses_to_send_a_file_over_the_limit ... ok
+test relays_no_other_skill_write ... ok
+test relays_a_memory_entry_edit_for_any_profile_and_nothing_else_there ... ok
+test refuses_speech_that_is_not_audio_or_has_no_text ... ok
+test relays_a_session_import_only_when_every_session_is_marked_imported ... ok
+test relays_no_other_voice_provider_write ... ok
+test relays_a_rest_get_with_the_sign_in_cookies ... ok
+test relays_a_rest_patch_with_a_json_body ... ok
+test resolves_the_host_name_of_a_direct_url ... ok
+test relays_no_other_toolset_write ... ok
+test reload_uses_the_picked_file_even_after_path_or_symlink_replacement ... ok
+test relays_frames_both_ways ... ok
+test relays_the_model_settings_writes ... ok
+test relays_only_get_patch_and_delete_under_api_and_the_model_job_and_persona_writes ... ok
+test a_connection_test_never_shows_a_header_value_a_gateway_repeats_at_sign_in_or_the_ticket ... ok
+test refuses_a_recording_that_is_not_audio_empty_or_too_long_without_sending_it ... ok
+test stats_files_to_attach ... ok
+test relays_a_rest_delete ... ok
+test relays_the_scheduled_job_writes ... ok
+test relays_the_persona_write_for_a_profile ... ok
+test stages_a_pasted_file_as_a_private_temp_file ... ok
+test toolset_guards_keep_only_no_mcp_platforms_coding_focus_and_disabled_names ... ok
+test relays_the_two_skill_writes_with_exactly_their_fields ... ok
+test relays_the_voice_provider_pick_and_key_save ... ok
+test reports_when_the_server_closes_the_socket ... ok
+test reports_a_file_that_is_gone ... ok
+test does_not_save_a_key_the_provider_turns_down ... ok
+test reads_only_the_start_of_a_huge_error_answer ... ok
+test saves_an_edits_text_through_the_upload_route ... ok
+test relays_the_toolset_switch_with_only_enabled_in_the_body ... ok
+test the_connection_going_drops_each_screen_without_a_close_so_hermes_keeps_the_owner_in_control ... ok
+test the_screen_relays_rfb_bytes_both_ways_and_closing_it_is_a_normal_close ... ok
+test the_generic_relay_still_refuses_writes_to_the_agent_fs_routes ... ok
+test sends_a_file_as_base64_inside_one_frame ... ok
+test saves_a_key_the_provider_could_not_check_and_says_so ... ok
+test transcribes_a_recording_as_a_data_url_for_the_profile ... ok
+test relays_under_a_dashboard_whose_path_is_percent_encoded ... ok
+test voice_requests_carry_the_gate_headers_too ... ok
+test saves_a_provider_key_the_provider_accepts ... ok
+test without_the_extra_headers_the_gate_refuses ... ok
+test voice_redirects_to_another_origin_stop_without_sending_credentials_or_audio ... ok
+test with_extra_headers_the_dashboards_own_detail_is_still_shown_unless_it_repeats_one ... ok
+test writes_an_artifacts_text_where_the_profiles_tools_run ... ok
+test signs_in_and_receives_gateway_ready_first ... ok
+test the_screen_reports_hermess_own_close_code ... ok
+test splits_newline_delimited_messages_into_frames ... ok
+test wrong_password_is_bad_credentials ... ok
+test saves_only_what_hermes_lists_as_a_provider_key ... ok
+test uploads_a_local_file_as_hermes_takes_it_and_reports_progress ... ok
+test cancelling_a_download_removes_its_part_file ... ok
+test a_connection_test_gives_up_on_a_port_that_never_answers ... ok
+test a_connection_test_gives_up_on_a_status_body_that_never_comes ... ok
+test a_provider_key_check_that_never_answers_gives_up ... ok
+
+test result: ok. 112 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/web_page.rs (target/debug/deps/web_page-c96405c681e494d2)
+
+running 4 tests
+test checks_only_web_addresses ... ok
+test opens_the_page_with_the_desktop_opener ... ok
+test says_when_the_site_cant_be_reached ... ok
+test says_a_site_refuses_when_its_answer_does ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+cargo test exit 0

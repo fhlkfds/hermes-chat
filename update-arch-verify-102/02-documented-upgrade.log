@@ -1,0 +1,548 @@
+$ cd /tmp/hc102/checkout   # the stated checkout, at 6017fa6 Merge pull request #185 from l0cky12/feat/sidebar-rail-redesign-176
+$ git pull && packaging/aur/build.sh -si --noconfirm   # PACMAN_AUTH=/tmp/hc102/sandbox-auth.sh
+2026-11-04T19:01:21-06:00
+Updating 6017fa6..af77a05
+Fast-forward
+ GLOSSARY.md                                        |   21 +-
+ README.md                                          |   10 +-
+ ...-shows-untrusted-content-in-sandboxed-frames.md |    2 +-
+ ...0009-setup-tests-a-sign-in-before-keeping-it.md |    2 +
+ ...are-hermess-cron-jobs-confirmed-by-read-back.md |    2 +
+ ...lates-are-local-data-with-plain-placeholders.md |    2 +
+ ...s-preview-terminals-files-and-hermess-screen.md |    2 +-
+ ...hats-open-in-tabs-per-pane-and-drag-to-split.md |    3 +-
+ ...ngs-tabs-keep-their-strip-and-gain-a-sub-nav.md |   26 +
+ ...mes-server-and-remembers-the-computer-picked.md |   25 +
+ ...a-dragged-tab-moves-and-any-pane-edge-splits.md |   72 ++
+ ...go-through-an-ssh-tunnel-rust-opens-per-page.md |   41 +
+ ...-hermes-in-a-new-chat-and-shows-what-changed.md |   29 +
+ ...gn-in-and-runs-again-from-the-sign-in-screen.md |   43 +
+ ...ives-the-terminal-its-host-as-the-ssh-target.md |   25 +
+ ...ed-through-hermess-tool-routes-and-read-back.md |   47 +
+ ...erminal-and-the-inbox-closes-on-a-click-away.md |   20 +
+ docs/research/hermes-gateway-api.md                |   11 +
+ docs/screenshots/inbox-click-away/README.md        |   21 +
+ .../after-1-rail-and-tab-strip.png                 |  Bin 0 -> 64832 bytes
+ .../inbox-click-away/after-2-inbox-open.png        |  Bin 0 -> 81602 bytes
+ .../inbox-click-away/after-3-logs-closes-inbox.png |  Bin 0 -> 62471 bytes
+ .../after-4-chat-click-closes-inbox.png            |  Bin 0 -> 62706 bytes
+ .../inbox-click-away/after-5-side-panel.png        |  Bin 0 -> 85537 bytes
+ .../before-1-rail-and-split-buttons.png            |  Bin 0 -> 66589 bytes
+ .../before-2-inbox-stays-over-logs.png             |  Bin 0 -> 79442 bytes
+ docs/screenshots/inbox-click-away/bridge.ts        |  106 ++
+ docs/screenshots/jobs-troubleshoot/1-job-list.png  |  Bin 0 -> 72962 bytes
+ .../jobs-troubleshoot/10-reloaded-while-open.png   |  Bin 0 -> 82182 bytes
+ .../jobs-troubleshoot/2-preview-from-list.png      |  Bin 0 -> 98847 bytes
+ .../jobs-troubleshoot/3-failed-run-buttons.png     |  Bin 0 -> 74405 bytes
+ .../4-preview-picked-run-redacted.png              |  Bin 0 -> 93038 bytes
+ .../jobs-troubleshoot/5-chat-first-message.png     |  Bin 0 -> 102927 bytes
+ .../jobs-troubleshoot/6-chat-reply-and-toast.png   |  Bin 0 -> 78670 bytes
+ .../7-reloaded-job-what-changed.png                |  Bin 0 -> 82246 bytes
+ .../jobs-troubleshoot/8-run-now-confirm.png        |  Bin 0 -> 82981 bytes
+ .../jobs-troubleshoot/9-working-panel.png          |  Bin 0 -> 78728 bytes
+ docs/screenshots/jobs-troubleshoot/README.md       |   33 +
+ docs/screenshots/jobs-troubleshoot/bridge.ts       |  144 +++
+ .../model-select-text/1-before-model.png           |  Bin 0 -> 91689 bytes
+ .../model-select-text/2-after-model.png            |  Bin 0 -> 95152 bytes
+ .../model-select-text/3-after-model-auxiliary.png  |  Bin 0 -> 101479 bytes
+ .../model-select-text/4-after-setup-provider.png   |  Bin 0 -> 99928 bytes
+ docs/screenshots/model-select-text/README.md       |   10 +
+ .../remove-templates/1-before-composer.png         |  Bin 0 -> 8420 bytes
+ docs/screenshots/remove-templates/1-before.png     |  Bin 0 -> 50967 bytes
+ .../remove-templates/2-after-composer.png          |  Bin 0 -> 8206 bytes
+ docs/screenshots/remove-templates/2-after.png      |  Bin 0 -> 50756 bytes
+ docs/screenshots/remove-templates/README.md        |    8 +
+ docs/screenshots/remove-templates/setup/dash.sh    |   13 +
+ docs/screenshots/remove-templates/setup/onboard.sh |   13 +
+ docs/screenshots/remove-templates/setup/seed.py    |   29 +
+ .../remove-templates/setup/start-app.sh            |    9 +
+ docs/screenshots/server-pages/1-server-page.png    |  Bin 0 -> 91120 bytes
+ docs/screenshots/server-pages/2-this-computer.png  |  Bin 0 -> 88093 bytes
+ docs/screenshots/server-pages/3-port-closed.png    |  Bin 0 -> 89085 bytes
+ docs/screenshots/server-pages/4-refused.png        |  Bin 0 -> 82065 bytes
+ docs/screenshots/server-pages/5-typed.png          |  Bin 0 -> 91489 bytes
+ docs/screenshots/server-pages/README.md            |   13 +
+ docs/screenshots/server-pages/bridge.ts            |   90 ++
+ docs/screenshots/settings-redesign/README.md       |   31 +
+ .../settings-redesign/after-appearance.png         |  Bin 0 -> 171105 bytes
+ .../settings-redesign/after-diagnostics.png        |  Bin 0 -> 159466 bytes
+ .../settings-redesign/after-general-connection.png |  Bin 0 -> 94660 bytes
+ .../settings-redesign/after-general-launch.png     |  Bin 0 -> 91840 bytes
+ .../settings-redesign/after-general-search.png     |  Bin 0 -> 64318 bytes
+ .../settings-redesign/after-general-storage.png    |  Bin 0 -> 107427 bytes
+ .../settings-redesign/after-general-voice.png      |  Bin 0 -> 165324 bytes
+ .../settings-redesign/after-memory-profile.png     |  Bin 0 -> 116770 bytes
+ .../screenshots/settings-redesign/after-memory.png |  Bin 0 -> 135366 bytes
+ .../settings-redesign/after-min-size.png           |  Bin 0 -> 67498 bytes
+ docs/screenshots/settings-redesign/after-model.png |  Bin 0 -> 97066 bytes
+ .../settings-redesign/after-persona.png            |  Bin 0 -> 84407 bytes
+ .../settings-redesign/after-skills-hover.png       |  Bin 0 -> 164938 bytes
+ .../screenshots/settings-redesign/after-skills.png |  Bin 0 -> 151664 bytes
+ .../settings-redesign/after-toolsets.png           |  Bin 0 -> 133638 bytes
+ .../settings-redesign/before-appearance-1.png      |  Bin 0 -> 161005 bytes
+ .../settings-redesign/before-appearance-2.png      |  Bin 0 -> 159894 bytes
+ .../settings-redesign/before-appearance-3.png      |  Bin 0 -> 160474 bytes
+ .../settings-redesign/before-diagnostics-1.png     |  Bin 0 -> 123686 bytes
+ .../settings-redesign/before-diagnostics-2.png     |  Bin 0 -> 133388 bytes
+ .../settings-redesign/before-general-2.png         |  Bin 0 -> 126935 bytes
+ .../settings-redesign/before-general-3.png         |  Bin 0 -> 112816 bytes
+ .../settings-redesign/before-general-top.png       |  Bin 0 -> 130902 bytes
+ .../settings-redesign/before-general-voice.png     |  Bin 0 -> 156046 bytes
+ .../settings-redesign/before-memory-1.png          |  Bin 0 -> 146044 bytes
+ .../settings-redesign/before-memory-2.png          |  Bin 0 -> 134504 bytes
+ .../settings-redesign/before-memory-3.png          |  Bin 0 -> 134430 bytes
+ .../settings-redesign/before-model-1.png           |  Bin 0 -> 97414 bytes
+ .../settings-redesign/before-model-2.png           |  Bin 0 -> 100910 bytes
+ .../settings-redesign/before-model-3.png           |  Bin 0 -> 101388 bytes
+ .../settings-redesign/before-persona-1.png         |  Bin 0 -> 100769 bytes
+ .../settings-redesign/before-skills-1.png          |  Bin 0 -> 117673 bytes
+ .../settings-redesign/before-skills-2.png          |  Bin 0 -> 124295 bytes
+ .../settings-redesign/before-skills-3.png          |  Bin 0 -> 124278 bytes
+ .../settings-redesign/before-toolsets-1.png        |  Bin 0 -> 134934 bytes
+ .../settings-redesign/before-toolsets-2.png        |  Bin 0 -> 131340 bytes
+ docs/screenshots/settings-redesign/bridge.ts       |  159 +++
+ docs/screenshots/setup-101/01-first-launch.png     |  Bin 0 -> 46262 bytes
+ docs/screenshots/setup-101/02-unreachable.png      |  Bin 0 -> 66368 bytes
+ docs/screenshots/setup-101/03-gateway-refused.png  |  Bin 0 -> 69185 bytes
+ docs/screenshots/setup-101/04-wrong-password.png   |  Bin 0 -> 59659 bytes
+ .../screenshots/setup-101/05-protocol-mismatch.png |  Bin 0 -> 55709 bytes
+ docs/screenshots/setup-101/06-test-passed.png      |  Bin 0 -> 53665 bytes
+ docs/screenshots/setup-101/07-connecting-stop.png  |  Bin 0 -> 53527 bytes
+ docs/screenshots/setup-101/08-stopped.png          |  Bin 0 -> 56449 bytes
+ docs/screenshots/setup-101/09-providers-skip.png   |  Bin 0 -> 89019 bytes
+ .../setup-101/10-key-rejected-not-shown.png        |  Bin 0 -> 93190 bytes
+ docs/screenshots/setup-101/11-key-saved-finish.png |  Bin 0 -> 90871 bytes
+ .../setup-101/12-settings-run-setup-again.png      |  Bin 0 -> 90737 bytes
+ .../setup-101/13-reconfigure-stopped-restored.png  |  Bin 0 -> 58510 bytes
+ docs/screenshots/setup-101/14-draft-kept.png       |  Bin 0 -> 47295 bytes
+ .../setup-101/15-signin-run-setup-again.png        |  Bin 0 -> 61351 bytes
+ docs/screenshots/setup-101/16-signin-edit.png      |  Bin 0 -> 57881 bytes
+ .../setup-101/17-signin-min-size-scrolls.png       |  Bin 0 -> 41925 bytes
+ docs/screenshots/setup-101/bridge.ts               |  131 ++
+ docs/screenshots/tab-drag/01-reorder-drag.png      |  Bin 0 -> 54616 bytes
+ docs/screenshots/tab-drag/02-reorder-after.png     |  Bin 0 -> 53647 bytes
+ docs/screenshots/tab-drag/03-right-drag.png        |  Bin 0 -> 56722 bytes
+ docs/screenshots/tab-drag/04-right-after.png       |  Bin 0 -> 65634 bytes
+ docs/screenshots/tab-drag/05-left-drag.png         |  Bin 0 -> 56580 bytes
+ docs/screenshots/tab-drag/06-left-after.png        |  Bin 0 -> 65699 bytes
+ docs/screenshots/tab-drag/07-bottom-drag.png       |  Bin 0 -> 54501 bytes
+ docs/screenshots/tab-drag/08-bottom-after.png      |  Bin 0 -> 67648 bytes
+ docs/screenshots/tab-drag/09-top-drag.png          |  Bin 0 -> 54093 bytes
+ docs/screenshots/tab-drag/10-top-after.png         |  Bin 0 -> 70591 bytes
+ docs/screenshots/tab-drag/11-merge-drag.png        |  Bin 0 -> 68457 bytes
+ docs/screenshots/tab-drag/12-merge-after.png       |  Bin 0 -> 53592 bytes
+ .../tab-drag/13-two-panes-below-drag.png           |  Bin 0 -> 72791 bytes
+ .../tab-drag/14-two-panes-below-after.png          |  Bin 0 -> 67551 bytes
+ docs/screenshots/tab-drag/15-tab-menu.png          |  Bin 0 -> 74685 bytes
+ docs/screenshots/tab-drag/16-merged-from-menu.png  |  Bin 0 -> 53908 bytes
+ docs/screenshots/tab-drag/17-ctrl-shift-pageup.png |  Bin 0 -> 53340 bytes
+ docs/screenshots/tab-drag/18-menu-two-panes.png    |  Bin 0 -> 73539 bytes
+ docs/screenshots/tab-drag/README.md                |   34 +
+ .../tab-drag/before-1-right-edge-copies.png        |  Bin 0 -> 57716 bytes
+ .../tab-drag/before-2-left-edge-squashed-hint.png  |  Bin 0 -> 57903 bytes
+ .../tab-drag/before-3-other-pane-copies.png        |  Bin 0 -> 64271 bytes
+ docs/screenshots/tab-drag/bridge.ts                |   97 ++
+ .../1-url-sign-in-connects-at-once.png             |  Bin 0 -> 15842 bytes
+ .../2-guess-failed-says-where-it-came-from.png     |  Bin 0 -> 27186 bytes
+ .../terminal-default/1-default-hermes-server.png   |  Bin 0 -> 59138 bytes
+ .../2-switched-to-this-computer.png                |  Bin 0 -> 60953 bytes
+ .../3-back-to-server-same-session.png              |  Bin 0 -> 64332 bytes
+ .../terminal-default/4-min-size-hermes-server.png  |  Bin 0 -> 41124 bytes
+ .../5-remembered-this-computer-after-relaunch.png  |  Bin 0 -> 57247 bytes
+ .../terminal-default/6-no-ssh-target.png           |  Bin 0 -> 69647 bytes
+ .../terminal-default/7-min-size-no-ssh-target.png  |  Bin 0 -> 46740 bytes
+ .../8-target-set-and-connected.png                 |  Bin 0 -> 56365 bytes
+ docs/screenshots/terminal-default/README.md        |   19 +
+ .../1-loaded-speech-to-text-real.png               |  Bin 0 -> 105879 bytes
+ .../voice-providers/10-refused-stand-in.png        |  Bin 0 -> 93225 bytes
+ .../voice-providers/11-unsupported-stand-in.png    |  Bin 0 -> 100031 bytes
+ .../12-merged-general-screenshots-group-real.png   |  Bin 0 -> 95527 bytes
+ .../voice-providers/13-merged-voice-tab-real.png   |  Bin 0 -> 110130 bytes
+ .../14-merged-text-to-speech-real.png              |  Bin 0 -> 106976 bytes
+ .../15-merged-voice-panel-link-stand-in.png        |  Bin 0 -> 74439 bytes
+ .../16-merged-opened-from-panel-stand-in.png       |  Bin 0 -> 108268 bytes
+ .../2-loaded-text-to-speech-real.png               |  Bin 0 -> 110253 bytes
+ .../3-picked-groq-key-write-only-real.png          |  Bin 0 -> 103666 bytes
+ .../voice-providers/4-key-typed-real.png           |  Bin 0 -> 107388 bytes
+ docs/screenshots/voice-providers/5-saving-real.png |  Bin 0 -> 107534 bytes
+ .../voice-providers/6-saved-and-read-back-real.png |  Bin 0 -> 110145 bytes
+ .../voice-providers/7-conflict-real.png            |  Bin 0 -> 106201 bytes
+ .../8-voice-panel-link-stand-in.png                |  Bin 0 -> 74438 bytes
+ .../9-opened-from-panel-stand-in.png               |  Bin 0 -> 102908 bytes
+ docs/screenshots/voice-providers/README.md         |   34 +
+ docs/screenshots/voice-providers/bridge.ts         |  134 ++
+ src-tauri/src/lib.rs                               |   60 +-
+ src-tauri/src/server_page.rs                       | 1302 ++++++++++++++++++++
+ src-tauri/src/transport.rs                         |  107 +-
+ src-tauri/tests/transport.rs                       |   95 +-
+ src/App.tsx                                        |  302 +++--
+ src/hermes/account.ts                              |    8 +-
+ src/hermes/backup.test.ts                          |    3 +-
+ src/hermes/backup.ts                               |    4 +-
+ src/hermes/connectStop.test.ts                     |   84 ++
+ src/hermes/fakeHermes.ts                           |   35 +-
+ src/hermes/fakeVoiceProviders.ts                   |  253 ++++
+ src/hermes/pipe.ts                                 |   10 +-
+ src/hermes/preview.test.ts                         |   42 +-
+ src/hermes/preview.ts                              |   46 +-
+ src/hermes/repo.test.ts                            |    2 +
+ src/hermes/repo.ts                                 |    5 +-
+ src/hermes/serial.test.ts                          |  107 ++
+ src/hermes/serial.ts                               |   43 +-
+ src/hermes/setup.test.ts                           |   10 +-
+ src/hermes/setup.ts                                |    3 +
+ src/hermes/terminal.test.ts                        |   34 +-
+ src/hermes/terminal.ts                             |   39 +-
+ src/hermes/transport.ts                            |   56 +-
+ src/hermes/troubleshoot.test.ts                    |  349 ++++++
+ src/hermes/troubleshoot.ts                         |  398 ++++++
+ src/hermes/uiPrefs.test.ts                         |   18 +-
+ src/hermes/uiPrefs.ts                              |    7 +-
+ src/hermes/voice.test.ts                           |    2 +-
+ src/hermes/voiceSettings.live.test.ts              |  109 ++
+ src/hermes/voiceSettings.test.ts                   |  268 ++++
+ src/hermes/voiceSettings.ts                        |  510 ++++++++
+ src/styles.css                                     |  197 ++-
+ src/ui/ChatPane.tsx                                |   30 +-
+ src/ui/Inbox.tsx                                   |   26 +-
+ src/ui/MemoryProviderSettings.tsx                  |  101 +-
+ src/ui/MemorySettings.tsx                          |   23 +-
+ src/ui/Onboarding.tsx                              |  142 ++-
+ src/ui/PersonaSettings.tsx                         |    7 +-
+ src/ui/PreviewPane.tsx                             |  249 +++-
+ src/ui/ScheduledJobs.tsx                           |  413 ++++++-
+ src/ui/Settings.tsx                                |  171 ++-
+ src/ui/Sidebar.tsx                                 |   52 +-
+ src/ui/SignIn.tsx                                  |   10 +-
+ src/ui/SkillSettings.tsx                           |   42 +-
+ src/ui/SubNav.tsx                                  |   37 +
+ src/ui/Tabs.tsx                                    |  192 ++-
+ src/ui/Templates.tsx                               |  648 ----------
+ src/ui/Terminal.tsx                                |   75 +-
+ src/ui/ToolsetSettings.tsx                         |    7 +-
+ src/ui/Voice.tsx                                   |   33 +-
+ src/ui/VoiceConversation.tsx                       |   25 +-
+ src/ui/VoiceProviderSettings.tsx                   |  455 +++++++
+ src/ui/chatHeader.test.tsx                         |   14 +-
+ src/ui/connections.test.tsx                        |    4 +-
+ src/ui/conversation.test.tsx                       |   23 +-
+ src/ui/diagnostics.test.tsx                        |    3 +-
+ src/ui/fileBrowser.test.tsx                        |   18 +-
+ src/ui/inbox.test.tsx                              |   42 +
+ src/ui/keyboard.test.tsx                           |    2 -
+ src/ui/memoryProviders.test.tsx                    |    2 +
+ src/ui/memorySettings.test.tsx                     |   58 +-
+ src/ui/modelSettings.test.tsx                      |   24 +
+ src/ui/onboarding.test.tsx                         |  469 ++++++-
+ src/ui/persona.test.tsx                            |    4 +-
+ src/ui/previewContext.tsx                          |   15 +-
+ src/ui/previewPane.test.tsx                        |  260 +++-
+ src/ui/queue.test.tsx                              |    2 +-
+ src/ui/rail.test.tsx                               |   18 +-
+ src/ui/reopen.test.tsx                             |    1 +
+ src/ui/scheduledJobs.test.tsx                      |  203 +++
+ src/ui/screen.test.tsx                             |   17 +-
+ src/ui/screenshot.test.tsx                         |    7 +-
+ src/ui/settingsSubnav.test.tsx                     |  229 ++++
+ src/ui/setupProviders.test.tsx                     |  206 ++++
+ src/ui/signOut.test.tsx                            |    2 +-
+ src/ui/skillSettings.test.tsx                      |    5 +-
+ src/ui/slashCommands.test.tsx                      |    2 +-
+ src/ui/split.test.tsx                              |    8 +-
+ src/ui/summoned.test.tsx                           |    9 +-
+ src/ui/tabMoves.test.ts                            |  138 +++
+ src/ui/tabMoves.ts                                 |  124 ++
+ src/ui/tabs.test.tsx                               |  280 ++++-
+ src/ui/tauriPreview.ts                             |   51 +-
+ src/ui/templates.test.tsx                          |  287 -----
+ src/ui/terminal.test.tsx                           |  148 ++-
+ src/ui/voice.test.tsx                              |    6 +-
+ src/ui/voiceProviderSettings.test.tsx              |  373 ++++++
+ 255 files changed, 10312 insertions(+), 1499 deletions(-)
+ create mode 100644 docs/adr/0051-settings-tabs-keep-their-strip-and-gain-a-sub-nav.md
+ create mode 100644 docs/adr/0051-the-terminal-opens-on-the-hermes-server-and-remembers-the-computer-picked.md
+ create mode 100644 docs/adr/0052-a-dragged-tab-moves-and-any-pane-edge-splits.md
+ create mode 100644 docs/adr/0052-server-pages-in-the-preview-go-through-an-ssh-tunnel-rust-opens-per-page.md
+ create mode 100644 docs/adr/0053-troubleshoot-hands-a-job-to-hermes-in-a-new-chat-and-shows-what-changed.md
+ create mode 100644 docs/adr/0054-setup-can-stop-a-sign-in-and-runs-again-from-the-sign-in-screen.md
+ create mode 100644 docs/adr/0055-a-web-address-sign-in-gives-the-terminal-its-host-as-the-ssh-target.md
+ create mode 100644 docs/adr/0055-speech-providers-are-picked-through-hermess-tool-routes-and-read-back.md
+ create mode 100644 docs/adr/0055-the-side-panel-alone-holds-files-and-the-terminal-and-the-inbox-closes-on-a-click-away.md
+ create mode 100644 docs/screenshots/inbox-click-away/README.md
+ create mode 100644 docs/screenshots/inbox-click-away/after-1-rail-and-tab-strip.png
+ create mode 100644 docs/screenshots/inbox-click-away/after-2-inbox-open.png
+ create mode 100644 docs/screenshots/inbox-click-away/after-3-logs-closes-inbox.png
+ create mode 100644 docs/screenshots/inbox-click-away/after-4-chat-click-closes-inbox.png
+ create mode 100644 docs/screenshots/inbox-click-away/after-5-side-panel.png
+ create mode 100644 docs/screenshots/inbox-click-away/before-1-rail-and-split-buttons.png
+ create mode 100644 docs/screenshots/inbox-click-away/before-2-inbox-stays-over-logs.png
+ create mode 100644 docs/screenshots/inbox-click-away/bridge.ts
+ create mode 100644 docs/screenshots/jobs-troubleshoot/1-job-list.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/10-reloaded-while-open.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/2-preview-from-list.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/3-failed-run-buttons.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/4-preview-picked-run-redacted.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/5-chat-first-message.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/6-chat-reply-and-toast.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/7-reloaded-job-what-changed.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/8-run-now-confirm.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/9-working-panel.png
+ create mode 100644 docs/screenshots/jobs-troubleshoot/README.md
+ create mode 100644 docs/screenshots/jobs-troubleshoot/bridge.ts
+ create mode 100644 docs/screenshots/model-select-text/1-before-model.png
+ create mode 100644 docs/screenshots/model-select-text/2-after-model.png
+ create mode 100644 docs/screenshots/model-select-text/3-after-model-auxiliary.png
+ create mode 100644 docs/screenshots/model-select-text/4-after-setup-provider.png
+ create mode 100644 docs/screenshots/model-select-text/README.md
+ create mode 100644 docs/screenshots/remove-templates/1-before-composer.png
+ create mode 100644 docs/screenshots/remove-templates/1-before.png
+ create mode 100644 docs/screenshots/remove-templates/2-after-composer.png
+ create mode 100644 docs/screenshots/remove-templates/2-after.png
+ create mode 100644 docs/screenshots/remove-templates/README.md
+ create mode 100755 docs/screenshots/remove-templates/setup/dash.sh
+ create mode 100644 docs/screenshots/remove-templates/setup/onboard.sh
+ create mode 100644 docs/screenshots/remove-templates/setup/seed.py
+ create mode 100755 docs/screenshots/remove-templates/setup/start-app.sh
+ create mode 100644 docs/screenshots/server-pages/1-server-page.png
+ create mode 100644 docs/screenshots/server-pages/2-this-computer.png
+ create mode 100644 docs/screenshots/server-pages/3-port-closed.png
+ create mode 100644 docs/screenshots/server-pages/4-refused.png
+ create mode 100644 docs/screenshots/server-pages/5-typed.png
+ create mode 100644 docs/screenshots/server-pages/README.md
+ create mode 100644 docs/screenshots/server-pages/bridge.ts
+ create mode 100644 docs/screenshots/settings-redesign/README.md
+ create mode 100644 docs/screenshots/settings-redesign/after-appearance.png
+ create mode 100644 docs/screenshots/settings-redesign/after-diagnostics.png
+ create mode 100644 docs/screenshots/settings-redesign/after-general-connection.png
+ create mode 100644 docs/screenshots/settings-redesign/after-general-launch.png
+ create mode 100644 docs/screenshots/settings-redesign/after-general-search.png
+ create mode 100644 docs/screenshots/settings-redesign/after-general-storage.png
+ create mode 100644 docs/screenshots/settings-redesign/after-general-voice.png
+ create mode 100644 docs/screenshots/settings-redesign/after-memory-profile.png
+ create mode 100644 docs/screenshots/settings-redesign/after-memory.png
+ create mode 100644 docs/screenshots/settings-redesign/after-min-size.png
+ create mode 100644 docs/screenshots/settings-redesign/after-model.png
+ create mode 100644 docs/screenshots/settings-redesign/after-persona.png
+ create mode 100644 docs/screenshots/settings-redesign/after-skills-hover.png
+ create mode 100644 docs/screenshots/settings-redesign/after-skills.png
+ create mode 100644 docs/screenshots/settings-redesign/after-toolsets.png
+ create mode 100644 docs/screenshots/settings-redesign/before-appearance-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-appearance-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-appearance-3.png
+ create mode 100644 docs/screenshots/settings-redesign/before-diagnostics-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-diagnostics-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-general-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-general-3.png
+ create mode 100644 docs/screenshots/settings-redesign/before-general-top.png
+ create mode 100644 docs/screenshots/settings-redesign/before-general-voice.png
+ create mode 100644 docs/screenshots/settings-redesign/before-memory-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-memory-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-memory-3.png
+ create mode 100644 docs/screenshots/settings-redesign/before-model-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-model-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-model-3.png
+ create mode 100644 docs/screenshots/settings-redesign/before-persona-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-skills-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-skills-2.png
+ create mode 100644 docs/screenshots/settings-redesign/before-skills-3.png
+ create mode 100644 docs/screenshots/settings-redesign/before-toolsets-1.png
+ create mode 100644 docs/screenshots/settings-redesign/before-toolsets-2.png
+ create mode 100644 docs/screenshots/settings-redesign/bridge.ts
+ create mode 100644 docs/screenshots/setup-101/01-first-launch.png
+ create mode 100644 docs/screenshots/setup-101/02-unreachable.png
+ create mode 100644 docs/screenshots/setup-101/03-gateway-refused.png
+ create mode 100644 docs/screenshots/setup-101/04-wrong-password.png
+ create mode 100644 docs/screenshots/setup-101/05-protocol-mismatch.png
+ create mode 100644 docs/screenshots/setup-101/06-test-passed.png
+ create mode 100644 docs/screenshots/setup-101/07-connecting-stop.png
+ create mode 100644 docs/screenshots/setup-101/08-stopped.png
+ create mode 100644 docs/screenshots/setup-101/09-providers-skip.png
+ create mode 100644 docs/screenshots/setup-101/10-key-rejected-not-shown.png
+ create mode 100644 docs/screenshots/setup-101/11-key-saved-finish.png
+ create mode 100644 docs/screenshots/setup-101/12-settings-run-setup-again.png
+ create mode 100644 docs/screenshots/setup-101/13-reconfigure-stopped-restored.png
+ create mode 100644 docs/screenshots/setup-101/14-draft-kept.png
+ create mode 100644 docs/screenshots/setup-101/15-signin-run-setup-again.png
+ create mode 100644 docs/screenshots/setup-101/16-signin-edit.png
+ create mode 100644 docs/screenshots/setup-101/17-signin-min-size-scrolls.png
+ create mode 100644 docs/screenshots/setup-101/bridge.ts
+ create mode 100644 docs/screenshots/tab-drag/01-reorder-drag.png
+ create mode 100644 docs/screenshots/tab-drag/02-reorder-after.png
+ create mode 100644 docs/screenshots/tab-drag/03-right-drag.png
+ create mode 100644 docs/screenshots/tab-drag/04-right-after.png
+ create mode 100644 docs/screenshots/tab-drag/05-left-drag.png
+ create mode 100644 docs/screenshots/tab-drag/06-left-after.png
+ create mode 100644 docs/screenshots/tab-drag/07-bottom-drag.png
+ create mode 100644 docs/screenshots/tab-drag/08-bottom-after.png
+ create mode 100644 docs/screenshots/tab-drag/09-top-drag.png
+ create mode 100644 docs/screenshots/tab-drag/10-top-after.png
+ create mode 100644 docs/screenshots/tab-drag/11-merge-drag.png
+ create mode 100644 docs/screenshots/tab-drag/12-merge-after.png
+ create mode 100644 docs/screenshots/tab-drag/13-two-panes-below-drag.png
+ create mode 100644 docs/screenshots/tab-drag/14-two-panes-below-after.png
+ create mode 100644 docs/screenshots/tab-drag/15-tab-menu.png
+ create mode 100644 docs/screenshots/tab-drag/16-merged-from-menu.png
+ create mode 100644 docs/screenshots/tab-drag/17-ctrl-shift-pageup.png
+ create mode 100644 docs/screenshots/tab-drag/18-menu-two-panes.png
+ create mode 100644 docs/screenshots/tab-drag/README.md
+ create mode 100644 docs/screenshots/tab-drag/before-1-right-edge-copies.png
+ create mode 100644 docs/screenshots/tab-drag/before-2-left-edge-squashed-hint.png
+ create mode 100644 docs/screenshots/tab-drag/before-3-other-pane-copies.png
+ create mode 100644 docs/screenshots/tab-drag/bridge.ts
+ create mode 100644 docs/screenshots/terminal-auto-target/1-url-sign-in-connects-at-once.png
+ create mode 100644 docs/screenshots/terminal-auto-target/2-guess-failed-says-where-it-came-from.png
+ create mode 100644 docs/screenshots/terminal-default/1-default-hermes-server.png
+ create mode 100644 docs/screenshots/terminal-default/2-switched-to-this-computer.png
+ create mode 100644 docs/screenshots/terminal-default/3-back-to-server-same-session.png
+ create mode 100644 docs/screenshots/terminal-default/4-min-size-hermes-server.png
+ create mode 100644 docs/screenshots/terminal-default/5-remembered-this-computer-after-relaunch.png
+ create mode 100644 docs/screenshots/terminal-default/6-no-ssh-target.png
+ create mode 100644 docs/screenshots/terminal-default/7-min-size-no-ssh-target.png
+ create mode 100644 docs/screenshots/terminal-default/8-target-set-and-connected.png
+ create mode 100644 docs/screenshots/terminal-default/README.md
+ create mode 100644 docs/screenshots/voice-providers/1-loaded-speech-to-text-real.png
+ create mode 100644 docs/screenshots/voice-providers/10-refused-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/11-unsupported-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/12-merged-general-screenshots-group-real.png
+ create mode 100644 docs/screenshots/voice-providers/13-merged-voice-tab-real.png
+ create mode 100644 docs/screenshots/voice-providers/14-merged-text-to-speech-real.png
+ create mode 100644 docs/screenshots/voice-providers/15-merged-voice-panel-link-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/16-merged-opened-from-panel-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/2-loaded-text-to-speech-real.png
+ create mode 100644 docs/screenshots/voice-providers/3-picked-groq-key-write-only-real.png
+ create mode 100644 docs/screenshots/voice-providers/4-key-typed-real.png
+ create mode 100644 docs/screenshots/voice-providers/5-saving-real.png
+ create mode 100644 docs/screenshots/voice-providers/6-saved-and-read-back-real.png
+ create mode 100644 docs/screenshots/voice-providers/7-conflict-real.png
+ create mode 100644 docs/screenshots/voice-providers/8-voice-panel-link-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/9-opened-from-panel-stand-in.png
+ create mode 100644 docs/screenshots/voice-providers/README.md
+ create mode 100644 docs/screenshots/voice-providers/bridge.ts
+ create mode 100644 src-tauri/src/server_page.rs
+ create mode 100644 src/hermes/connectStop.test.ts
+ create mode 100644 src/hermes/fakeVoiceProviders.ts
+ create mode 100644 src/hermes/troubleshoot.test.ts
+ create mode 100644 src/hermes/troubleshoot.ts
+ create mode 100644 src/hermes/voiceSettings.live.test.ts
+ create mode 100644 src/hermes/voiceSettings.test.ts
+ create mode 100644 src/hermes/voiceSettings.ts
+ create mode 100644 src/ui/SubNav.tsx
+ delete mode 100644 src/ui/Templates.tsx
+ create mode 100644 src/ui/VoiceProviderSettings.tsx
+ create mode 100644 src/ui/settingsSubnav.test.tsx
+ create mode 100644 src/ui/setupProviders.test.tsx
+ create mode 100644 src/ui/tabMoves.test.ts
+ create mode 100644 src/ui/tabMoves.ts
+ delete mode 100644 src/ui/templates.test.tsx
+ create mode 100644 src/ui/voiceProviderSettings.test.tsx
+==> Making package: hermes-chat-git r0-1 (Wed 04 Nov 2026 07:01:23 PM CST)
+==> Checking runtime dependencies...
+==> Checking buildtime dependencies...
+==> Retrieving sources...
+  -> Updating hermes-chat git repo...
+  -> Found hermes-chat.desktop
+==> Validating source files with sha256sums...
+    hermes-chat ... Skipped
+    hermes-chat.desktop ... Passed
+==> Extracting sources...
+  -> Creating working copy of hermes-chat git repo...
+Reset branch 'makepkg'
+==> Starting prepare()...
+
+added 211 packages, and audited 212 packages in 5s
+
+114 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+==> Starting pkgver()...
+==> Updated version: hermes-chat-git r622.af77a05-1
+==> Starting build()...
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run build`
+npm notice run hermes-chat@0.1.0 build
+npm notice run tsc --noEmit && vite build
+vite v8.3.5 building client environment for production...
+transforming...
+✓ 2717 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                        0.79 kB │ gzip:   0.48 kB
+dist/assets/Terminal-BrP-ENHg.css      3.93 kB │ gzip:   1.01 kB
+dist/assets/index-kBzpxF12.css       171.91 kB │ gzip:  30.97 kB
+dist/assets/bits-l9opEVhR.js          21.43 kB │ gzip:   8.66 kB
+dist/assets/rfb-xHgMEWMb.js          187.37 kB │ gzip:  56.52 kB
+dist/assets/Terminal-N61zKtIb.js     340.37 kB │ gzip:  86.16 kB
+dist/assets/index-CAask9Xl.js      1,860.81 kB │ gzip: 555.82 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 780ms
+   Compiling openssl-sys v0.9.117
+   Compiling ring v0.17.14
+   Compiling hermes-chat v0.1.0 (/tmp/hc102/checkout/packaging/aur/build/src/hermes-chat/src-tauri)
+   Compiling openssl v0.10.81
+   Compiling native-tls v0.2.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling tungstenite v0.30.0
+   Compiling hyper-tls v0.6.0
+   Compiling tokio-tungstenite v0.30.0
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling tauri-plugin-updater v2.14.1
+    Finished `release` profile [optimized] target(s) in 44.36s
+       Built application at: /tmp/hc102/checkout/packaging/aur/build/src/hermes-chat/src-tauri/target/release/hermes-chat
+==> Entering fakeroot environment...
+==> Starting package()...
+==> Tidying install...
+  -> Removing libtool files...
+  -> Removing static library files...
+  -> Purging unwanted files...
+  -> Stripping unneeded symbols from binaries and libraries...
+  -> Compressing man and info pages...
+==> Checking for packaging issues...
+==> Creating package "hermes-chat-git"...
+  -> Generating .PKGINFO file...
+  -> Generating .BUILDINFO file...
+  -> Generating .MTREE file...
+  -> Compressing package...
+==> Leaving fakeroot environment.
+==> Finished making: hermes-chat-git r622.af77a05-1 (Wed 04 Nov 2026 07:02:18 PM CST)
+==> Installing package hermes-chat-git with pacman -U...
+sandbox-auth: /usr/bin/pacman --noconfirm -U /tmp/hc102/checkout/packaging/aur/build/hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst
+loading packages...
+resolving dependencies...
+looking for conflicting packages...
+
+Packages (1) hermes-chat-git-r622.af77a05-1
+
+Total Installed Size:  16.19 MiB
+Net Upgrade Size:       0.21 MiB
+
+:: Proceed with installation? [Y/n] 
+checking keyring...
+checking package integrity...
+loading package files...
+checking for file conflicts...
+checking available disk space...
+:: Processing package changes...
+upgrading hermes-chat-git...
+ldconfig: Can't create temporary cache file /etc/ld.so.cache~: Permission denied
+error: command failed to execute correctly
+:: Running post-transaction hooks...
+(1/3) Arming ConditionNeedsUpdate...
+touch: setting times of '/usr': Permission denied
+error: command failed to execute correctly
+(2/3) Updating icon theme caches...
+gtk-update-icon-cache: Failed to open file usr/share/icons/hicolor/.icon-theme.cache : Permission denied
+error: command failed to execute correctly
+(3/3) Updating the desktop file MIME type cache...
+exit 0
+2026-11-04T19:02:19-06:00

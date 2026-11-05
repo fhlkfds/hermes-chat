@@ -1,0 +1,99 @@
+==> Making package: hermes-chat-git r0-1 (Wed 04 Nov 2026 07:17:02 PM CST)
+==> Checking runtime dependencies...
+==> Checking buildtime dependencies...
+==> Retrieving sources...
+  -> Updating hermes-chat git repo...
+  -> Found hermes-chat.desktop
+==> Validating source files with sha256sums...
+    hermes-chat ... Skipped
+    hermes-chat.desktop ... Passed
+==> Extracting sources...
+  -> Creating working copy of hermes-chat git repo...
+From /tmp/hc102/branchpkg/hermes-chat
+ * [new branch]      feat/composer-skills-188 -> origin/feat/composer-skills-188
+ * [new branch]      feat/connection-routes-191 -> origin/feat/connection-routes-191
+ * [new branch]      feat/follow-up-behavior-189 -> origin/feat/follow-up-behavior-189
+ * [new branch]      feat/idle-compaction -> origin/feat/idle-compaction
+ * [new branch]      feat/persona-any-profile-190 -> origin/feat/persona-any-profile-190
+ * [new branch]      feat/settings-rows-general-174 -> origin/feat/settings-rows-general-174
+ * [new branch]      fix/updater-arch-verify-102 -> origin/fix/updater-arch-verify-102
+ * [new branch]      t3/10833e08          -> origin/t3/10833e08
+ * [new branch]      t3/29c10117          -> origin/t3/29c10117
+ * [new branch]      t3/42f8081c          -> origin/t3/42f8081c
+ * [new branch]      t3/53b61828          -> origin/t3/53b61828
+ * [new branch]      t3/58e81014          -> origin/t3/58e81014
+ * [new branch]      t3/8576a147          -> origin/t3/8576a147
+ * [new branch]      t3/892557b1          -> origin/t3/892557b1
+ * [new branch]      t3/abde3888          -> origin/t3/abde3888
+ * [new branch]      t3/cd81f080          -> origin/t3/cd81f080
+ * [new branch]      t3/e0c37146          -> origin/t3/e0c37146
+Reset branch 'makepkg'
+==> Starting prepare()...
+
+added 211 packages, and audited 212 packages in 3s
+
+114 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+==> Starting pkgver()...
+==> Updated version: hermes-chat-git r599.568fea0-1
+==> Starting build()...
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run build`
+npm notice run hermes-chat@0.1.0 build
+npm notice run tsc --noEmit && vite build
+vite v8.3.5 building client environment for production...
+transforming...
+✓ 2716 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                        0.79 kB │ gzip:   0.48 kB
+dist/assets/Terminal-BrP-ENHg.css      3.93 kB │ gzip:   1.01 kB
+dist/assets/index-D8_B6Y4u.css       173.42 kB │ gzip:  31.25 kB
+dist/assets/bits-DThfiTRs.js          21.00 kB │ gzip:   8.44 kB
+dist/assets/rfb-xHgMEWMb.js          187.37 kB │ gzip:  56.52 kB
+dist/assets/Terminal-C1-Rn85P.js     339.85 kB │ gzip:  85.97 kB
+dist/assets/index-BDRBQ8Ig.js      1,860.55 kB │ gzip: 555.28 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 938ms
+   Compiling openssl-sys v0.9.117
+   Compiling ring v0.17.14
+   Compiling hermes-chat v0.1.0 (/tmp/hc102/branchpkg/src/hermes-chat/src-tauri)
+   Compiling openssl v0.10.81
+   Compiling native-tls v0.2.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling tungstenite v0.30.0
+   Compiling hyper-tls v0.6.0
+   Compiling rustls v0.23.46
+   Compiling tokio-tungstenite v0.30.0
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling tauri-plugin-updater v2.14.1
+    Finished `release` profile [optimized] target(s) in 41.18s
+       Built application at: /tmp/hc102/branchpkg/src/hermes-chat/src-tauri/target/release/hermes-chat
+==> Entering fakeroot environment...
+==> Starting package()...
+==> Tidying install...
+  -> Removing libtool files...
+  -> Removing static library files...
+  -> Purging unwanted files...
+  -> Stripping unneeded symbols from binaries and libraries...
+  -> Compressing man and info pages...
+==> Checking for packaging issues...
+==> Creating package "hermes-chat-git"...
+  -> Generating .PKGINFO file...
+  -> Generating .BUILDINFO file...
+  -> Generating .MTREE file...
+  -> Compressing package...
+==> Leaving fakeroot environment.
+==> Finished making: hermes-chat-git r599.568fea0-1 (Wed 04 Nov 2026 07:17:51 PM CST)
+exit 0

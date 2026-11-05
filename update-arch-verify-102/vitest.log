@@ -1,0 +1,17 @@
+npm notice run hermes-chat@0.1.0 npx
+npm notice run 'vitest' run --maxWorkers=4
+
+ RUN  v5.0.5 /home/liam/.t3/worktrees/hermes-chat/t3-abde3888
+
+(node:701306) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  166 passed | 4 skipped (170)
+      Tests  3498 passed | 12 skipped (3510)
+   Start at  19:40:36
+   Duration  106.43s (tests 78%, environment 10%, import 10%, transform 2%)
+
+    Isolate  170 workers spawned · ~347ms startup each (spawn + environment, per file)
+             at least ~14.41s faster with isolate: false — reuses workers across files instead of one per file
+
+vitest exit 0

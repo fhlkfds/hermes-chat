@@ -1,0 +1,110 @@
+    Checking hermes-chat v0.1.0 (/home/liam/.t3/worktrees/hermes-chat/t3-abde3888/src-tauri)
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> src/remote.rs:142:14
+    |
+142 |     handler: Mutex<Option<Box<dyn Fn(Request) + Send>>>,
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: match expression looks like `matches!` macro
+    --> src/transport.rs:1547:20
+     |
+1547 |       let value_ok = match (second, fields.get(second)) {
+     |  ____________________^
+1548 | |         ("enabled", Some(serde_json::Value::Bool(_))) => true,
+1549 | |         ("content", Some(serde_json::Value::String(_))) => true,
+1550 | |         _ => false,
+1551 | |     };
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#match_like_matches_macro
+     = note: `#[warn(clippy::match_like_matches_macro)]` on by default
+help: use `matches!` directly
+     |
+1547 -     let value_ok = match (second, fields.get(second)) {
+1548 -         ("enabled", Some(serde_json::Value::Bool(_))) => true,
+1549 -         ("content", Some(serde_json::Value::String(_))) => true,
+1550 -         _ => false,
+1551 -     };
+1547 +     let value_ok = matches!((second, fields.get(second)), ("enabled", Some(serde_json::Value::Bool(_))) | ("content", Some(serde_json::Value::String(_))));
+     |
+
+warning: this function has too many arguments (10/7)
+   --> src/lib.rs:121:1
+    |
+121 | / async fn hermes_connect(
+122 | |     state: State<'_, AppState>,
+123 | |     transfers: State<'_, Transfers>,
+124 | |     displays: State<'_, display::Displays>,
+...   |
+131 | |     on_event: Channel<PipeEvent>,
+132 | | ) -> Result<Route, String> {
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> src/lib.rs:618:20
+    |
+618 | struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, (std::path::PathBuf, u64)>)>);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#type_complexity
+
+warning: this function has too many arguments (8/7)
+   --> src/lib.rs:667:1
+    |
+667 | / async fn files_upload(
+668 | |     app: tauri::AppHandle,
+669 | |     transfers: State<'_, Transfers>,
+670 | |     picks: State<'_, UploadPicks>,
+...   |
+675 | |     on_progress: Channel<TransferProgress>,
+676 | | ) -> Result<String, String> {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#too_many_arguments
+
+warning: `hermes-chat` (lib) generated 5 warnings
+warning: `hermes-chat` (lib test) generated 5 warnings (5 duplicates)
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> tests/repo_git.rs:795:83
+    |
+795 |     ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "feature".into(), remote_b...
+    |                                                                                   ^^ help: change this to: `d`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrow
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: `hermes-chat` (test "repo_git") generated 1 warning (run `cargo clippy --fix --test "repo_git" -p hermes-chat -- ` to apply 1 suggestion)
+warning: `format!` in `format!` args
+   --> tests/transport.rs:137:16
+    |
+137 |     let body = format!("{}{}", &head[..head.len() - 1], format!(r#","pad":"{}"}}"#, "x".repeat(n.saturating_sub(head.len() + 9))));
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: combine the `format!(..)` arguments with the outer `format!(..)` call
+    = help: or consider changing `format!` to `format_args!`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#format_in_format_args
+    = note: `#[warn(clippy::format_in_format_args)]` on by default
+
+warning: writing `&PathBuf` instead of `&Path` involves a new object where a slice will do
+    --> tests/transport.rs:1136:15
+     |
+1136 | fn path_of(p: &PathBuf) -> String {
+     |               ^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#ptr_arg
+     = note: `#[warn(clippy::ptr_arg)]` on by default
+help: change this to
+     |
+1136 - fn path_of(p: &PathBuf) -> String {
+1136 + fn path_of(p: &Path) -> String {
+     |
+
+warning: `hermes-chat` (test "transport") generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.77s
+clippy exit 0

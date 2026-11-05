@@ -1,0 +1,22 @@
+# Host (never modified by these tests)
+$ pacman -Q hermes-chat-git; pacman -Qqo /usr/bin/hermes-chat; sha256sum /usr/bin/hermes-chat
+hermes-chat-git r622.af77a05-1
+hermes-chat-git
+390d8fc17557ad960d0b3b1154e026d531aaa4db1b7bdef41945ca3f4ef0c307  /usr/bin/hermes-chat
+
+# Sandbox, now
+$ sandbox.sh run sbx3 sh -c 'pacman -Q hermes-chat-git; pacman -Qo /usr/bin/hermes-chat; sha256sum /usr/bin/hermes-chat'
+hermes-chat-git r622.af77a05-1
+/usr/bin/hermes-chat is owned by hermes-chat-git r622.af77a05-1
+390d8fc17557ad960d0b3b1154e026d531aaa4db1b7bdef41945ca3f4ef0c307  /usr/bin/hermes-chat
+$ bsdtar -xOf hermes-chat-git-r622.af77a05-1-x86_64.pkg.tar.zst usr/bin/hermes-chat | sha256sum
+390d8fc17557ad960d0b3b1154e026d531aaa4db1b7bdef41945ca3f4ef0c307  -
+$ sandbox.sh run sbx3 pacman -Qkk hermes-chat-git | categories
+     15 GID mismatch
+      1 hermes-chat-git: 41 total files, 15 altered files
+     15 UID mismatch
+$ ... | grep -i 'checksum|size|modification'
+(none)
+$ sandbox.sh run sbx3 pacman -Qqo /tmp/hc102/copied/hermes-chat
+error: No package owns /tmp/hc102/copied/hermes-chat
+exit 1
