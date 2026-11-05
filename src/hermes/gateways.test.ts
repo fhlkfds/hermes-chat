@@ -201,6 +201,28 @@ describe("Gateways: problems told apart", () => {
     expect(fake.writes.at(-1)).toEqual({ profile: "default", what: "test telegram" });
   });
 
+  it("a 403 on a read is a permission problem, on its own and before a save", async () => {
+    const { api, fake } = await setUp();
+    const g = await tg(api);
+    fake.refuseReads = { status: 403, detail: "Forbidden for this sign-in" };
+    await expect(api.list("default")).rejects.toMatchObject({ kind: "permission", message: "Forbidden for this sign-in" });
+    const r = await api.save("default", g, draft(g, { enabled: false }));
+    expect(r).toMatchObject({ kind: "refused", problem: { kind: "permission" } });
+    expect(fake.writes).toEqual([]);
+  });
+
+  it("keeps a secret a save sent out of later reads and checks too", async () => {
+    const { api, fake } = await setUp();
+    const g = await tg(api);
+    fake.refuse = { status: 400, detail: "nope" };
+    await api.save("default", g, draft(g, { edits: { TELEGRAM_WEBHOOK_SECRET: { kind: "replace", value: "hook-secret-1" } } }));
+    fake.gateway.default = { running: true, platforms: { telegram: { state: "fatal", error_code: "x", error_message: "webhook hook-secret-1 refused" } } };
+    expect((await tg(api)).error?.text).toBe("webhook [redacted] refused");
+    expect((await api.check("default", "telegram")).check.text).toBe("webhook [redacted] refused");
+    fake.refuse = { status: 500, detail: "check failed for hook-secret-1" };
+    expect((await api.check("default", "telegram")).check.text).toBe("check failed for [redacted]");
+  });
+
   it("an adapter the gateway couldn't build for a platform with its token set is a missing library", async () => {
     const { api, fake } = await setUp();
     const unavailable = { state: "fatal", error_code: "adapter_unavailable", error_message: "No adapter available for enabled discord; check the plugin, dependencies, and credentials." };

@@ -58,6 +58,8 @@ export class FakeGateways {
   drop?: "lost" | "stored";
   /** The next write, or status check, is refused with this. */
   refuse?: { status: number; detail: string };
+  /** Every list read is refused with this while set. */
+  refuseReads?: { status: number; detail: string };
   /** Awaited before each write is applied. */
   gate?: Promise<void>;
   /** Run after each list read, so a test can change things between the screen's reads. */
@@ -122,6 +124,7 @@ export class FakeGateways {
       const profile = req.query.get("profile") ?? "default";
       if (!this.known(profile)) throw answered(404, `Profile '${profile}' does not exist`);
       if (req.path === "/api/messaging/platforms" && req.method === "GET") {
+        if (this.refuseReads) throw answered(this.refuseReads.status, this.refuseReads.detail);
         const out = { env_path: `/srv/hermes/${profile}/.env`, gateway_start_command: `hermes -p ${profile} gateway start`, platforms: CATALOG.map((s) => this.payload(profile, s)) };
         this.afterRead?.();
         return out;

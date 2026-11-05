@@ -83,6 +83,15 @@ export type StatusCheck = { ok: boolean; text: string; problem?: Problem; at: nu
 export type GatewaysRest = (method: RestMethod, pathAndQuery: string, body?: unknown) => Promise<unknown>;
 
 export class GatewaysUnsupportedError extends Error {}
+/** A list read Hermes refused, with the kind of problem, so a 403 still reads as a refused permission. */
+export class GatewaysReadError extends Error {
+  constructor(
+    message: string,
+    readonly kind: ProblemKind,
+  ) {
+    super(message);
+  }
+}
 
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
@@ -237,26 +246,31 @@ function problemOf(f: Failure, typed: readonly string[], sentSecret: boolean): P
 
 /** Settings → Gateways' reads and writes. Every call names its profile, so a profile switch can't redirect one. */
 export class GatewaysApi {
+  /**
+   * The values saves have sent while the app runs, newest last, kept only to take them out of any text Hermes sends
+   * back later (an error that echoes one), on any read or check. Never shown, stored or sent anywhere else.
+   */
+  private sent: string[] = [];
+
   constructor(private rest: GatewaysRest) {}
 
-  /** `typed`: values a save just sent, kept out of every text in the list. */
-  async list(profile: string, typed: readonly string[] = []): Promise<GatewayList> {
+  async list(profile: string): Promise<GatewayList> {
     let res: unknown;
     try {
       res = await this.rest("GET", `api/messaging/platforms?${q(profile)}`);
     } catch (e) {
       const f = failureOf(e);
       if (noRoute(f)) throw new GatewaysUnsupportedError("This Hermes server has no messaging gateway routes (/api/messaging/platforms). Updating Hermes adds them.");
-      throw new Error(redact(f.reason, typed));
+      throw new GatewaysReadError(redact(f.reason, this.sent), f.status === 403 ? "permission" : "other");
     }
     const rows = obj(res).platforms;
     if (!Array.isArray(rows)) throw new Error("Hermes answered with something other than a list of messaging platforms.");
     const start = str(obj(res).gateway_start_command);
-    return { profile, gateways: rows.flatMap((r) => gatewayOf(r, typed) ?? []), startCommand: start || undefined, readAt: Date.now() };
+    return { profile, gateways: rows.flatMap((r) => gatewayOf(r, this.sent) ?? []), startCommand: start || undefined, readAt: Date.now() };
   }
 
-  private async again(profile: string, typed: readonly string[] = []): Promise<GatewayList | undefined> {
-    return this.list(profile, typed).catch(() => undefined);
+  private async again(profile: string): Promise<GatewayList | undefined> {
+    return this.list(profile).catch(() => undefined);
   }
 
   /**
@@ -264,15 +278,20 @@ export class GatewaysApi {
    * else now; then reads it again, and calls it saved only if the read shows all of it.
    */
   async save(profile: string, shown: Gateway, d: Draft): Promise<SaveResult> {
-    const typed = Object.values(d.edits).flatMap((e) => (e?.kind === "replace" && e.value.trim() ? [e.value.trim()] : []));
-    const sentSecret = shown.fields.some((f) => f.secret && typeof wanted(f, d.edits[f.key]) === "string");
+    const typed = shown.fields.flatMap((f) => {
+      const v = f.secret ? wanted(f, d.edits[f.key]) : undefined;
+      return typeof v === "string" ? [v] : [];
+    });
+    this.sent = [...this.sent.filter((v) => !typed.includes(v)), ...typed].slice(-50);
+    const sentSecret = typed.length > 0;
     const local = draftProblem(shown, d);
     if (local) return { kind: "refused", problem: { kind: sentSecret && /redacted/.test(local) ? "invalid-token" : "other", text: local } };
     let before: GatewayList;
     try {
-      before = await this.list(profile, typed);
+      before = await this.list(profile);
     } catch (e) {
-      return { kind: "refused", problem: { kind: "other", text: `Hermes couldn't be read before saving, so nothing was sent: ${e instanceof Error ? e.message : String(e)}` } };
+      const kind = e instanceof GatewaysReadError ? e.kind : "other";
+      return { kind: "refused", problem: { kind, text: `Hermes couldn't be read before saving, so nothing was sent: ${e instanceof Error ? e.message : String(e)}` } };
     }
     const now = before.gateways.find((g) => g.id === shown.id);
     if (!now) return { kind: "refused", problem: { kind: "other", text: `This Hermes no longer lists ${shown.name}.` }, list: before };
@@ -284,13 +303,13 @@ export class GatewaysApi {
       const f = failureOf(e);
       if (f.notRelayed || /^Not connected to Hermes/.test(f.reason)) return { kind: "refused", problem: { kind: "other", text: f.reason } };
       if (f.signedOut) return { kind: "unconfirmed", reason: f.reason };
-      const list = await this.again(profile, typed);
+      const list = await this.again(profile);
       // Hermes checks the whole request before it writes, so a 4xx changed nothing.
-      if (f.status !== undefined && f.status >= 400 && f.status < 500) return { kind: "refused", problem: problemOf(f, typed, sentSecret), list };
+      if (f.status !== undefined && f.status >= 400 && f.status < 500) return { kind: "refused", problem: problemOf(f, this.sent, sentSecret), list };
       if (list && landed(shown, list.gateways.find((g) => g.id === shown.id), d, false)) return { kind: "saved", list, restart: !!list.gateways.find((g) => g.id === shown.id)?.gatewayRunning };
-      return { kind: "unconfirmed", reason: redact(f.reason, typed), list };
+      return { kind: "unconfirmed", reason: redact(f.reason, this.sent), list };
     }
-    const list = await this.again(profile, typed);
+    const list = await this.again(profile);
     if (!list) return { kind: "unconfirmed", reason: "Hermes answered, but the gateways couldn't be read again to confirm it." };
     const after = list.gateways.find((g) => g.id === shown.id);
     if (!landed(shown, after, d, true)) return { kind: "unconfirmed", reason: "Hermes answered, but reading it again doesn't show all of the change.", list };
@@ -303,10 +322,10 @@ export class GatewaysApi {
     try {
       res = obj(await this.rest("POST", `api/messaging/platforms/${id}/test?${q(profile)}`));
     } catch (e) {
-      const problem = problemOf(failureOf(e), [], false);
+      const problem = problemOf(failureOf(e), this.sent, false);
       return { check: { ok: false, problem, text: problem.text, at: Date.now() } };
     }
-    const text = redact(str(res.message) || (res.ok === true ? "Connected." : "Hermes didn't say why."));
+    const text = redact(str(res.message) || (res.ok === true ? "Connected." : "Hermes didn't say why."), this.sent);
     // The check's answer has no error code; the list, read again, does.
     const list = await this.again(profile);
     const g = list?.gateways.find((x) => x.id === id);

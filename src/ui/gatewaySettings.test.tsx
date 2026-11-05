@@ -160,6 +160,34 @@ describe("Settings → Gateways", () => {
     expect(view.container.innerHTML).not.toContain(TOKEN);
   });
 
+  it("keeps a secret from a refused save out of Read again and Check status", async () => {
+    const s = server();
+    const { user, view } = await shown({ s });
+    await user.click(screen.getByRole("button", { name: "Add Webhook secret" }));
+    await user.click(screen.getByLabelText("Webhook secret"));
+    await user.paste("odd-hook-value");
+    s.gateways.refuse = { status: 400, detail: "rejected" };
+    await user.click(save());
+    await within(rowOf("Save")).findByRole("alert");
+    s.gateways.gateway.default = { running: true, platforms: { telegram: { state: "fatal", error_code: "x", error_message: "webhook odd-hook-value refused" } } };
+    await user.click(screen.getByRole("button", { name: "Read again" }));
+    await within(rowOf("Status")).findByText(/webhook \[redacted\] refused/);
+    await user.click(screen.getByRole("button", { name: "Check status" }));
+    await within(rowOf("Check status")).findByText(/webhook \[redacted\] refused/);
+    // The field still holds what was typed, to fix and send again; nothing else on screen does.
+    expect((screen.getByLabelText("Webhook secret") as HTMLInputElement).value).toBe("odd-hook-value");
+    expect(view.container.textContent).not.toContain("odd-hook-value");
+  });
+
+  it("says a refused read is a permission problem", async () => {
+    const s = server();
+    s.gateways.refuseReads = { status: 403, detail: "Forbidden" };
+    const hermes = await connect(s.openPipe, "default");
+    running.push(hermes);
+    render(<GatewaySettings api={hermes.gateways} profile="default" connected openUrl={vi.fn()} />);
+    await screen.findByText("Permission refused: Hermes won't let this sign-in read the gateways: Forbidden");
+  });
+
   it("says when this Hermes has no messaging routes", async () => {
     const s = server();
     s.gateways.routes = "none";

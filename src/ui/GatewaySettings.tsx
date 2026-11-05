@@ -19,6 +19,7 @@ import {
   type Problem,
   type SaveResult,
   type StatusCheck,
+  GatewaysReadError,
   GatewaysUnsupportedError,
   changed,
   draftProblem,
@@ -96,7 +97,7 @@ function saveNote(r: SaveResult, g: Gateway): Note {
 
 export function GatewaySettings({ api, profile, connected, picker, openUrl }: { api: GatewaysApi; profile: string; connected: boolean; picker?: ReactNode; openUrl: (url: string) => Promise<void> | void }) {
   const [list, setList] = useState<GatewayList>();
-  const [problem, setProblem] = useState<{ unsupported: boolean; text: string }>();
+  const [problem, setProblem] = useState<{ unsupported: boolean; permission: boolean; text: string }>();
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<PlatformId>("telegram");
   const [drafts, setDrafts] = useState<Partial<Record<PlatformId, Draft>>>({});
@@ -118,7 +119,7 @@ export function GatewaySettings({ api, profile, connected, picker, openUrl }: { 
       setList(l);
       setProblem(undefined);
     } catch (e) {
-      if (mine(p)) setProblem({ unsupported: e instanceof GatewaysUnsupportedError, text: messageOf(e) });
+      if (mine(p)) setProblem({ unsupported: e instanceof GatewaysUnsupportedError, permission: e instanceof GatewaysReadError && e.kind === "permission", text: messageOf(e) });
     } finally {
       if (mine(p)) setLoading(false);
     }
@@ -145,7 +146,7 @@ export function GatewaySettings({ api, profile, connected, picker, openUrl }: { 
         <SettingRow name="Profile" control={picker ?? <span className="set-value mono">{profile}</span>} />
         <SettingNote tone={problem.unsupported ? "muted" : "bad"} role="alert">
           {problem.unsupported ? <Info size={14} /> : <AlertTriangle size={14} />}
-          <span>{problem.unsupported ? problem.text : `Couldn't read the gateways: ${problem.text}`}</span>
+          <span>{problem.unsupported ? problem.text : problem.permission ? `Permission refused: Hermes won't let this sign-in read the gateways: ${problem.text}` : `Couldn't read the gateways: ${problem.text}`}</span>
           {!problem.unsupported && (
             <button className="btn" disabled={!connected || loading} onClick={() => void load()}>
               <RefreshCw size={14} /> {loading ? "Trying…" : "Try again"}

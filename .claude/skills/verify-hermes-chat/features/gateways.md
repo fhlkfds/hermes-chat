@@ -23,7 +23,7 @@ Settings → Gateways sets up one profile's Telegram and Discord gateways on the
 
 Preconditions:
 
-- Signed in ([sign-in.md](sign-in.md)). The stand-in's FakeHermes has the messaging routes with nothing set. For the gateway's own states (missing dependency, a running gateway), use a real `f0d94882` dashboard: `hv up --dashboard <url>`, and start its gateway with `hermes gateway run` under the same `env -i` and `HERMES_HOME`. The box's Hermes venv has neither python-telegram-bot nor discord.py, so an enabled platform reports `missing_dependency` there.
+- Signed in ([sign-in.md](sign-in.md)). The stand-in's FakeHermes has the messaging routes with nothing set. For the gateway's own states (missing dependency, a running gateway), use a real `f0d94882` dashboard: `hv up --dashboard <url>`, and start its gateway with `hermes gateway run` under the same `env -i` and `HERMES_HOME`. The box's Hermes venv has neither python-telegram-bot nor discord.py; see Gotchas for what the gateway does about that.
 
 - **Open.** `$S/wd.mjs click button Settings`, `$S/wd.mjs click '[role=tab]' Gateways`, `$S/wd.mjs wait h2 Telegram`.
 - **Turned-down token.** `$S/wd.mjs click button "Add Telegram bot token"`, `$S/wd.mjs fill input "Telegram bot token" -- not-a-token`, `$S/wd.mjs click button Save`, `$S/wd.mjs wait '[role=alert]' "Token turned down"`.
@@ -38,4 +38,4 @@ Preconditions:
 
 - A live connection to Telegram or Discord needs a real bot token and account; dummy tokens only reach the "turned down" and "missing" states.
 - Hermes turns a platform on by itself when a token is saved without `enabled`; the app always sends the switch, so check `enabled` on the server after a token-only save.
-- Starting the gateway with dummy tokens and the libraries installed would make it contact Telegram or Discord. Without them it stops at `missing_dependency` and contacts nothing.
+- Hermes lazily installs python-telegram-bot or discord.py when its gateway starts a platform without it, and then logs in to Telegram or Discord with the token (a dummy one is turned down; no message is sent). To see a missing library instead, start the gateway with `HERMES_DISABLE_LAZY_INSTALLS=1`; Discord then reports `adapter_unavailable`, which the screen shows as "Missing on the server".
