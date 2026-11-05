@@ -63,7 +63,7 @@ export function IdleCompactSettings() {
           <span className="field-hint">No reply, no message sent, nothing waiting on you.</span>
         </label>
       </div>
-      <p className="muted small model-note">
+      <p className="muted small settings-note">
         Kept on this computer, for every connection and profile, and runs only while Hermes Chat is open and connected. Only chats opened in this app since
         it connected are measured, so only they are compacted. Each compaction is a call to the profile's Compression model (Auxiliary models, on this page).
         Hermes's own compaction when the window fills during a reply works as before.
