@@ -40,10 +40,10 @@ export type VoiceSetup = {
   sttSettings?: Record<string, Record<string, string>>;
   ttsSettings?: Record<string, Record<string, string>>;
   /**
-   * Set when speech to text runs on this computer instead (ADR 0067): the engine's name, or why it can't run. Not
-   * from Hermes: the app adds it from the owner's choice.
+   * Set when speech to text runs on this computer first (ADR 0067, 0065): the engine's name, or why it can't run, and
+   * whether Hermes is the backup. Not from Hermes: the app adds it from the owner's choice.
    */
-  sttLocal?: { label?: string; problem?: string };
+  sttLocal?: { label?: string; problem?: string; backup?: boolean };
 };
 
 /**

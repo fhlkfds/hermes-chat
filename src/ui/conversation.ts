@@ -12,7 +12,7 @@
 // - Audio lives in memory only, and only one turn's worth: the quiet before speech is trimmed to half a second, and a
 //   turn stops at its length limit.
 // - Each recording is sent to Hermes at most once, and late answers from before a pause or End are dropped.
-import type { Transcript } from "../hermes/pipe";
+import { fellBackOf, type HeardTranscript } from "../hermes/sttRoute";
 import type { Delivery } from "../hermes/transport";
 import { type Item, isWaiting } from "../hermes/model";
 import { messageOf, toWav } from "../hermes/voice";
@@ -43,7 +43,7 @@ export type ConversationPhase = "off" | "starting" | "listening" | "transcribing
  * One thing the owner said that became text: what was sent, or wasn't, and what became of it. `sending`, `sent` (Hermes
  * took it), `failed` (it didn't), `unknown` (it may have: the chat settles it), `not-sent` (kept back, `why` says why).
  */
-export type Heard = { id: number; text: string; state: "sending" | "sent" | "failed" | "unknown" | "not-sent"; why?: string };
+export type Heard = { id: number; text: string; state: "sending" | "sent" | "failed" | "unknown" | "not-sent"; why?: string; via?: string };
 
 export type MicDevice = { id: string; label: string };
 
@@ -73,7 +73,7 @@ export type ConversationState = {
 
 /** What a conversation needs from the chat pane. `send` puts text in the chat as the owner's message. */
 export type ConversationDeps = {
-  transcribe: (audio: Uint8Array, mime: string) => Promise<Transcript>;
+  transcribe: (audio: Uint8Array, mime: string, signal?: AbortSignal) => Promise<HeardTranscript>;
   send: (text: string) => Promise<{ delivery: Delivery; itemId?: string }>;
   /** Stops Hermes's reply (the composer's Stop), not just its audio. */
   stopReply: () => void;
@@ -108,6 +108,8 @@ export class VoiceConversation {
   /** Seconds of microphone audio since the conversation started: the clock every timing here runs on. */
   private clock = 0;
   private loudness = 0;
+  /** Aborts the transcription on its way, on End or a pause. */
+  private transcribeAbort?: AbortController;
   /** The microphone is shut until this time on the clock (the echo tail). */
   private shutUntil = 0;
   /** When the pane last went quiet, and what had played: for the echo check. */
@@ -170,6 +172,7 @@ export class VoiceConversation {
   end(): void {
     if (this.state.phase === "off") return;
     this.session++;
+    this.transcribeAbort?.abort();
     // Forgotten first, so the speaker stopping below doesn't read as the reply ending and listen again.
     this.speakingItem = undefined;
     this.held = this.transcribing = this.awaiting = undefined;
@@ -196,6 +199,8 @@ export class VoiceConversation {
     const phase = this.state.phase;
     if (phase === "off" || phase === "paused") return;
     this.session++;
+    // A held turn is sent again on resume; the run on its way stops here, so it never goes on to the backup meanwhile.
+    this.transcribeAbort?.abort();
     this.speakingItem = undefined;
     if (this.transcribing) this.held = this.transcribing;
     this.transcribing = this.awaiting = undefined;
@@ -404,42 +409,48 @@ export class VoiceConversation {
 
   private async transcribe(turn: Turn) {
     const session = this.session;
+    this.transcribeAbort?.abort();
+    const abort = new AbortController();
+    this.transcribeAbort = abort;
     this.transcribing = turn;
     this.set({ phase: "transcribing" });
-    let got: Transcript;
+    let got: HeardTranscript;
     try {
-      got = await this.deps.transcribe(turn.recording.audio, turn.recording.mime);
+      got = await this.deps.transcribe(turn.recording.audio, turn.recording.mime, abort.signal);
     } catch (e) {
       if (session !== this.session) return;
       // The transport's own errors already say what failed; others ("Not connected to Hermes.") get it said.
       const why = messageOf(e);
-      this.pause(/^Hermes couldn't transcribe/.test(why) ? why : `Hermes couldn't transcribe what you said: ${why}`);
+      this.pause(/^(Hermes|This computer) couldn't transcribe/.test(why) ? why : `Hermes couldn't transcribe what you said: ${why}`);
       return;
     }
     if (session !== this.session || this.transcribing !== turn) return;
     this.transcribing = undefined;
     const text = got.text.trim();
+    // Said under the turn when the backup did the transcribing (ADR 0065).
+    const via = fellBackOf(got);
     if (!text) {
-      this.set({ note: "Hermes heard no words in that, so nothing was sent." });
+      const who = got.ran === "local" ? "This computer" : "Hermes";
+      this.set({ note: `${who} heard no words in that, so nothing was sent.${via ? ` ${via}` : ""}` });
       return this.enterListening();
     }
     if (turn.echo && isEcho(text, turn.echo)) {
-      this.addHeard({ text, state: "not-sent", why: "It repeated the reply Hermes had just spoken, so it was taken as an echo from the speakers." });
+      this.addHeard({ text, state: "not-sent", why: "It repeated the reply Hermes had just spoken, so it was taken as an echo from the speakers.", via });
       return this.enterListening();
     }
     if (this.chat.running || this.chat.items.some(isWaiting)) {
-      this.addHeard({ text, state: "not-sent", why: "Hermes was busy with another message by then. Say it again once it's done." });
+      this.addHeard({ text, state: "not-sent", why: "Hermes was busy with another message by then. Say it again once it's done.", via });
       return this.enterListening();
     }
     // Never twice: a recording becomes one message at most.
     if (this.sentSeqs.has(turn.seq)) return;
     this.sentSeqs.add(turn.seq);
-    await this.deliver(text);
+    await this.deliver(text, via);
   }
 
-  private async deliver(text: string) {
+  private async deliver(text: string, via?: string) {
     const session = this.session;
-    const id = this.addHeard({ text, state: "sending" });
+    const id = this.addHeard({ text, state: "sending", via });
     const awaiting: { itemId?: string; seenRunning: boolean } = { seenRunning: false };
     this.awaiting = awaiting;
     this.set({ phase: "sending", waitingOn: "reply" });

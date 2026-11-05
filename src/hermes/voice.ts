@@ -57,7 +57,8 @@ export function ttsProvider(setup: VoiceSetup): ProviderInfo {
 /** Why Dictation can't be used with this set-up, or undefined if it can be tried. */
 export function dictationBlocked(setup: VoiceSetup | undefined): string | undefined {
   if (!setup) return undefined;
-  if (setup.sttLocal) return setup.sttLocal.problem ? `${setup.sttLocal.problem} See Settings → Voice.` : undefined;
+  // This computer first: its problem blocks Dictation only with no backup; with Hermes as backup, it can be tried.
+  if (setup.sttLocal) return setup.sttLocal.problem && !setup.sttLocal.backup ? `${setup.sttLocal.problem} See Settings → Voice.` : undefined;
   if (!setup.transcribe) return "This Hermes server can't transcribe recordings. Updating Hermes adds it.";
   if (setup.sttEnabled === false) return "Speech-to-text is turned off for this profile in Hermes (stt.enabled is false).";
   return undefined;

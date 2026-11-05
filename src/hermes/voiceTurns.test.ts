@@ -133,5 +133,12 @@ describe("conversationBlocked", () => {
     expect(conversationBlocked("connected", setup({ speak: false }), true)).toMatch(/can't speak its replies/);
     expect(conversationBlocked("connected", setup(), false)).toMatch(/first message/);
     expect(conversationBlocked("connected", setup(), true)).toBeUndefined();
+    // With this computer transcribing, first or as backup, Hermes's own speech-to-text isn't needed (ADR 0065).
+    const local = { primary: "local", backup: false, timeoutSeconds: 30 } as const;
+    expect(conversationBlocked("connected", setup({ sttEnabled: false }), true, local)).toBeUndefined();
+    expect(conversationBlocked("connected", setup({ transcribe: false }), true, { ...local, primary: "server", backup: true })).toBeUndefined();
+    // It still needs Hermes connected and speaking.
+    expect(conversationBlocked("connected", setup({ speak: false }), true, local)).toMatch(/can't speak its replies/);
+    expect(conversationBlocked("reconnecting", setup(), true, local)).toMatch(/Connect to Hermes/);
   });
 });

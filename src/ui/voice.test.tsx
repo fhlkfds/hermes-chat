@@ -6,6 +6,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
+import { FakeLocalStt } from "../hermes/fakeLocalStt";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { Speaker } from "./speaker";
@@ -111,7 +112,7 @@ const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
 let signIns = 0;
 
 /** Signed in with one Active chat that has a reply, the New chat pane on screen. Each sign-in has its own drafts. */
-async function signedIn(server = new FakeHermes()) {
+async function signedIn(server = new FakeHermes(), localStt = new FakeLocalStt()) {
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" }), row("nas", 2, { pinned: true, title: "NAS disks" })];
   server.transcripts = {
     backup: [
@@ -121,11 +122,15 @@ async function signedIn(server = new FakeHermes()) {
     nas: [{ role: "user", text: "How full is the NAS?" }],
   };
   const hermes = await connect(server.openPipe);
+  // Rust reaches the connected Hermes for the server side, as `hermes_transcribe` does.
+  localStt.server = (audio, mime) => hermes.transcribe(audio, mime);
   const user = userEvent.setup();
-  render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `liam${++signIns}` }} onSignOut={async () => {}} />);
+  render(
+    <Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: `liam${++signIns}` }} onSignOut={async () => {}} localStt={localStt} />,
+  );
   await screen.findByRole("button", { name: /Nightly backup/ });
   await settle(hermes);
-  return { server, hermes, user };
+  return { server, hermes, user, localStt };
 }
 
 const dictate = () => screen.getByRole("button", { name: "Dictate" });
@@ -446,6 +451,112 @@ describe("Dictation", () => {
   });
 });
 
+describe("Dictation, where speech-to-text runs (ADR 0065)", () => {
+  it("transcribes on this computer when it is the primary: nothing goes to Hermes", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    localStt.heard = "Restart the NAS";
+    localStt.route({ primary: "local", backup: false });
+    const { server, user } = await signedIn(undefined, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Restart the NAS"));
+    expect(server.recordings).toHaveLength(0);
+    expect(localStt.recordings).toHaveLength(1);
+    expect(String.fromCharCode(...localStt.recordings[0].audio.slice(0, 4))).toBe("RIFF");
+    // It came from the primary, so there's nothing to say.
+    expect(screen.queryByRole("status", { name: "" })).toBeNull();
+    expect(document.querySelector(".voice-note")).toBeNull();
+  });
+
+  it("falls back to this computer when Hermes's provider fails, and says which one transcribed it", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    localStt.heard = "Check the NAS";
+    localStt.route({ primary: "server", backup: true });
+    const server = new FakeHermes();
+    server.heard = new Error("Hermes couldn't transcribe the recording: GROQ_API_KEY is not set");
+    const { user } = await signedIn(server, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Check the NAS"));
+    expect(server.recordings).toHaveLength(1);
+    expect(localStt.recordings).toHaveLength(1);
+    expect(localStt.recordings[0].audio).toEqual(server.recordings[0].audio);
+    const note = document.querySelector(".voice-note.info")!;
+    expect(note.getAttribute("role")).toBe("status");
+    expect(note.textContent).toMatch(/^Transcribed on this computer\. Hermes couldn't transcribe it: GROQ_API_KEY is not set\./);
+  });
+
+  it("falls back to Hermes when this computer has no model, and keeps the recording when both fail", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.route({ primary: "local", backup: true });
+    const { server, user } = await signedIn(undefined, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Check the backup logs"));
+    expect(document.querySelector(".voice-note.info")!.textContent).toMatch(/^Transcribed on Hermes\. This computer couldn't transcribe it: No speech-to-text engine is chosen on this computer\./);
+
+    server.heard = new Error("Can't reach the Hermes dashboard: connection reset");
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/This computer couldn't transcribe it: No speech-to-text engine is chosen on this computer\. Hermes couldn't transcribe it either: Can't reach/);
+    expect(screen.getByRole("button", { name: /Try again/ })).toBeTruthy();
+  });
+
+  it("sends nothing to the backup once the owner cancels, even when this computer fails after", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    let release!: () => void;
+    localStt.gate = new Promise((r) => (release = r));
+    localStt.heard = new Error("whisper.cpp exited with code 1");
+    localStt.route({ primary: "local", backup: true });
+    const { server, user, hermes } = await signedIn(undefined, localStt);
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await screen.findByText(/Transcribing/);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    release();
+    await settle(hermes);
+    await act(async () => void (await new Promise((r) => setTimeout(r, 50))));
+    expect(localStt.recordings).toHaveLength(1);
+    expect(server.recordings).toEqual([]);
+    expect(composer().value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("can start a voice conversation with Hermes's speech-to-text off when this computer transcribes", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    localStt.route({ primary: "local", backup: false });
+    const server = new FakeHermes();
+    server.voice = { ...server.voice, sttEnabled: false };
+    const { user } = await signedIn(server, localStt);
+    await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
+    const start = await screen.findByRole("button", { name: /voice conversation/i });
+    await waitFor(() => expect(start.getAttribute("aria-disabled")).not.toBe("true"));
+  });
+
+  it("can be started while Hermes is offline when this computer transcribes", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    localStt.route({ primary: "local", backup: false });
+    const { server, hermes } = await signedIn(undefined, localStt);
+    server.refuse = "Can't reach the Hermes dashboard: connection refused";
+    act(() => server.drop());
+    await settle(hermes);
+    await waitFor(() => expect(screen.getAllByText(/Reconnecting|Disconnected|Offline|Can't reach/i).length).toBeGreaterThan(0));
+    expect(dictate().getAttribute("aria-disabled")).toBe("false");
+  });
+});
+
 describe("Read aloud", () => {
   async function inBackup(server?: FakeHermes) {
     const s = await signedIn(server);
@@ -595,3 +706,27 @@ describe("Settings, Voice", () => {
     expect(section.textContent).toMatch(/can't read replies aloud/);
   });
 });
+
+describe("Settings, Voice, Speech to text (ADR 0065, 0067)", () => {
+  it("is chosen in Settings → Voice, and Dictation then transcribes where it says", async () => {
+    const localStt = new FakeLocalStt();
+    localStt.useModel("base");
+    localStt.heard = "Restart the NAS";
+    const { server, user } = await signedIn(undefined, localStt);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("tab", { name: /Voice/ }));
+    const where = await screen.findByRole("radiogroup", { name: "Where speech to text runs" });
+    await user.click(within(where).getByRole("radio", { name: "This computer" }));
+    await waitFor(() => expect(localStt.choice.onThisComputer).toBe(true));
+    // The engine and model it runs are shown as Rust read them back.
+    expect(await screen.findByText(localStt.modelPath("base"))).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    await record(user);
+    mic.say(1);
+    await user.click(screen.getByRole("button", { name: /Done/ }));
+    await waitFor(() => expect(composer().value).toBe("Restart the NAS"));
+    expect(server.recordings).toHaveLength(0);
+    expect(localStt.recordings).toHaveLength(1);
+  });
+});
+

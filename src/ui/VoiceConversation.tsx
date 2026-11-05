@@ -7,6 +7,7 @@ import type { ConnectionStatus, Item } from "../hermes/model";
 import type { Delivery } from "../hermes/transport";
 import { clock, sttProvider, ttsProvider } from "../hermes/voice";
 import { type TurnSettings, conversationBlocked, turnSettings } from "../hermes/voiceTurns";
+import type { SttPrefs } from "../hermes/sttRoute";
 import { type ConversationState, type Heard, VoiceConversation } from "./conversation";
 import type { AudioEnv } from "./recorder";
 import type { Speaker } from "./speaker";
@@ -54,7 +55,8 @@ export function useVoiceConversation(o: {
   useEffect(() => {
     if (!o.speaker || !o.voice) return;
     const c = new VoiceConversation({
-      transcribe: (audio, mime) => latest.current.voice!.transcribe(audio, mime),
+      // The signal goes on, so End or a pause stops the router before it tries the backup (ADR 0065).
+      transcribe: (audio, mime, signal) => latest.current.voice!.transcribe(audio, mime, signal),
       send: (text) =>
         latest.current.send ? latest.current.send(text) : Promise.resolve({ delivery: { delivery: "unsent", reason: "This chat can't take messages now." } }),
       stopReply: () => latest.current.stopReply(),
@@ -287,6 +289,7 @@ export function ConversationPanel({
                   {HEARD_STATE[h.state]}
                   {h.why ? `: ${h.why}` : ""}
                 </span>
+                {h.via && <span className="conv-heard-via">{h.via}</span>}
               </li>
             ))}
           </ol>
@@ -327,6 +330,6 @@ export function ConversationPanel({
 }
 
 /** Why the conversation can't start in this chat now, for the Start button. */
-export function startBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, started: boolean, dictating: boolean): string | undefined {
-  return conversationBlocked(status, setup, started) ?? (dictating ? "Finish or cancel the dictation first." : undefined);
+export function startBlocked(status: ConnectionStatus, setup: VoiceSetup | undefined, started: boolean, dictating: boolean, stt?: Readonly<SttPrefs>): string | undefined {
+  return conversationBlocked(status, setup, started, stt) ?? (dictating ? "Finish or cancel the dictation first." : undefined);
 }

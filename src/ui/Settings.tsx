@@ -39,11 +39,12 @@ import { StartupSettings } from "./StartupSettings";
 import { ChatSectionSettings } from "./ChatSectionSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
-import type { Transcript, VoiceSetup } from "../hermes/pipe";
+import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
 import { VoiceProviderSettings } from "./VoiceProviderSettings";
 import { LocalSttSettings } from "./LocalSttSettings";
 import type { LocalSttApi } from "../hermes/localStt";
+import type { SttSide, HeardTranscript } from "../hermes/sttRoute";
 import { ScreenshotSettings } from "./ScreenshotSettings";
 import { TraySettings } from "./TraySettings";
 import type { TrayWiring } from "../hermes/tauriTray";
@@ -236,10 +237,10 @@ export function SettingsScreen({
   voiceSettings?: VoiceSettingsApi;
   /** Calls `fn` whenever the voice set-up may have changed on Hermes; returns its unsubscribe. */
   onVoiceChange?: (fn: () => void) => () => void;
-  /** Speech to text on this computer instead of on Hermes (ADR 0067), in the Voice tab. */
+  /** Where speech to text runs, and this computer's engine and models (ADR 0065, 0067), in the Voice tab. */
   localStt?: LocalSttApi;
-  /** Transcribes a recording the way Dictation does, for the Voice tab's Test. */
-  transcribe?: (audio: Uint8Array, mime: string) => Promise<Transcript>;
+  /** Transcribes a recording the way Dictation does, or on one side alone, for the Voice tab's Test. */
+  transcribe?: (audio: Uint8Array, mime: string, side?: SttSide, signal?: AbortSignal) => Promise<HeardTranscript>;
   /** Set, each time anew, to show the Voice tab: from a voice conversation's "Change voice settings". */
   showVoice?: object;
   /** Settings → Persona; the tab is left out without it. */
@@ -321,7 +322,7 @@ export function SettingsScreen({
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
-      (t.id !== "voice" || voiceSetup || voiceSettings) &&
+      (t.id !== "voice" || voiceSetup || voiceSettings || localStt) &&
       (t.id !== "persona" || persona) &&
       (t.id !== "memory" || memory) &&
       (t.id !== "skills" || skills) &&
@@ -755,7 +756,7 @@ export function SettingsScreen({
         return (
           <>
             <VoiceSettings status={status} profile={profile} setup={voiceSetup} changes={voiceChanges} />
-            {localStt && <LocalSttSettings api={localStt} transcribe={transcribe} connected={status === "connected"} />}
+            {localStt && <LocalSttSettings api={localStt} transcribe={transcribe} status={status} setup={voiceSetup} changes={voiceChanges} />}
             {voiceSettings && (
               // Read for one profile and connection; another starts afresh, with nothing typed kept.
               <VoiceProviderSettings key={profile} api={voiceSettings} profile={profile} connected={status === "connected"} />

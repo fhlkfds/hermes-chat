@@ -55,7 +55,8 @@ import { paneNames, Split, usePaneVisible, type PaneSlot, type SplitDir } from "
 import { closeTabIn, navigateTabs, PaneDrop, TabStrip, type TabAction } from "./ui/Tabs";
 import { dropLabel, EDGE_SIDE, EDGES, moveTab, sameMove, type DropZone, type MovedChat, type TabDrop } from "./ui/tabMoves";
 import type { VoiceApi } from "./ui/Voice";
-import { tauriLocalStt } from "./hermes/localStt";
+import { prefsOf, tauriLocalStt, type LocalSttApi } from "./hermes/localStt";
+import { DEFAULT_STT_PREFS, sttRoute } from "./hermes/sttRoute";
 import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
@@ -751,6 +752,7 @@ export function Main({
   refs = savedConnectionRefs,
   tray = tauriTray,
   repoApi = tauriRepo,
+  localStt = tauriLocalStt,
 }: {
   hermes: Hermes;
   /** The saved connection in use (connections.ts); a bare sign-in (in tests) is keyed by its address, as before. */
@@ -789,6 +791,8 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
+  /** Speech to text on this computer and where each recording goes, decided by Rust (ADR 0065, 0067). */
+  localStt?: LocalSttApi;
   /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
   summon?: SummonApi;
   /** Where Settings → Persona keeps unsaved edits and replaced versions on this computer. */
@@ -892,22 +896,31 @@ export function Main({
   const openVoiceSettings = useRef(() => {});
   const voice = useMemo<VoiceApi>(
     () => ({
-      // Speech to text may run on this computer instead (ADR 0067); Rust decides where a recording goes either way.
+      // Speech to text may run on this computer, first or as backup (ADR 0065, 0067); Rust decides where a recording
+      // goes, and its answer says where it ran. The route read here also tells the composer whether Hermes is needed.
       setup: () =>
-        Promise.all([hermes.voiceSetup(), tauriLocalStt.state().catch(() => undefined)]).then(([setup, local]) =>
-          local?.onThisComputer ? { ...setup, sttLocal: { label: local.label ?? undefined, problem: local.problem ?? undefined } } : setup,
-        ),
-      transcribe: (audio, mime) => hermes.transcribe(audio, mime),
+        Promise.all([hermes.voiceSetup(), localStt.state().catch(() => undefined)]).then(([setup, local]) => {
+          return local?.onThisComputer
+            ? { ...setup, sttLocal: { label: local.label ?? undefined, problem: local.problem ?? undefined, backup: !!local.backup } }
+            : setup;
+        }),
+      transcribe: (audio, mime, signal) => localStt.transcribe({ audio, mime, profile: hermes.profile, signal }),
       speak: (text) => hermes.speak(text),
       onChange: (fn) => {
         const offHermes = hermes.onVoiceChange(fn);
-        const offLocal = tauriLocalStt.onChange(fn);
+        const offLocal = localStt.onChange(fn);
         return () => (offHermes(), offLocal());
       },
       openSettings: () => openVoiceSettings.current(),
     }),
-    [hermes],
+    [hermes, localStt],
   );
+  // The speech-to-text route as Rust reads it, also while Hermes is offline: Dictation can run on this computer then.
+  useEffect(() => {
+    const read = () => void sttRoute.refresh(() => localStt.state().then(prefsOf, () => DEFAULT_STT_PREFS));
+    read();
+    return localStt.onChange(read);
+  }, [localStt]);
   // The project screen covers the chat pane, as Settings does.
   const [projectOpen, setProjectOpen] = useState(false);
   // The membership sync's dialog: the move to Hermes, and conflicts with another computer (ADR 0033).
@@ -2729,9 +2742,9 @@ export function Main({
             voiceSetup={voice.setup}
             voiceSettings={hermes.voiceSettings}
             onVoiceChange={voice.onChange}
-            localStt={tauriLocalStt}
-            transcribe={voice.transcribe}
             showVoice={showVoice}
+            localStt={localStt}
+            transcribe={(audio, mime, side, signal) => localStt.transcribe({ audio, mime, profile: hermes.profile, side, signal })}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             capabilities={hermes.capabilities}
