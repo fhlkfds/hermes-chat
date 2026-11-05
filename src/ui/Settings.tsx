@@ -393,7 +393,7 @@ export function SettingsScreen({
     const w = wordsKey.split(" ");
     const run = () => {
       setFound(applySearch(root, w));
-      // A match inside a folded explanation (Toolsets' "How a change applies") would be counted but unseen: open the folds.
+      // A match inside a <details> fold would be counted but unseen: open them. Settings' own (i) folds open through SettingsSearching.
       for (const d of root.querySelectorAll<HTMLDetailsElement>("details")) d.open = true;
     };
     run();
