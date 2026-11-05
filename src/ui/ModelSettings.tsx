@@ -1,7 +1,7 @@
 // Settings → Model: the main model, subagents, auxiliary (helper task) models and the guardrails, as Hermes has them
 // for the profile shown. Edits are one draft held here until a part is applied; leaving Settings drops it without
 // asking, as the official desktop app does. Reads and writes: modelSettings.ts.
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { CircleDollarSign, Pin, RotateCcw, ShieldAlert, TriangleAlert } from "lucide-react";
 import {
   AUX_AUTO,
@@ -34,6 +34,7 @@ import {
 import { isEffort, type ModelCatalog, type ModelPick } from "../hermes/models";
 import { getUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite } from "../hermes/uiPrefs";
 import { ModelControls } from "./ModelPicker";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 const EFFORT_LABEL: Record<string, string> = {
   [EFFORT_OFF]: "Off",
@@ -65,16 +66,6 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 const providerName = (providers: CatalogProvider[], slug: string) => providers.find((p) => p.slug === slug)?.name ?? slug;
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="field model-field">
-      <span className="field-label">{label}</span>
-      {children}
-      {hint && <span className="field-hint">{hint}</span>}
-    </label>
-  );
-}
-
 /** The catalog's providers; one Hermes has that the catalog no longer lists stays on offer. */
 function ProviderSelect({ label, value, providers, onChange }: { label: string; value: string; providers: CatalogProvider[]; onChange: (slug: string) => void }) {
   const listed = providers.some((p) => p.slug === value);
@@ -99,7 +90,7 @@ function ProviderSelect({ label, value, providers, onChange }: { label: string; 
 function ModelSelect({ label, value, provider, providers, onChange }: { label: string; value: string; provider: string; providers: CatalogProvider[]; onChange: (m: string) => void }) {
   const models = providers.find((p) => p.slug === provider)?.models ?? [];
   return (
-    <select className="select" aria-label={label} value={value} disabled={!provider} onChange={(e) => onChange(e.target.value)}>
+    <select className="select wide" aria-label={label} value={value} disabled={!provider} onChange={(e) => onChange(e.target.value)}>
       <option value="" disabled>
         {provider ? "Choose a model…" : "Choose a provider first"}
       </option>
@@ -152,8 +143,9 @@ function ApplyRow({
   onApply: () => void;
 }) {
   const note = error ?? (changed ? (problem ?? "Not applied yet.") : done ? "Applied. New chats use it." : "Same as Hermes.");
+  // The card's last line: SettingsSection has no place under its card, and the part's state stays in view beside Apply.
   return (
-    <div className="settings-row model-apply">
+    <SettingNote className="model-apply">
       <div className={`small ${error || (changed && problem) ? "sign-in-error" : "muted"}`} role={error ? "alert" : undefined}>
         {note}
       </div>
@@ -167,7 +159,7 @@ function ApplyRow({
           </button>
         </div>
       )}
-    </div>
+    </SettingNote>
   );
 }
 
@@ -193,11 +185,14 @@ function TextGeneration({
   show?: object;
 }) {
   const { modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
-  const heading = useRef<HTMLHeadingElement>(null);
+  const titleId = useId();
   useEffect(() => {
-    if (!show || !heading.current) return;
-    heading.current.scrollIntoView({ block: "start" });
-    heading.current.focus({ preventScroll: true });
+    // The section's heading, named by its id since something points here: it takes the focus, as a heading can't by itself.
+    const heading = show && document.getElementById(titleId);
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.scrollIntoView({ block: "start" });
+    heading.focus({ preventScroll: true });
   }, [show]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -245,65 +240,71 @@ function TextGeneration({
   };
 
   return (
-    <section>
-      <h2 ref={heading} tabIndex={-1}>
-        Text generation
-      </h2>
-      <div className="model-card text-gen" role="group" aria-label="Text generation model">
-        <div className="text-gen-label">
-          <div className="text-gen-title">
-            <span className="appearance-title">Text generation model</span>
-            {pinned && (
-              <button
-                className="icon-btn small-icon"
-                title="Use the main model"
-                aria-label="Use the main model for text generation"
-                disabled={busy || !connected}
-                onClick={() => void write({ provider: AUX_AUTO, model: "", effort: AUX_INHERIT })}
-              >
-                <RotateCcw size={13} />
-              </button>
-            )}
-          </div>
-          <span className="muted small">
-            Used for chat titles, including Regenerate title. Hermes keeps it for the <span className="mono">{profile}</span> profile, so its own
-            titles and other Hermes clients use it too.{" "}
-            {pinned ? "" : `Until you pick one, it's the main model, ${saved.main.model || "the profile's"}.`}
-          </span>
-        </div>
-        <fieldset className="text-gen-controls" disabled={busy || !connected}>
-          <ModelControls
-            catalog={catalog}
-            current={current}
-            defaultEffort={catalog.defaultEffort}
-            favorites={modelFavorites}
-            onPick={(p) => void write({ provider: p.provider, model: p.model, effort: p.effort ?? AUX_INHERIT })}
-            onToggleFavorite={toggleModelFavorite}
-          />
-        </fieldset>
+    <SettingsSection title="Text generation" titleId={titleId}>
+      <div className="text-gen" role="group" aria-label="Text generation model">
+        <SettingRow
+          name="Text generation model"
+          hint={
+            <>
+              Used for chat titles, including Regenerate title.{" "}
+              {pinned ? "" : `Until you pick one, it's the main model, ${saved.main.model || "the profile's"}.`}
+            </>
+          }
+          more={
+            <p>
+              Hermes keeps it for the <span className="mono">{profile}</span> profile, so its own titles and other Hermes clients use it too.
+            </p>
+          }
+          control={
+            <>
+              {pinned && (
+                <button
+                  className="icon-btn small-icon"
+                  title="Use the main model"
+                  aria-label="Use the main model for text generation"
+                  disabled={busy || !connected}
+                  onClick={() => void write({ provider: AUX_AUTO, model: "", effort: AUX_INHERIT })}
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
+              <fieldset className="text-gen-controls" disabled={busy || !connected}>
+                <ModelControls
+                  catalog={catalog}
+                  current={current}
+                  defaultEffort={catalog.defaultEffort}
+                  favorites={modelFavorites}
+                  onPick={(p) => void write({ provider: p.provider, model: p.model, effort: p.effort ?? AUX_INHERIT })}
+                  onToggleFavorite={toggleModelFavorite}
+                />
+              </fieldset>
+            </>
+          }
+        >
+          {(busy || error) && (
+            <div className={error ? "sign-in-error" : "muted"} role={error ? "alert" : "status"}>
+              {error ? `Couldn't set the text generation model: ${error}` : "Saving…"}
+            </div>
+          )}
+          {ask && (
+            <div className="confirm set-confirm" role="alertdialog" aria-label="Expensive model">
+              <span className="confirm-msg">
+                <ShieldAlert size={12} /> Use {ask.next.model} for text generation?
+              </span>
+              <span className="confirm-detail">{ask.message}</span>
+              <div className="confirm-actions">
+                <button className="btn" onClick={() => setAsk(undefined)}>
+                  Keep current
+                </button>
+                <button className="btn danger" onClick={() => void write(ask.next, true)}>
+                  Use anyway
+                </button>
+              </div>
+            </div>
+          )}
+        </SettingRow>
       </div>
-      {(busy || error) && (
-        <div className={`small model-status ${error ? "sign-in-error" : "muted"}`} role={error ? "alert" : "status"}>
-          {error ? `Couldn't set the text generation model: ${error}` : "Saving…"}
-        </div>
-      )}
-      {ask && (
-        <div className="confirm" role="alertdialog" aria-label="Expensive model">
-          <span className="confirm-msg">
-            <ShieldAlert size={12} /> Use {ask.next.model} for text generation?
-          </span>
-          <span className="confirm-detail">{ask.message}</span>
-          <div className="confirm-actions">
-            <button className="btn" onClick={() => setAsk(undefined)}>
-              Keep current
-            </button>
-            <button className="btn danger" onClick={() => void write(ask.next, true)}>
-              Use anyway
-            </button>
-          </div>
-        </div>
-      )}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -345,13 +346,10 @@ export function ModelSettings({
 
   if (!saved || !draft) {
     return (
-      <section>
-        <h2>Main model</h2>
-        <div className="settings-row">
-          <div className={`small ${loadError ? "sign-in-error" : "muted"}`} role={loadError ? "alert" : undefined}>
-            {loadError ? `Couldn't read the model setup: ${loadError}` : connected ? "Reading the model setup from Hermes…" : "Connect to Hermes to see the model setup."}
-          </div>
-          {loadError && (
+      <SettingsSection
+        title="Main model"
+        action={
+          loadError && (
             <button
               className="btn"
               onClick={() => {
@@ -361,9 +359,17 @@ export function ModelSettings({
             >
               Try again
             </button>
-          )}
-        </div>
-      </section>
+          )
+        }
+      >
+        <SettingNote tone={loadError ? "bad" : "muted"} role={loadError ? "alert" : undefined}>
+          {loadError
+            ? `Couldn't read the model setup: ${loadError}`
+            : connected
+              ? "Reading the model setup from Hermes…"
+              : "Connect to Hermes to see the model setup."}
+        </SettingNote>
+      </SettingsSection>
     );
   }
 
@@ -476,36 +482,66 @@ export function ModelSettings({
       expensiveNode(ask, "main")
     );
 
+  const number = (label: string, key: "maxIterations" | "maxConcurrent" | "timeoutSeconds", min: number) => (
+    <input
+      className="model-num"
+      type="number"
+      min={min}
+      aria-label={label}
+      value={sub[key]}
+      onChange={(e) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, [key]: e.target.value } }))}
+    />
+  );
+
   return (
     <>
-      <section>
-        <h2>Main model</h2>
-        <p className="muted">
-          The model new chats on the <span className="mono">{profile}</span> profile start with; chats already open keep theirs. Changes stay on this
-          screen until you apply them, and leaving Settings drops them.
-        </p>
-        <div className="model-grid">
-          <Field label="Provider">
-            <ProviderSelect label="Main provider" value={m.provider} providers={providers} onChange={(p) => edit("main", (d) => ({ ...d, main: chooseProvider(d.main, p) }))} />
-          </Field>
-          <Field label="Model">
-            <ModelSelect
-              label="Main model"
-              value={m.model}
-              provider={m.provider}
-              providers={providers}
-              onChange={(model) => edit("main", (d) => ({ ...d, main: { ...d.main, model } }))}
-            />
-          </Field>
-          <Field label="Reasoning effort" hint={caps && !caps.reasoning ? "This model doesn't reason." : undefined}>
-            <EffortSelect
-              label="Main reasoning effort"
-              value={m.effort}
-              first={["", "Hermes default"]}
-              onChange={(effort) => edit("main", (d) => ({ ...d, main: { ...d.main, effort } }))}
-            />
-          </Field>
-          <Field label="Speed" hint={caps && !caps.fast && !m.fast ? "This model has no fast mode." : "Priority processing, where the provider bills more for it."}>
+      <SettingsSection
+        title="Main model"
+        intro={
+          <>
+            The model new chats on the <span className="mono">{profile}</span> profile start with; chats already open keep theirs. Changes stay on
+            this screen until you apply them, and leaving Settings drops them.
+          </>
+        }
+      >
+        <SettingRow
+          name="Model"
+          control={
+            <div className="model-pick">
+              <ProviderSelect
+                label="Main provider"
+                value={m.provider}
+                providers={providers}
+                onChange={(p) => edit("main", (d) => ({ ...d, main: chooseProvider(d.main, p) }))}
+              />
+              <ModelSelect
+                label="Main model"
+                value={m.model}
+                provider={m.provider}
+                providers={providers}
+                onChange={(model) => edit("main", (d) => ({ ...d, main: { ...d.main, model } }))}
+              />
+            </div>
+          }
+        />
+        <SettingRow
+          name="Reasoning effort"
+          hint={caps && !caps.reasoning ? "This model doesn't reason." : undefined}
+          control={
+            <div className="model-pick">
+              <EffortSelect
+                label="Main reasoning effort"
+                value={m.effort}
+                first={["", "Hermes default"]}
+                onChange={(effort) => edit("main", (d) => ({ ...d, main: { ...d.main, effort } }))}
+              />
+            </div>
+          }
+        />
+        <SettingRow
+          name="Speed"
+          hint={caps && !caps.fast && !m.fast ? "This model has no fast mode." : "Priority processing, where the provider bills more for it."}
+          control={
             <span className="check">
               <input
                 type="checkbox"
@@ -516,8 +552,8 @@ export function ModelSettings({
               />
               Fast mode
             </span>
-          </Field>
-        </div>
+          }
+        />
         <ApplyRow
           name="main model"
           changed={mainChanged(saved, draft)}
@@ -530,7 +566,7 @@ export function ModelSettings({
           onDiscard={() => discard("main")}
           onApply={() => applyMain()}
         />
-      </section>
+      </SettingsSection>
 
       <TextGeneration
         saved={saved}
@@ -545,18 +581,30 @@ export function ModelSettings({
         }}
       />
 
-      <section>
-        <h2>Subagents</h2>
-        <p className="muted">
-          The helpers Hermes starts with <span className="mono">delegate_task</span> to work on part of a job. By default they run on the main agent's
-          model.
-        </p>
-        <div className="model-card" role="group" aria-label="Default subagent">
-          <div className="appearance-title">Default subagent</div>
-          <div className="model-grid">
-            <Field label="Route">
+      <SettingsSection
+        title="Subagents"
+        intro={
+          <>
+            The helpers Hermes starts with <span className="mono">delegate_task</span> to work on part of a job. By default they run on the main
+            agent's model.
+          </>
+        }
+      >
+        <SettingRow
+          name="Default subagent"
+          hint={
+            sub.route === "inherit"
+              ? `Subagents run on the main agent's provider and model, ${saved.main.model}.`
+              : sub.route === "parent-model"
+                ? `Subagents run the main agent's model, ${saved.main.model}, on the provider chosen here. That provider must offer it.`
+                : sub.route === "custom-model"
+                  ? `Subagents run the model chosen here on the main agent's provider, ${providerName(providers, saved.main.provider)}, with its credentials.`
+                  : "Subagents run on a provider and model of their own."
+          }
+          control={
+            <div className="model-pick">
               <select
-                className="select"
+                className="select wide"
                 aria-label="Subagent route"
                 value={sub.route}
                 onChange={(e) => {
@@ -570,19 +618,15 @@ export function ModelSettings({
                   </option>
                 ))}
               </select>
-            </Field>
-            {(sub.route === "parent-model" || sub.route === "provider") && (
-              <Field label="Provider">
+              {(sub.route === "parent-model" || sub.route === "provider") && (
                 <ProviderSelect
                   label="Subagent provider"
                   value={sub.provider}
                   providers={providers}
                   onChange={(p) => edit("subagent", (d) => ({ ...d, subagent: chooseProvider(d.subagent, p) }))}
                 />
-              </Field>
-            )}
-            {(sub.route === "custom-model" || sub.route === "provider") && (
-              <Field label="Model">
+              )}
+              {(sub.route === "custom-model" || sub.route === "provider") && (
                 <ModelSelect
                   label="Subagent model"
                   value={sub.model}
@@ -590,67 +634,41 @@ export function ModelSettings({
                   providers={providers}
                   onChange={(model) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, model } }))}
                 />
-              </Field>
-            )}
-          </div>
-          <p className="muted small model-note">
-            {sub.route === "inherit"
-              ? `Subagents run on the main agent's provider and model, ${saved.main.model}.`
-              : sub.route === "parent-model"
-                ? `Subagents run the main agent's model, ${saved.main.model}, on the provider chosen here. That provider must offer it.`
-                : sub.route === "custom-model"
-                  ? `Subagents run the model chosen here on the main agent's provider, ${providerName(providers, saved.main.provider)}, with its credentials.`
-                  : "Subagents run on a provider and model of their own."}
-          </p>
-          <div className="model-grid four">
-            <Field label="Turn limit">
-              <input
-                type="number"
-                min={1}
-                aria-label="Subagent turn limit"
-                value={sub.maxIterations}
-                onChange={(e) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, maxIterations: e.target.value } }))}
-              />
-            </Field>
-            <Field label="Concurrency">
-              <input
-                type="number"
-                min={1}
-                aria-label="Subagent concurrency"
-                value={sub.maxConcurrent}
-                onChange={(e) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, maxConcurrent: e.target.value } }))}
-              />
-            </Field>
-            <Field label="Timeout (s)" hint="0: no limit">
-              <input
-                type="number"
-                min={0}
-                aria-label="Subagent timeout in seconds"
-                value={sub.timeoutSeconds}
-                onChange={(e) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, timeoutSeconds: e.target.value } }))}
-              />
-            </Field>
-            <Field label="Reasoning effort">
+              )}
+            </div>
+          }
+        />
+        <SettingRow
+          name="Reasoning effort"
+          control={
+            <div className="model-pick">
               <EffortSelect
                 label="Subagent reasoning effort"
                 value={sub.effort}
                 first={["", "Inherit"]}
                 onChange={(effort) => edit("subagent", (d) => ({ ...d, subagent: { ...d.subagent, effort } }))}
               />
-            </Field>
-          </div>
-        </div>
+            </div>
+          }
+        />
+        <SettingRow name="Turn limit" hint="The turns one subagent may take." control={number("Subagent turn limit", "maxIterations", 1)} />
+        <SettingRow name="Concurrency" hint="Subagents running at once." control={number("Subagent concurrency", "maxConcurrent", 1)} />
+        <SettingRow
+          name="Timeout (s)"
+          hint="How long a subagent may go without progress. 0: no limit"
+          control={number("Subagent timeout in seconds", "timeoutSeconds", 0)}
+        />
         {saved.subagent.directEndpoint && (
-          <p className="muted small model-note">
+          <SettingNote tone="warn">
             <TriangleAlert size={12} /> A direct endpoint is set for subagents in Hermes's config, and it takes precedence over the route here. Hermes
             Chat leaves it as it is.
-          </p>
+          </SettingNote>
         )}
         {saved.namedRoutes > 0 && (
-          <p className="muted small model-note">
-            {saved.namedRoutes} named {saved.namedRoutes === 1 ? "route" : "routes"} from the advanced-delegation plugin {saved.namedRoutes === 1 ? "is" : "are"}{" "}
-            set too; edit them in the official Hermes app.
-          </p>
+          <SettingNote>
+            {saved.namedRoutes} named {saved.namedRoutes === 1 ? "route" : "routes"} from the advanced-delegation plugin{" "}
+            {saved.namedRoutes === 1 ? "is" : "are"} set too; edit them in the official Hermes app.
+          </SettingNote>
         )}
         <ApplyRow
           name="subagent"
@@ -663,64 +681,64 @@ export function ModelSettings({
           onDiscard={() => discard("subagent")}
           onApply={() => void apply("subagent", async () => (await api.applySubagent(saved, sub), true))}
         />
-      </section>
+      </SettingsSection>
 
-      <section>
-        <h2>Auxiliary models</h2>
-        <p className="muted">
-          Helper tasks Hermes runs beside a chat. Each runs on the main model unless it's given one of its own, so cheap helpers can run cheap.
-        </p>
-        <div className="aux-list">
-          {saved.auxiliary.filter((t) => t.task !== TEXT_TASK).map((t: AuxTask) => {
+      <SettingsSection
+        title="Auxiliary models"
+        intro="Helper tasks Hermes runs beside a chat. Each runs on the main model unless it's given one of its own, so cheap helpers can run cheap."
+      >
+        {saved.auxiliary
+          .filter((t) => t.task !== TEXT_TASK)
+          .map((t: AuxTask) => {
             const a = draft.auxiliary[t.task];
             const auto = a.provider === AUX_AUTO;
             return (
-              <div className="aux-row" key={t.task} role="group" aria-label={t.label}>
-                <div className="aux-head">
-                  <div className="aux-label">
-                    <span className="appearance-title">{t.label}</span>
-                    <span className="muted small">{t.hint}</span>
-                  </div>
-                  <EffortSelect
-                    label={`${t.label} effort`}
-                    value={a.effort}
-                    first={[AUX_INHERIT, "inherit · main model effort"]}
-                    onChange={(effort) => edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: { ...a, effort } } }))}
-                  />
-                </div>
-                <div className="aux-pickers">
-                  <select
-                    className="select"
-                    aria-label={`${t.label} provider`}
-                    value={a.provider}
-                    onChange={(e) => edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: chooseAuxProvider(a, e.target.value) } }))}
-                  >
-                    <option value={AUX_AUTO}>auto · use main model</option>
-                    {!auto && !providers.some((p) => p.slug === a.provider) && <option value={a.provider}>{a.provider}</option>}
-                    {providers.map((p) => (
-                      <option key={p.slug} value={p.slug}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  {auto ? (
-                    <select className="select" aria-label={`${t.label} model`} value="" disabled>
-                      <option value="">{saved.main.model || "main model"}</option>
+              <SettingRow
+                key={t.task}
+                name={t.label}
+                hint={t.hint}
+                control={
+                  <div className="model-pick">
+                    <select
+                      className="select"
+                      aria-label={`${t.label} provider`}
+                      value={a.provider}
+                      onChange={(e) =>
+                        edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: chooseAuxProvider(a, e.target.value) } }))
+                      }
+                    >
+                      <option value={AUX_AUTO}>auto · use main model</option>
+                      {!auto && !providers.some((p) => p.slug === a.provider) && <option value={a.provider}>{a.provider}</option>}
+                      {providers.map((p) => (
+                        <option key={p.slug} value={p.slug}>
+                          {p.name}
+                        </option>
+                      ))}
                     </select>
-                  ) : (
-                    <ModelSelect
-                      label={`${t.label} model`}
-                      value={a.model}
-                      provider={a.provider}
-                      providers={providers}
-                      onChange={(model) => edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: { ...a, model } } }))}
+                    {auto ? (
+                      <select className="select wide" aria-label={`${t.label} model`} value="" disabled>
+                        <option value="">{saved.main.model || "main model"}</option>
+                      </select>
+                    ) : (
+                      <ModelSelect
+                        label={`${t.label} model`}
+                        value={a.model}
+                        provider={a.provider}
+                        providers={providers}
+                        onChange={(model) => edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: { ...a, model } } }))}
+                      />
+                    )}
+                    <EffortSelect
+                      label={`${t.label} effort`}
+                      value={a.effort}
+                      first={[AUX_INHERIT, "inherit · main model effort"]}
+                      onChange={(effort) => edit("auxiliary", (d) => ({ ...d, auxiliary: { ...d.auxiliary, [t.task]: { ...a, effort } } }))}
                     />
-                  )}
-                </div>
-              </div>
+                  </div>
+                }
+              />
             );
           })}
-        </div>
         <ApplyRow
           name="auxiliary models"
           changed={auxEdited.length > 0}
@@ -733,31 +751,32 @@ export function ModelSettings({
           ask={expensiveNode(ask, "auxiliary")}
           onApply={() => applyAuxiliary()}
         />
-      </section>
+      </SettingsSection>
 
-      <section>
-        <h2>Guardrails</h2>
-        <p className="muted">Checked when you apply a main model, before anything is written.</p>
-        <div className="guard">
-          <div className="appearance-title">
-            <Pin size={13} /> Pinned helper tasks
-          </div>
-          <div className="muted small">
-            {pins.length
+      <SettingsSection title="Guardrails" intro="Checked when you apply a main model, before anything is written.">
+        <SettingRow
+          className="model-guard"
+          name={
+            <>
+              <Pin size={13} /> Pinned helper tasks
+            </>
+          }
+          hint={
+            pins.length
               ? `${list(pins.map((t) => t.label))} ${pins.length === 1 ? "is" : "are"} pinned to ${list(pinnedBy.map((p) => providerName(providers, p)))}. Moving the main model to another provider asks first, since they'd keep running there.`
-              : "No helper task is pinned to a provider of its own, so they all follow the main model."}
-          </div>
-        </div>
-        <div className="guard">
-          <div className="appearance-title">
-            <CircleDollarSign size={13} /> Expensive models
-          </div>
-          <div className="muted small">
-            Hermes checks the price of the main model you apply. If it's above Hermes's safety threshold, nothing is switched until you choose Switch
-            anyway or Keep current.
-          </div>
-        </div>
-      </section>
+              : "No helper task is pinned to a provider of its own, so they all follow the main model."
+          }
+        />
+        <SettingRow
+          className="model-guard"
+          name={
+            <>
+              <CircleDollarSign size={13} /> Expensive models
+            </>
+          }
+          hint="Hermes checks the price of the main model you apply. If it's above Hermes's safety threshold, nothing is switched until you choose Switch anyway or Keep current."
+        />
+      </SettingsSection>
     </>
   );
 }

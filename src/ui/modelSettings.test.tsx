@@ -83,7 +83,7 @@ describe("Settings → Model", () => {
     document.head.append(sheet);
     try {
       await shown();
-      for (const name of ["Main provider", "Main model", "Main reasoning effort"]) expect(select(name).closest(".field")).toBeTruthy();
+      for (const name of ["Main provider", "Main model", "Main reasoning effort"]) expect(select(name).closest(".set-control")).toBeTruthy();
       for (const s of screen.getAllByRole<HTMLSelectElement>("combobox")) {
         expect([s.getAttribute("aria-label"), getComputedStyle(s).height, getComputedStyle(s).paddingTop, getComputedStyle(s).paddingBottom]).toEqual([
           s.getAttribute("aria-label"),
@@ -105,6 +105,67 @@ describe("Settings → Model", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Apply main model" }).disabled).toBe(true);
     await user.selectOptions(select("Main model"), "hermes-5-70b");
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Apply main model" }).disabled).toBe(false);
+  });
+});
+
+describe("Settings → Model as cards of rows (#174, ADR 0059)", () => {
+  const section = (heading: string) => screen.getByRole("heading", { name: heading, level: 2 }).closest("section")!;
+  /** The card a control sits in, and whether it is a row's control there. */
+  const inRow = (el: Element, heading: string) => !!el.closest(".set-row > .set-control") && el.closest(".set-card") === section(heading).querySelector(".set-card");
+
+  it("puts each setting in a row of its section's card, with Apply on the card's last line", async () => {
+    await shown();
+    for (const heading of ["Main model", "Text generation", "Subagents", "Auxiliary models", "Guardrails", "Idle compaction"])
+      expect(section(heading).querySelector(":scope > .set-card")).toBeTruthy();
+    for (const name of ["Main provider", "Main model", "Main reasoning effort"]) expect(inRow(select(name), "Main model")).toBe(true);
+    expect(inRow(screen.getByRole("checkbox", { name: "Fast mode" }), "Main model")).toBe(true);
+    for (const name of ["Subagent route", "Subagent reasoning effort"]) expect(inRow(select(name), "Subagents")).toBe(true);
+    for (const name of ["Subagent turn limit", "Subagent concurrency", "Subagent timeout in seconds"])
+      expect(inRow(screen.getByRole("spinbutton", { name }), "Subagents")).toBe(true);
+    for (const name of ["Compression provider", "Compression model", "Compression effort"]) expect(inRow(select(name), "Auxiliary models")).toBe(true);
+    expect(inRow(screen.getByRole("button", { name: /^Model:/ }), "Text generation")).toBe(true);
+    expect(inRow(screen.getByRole("switch", { name: "Compact idle chats" }), "Idle compaction")).toBe(true);
+    for (const [part, heading] of [
+      ["main model", "Main model"],
+      ["subagent", "Subagents"],
+      ["auxiliary models", "Auxiliary models"],
+    ]) {
+      const apply = screen.getByRole("button", { name: `Apply ${part}` });
+      expect(apply.closest(".set-card > .set-note")).toBe(section(heading).querySelector(".set-card > .set-note:last-child"));
+    }
+  });
+
+  it("folds only explanation: states, problems and what leaving drops stay in view", async () => {
+    const { user } = await shown();
+    const visible = (text: RegExp) => !screen.getByText(text).closest("[hidden]");
+    expect(visible(/leaving Settings drops them/)).toBe(true);
+    expect(visible(/Text generation, Compression and Vision are pinned to OpenRouter/)).toBe(true);
+    for (const state of screen.getAllByText("Same as Hermes.")) expect(state.closest("[hidden]")).toBeNull();
+    expect(visible(/Subagents run on the main agent's provider and model/)).toBe(true);
+    await user.selectOptions(select("Main provider"), "nous");
+    expect(visible(/^Choose a model for nous\.$/)).toBe(true);
+    // Nothing on the tab is folded but the help behind an (i).
+    for (const fold of screen.getByRole("tabpanel").querySelectorAll("[hidden]")) expect(fold.classList.contains("set-more")).toBe(true);
+  });
+
+  it("keeps the longer help behind an (i), opened by a search that finds words in it", async () => {
+    const { user } = await shown();
+    for (const [about, words] of [
+      ["About Text generation model", "other Hermes clients use it too"],
+      ["About Compact idle chats", "prompt cache has gone cold"],
+    ]) {
+      const button = screen.getByRole("button", { name: about });
+      const help = document.getElementById(button.getAttribute("aria-controls")!)!;
+      expect(button.getAttribute("aria-expanded")).toBe("false");
+      expect(help.hidden).toBe(true);
+      expect(help.textContent).toContain(words);
+    }
+    await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "prompt cache");
+    await waitFor(() => expect(section("Idle compaction").hasAttribute("data-search-miss")).toBe(false));
+    expect(section("Main model").hasAttribute("data-search-miss")).toBe(true);
+    const about = screen.getByRole("button", { name: "About Compact idle chats" });
+    expect(about.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(about.getAttribute("aria-controls")!)!.hidden).toBe(false);
   });
 });
 
