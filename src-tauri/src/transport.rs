@@ -764,7 +764,7 @@ impl Dashboard {
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
     /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
     /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
-    /// ADR 0053).
+    /// ADR 0055).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -1442,7 +1442,7 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
     }
 }
 
-/// Settings → Voice's writes under Hermes's toolset routes (ADR 0053, `hermes_cli/web_routers/tools.py`), for the `stt`
+/// Settings → Voice's writes under Hermes's toolset routes (ADR 0055, `hermes_cli/web_routers/tools.py`), for the `stt`
 /// and `tts` toolsets only:
 /// - `PUT api/tools/toolsets/{stt,tts}/provider` with exactly `{"provider": <name>}` picks a provider by the name Hermes
 ///   lists it under (`apply_provider_selection`, which writes `<kind>.provider` and nothing else of the config).

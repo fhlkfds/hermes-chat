@@ -251,6 +251,9 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
  * only its message, so the stage is read from that.
  */
 export function explainSignIn(message: string, d: SignInDetails): Extract<TestOutcome, { ok: false }> {
+  // Sign out's own note that the keyring kept the password (account.ts `signOut`): no sign-in failed, so it is shown
+  // as it is, not read as an unreachable server.
+  if (/^Signed out, but /.test(message)) return { ok: false, stage: "sign-in", problem: message, fixes: [] };
   const stage: Stage = /Wrong username or password|Too many sign-in attempts|sign-in/i.test(message)
     ? "sign-in"
     : /canonical session protocol|chat connection|ready/i.test(message)

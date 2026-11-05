@@ -382,7 +382,7 @@ Read in `hermes_cli/web_routers/tools.py`, `hermes_cli/tools_config.py` (`TOOL_C
 - **Keys.** `PUT /api/tools/toolsets/{stt,tts}/env?profile=` `{env}` → `save_env_value` for each non-blank value. Names must be env vars of that toolset's visible providers, else 400 `Unknown env var(s) for toolset …`. Answer: `{ok, saved, skipped, is_set}`.
 - **Settings.** `stt.<provider>.{model, model_id, language, language_code}` and `tts.<provider>.{model, model_id, voice, voice_id, language}` in `config_defaults.py`. `PUT /api/config` deep-merges them. `GET /api/config/schema` gives `select` options for `stt.<provider>.model` (`STT_MODEL_CATALOG`), `stt.provider` and `tts.provider`.
 - **Not used.** `GET /api/audio/elevenlabs/voices` lists ElevenLabs voices with the server's key (a possible follow-up for a voice picker). `POST /api/tools/toolsets/{name}/post-setup` spawns installs. `GET /api/audio/voice-config` hands keys to the client.
-- What the app does: ADR 0053.
+- What the app does: ADR 0055.
 
 ### Projects (2026-11-02, deployed `bf0203a`, source read and probed with a throwaway `HERMES_HOME`)
 

@@ -248,6 +248,7 @@ describe("the Settings toggle", () => {
   it("turns reopening off and on", async () => {
     const { user } = await launch(server());
     await user.click(screen.getByRole("button", { name: /^Settings/ }));
+    await user.click(await screen.findByRole("button", { name: "Launch, tray & updates" }));
     const toggle = await screen.findByRole("switch", { name: "Reopen last chat on launch" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     await user.click(toggle);

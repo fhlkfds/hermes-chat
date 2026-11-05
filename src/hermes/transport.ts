@@ -444,13 +444,36 @@ export type Snapshot = {
   branchNews?: { text: string; chatId?: string; at: number };
 };
 
+/** Why `connect` rejected when its `signal` stopped it. */
+export const CONNECT_STOPPED = "Connecting was stopped. Nothing was saved.";
+
 /**
  * Connects to Hermes for `profile`, by default the one shown last; rejects if the first connection fails. Later drops
- * are reconnected by the returned Hermes.
+ * are reconnected by the returned Hermes. `signal` stops the first connection while it opens: the Hermes is closed,
+ * which stops Rust opening it too (`hermes_connect_cancel`), and this rejects with `CONNECT_STOPPED`. A stop that
+ * comes after Hermes answered changes nothing.
  */
-export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache, notify?: Notify): Promise<Hermes> {
+export async function connect(openPipe: OpenPipe, profile?: string, cache: ChatCache = noCache, notify?: Notify, signal?: AbortSignal): Promise<Hermes> {
+  if (signal?.aborted) throw new Error(CONNECT_STOPPED);
   const hermes = new Hermes(openPipe, profile ?? cache.lastProfile() ?? "default", cache, notify);
-  await hermes.dial();
+  let closing: Promise<void> | undefined;
+  const stop = () => void (closing = hermes.close().catch(() => {}));
+  signal?.addEventListener("abort", stop, { once: true });
+  let failed: unknown;
+  try {
+    await hermes.dial();
+  } catch (e) {
+    failed = e;
+  } finally {
+    signal?.removeEventListener("abort", stop);
+  }
+  // Stopped, even if the dial got through before the close reached it: wait until whatever the dial opened is closed
+  // too, so the next connection finds Rust's one free.
+  if (signal?.aborted) {
+    await closing;
+    throw new Error(CONNECT_STOPPED);
+  }
+  if (failed !== undefined) throw failed;
   return hermes;
 }
 
@@ -793,7 +816,7 @@ export class Hermes {
     },
   );
   /**
-   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0053). Each call names its profile, and goes only over a
+   * Settings → Voice's reads and writes (voiceSettings.ts, ADR 0055). Each call names its profile, and goes only over a
    * connection that is up. Its read of the voice set-up is always fresh; a save drops the chat panes' cached one.
    */
   readonly voiceSettings = new VoiceSettingsApi(

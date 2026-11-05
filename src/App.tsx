@@ -1,7 +1,7 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, X } from "lucide-react";
-import { RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import type { ServerCommandList } from "./hermes/commands";
@@ -73,6 +73,7 @@ import { OutputsIndex, outputsIn, splitPath, type Output } from "./hermes/output
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
 import { ScheduledJobs } from "./ui/ScheduledJobs";
+import { TroubleshootStore, startTroubleshoot } from "./hermes/troubleshoot";
 import { CapabilityGate } from "./ui/Diagnostics";
 import { guideUrl, type CapabilityId } from "./hermes/capabilities";
 import { useCapabilities } from "./ui/Diagnostics";
@@ -95,7 +96,7 @@ import { PreviewPane } from "./ui/PreviewPane";
 import { PANE_MIN_WIDTH, SidePanel, type PanelTab } from "./ui/SidePanel";
 import { ScreenTab } from "./ui/Screen";
 import { PreviewContext } from "./ui/previewContext";
-import { tauriLocalFiles, tauriWebPages, type LocalFiles, type WebPages } from "./ui/tauriPreview";
+import { tauriLocalFiles, tauriServerPages, tauriWebPages, type LocalFiles, type ServerPages, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
@@ -120,9 +121,10 @@ const SYNC_EVERY_MS = 60_000;
 // While the inbox is open it asks for fresh checks this often; they run at most every 15 seconds (transport.ts).
 const INBOX_CHECK_EVERY_MS = 30_000;
 const TOAST_MS = 5_000;
+const ACTION_TOAST_MS = 15_000;
 
 /** A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. */
-type Toast = { text: string; undo?: () => void; at: number };
+type Toast = { text: string; undo?: () => void; action?: { label: string; run: () => void }; at: number };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -168,7 +170,7 @@ const account: Account = {
     return savedConnections();
   },
   secrets: systemSecrets,
-  connect: (c, d) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify),
+  connect: (c, d, signal) => connect(tauriPipe(d), undefined, localChatCache(c), desktopNotify, signal),
   readSaved: (c, d, reason) => readSaved(tauriPipe(d), reason, localChatCache(c), desktopNotify),
 };
 
@@ -269,6 +271,11 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
   // Whether the main screen reopens the profile's last open chat: at launch, and on switching to a connection.
   const [coldStart, setColdStart] = useState(true);
   const [setup, setSetup] = useState<Setup>();
+  const setupRef = useRef(setup);
+  setupRef.current = setup;
+  // Moves on with everything the owner does on the sign-in screen, so a Run setup again still reading the keyring
+  // gives way to whatever was asked for after it.
+  const signInAsks = useRef(0);
   const [confirmingSetup, setConfirmingSetup] = useState(false);
   const connectionGuard = useRef<((to: SavedConnection) => Promise<boolean>) | undefined>(undefined);
   // A connection being switched to, for the screen shown meanwhile.
@@ -374,9 +381,10 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
    * Setup's Save and connect, and the sign-in screen's Connect: signs in to `target` with `d`, and keeps it. The
    * connection in use closes first, or its reconnects would take Rust's one connection back. If the new one fails
    * after all, the one in use before is put back, as at launch: Offline with what this computer saved if it can't
-   * connect either.
+   * connect either. `signal` is Setup's Stop: while Hermes hasn't answered, it stops the sign-in, which then fails
+   * with nothing saved, and the one in use before is put back the same way.
    */
-  const connectWith = async (target: SavedConnection, d: SignInDetails, name?: string) => {
+  const connectWith = async (target: SavedConnection, d: SignInDetails, name?: string, signal?: AbortSignal) => {
     // Setup can spend minutes testing while more work or approvals arrive. Ask at the actual switch, using Main's
     // latest state, and keep Setup mounted but hidden so cancelling the question keeps its tested details.
     if (setup && current.current && connectionGuard.current) {
@@ -388,14 +396,15 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         setConfirmingSetup(false);
       }
     }
-    return serial(async (stale) => {
+    // Stopped while it waits its turn: it never starts, and the connection in use isn't touched.
+    return serial.stoppable(signal, () => new Error(CONNECT_STOPPED), async (stale) => {
       if (stale()) throw new Error("A newer connection was selected.");
       const before = current.current;
       const beforeConnection = connectionRef.current;
       const beforeDetails = signedInWith.current;
       if (before) await before.close().catch(() => {});
       try {
-        const { hermes: h, connection: c, notSaved, kept } = await signIn(target, d, account, name);
+        const { hermes: h, connection: c, notSaved, kept } = await signIn(target, d, account, name, signal);
         if (stale()) {
           await h.close().catch(() => {});
           use(null);
@@ -464,7 +473,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         initialName={setup.name}
         probe={tauriProbe}
         hermes={hermes ?? undefined}
-        onConnect={(d, name) => connectWith(setup.target, d, name)}
+        onConnect={(d, name, signal) => connectWith(setup.target, d, name, signal)}
         onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
         onDone={() => setSetup(undefined)}
       />
@@ -562,16 +571,34 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         error={error}
         connection={connection}
         connections={recent}
-        onSetUp={() => setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) })}
-        onPick={(c) =>
+        onSetUp={() => {
+          signInAsks.current++;
+          setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) });
+        }}
+        onRerunSetup={(c) => {
+          const mine = ++signInAsks.current;
+          void serial(async (stale) => {
+            // From what is saved for it, as Edit does. Setup opens only if nothing else was asked for meanwhile: the
+            // screen is still for `c`, nothing signed in, and no other setup opened.
+            const d = await signInForm(c, account);
+            if (stale() || mine !== signInAsks.current || setupRef.current || current.current || connectionRef.current?.id !== c.id) return;
+            setSetup({ mode: "edit", initial: d, target: c, name: c.name });
+          });
+        }}
+        onPick={(c) => {
+          signInAsks.current++;
           void serial(async (stale) => {
             const d = (await savedSignIn(c, account)) ?? (await signInForm(c, account));
             if (!stale()) showSignIn(c, d);
-          })
-        }
-        onRemove={setRemoving}
+          });
+        }}
+        onRemove={(c) => {
+          signInAsks.current++;
+          setRemoving(c);
+        }}
         onSignIn={async (d) => {
           if (!connection) return;
+          signInAsks.current++;
           setError(undefined);
           try {
             await connectWith(connection, d);
@@ -676,6 +703,7 @@ export function Main({
   connectionGuard,
   localFiles = tauriLocalFiles,
   webPages = tauriWebPages,
+  serverPages = tauriServerPages,
   screenshots = tauriScreenshotWiring,
   summon = desktopSummon,
   personaStore = savedPersona,
@@ -721,6 +749,8 @@ export function Main({
   onSetUp?: () => void;
   localFiles?: LocalFiles;
   webPages?: WebPages;
+  /** Pages on the Hermes server's own loopback, through SSH (ADR 0052). */
+  serverPages?: ServerPages;
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0034, 0043). */
   repoApi?: RepoApi;
@@ -838,6 +868,8 @@ export function Main({
   const [membershipOpen, setMembershipOpen] = useState(false);
   /** The Scheduled jobs screen covers the chat, as Settings does. */
   const [jobsOpen, setJobsOpen] = useState(false);
+  /** The job the Scheduled jobs screen opens on, when something other than the rail opened it; `n` starts it again. */
+  const [jobsAt, setJobsAt] = useState<{ id: string; n: number }>();
   /** Automations (webhook routes, ADR 0036) cover the chat too. */
   const [automationsOpen, setAutomationsOpen] = useState(false);
   // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, kept in the prefs so it opens on the one picked
@@ -967,6 +999,10 @@ export function Main({
   // Projects are Hermes's, one store for each connection and profile; which chats are in each is kept on this computer.
   // A project picked in the switcher narrows the list to its chats. Active, Settled and Unread work as before inside it.
   const scope = projectScope(connection, profile);
+  // Troubleshooting chats started from the Jobs screen, for this app run (troubleshoot.ts, ADR 0053). The store sees
+  // every change in the chats, to tell when a troubleshooting reply has ended.
+  const troubleshoots = useMemo(() => new TroubleshootStore(), [hermes]);
+  useEffect(() => hermes.subscribe(() => troubleshoots.observe(hermes.getSnapshot())), [hermes, troubleshoots]);
   // Keep the same store and request queue when returning to a profile: a write still finishing for that profile
   // must share ordering with its new reads and writes, rather than commit from an abandoned snapshot.
   const projectStores = useMemo(() => new Map<string, ProjectsStore>(), [hermes]);
@@ -1180,6 +1216,44 @@ export function Main({
   };
 
   const newChat = (remember = true) => openChat(null, { remember, fresh: true });
+
+  /** Opens the Scheduled jobs screen on one job, as a troubleshooting chat's toast does (ADR 0053). */
+  const openJobAt = (id: string) =>
+    guard(() => {
+      setProjectOpen(false);
+      setSettingsOpen(false);
+      setOutputsOpen(false);
+      setUsageOpen(false);
+      setLogsOpen(false);
+      setRepoOpen(false);
+      setAutomationsOpen(false);
+      setJobsAt((a) => ({ id, n: (a?.n ?? 0) + 1 }));
+      setJobsOpen(true);
+    });
+  const openJobAtLatest = useRef(openJobAt);
+  openJobAtLatest.current = openJobAt;
+  // A troubleshooting reply that ends while the Jobs screen isn't showing is said in a toast, which opens the job: the
+  // screen reads it again there and shows what changed. On the Jobs screen, the job's own panel says it.
+  const jobsShowing = useRef(false);
+  jobsShowing.current = jobsOpen && !settingsOpen;
+  const troubleToasted = useRef(new Set<string>());
+  useEffect(
+    () =>
+      troubleshoots.subscribe(() => {
+        for (const t of troubleshoots.getSnapshot()) {
+          if (t.phase !== "ended" || troubleToasted.current.has(t.id)) continue;
+          troubleToasted.current.add(t.id);
+          if (jobsShowing.current) continue;
+          const here = hermes.profile === t.profile;
+          setToast({
+            text: `Troubleshooting “${t.jobName}”: Hermes's reply has ended.${here ? "" : ` Switch to ${t.profile} to see the job.`}`,
+            at: Date.now(),
+            ...(here && { action: { label: "See what changed", run: () => openJobAtLatest.current(t.jobId) } }),
+          });
+        }
+      }),
+    [troubleshoots],
+  );
 
   /** Opens the Repository screen on a worktree's Worktrees view, as a chat's worktree label does (ADR 0043). */
   const openRepository = (at: { target: string; path: string; view: "worktrees" }) =>
@@ -1608,7 +1682,8 @@ export function Main({
 
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast(null), TOAST_MS);
+    // A toast that offers somewhere to go stays longer than one that only says something.
+    const timer = setTimeout(() => setToast(null), toast.action ? ACTION_TOAST_MS : TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
 
@@ -2167,6 +2242,7 @@ export function Main({
             setLogsOpen(false);
             setRepoOpen(false);
             setAutomationsOpen(false);
+            setJobsAt(undefined);
             setJobsOpen(true);
           })
         }
@@ -2393,11 +2469,18 @@ export function Main({
                 onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
               >
                 <ScheduledJobs
-                  key={profile}
+                  key={`${profile}:${jobsAt?.n ?? 0}`}
                   api={hermes.cron}
                   profile={profile}
                   connected={status === "connected"}
                   onClose={() => { flushSync(() => setJobsOpen(false)); focusPane(active.key); }}
+                  openJob={jobsAt?.id}
+                  troubleshoot={{
+                    store: troubleshoots,
+                    scope,
+                    start: (job, text) => startTroubleshoot(hermes, troubleshoots, scope, profile, job, text, (id) => openChat(id)),
+                    openChat: (id) => openChat(id),
+                  }}
                 />
               </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
@@ -2687,6 +2770,7 @@ export function Main({
                     readServer={(path, host) => (host ? hermes.readHostFile(path) : hermes.readServerFile(path))}
                     local={localFiles}
                     web={webPages}
+                    serverPages={serverPages}
                     onOpen={openPreview}
                     artifacts={artifacts}
                     connected={status === "connected"}
@@ -2767,6 +2851,16 @@ export function Main({
               }}
             >
               Undo
+            </button>
+          )}
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action?.run();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
             </button>
           )}
         </div>

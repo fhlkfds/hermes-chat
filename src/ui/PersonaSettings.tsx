@@ -3,7 +3,7 @@
 // or a crash doesn't lose it, and each version a save replaced is kept to put back (personaStore.ts). The text is the
 // owner's, but it is treated as untrusted: it is only ever a textarea's value, never rendered.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X } from "lucide-react";
+import { FileText, History, RotateCcw, Save, TriangleAlert, Undo2, X, ChevronRight } from "lucide-react";
 import { asReadBack, PersonaError, sameSoul, soulNotes, type PersonaApi, type ProfileHome, type Soul } from "../hermes/persona";
 import { EARLIER_KEPT, type EarlierSoul, type PersonaDraft, type PersonaStore } from "../hermes/personaStore";
 
@@ -318,11 +318,16 @@ export function PersonaSettings({
             {file ? <span className="mono">{file}</span> : <span className="muted">SOUL.md in the {profile} profile's folder on the server</span>}
           </dd>
         </dl>
+        <details className="disc persona-how">
+          <summary>
+            <ChevronRight size={13} className="disc-chev" aria-hidden /> When a saved persona takes effect
+          </summary>
         <p className="muted small persona-effect">
           Hermes reads SOUL.md when a chat starts. Chats started after you save use the new persona, in Hermes Chat, in other Hermes clients and on
           messaging platforms that use the {profile} profile. A chat already under way keeps the persona it started with, unless Hermes rebuilds its
           instructions, as it does when the chat's model changes. Hermes doesn't need to restart, and Hermes Chat never restarts it.
         </p>
+        </details>
         {home?.distribution && (
           <p className="muted small persona-effect">
             <TriangleAlert size={12} /> This profile was installed from the <span className="mono">{home.distribution}</span> profile distribution.

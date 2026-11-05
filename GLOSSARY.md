@@ -164,7 +164,7 @@ Talking with Hermes hands-free in a started chat, from Start voice conversation 
 _Avoid_: voice mode (Hermes's own), voice chat, live mode, hands-free mode
 
 **Speech provider**:
-The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0053).
+The service Hermes turns speech into text with (speech-to-text), or text into speech with (text-to-speech), for one profile, such as Local Whisper or ElevenLabs. Dictation, Read aloud and Voice conversations all use the profile's two, on the server. Settings → Voice lists the ones Hermes offers, says which are set up (installed, signed in, or with a key), and picks one for each side, with its model, voice and language and its API key. A key is write-only: Hermes says only whether one is set. Each save is checked against Hermes first and confirmed by reading back (ADR 0055).
 _Avoid_: STT/TTS engine, voice backend, voice model
 
 **Close to tray**:
@@ -240,7 +240,7 @@ A model the owner starred in the model picker. Favorites are listed first, and a
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
 **Setup**:
-The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen. Cancelling it leaves every Connection as it was.
+The steps that connect Hermes Chat to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key, which can be skipped. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen (**Run setup again**). Cancelling it, or stopping Save and connect, leaves every Connection as it was.
 _Avoid_: onboarding (fine in conversation, not in the app), wizard, first-run (that's only when setup opens by itself)
 
 **Provider key**:
@@ -271,8 +271,12 @@ The resizable panel beside the chat, with four tabs: Preview, Terminal, Files an
 _Avoid_: drawer, sidebar (that is the chat list), inspector
 
 **Preview**:
-The Side panel's tab that shows a web page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
+The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word)
+
+**Server page**:
+A web page on the Hermes server's own loopback (`localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`), such as a dev server Hermes started there. The Preview opens a loopback address as a Server page unless the owner switches it to **This computer**. It loads through an SSH tunnel to the sign-in's SSH target, opened while the page shows and closed when it goes. A URL sign-in has no SSH target, so its Server pages don't open (ADR 0052).
+_Avoid_: remote page, tunnelled page, port forward (the mechanism)
 
 **Server file**:
 A file on the Hermes server, by its full path there. Hermes reads it, and Hermes may refuse, for example a file with credentials. Paths in tool calls are Server files, since that is where Hermes runs its tools.
@@ -377,6 +381,10 @@ _Avoid_: trigger, test run
 **Job run**:
 One run of a Scheduled job, as Hermes recorded it: an agent session, or the output a script job printed. Its state is running, succeeded, failed, or unknown, when Hermes recorded no outcome (the run's process stopped, or Hermes went on in a session it doesn't list). Its result is the agent's last reply, read from the session, or the script's output.
 _Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
+
+**Troubleshoot** (a Scheduled job):
+The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0053).
+_Avoid_: diagnose, debug, fix (Hermes fixes; the owner troubleshoots), repair
 
 **Schedule time zone**:
 The time zone Hermes reads a profile's schedules in and runs its jobs on: the profile's `timezone` setting, else the server's own zone. Times on the Scheduled jobs screen are on it, with this computer's time beside them when it reads differently; daylight-saving changes follow it.

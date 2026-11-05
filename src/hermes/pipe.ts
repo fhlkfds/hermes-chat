@@ -59,7 +59,7 @@ export type PipeEvent = { kind: "frame"; text: string } | { kind: "closed"; reas
  */
 export type Route = { kind: "ssh"; target: string } | { kind: "url"; url: string; addresses: string[] };
 
-/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, Settings → Skills' switch and save, and Settings → Voice's provider pick and key save (ADR 0053), among others listed at `Dashboard::request` in src-tauri/src/transport.rs. */
+/** The dashboard REST verbs the Rust side relays. POST and PUT reach only Settings → Model's two write routes, the scheduled-job writes, Settings → Toolsets' switch, Settings → Persona's save, Settings → Skills' switch and save, and Settings → Voice's provider pick and key save (ADR 0055), among others listed at `Dashboard::request` in src-tauri/src/transport.rs. */
 export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {
