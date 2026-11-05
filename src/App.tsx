@@ -849,8 +849,17 @@ export function Main({
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
+  /** Set, each time anew, to open Settings on its Voice tab, from a voice conversation's "Change voice settings". */
+  const [showVoice, setShowVoice] = useState<object>();
+  const openVoiceSettings = useRef(() => {});
   const voice = useMemo<VoiceApi>(
-    () => ({ setup: () => hermes.voiceSetup(), transcribe: (audio, mime) => hermes.transcribe(audio, mime), speak: (text) => hermes.speak(text) }),
+    () => ({
+      setup: () => hermes.voiceSetup(),
+      transcribe: (audio, mime) => hermes.transcribe(audio, mime),
+      speak: (text) => hermes.speak(text),
+      onChange: hermes.onVoiceChange,
+      openSettings: () => openVoiceSettings.current(),
+    }),
     [hermes],
   );
   // The project screen covers the chat pane, as Settings does.
@@ -1062,7 +1071,12 @@ export function Main({
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setShowDiagnostics(undefined);
+    setShowVoice(undefined);
     setSettingsOpen(true);
+  };
+  openVoiceSettings.current = () => {
+    openSettings();
+    setShowVoice({});
   };
   /** Opens Settings → Diagnostics at capability `id`, from the note a screen shows when Hermes lacks it. */
   const openDiagnostics = (id: CapabilityId) => {
@@ -2134,6 +2148,7 @@ export function Main({
                   setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowDiagnostics(undefined);
+                  setShowVoice(undefined);
                   setShowMemory({});
                   setSettingsOpen(true);
                 }
@@ -2550,6 +2565,9 @@ export function Main({
             checkScreenshots={screenshots.support}
             tray={tray}
             voiceSetup={voice.setup}
+            voiceSettings={hermes.voiceSettings}
+            onVoiceChange={hermes.onVoiceChange}
+            showVoice={showVoice}
             showTextGeneration={showTextGeneration}
             showMemory={showMemory}
             capabilities={hermes.capabilities}

@@ -1310,6 +1310,7 @@ function Composer({
         <ConversationPanel
           conversation={conversation}
           setup={voiceSetup}
+          onSettings={voice?.openSettings}
           onEnd={() => {
             conversation.end();
             // Back to the button that started it, once it is shown again.

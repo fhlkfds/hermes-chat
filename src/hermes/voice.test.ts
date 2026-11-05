@@ -103,7 +103,7 @@ describe("Hermes's voice calls", () => {
     };
     const hermes = await connect(server.openPipe);
     await hermes.idle();
-    expect(await hermes.voiceSetup()).toEqual(server.voice);
+    expect(await hermes.voiceSetup()).toMatchObject(server.voice);
     await hermes.voiceSetup();
     expect(reads).toBe(1);
     await hermes.switchProfile("work");

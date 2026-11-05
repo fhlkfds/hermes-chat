@@ -78,7 +78,7 @@ describe("Being brought forward", () => {
   it("leaves Settings open as it was, focus included", async () => {
     const { rust, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(await screen.findByRole("button", { name: "Voice & screenshots" }));
+    await user.click(await screen.findByRole("button", { name: "Screenshots" }));
     const heading = await screen.findByRole("heading", { name: "Screenshots" });
     const key = screen.getByRole("button", { name: "Screenshot shortcut" });
     key.focus();

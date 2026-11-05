@@ -904,6 +904,25 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .voice-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .voice-row:first-of-type { border-top: 0; }
 .voice-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.badge.ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
+.voice-side { padding: 12px 0 4px; border-top: 1px solid var(--line); }
+.voice-side h3 { margin: 0 0 2px; font-size: 1rem; }
+.voice-side > p { margin: 0 0 8px; }
+.voice-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; max-width: 520px; }
+.voice-field > span:first-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 500; }
+.voice-field .mono { font-size: calc(11rem / 14); font-weight: 400; }
+.voice-provider-list { list-style: none; margin: 6px 0 8px; padding: 0; display: grid; gap: 2px; }
+.voice-provider-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 3px 6px; border-radius: 6px; }
+.voice-provider-list li.picked { background: var(--raised-2); }
+.voice-provider-name { font-weight: 500; }
+.voice-provider-tag { flex-basis: 100%; padding-left: 0; }
+@media (min-width: 720px) { .voice-provider-tag { flex-basis: auto; } }
+.voice-picked { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.voice-picked > p { margin: 0 0 4px; }
+.voice-save { padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.voice-unsupported { padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.voice-unsupported p { margin: 4px 0; }
+.conv-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 /* updates */
 .settings-btn { position: relative; }
 .update-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; }

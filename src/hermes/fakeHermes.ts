@@ -3,6 +3,7 @@
 import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
 import { FakeMemoryProviders } from "./fakeMemoryProviders";
+import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
@@ -358,6 +359,10 @@ export class FakeHermes {
   speech: Speech | Error = { mime: "audio/mpeg", audio: new Uint8Array([0x49, 0x44, 0x33, 4]), provider: "edge" };
   /** While set, transcribing and reading aloud wait for it before they answer. */
   voiceGate?: Promise<void>;
+  /** While set, the next read of the voice set-up waits for it (once). */
+  voiceSetupGate?: Promise<void>;
+  /** While set, reading the voice set-up fails with this. */
+  voiceSetupFailure?: string;
   /** Every recording sent to transcribe, and every text sent to read aloud, in order. */
   readonly recordings: { profile: string; audio: Uint8Array; mime: string }[] = [];
   readonly spoken: { profile: string; text: string }[] = [];
@@ -382,6 +387,11 @@ export class FakeHermes {
   readonly skills = new FakeSkills(this.managedFiles);
   /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
   readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
+  /** The profiles' speech providers, for Settings → Voice (fakeVoiceProviders.ts). */
+  readonly voiceProviders = new FakeVoiceProviders(
+    (p) => p === "default" || p in this.otherProfiles,
+    () => ({ stt: this.voice.sttProvider, tts: this.voice.ttsProvider }),
+  );
   /** Whether this connection sent `client.capabilities {server_requests: true}`. */
   answersRequests = false;
   /** Server→client requests nobody has answered yet, by id. */
@@ -1116,7 +1126,7 @@ export class FakeHermes {
       profiles: ["default"],
     }),
     "POST /api/model/set": ({ body }) => this.setModel(body ?? {}),
-    "PUT /api/config": ({ body }) => {
+    "PUT /api/config": async ({ body, query }) => {
       // `ConfigUpdate` needs `config`; the rest deep-merges over the stored file (`update_config`).
       const config = body?.config;
       if (!config || typeof config !== "object")
@@ -1124,6 +1134,7 @@ export class FakeHermes {
       const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown> };
       Object.assign(this.modelConfig.agent, c.agent ?? {});
       Object.assign(this.modelConfig.delegation, c.delegation ?? {});
+      await this.voiceProviders.mergeConfig(query.get("profile") || "default", config as Record<string, unknown>);
       return { ok: true };
     },
   };
@@ -1183,7 +1194,7 @@ export class FakeHermes {
       { name: "DuckDuckGo (ddgs)", post_setup: "ddgs", status: "needs_setup", is_active: false },
     ],
     computer_use: [{ name: "cua-driver (background)", post_setup: "cua_driver", status: "needs_setup", is_active: false }],
-    stt: [{ name: "Local Whisper", status: "ready", is_active: true }],
+    // `stt` and `tts` answer from `voiceProviders` unless a test sets them here.
   };
   /** While set, the next toolset list read waits for it (once). */
   toolsetListGateOnce?: Promise<void>;
@@ -1284,7 +1295,13 @@ export class FakeHermes {
         if (this.speech instanceof Error) throw this.speech;
         return this.speech;
       },
-      voiceSetup: async () => ({ ...this.voice }),
+      voiceSetup: async (profile) => {
+        const gate = this.voiceSetupGate;
+        this.voiceSetupGate = undefined;
+        await gate;
+        if (this.voiceSetupFailure) throw new Error(this.voiceSetupFailure);
+        return { ...this.voice, ...this.voiceProviders.setup(profile) };
+      },
       download: (id, path, name, onProgress) => this.managedFiles.download(id, path, name, onProgress),
       pickUpload: async () => this.managedFiles.pickUpload(),
       discardUpload: async (token) => void this.managedFiles.discardPick(token),
@@ -1341,7 +1358,8 @@ export class FakeHermes {
       this.webhooks.route(req) ??
       this.cron.route(req) ??
       this.skills.route(req) ??
-      this.memoryProviders.route(req);
+      this.memoryProviders.route(req) ??
+      this.voiceProviders.route(req);
     const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
     if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));
     if (soul && this.soulRoutes && method !== "GET" && method !== "PUT") throw new Error(`The dashboard answered 405: {"detail":"Method Not Allowed"}`);
@@ -1378,7 +1396,9 @@ export class FakeHermes {
         return { ...t, enabled, available: enabled };
       });
     if (req.method === "GET" && name !== undefined && config) {
-      const t = known(name);
+      // `stt` and `tts` answer from the speech providers' fake unless a test set their rows here.
+      const voiceNow = name in this.toolsetProviders ? undefined : await this.voiceProviders.configRoute(profile, name);
+      const t = voiceNow ? true : known(name);
       if (!t) throw new Error(`The dashboard answered 400: {"detail":"Unknown toolset: ${name}"}`);
       if (this.toolsetConfigFailure) throw new Error(this.toolsetConfigFailure);
       const gate = this.toolsetConfigGate[name];
@@ -1386,9 +1406,11 @@ export class FakeHermes {
       if (gate) {
         delete this.toolsetConfigGate[name];
         await gate;
+        if (voiceNow) return voiceNow;
         const providers = providersNow.map((p) => ({ env_vars: [], post_setup: null, ...p }));
         return { name, has_category: providers.length > 0, providers, active_provider: providers.find((p) => p.is_active)?.name ?? null };
       }
+      if (voiceNow) return voiceNow;
       const providers = (this.toolsetProviders[name] ?? []).map((p) => ({ env_vars: [], post_setup: null, ...p }));
       const active = providers.find((p) => p.is_active)?.name ?? null;
       return { name, has_category: providers.length > 0, providers, active_provider: active };

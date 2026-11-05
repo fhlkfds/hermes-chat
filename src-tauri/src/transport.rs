@@ -20,6 +20,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -193,9 +194,10 @@ pub struct Speech {
     pub provider: Option<String>,
 }
 
-/// What the profile's voice set-up looks like from here: whether the server has the two audio routes, and which
-/// providers the profile's config names. Only these fields leave Rust; the config they come from can hold API keys.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// What the profile's voice set-up looks like from here: whether the server has the two audio routes, which
+/// providers the profile's config names, and each provider's model, voice and language for Settings → Voice. Only these
+/// fields leave Rust; the config they come from can hold API keys.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceSetup {
     /// The server has `POST /api/audio/transcribe`.
@@ -219,6 +221,54 @@ pub struct VoiceSetup {
     /// `voice.max_recording_seconds`: the longest one turn may be; 0 or less means Hermes sets no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_recording_seconds: Option<f64>,
+    /// `stt.language`: the language hint Hermes gives every speech-to-text provider that has none of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_language: Option<String>,
+    /// Each speech-to-text provider's own settings, by provider (`stt.<provider>.<setting>`): only the settings named in
+    /// `VOICE_SETTING_KEYS`, and only when they are text. No key, token or other field of those sections leaves Rust.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub stt_settings: BTreeMap<String, BTreeMap<String, String>>,
+    /// The same for text-to-speech (`tts.<provider>.<setting>`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tts_settings: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// The settings of a speech provider's config section that Settings → Voice shows and changes: its model, voice and
+/// language. Hermes names them differently per provider (`tts.elevenlabs.voice_id`, `stt.elevenlabs.language_code`).
+pub const VOICE_SETTING_KEYS: [&str; 6] = ["model", "model_id", "voice", "voice_id", "language", "language_code"];
+
+/// A speech provider's name as a config section key: what Hermes's own providers are called. Other keys of `stt` and
+/// `tts` (`providers`, `streaming`, `local` …) are told apart by their contents, not their names.
+fn voice_provider_name(name: &str) -> bool {
+    let mut b = name.bytes();
+    name.len() <= 64 && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric()) && b.all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+/// A voice setting's value as text, kept exactly as Hermes has it so a later check can compare it: `None` for anything
+/// that isn't a string, or is long or holds control characters (no model or voice name does).
+fn voice_setting_text(v: &serde_json::Value) -> Option<String> {
+    v.as_str().filter(|s| s.chars().count() <= 256 && !s.chars().any(char::is_control)).map(str::to_owned)
+}
+
+/// The `VOICE_SETTING_KEYS` of each provider section under `section` (the config's `stt` or `tts`). Command providers
+/// under `providers` aren't Hermes's own and are left out.
+fn voice_settings(section: &serde_json::Value) -> BTreeMap<String, BTreeMap<String, String>> {
+    let Some(section) = section.as_object() else {
+        return BTreeMap::new();
+    };
+    section
+        .iter()
+        .filter(|(name, _)| name.as_str() != "providers" && voice_provider_name(name))
+        .filter_map(|(name, block)| {
+            let fields: BTreeMap<String, String> = block
+                .as_object()?
+                .iter()
+                .filter(|(k, _)| VOICE_SETTING_KEYS.contains(&k.as_str()))
+                .filter_map(|(k, v)| Some((k.clone(), voice_setting_text(v)?)))
+                .collect();
+            (!fields.is_empty()).then(|| (name.clone(), fields))
+        })
+        .collect()
 }
 
 /// How an audio route answered: its JSON, no such route, or a refusal and Hermes's reason.
@@ -712,8 +762,9 @@ impl Dashboard {
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), and Import transcripts'
     /// `POST api/sessions/import` whose every session is marked `source: "import"` (`import_body_allowed`, ADR 0031),
-    /// the Automations writes (`webhook_write`, ADR 0036), and Settings → Memory's external memory writes
-    /// (`memory_provider_write`, ADR 0045).
+    /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
+    /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
+    /// ADR 0055).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -726,6 +777,7 @@ impl Dashboard {
             ("POST", _) if cron_write("POST", path) => Method::POST,
             ("PUT", _) if cron_write("PUT", path) => Method::PUT,
             ("PUT", _) if toolset_toggle_allowed(path, body.as_deref()) => Method::PUT,
+            ("PUT", _) if voice_provider_write(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if skill_write_allowed(path, body.as_deref()) => Method::PUT,
             ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
             ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
@@ -807,8 +859,8 @@ impl Dashboard {
 
     /// Reads whether the server has the two audio routes, and which providers `profile`'s config names. The routes
     /// are asked with bodies they refuse before doing any work (an empty recording, no text), so nothing is
-    /// transcribed or spoken. Only the provider names, `stt.enabled` and the three `voice.*` turn settings are kept
-    /// from the config.
+    /// transcribed or spoken. Only the provider names, `stt.enabled`, the three `voice.*` turn settings and each
+    /// provider's model, voice and language (`VOICE_SETTING_KEYS`) are kept from the config.
     pub async fn voice_setup(&self, profile: &str) -> Result<VoiceSetup, TransportError> {
         let has = |a: AudioAnswer| !matches!(a, AudioAnswer::NoRoute);
         let transcribe = has(self.post_audio("api/audio/transcribe", profile, &json!({"data_url": ""})).await?);
@@ -824,6 +876,7 @@ impl Dashboard {
             None => (None, None, None),
         };
         let voice = |key: &str| config.as_ref().and_then(|c| config_number(&c["voice"][key]));
+        let settings = |kind: &str| config.as_ref().map(|c| voice_settings(&c[kind])).unwrap_or_default();
         Ok(VoiceSetup {
             transcribe,
             speak,
@@ -833,6 +886,9 @@ impl Dashboard {
             silence_threshold: voice("silence_threshold"),
             silence_duration: voice("silence_duration"),
             max_recording_seconds: voice("max_recording_seconds"),
+            stt_language: config.as_ref().and_then(|c| voice_setting_text(&c["stt"]["language"])),
+            stt_settings: settings("stt"),
+            tts_settings: settings("tts"),
         })
     }
 
@@ -1383,6 +1439,43 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
         (false, Some(serde_json::Value::Bool(_))) => true,
         (true, Some(serde_json::Value::String(s))) => s == "probe",
         _ => false,
+    }
+}
+
+/// Settings → Voice's writes under Hermes's toolset routes (ADR 0055, `hermes_cli/web_routers/tools.py`), for the `stt`
+/// and `tts` toolsets only:
+/// - `PUT api/tools/toolsets/{stt,tts}/provider` with exactly `{"provider": <name>}` picks a provider by the name Hermes
+///   lists it under (`apply_provider_selection`, which writes `<kind>.provider` and nothing else of the config).
+/// - `PUT api/tools/toolsets/{stt,tts}/env` with exactly `{"env": {NAME: key}}`, never empty, saves API keys to the
+///   profile's `.env`. Hermes takes only the env vars that toolset's providers list. A blank key, which Hermes skips, or
+///   one with a control character, which would break the `.env` line, isn't relayed.
+///
+/// Their `model` and `post-setup` routes, and every other toolset's `provider` and `env`, aren't reached.
+pub fn voice_provider_write(path: &str, body: Option<&str>) -> bool {
+    let Some(route) = path.strip_prefix("api/tools/toolsets/") else {
+        return false;
+    };
+    let field = match route {
+        "stt/provider" | "tts/provider" => "provider",
+        "stt/env" | "tts/env" => "env",
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(value) = fields.as_object().filter(|o| o.len() == 1).and_then(|o| o.get(field)) else {
+        return false;
+    };
+    let text_ok = |s: &str, max: usize| !s.trim().is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control);
+    let env_name = |n: &str| {
+        let mut b = n.bytes();
+        n.len() <= 128 && matches!(b.next(), Some(c) if c.is_ascii_uppercase()) && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+    };
+    match field {
+        "provider" => value.as_str().is_some_and(|p| text_ok(p, 200)),
+        _ => value
+            .as_object()
+            .is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|v| text_ok(v, 4096)))),
     }
 }
 
