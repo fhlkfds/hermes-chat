@@ -6,7 +6,7 @@ import type { Transcript } from "../hermes/pipe";
 import { baseName, type FoundEngine, type LocalSttApi, type LocalSttState } from "../hermes/localStt";
 import { messageOf } from "../hermes/voice";
 import { arrowSelect, Spinner } from "./bits";
-import { startCapture, type AudioEnv, type Capture } from "./recorder";
+import { CaptureAborted, startCapture, type AudioEnv, type Capture } from "./recorder";
 import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 
 /** How long the Test records. */
@@ -34,13 +34,16 @@ export function LocalSttSettings({
   const [found, setFound] = useState<FoundEngine[]>();
   const [error, setError] = useState<string>();
   const [test, setTest] = useState<Test>();
-  const live = useRef({ run: 0, capture: undefined as Capture | undefined });
+  // `run` goes up with every Test and every stop, so anything from an older one is dropped. `starting` aborts a
+  // microphone still opening; `capture` is the open one.
+  const live = useRef({ run: 0, capture: undefined as Capture | undefined, starting: undefined as AbortController | undefined });
 
   useEffect(() => {
     api.state().then(setState, (e) => setError(messageOf(e)));
     const now = live.current;
     return () => {
       now.run++;
+      now.starting?.abort();
       now.capture?.cancel();
     };
   }, [api]);
@@ -52,6 +55,7 @@ export function LocalSttSettings({
   /** Drops any Test under way, closing its microphone, so a newer one or a change can't leave it open. */
   const stopTest = () => {
     live.current.run++;
+    live.current.starting?.abort();
     live.current.capture?.cancel();
     live.current.capture = undefined;
     setTest(undefined);
@@ -67,9 +71,16 @@ export function LocalSttSettings({
     if (!transcribe) return;
     stopTest();
     const run = live.current.run;
-    const fail = (why: string) => run === live.current.run && setTest({ phase: "failed", why });
+    // Ends this run, so a microphone lost mid-Test isn't transcribed when the timer fires.
+    const fail = (why: string) => {
+      if (run !== live.current.run) return;
+      live.current.run++;
+      live.current.capture = undefined;
+      setTest({ phase: "failed", why });
+    };
+    const starting = (live.current.starting = new AbortController());
     try {
-      const capture = await startCapture(fail, undefined, env);
+      const capture = await startCapture(fail, starting.signal, env);
       if (run !== live.current.run) return capture.cancel();
       live.current.capture = capture;
       setTest({ phase: "recording", capture });
@@ -83,7 +94,9 @@ export function LocalSttSettings({
       if (run !== live.current.run) return;
       setTest({ phase: "done", text: got.text, ms: performance.now() - started, by: got.provider ?? (local ? "this computer" : "Hermes") });
     } catch (e) {
-      fail(messageOf(e));
+      if (!(e instanceof CaptureAborted)) fail(messageOf(e));
+    } finally {
+      if (live.current.starting === starting) live.current.starting = undefined;
     }
   };
 

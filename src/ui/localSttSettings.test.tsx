@@ -41,11 +41,14 @@ function fakeApi(found: FoundEngine[], start: LocalSttState = { onThisComputer: 
   return { api, sets };
 }
 
-/** A microphone that opens at once, a new track each time; `track` is the last, `tracks` all of them. */
-function fakeMic() {
-  const tracks: { stopped: boolean }[] = [];
+/**
+ * A microphone, a new track each time; `track` is the last, `tracks` all of them. `hang`: the audio system never
+ * finishes starting (`resume()` stays pending).
+ */
+function fakeMic(hang = false) {
+  const tracks: { stopped: boolean; onended: null | (() => void) }[] = [];
   const newTrack = () => {
-    const track = { stopped: false, readyState: "live", onended: null, stop: () => void (track.stopped = true) };
+    const track = { stopped: false, readyState: "live", onended: null as null | (() => void), stop: () => void (track.stopped = true) };
     tracks.push(track);
     return track;
   };
@@ -59,7 +62,8 @@ function fakeMic() {
     makeContext: () =>
       ({
         sampleRate: 16_000,
-        state: "running",
+        state: hang ? "suspended" : "running",
+        resume: () => new Promise(() => {}),
         destination: {},
         createMediaStreamSource: () => ({ connect: () => {}, disconnect: () => {} }),
         createScriptProcessor: () => ({ onaudioprocess: null, connect: () => {}, disconnect: () => {} }),
@@ -176,5 +180,33 @@ describe("Speech to text: Test", () => {
     expect(transcribe).toHaveBeenCalledTimes(1);
     view.unmount();
     expect(mic.tracks.every((t) => t.stopped)).toBe(true);
+  });
+
+  it("closes a microphone that is still starting when the tab closes", async () => {
+    const { api } = fakeApi([]);
+    const mic = fakeMic(true);
+    const transcribe = vi.fn();
+    const view = render(<LocalSttSettings api={api} connected transcribe={transcribe} env={mic.env} />);
+    await userEvent.click(await screen.findByRole("button", { name: /Test/ }));
+    await waitFor(() => expect(mic.tracks).toHaveLength(1));
+    expect(screen.queryByText(/Recording… say/)).toBeNull();
+    view.unmount();
+    expect(mic.track.stopped).toBe(true);
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it("stops the Test when the microphone is unplugged, and doesn't transcribe what was dropped", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = fakeApi([]);
+    const mic = fakeMic();
+    const transcribe = vi.fn(async () => ({ text: "" }));
+    render(<LocalSttSettings api={api} connected transcribe={transcribe} env={mic.env} />);
+    await userEvent.click(await screen.findByRole("button", { name: /Test/ }), { advanceTimers: vi.advanceTimersByTime });
+    await screen.findByText(/Recording… say/);
+    act(() => mic.track.onended?.());
+    expect((await screen.findByRole("alert")).textContent).toMatch(/disconnected/);
+    await act(() => vi.advanceTimersByTimeAsync(TEST_SECONDS * 1000));
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toMatch(/disconnected/);
   });
 });
