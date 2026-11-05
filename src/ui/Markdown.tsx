@@ -1,8 +1,8 @@
 // Markdown with highlighted, copyable code blocks and find-in-chat marks. Ported from the prototype. Single newlines
 // are kept as line breaks, since replies often put one item per line. Links open in the preview pane, never in the
 // app's own window (previewContext.tsx).
-import { memo, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { Children, isValidElement, memo, useMemo, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
@@ -38,14 +38,20 @@ function rehypeFind(query: string) {
   };
 }
 
+/** The language a highlighted `<code>` element names in its class, `language-ts`, or "" for none. */
+function codeLanguage(children: ReactNode): string {
+  const code = Children.toArray(children).find(isValidElement) as { props: { className?: unknown } } | undefined;
+  const className = code?.props.className;
+  return (typeof className === "string" && className.match(/language-(\S+)/)?.[1]) || "";
+}
+
 function CodeBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
-  const [lang, setLang] = useState("");
   return (
     <div className="code">
       <div className="code-head">
-        <span>{lang}</span>
+        <span>{codeLanguage(children)}</span>
         <button
           className="code-copy"
           onClick={() => {
@@ -58,15 +64,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre
-        ref={(el) => {
-          ref.current = el;
-          const m = el?.querySelector("code")?.className.match(/language-(\S+)/);
-          if (m && m[1] !== lang) setLang(m[1]);
-        }}
-      >
-        {children}
-      </pre>
+      <pre ref={ref}>{children}</pre>
     </div>
   );
 }
@@ -75,21 +73,25 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 // again, each time the plugin is attached, and ReactMarkdown attaches its plugins on every render.
 const highlightCode = rehypeHighlight({ detect: true });
 
+const remarkPlugins = [remarkGfm, remarkBreaks];
+const highlightOnly = [() => highlightCode];
+
+// Made once, not on each render: a new `pre` function would be a new component type to React, which would throw away
+// every code block's DOM and build it again on each streamed delta (#224).
+const components: Components = {
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  a: ({ href, title, children }) => (
+    <PreviewLink href={href} title={title}>
+      {children}
+    </PreviewLink>
+  ),
+};
+
 /** `query`: the find-in-chat text to mark. */
 export const Markdown = memo(function Markdown({ text, query = "" }: { text: string; query?: string }) {
+  const rehypePlugins = useMemo(() => (query ? [() => highlightCode, rehypeFind(query)] : highlightOnly), [query]);
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
-      rehypePlugins={[() => highlightCode, rehypeFind(query)]}
-      components={{
-        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-        a: ({ href, title, children }) => (
-          <PreviewLink href={href} title={title}>
-            {children}
-          </PreviewLink>
-        ),
-      }}
-    >
+    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
       {text}
     </ReactMarkdown>
   );
