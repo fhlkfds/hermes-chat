@@ -1673,6 +1673,10 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .persona-where { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
 .persona-where dt { color: var(--muted); }
 .persona-where dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.persona-where:has(.persona-picker) { align-items: baseline; }
+.persona-picker { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.persona-picker .select { min-width: 180px; max-width: 100%; }
+.persona-picker .muted { font-family: var(--ui-font, Inter), sans-serif; }
 .settings p.persona-effect { margin: 0 0 8px; line-height: 1.55; }
 .settings p.persona-effect svg, .settings p.persona-note svg { vertical-align: -2px; }
 .settings p.persona-note { margin: 8px 0 0; }

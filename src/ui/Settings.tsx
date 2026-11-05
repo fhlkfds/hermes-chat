@@ -27,7 +27,7 @@ import type { MemoryProvidersApi } from "../hermes/memoryProviders";
 import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import type { SkillsApi } from "../hermes/skills";
 import { SkillSettings } from "./SkillSettings";
-import { PersonaSettings, type PersonaWhere } from "./PersonaSettings";
+import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSettings";
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
@@ -89,8 +89,11 @@ export const signInText = (route?: Route) =>
       ? "Dashboard username and password, at the dashboard's URL"
       : "Dashboard username and password";
 
-/** Settings → Persona's wiring: the API, where its edits are kept on this computer, and what it edits. */
-export type PersonaWiring = { api: PersonaApi; store: PersonaStore; storeKey: string; where: PersonaWhere };
+/**
+ * Settings → Persona's wiring: the API, where each profile's edits are kept on this computer (`keyOf`), and where it
+ * starts: `where.profile` is the profile in use.
+ */
+export type PersonaWiring = { api: PersonaApi; store: PersonaStore; keyOf: (profile: string) => string; where: PersonaWhere };
 
 const allow = (go: () => void) => go();
 
@@ -208,7 +211,7 @@ export function SettingsScreen({
   /** Settings → Persona; the tab is left out without it. */
   persona?: PersonaWiring;
   /** Says whether the Persona tab holds an edit Hermes doesn't have yet. */
-  onPersonaDirty?: (dirty: boolean, kept: boolean) => void;
+  onPersonaDirty?: PersonaDirty;
   /** Runs `go`, once the owner agrees to leave an unsaved persona, memory or skill edit behind, if there is one. */
   guard?: (go: () => void) => void;
   /** Set, each time anew, to show the Model tab at the Text generation model: from a title that couldn't be regenerated. */
@@ -533,14 +536,15 @@ export function SettingsScreen({
       case "persona":
         return (
           persona &&
-          // An edit is for one connection and profile: another profile is another editor.
+          // An edit is for one connection and profile: another profile is another editor. The picker starts again on the
+          // profile in use when that or the connection changes.
           gated(
             "persona",
-            <PersonaSettings
-              key={`${persona.storeKey}`}
+            <PersonaPage
+              key={persona.keyOf(persona.where.profile)}
               api={persona.api}
               store={persona.store}
-              storeKey={persona.storeKey}
+              keyOf={persona.keyOf}
               where={persona.where}
               connected={status === "connected"}
               onDirty={onPersonaDirty}
