@@ -2,8 +2,9 @@
 // A switch changes one toolset for the whole profile; it is checked against a fresh read first and shown as saved only
 // once Hermes reads it back that way. Beside each, read-only: whether the profile inherits Hermes's default list, what
 // forces it off, and what the open chat actually has. Reads and writes: toolsets.ts.
-import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { RefreshCw, ShieldCheck, TriangleAlert, ChevronRight } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 import {
   UnsupportedServerError,
   changeableName,
@@ -112,6 +113,7 @@ function ToolsetRow({
   inherited,
   chat,
   note,
+  ask,
   onToggle,
 }: {
   t: Toolset;
@@ -130,6 +132,8 @@ function ToolsetRow({
   /** What the open chat has of its tools. */
   chat?: ReturnType<typeof chatHas>;
   note?: Note;
+  /** The confirmation a change of this toolset is waiting on, under its row. */
+  ask?: ReactNode;
   onToggle: (t: Toolset) => void;
 }) {
   const id = `toolset-${t.name}`;
@@ -137,22 +141,37 @@ function ToolsetRow({
   const checkingMe = checking?.name === t.name ? checking : undefined;
   const canSwitch = write?.ok === true && changeableName(t.name);
   return (
-    <div className="toolset-row" aria-busy={mine || checkingMe ? true : undefined}>
-      <div className="toolset-head">
-        <div className="toolset-label">
-          <div className="appearance-title" id={`${id}-label`}>
-            {t.label}
-            {t.platform !== "cli" && <span className="badge">{t.platformLabel} only</span>}
-            {(!t.configured || problem) && <span className="badge warn">Needs setup</span>}
-            {inherited && !t.configOnly && <span className="badge">Inherited</span>}
-            {offEverywhere && <span className="badge off">Forced off on every platform</span>}
-          </div>
+    <SettingRow
+      className="toolset-row"
+      nameId={`${id}-label`}
+      about={t.label}
+      name={
+        <>
+          {t.label}
+          {t.platform !== "cli" && <span className="badge">{t.platformLabel} only</span>}
+          {(!t.configured || problem) && <span className="badge warn">Needs setup</span>}
+          {inherited && !t.configOnly && <span className="badge">Inherited</span>}
+          {offEverywhere && <span className="badge off">Forced off on every platform</span>}
+        </>
+      }
+      // What it is, then what the open chat has of it.
+      hint={
+        <>
           {/* Plugin toolsets can describe themselves at length: two lines here, all of it on hover. */}
-          <div className="muted small toolset-desc" id={`${id}-desc`} title={t.description || undefined}>
+          <div className="toolset-desc" id={`${id}-desc`} title={t.description || undefined}>
             {t.description || t.tools.join(", ")}
           </div>
-        </div>
-        {canSwitch ? (
+          {chat !== undefined && (
+            <div className="toolset-chat">
+              This chat: {chat === "all" ? "has it" : chat === "none" ? "doesn't have it" : `has ${chat.some} of its ${t.tools.length} tools`}.
+              {(chat === "all") !== t.enabled && ` That isn't the profile's setting: an open chat keeps the tools Hermes built it with${t.enabled ? ", and Hermes leaves out tools whose requirements aren't met" : ""}.`}
+            </div>
+          )}
+        </>
+      }
+      more={t.configOnly && <p>A setting with no tools of its own: it turns speech-to-text on or off for the profile, Dictation in this app included.</p>}
+      control={
+        canSwitch ? (
           <button
             className="switch"
             id={`${id}-switch`}
@@ -160,6 +179,7 @@ function ToolsetRow({
             aria-checked={t.enabled}
             aria-labelledby={`${id}-label`}
             aria-describedby={`${id}-desc`}
+            aria-busy={mine || checkingMe ? true : undefined}
             disabled={!connected || locked}
             onClick={() => onToggle(t)}
           >
@@ -169,39 +189,30 @@ function ToolsetRow({
           <span className={`badge ${t.enabled ? "" : "off"}`} aria-label={`${t.label} is ${onOff(t.enabled)}`}>
             {t.enabled ? "On" : "Off"}
           </span>
-        )}
-      </div>
-      {t.platform !== "cli" && <div className="muted small toolset-hint">Changes Hermes's {t.platformLabel} chats, not this app's.</div>}
-      {offEverywhere && (
-        <div className="muted small toolset-hint">The profile's agent.disabled_toolsets turns it off on every platform. Turning it on here takes it off that list.</div>
-      )}
-      {chat !== undefined && (
-        <div className="muted small toolset-hint toolset-chat">
-          This chat: {chat === "all" ? "has it" : chat === "none" ? "doesn't have it" : `has ${chat.some} of its ${t.tools.length} tools`}.
-          {(chat === "all") !== t.enabled && ` That isn't the profile's setting: an open chat keeps the tools Hermes built it with${t.enabled ? ", and Hermes leaves out tools whose requirements aren't met" : ""}.`}
-        </div>
-      )}
-      {t.configOnly && (
-        <div className="muted small toolset-hint">A setting with no tools of its own: it turns speech-to-text on or off for the profile, Dictation in this app included.</div>
-      )}
+        )
+      }
+    >
+      {t.platform !== "cli" && <div className="muted">Changes Hermes's {t.platformLabel} chats, not this app's.</div>}
+      {offEverywhere && <div className="muted">The profile's agent.disabled_toolsets turns it off on every platform. Turning it on here takes it off that list.</div>}
       {(!t.configured || problem) && (
-        <div className="muted small toolset-hint">
+        <div className="muted">
           {problem ?? "Its provider or API key isn't set up on the server."} {t.configOnly ? "It may not work" : "Its tools may not work, or be offered,"} even while it's on. Set it up with{" "}
           <span className="mono">hermes tools</span> there.
         </div>
       )}
-      {write?.ok && !changeableName(t.name) && <div className="muted small toolset-hint">This app can't send its name to Hermes, so it can't change it.</div>}
+      {write?.ok && !changeableName(t.name) && <div className="muted">This app can't send its name to Hermes, so it can't change it.</div>}
       {(mine || checkingMe) && (
-        <div className="small muted toolset-hint" role="status">
+        <div className="muted" role="status">
           {mine ? `Saving: turning ${t.label} ${onOff(mine.enabled)}…` : `Checking what turning ${t.label} ${onOff(checkingMe!.enabled)} does…`}
         </div>
       )}
       {!mine && !checkingMe && note && (
-        <div className={`small toolset-hint ${note.tone === "error" ? "sign-in-error" : note.tone === "warn" ? "warn-note" : "muted"}`} role={note.tone === "ok" ? "status" : "alert"}>
+        <div className={note.tone === "error" ? "sign-in-error" : note.tone === "warn" ? "warn-note" : "muted"} role={note.tone === "ok" ? "status" : "alert"}>
           {note.text}
         </div>
       )}
-    </div>
+      {ask}
+    </SettingRow>
   );
 }
 
@@ -470,16 +481,20 @@ export function ToolsetSettings({
 
   const intro = (
     <>
-      <h2>Toolsets</h2>
-      <p className="muted">
-        Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile. Hermes keeps this list on the server, in the profile's
-        settings, so the command line, the TUI and the Hermes desktop app use it too. It is the same for every chat in the profile.
+      Which tools Hermes offers the model in the <span className="mono">{profile}</span> profile.
+    </>
+  );
+  // How a change applies: the section's (i).
+  const how = (
+    <>
+      <p>
+        Hermes keeps this list on the server, in the profile's settings, so the command line, the TUI and the Hermes desktop app use it too. It is the
+        same for every chat in the profile.
       </p>
-      <details className="disc toolset-how">
-        <summary>
-          <ChevronRight size={13} className="disc-chev" aria-hidden /> How a change applies: this chat, the {profile} profile, the whole server
-        </summary>
-      <dl className="toolset-scopes small" aria-label="What a change reaches">
+      <p>
+        <strong>How a change applies:</strong> this chat, the {profile} profile, the whole server
+      </p>
+      <dl className="toolset-scopes" aria-label="What a change reaches">
         <dt>
           This chat <span className="badge off">Not changeable here</span>
         </dt>
@@ -503,28 +518,34 @@ export function ToolsetSettings({
           route reports or changes it.
         </dd>
       </dl>
-      <p className="muted small toolset-scope">
+      <p>
+        Forced values come on top: agent.disabled_toolsets turns toolsets off on every platform, and a server pin replaces the list.
+      </p>
+      <p className="toolset-scope">
         <ShieldCheck size={12} /> Toolsets aren't Approvals. Turning one on doesn't change which commands Hermes asks about before running them, or YOLO.
       </p>
-      </details>
     </>
   );
 
   if (unsupported || !list) {
     return (
-      <section>
-        {intro}
-        <div className="settings-row">
-          <div className={`small ${loadError ? "sign-in-error" : unsupported ? "warn-note" : "muted"}`} role={loadError || unsupported ? "alert" : "status"}>
-            {unsupported ?? (loadError ? `Couldn't read the toolsets: ${loadError}` : connected ? "Reading the toolsets from Hermes…" : "Connect to Hermes to see the profile's toolsets.")}
-          </div>
-          {(loadError || unsupported) && connected && (
+      <SettingsSection
+        title="Toolsets"
+        intro={intro}
+        more={how}
+        action={
+          (loadError || unsupported) &&
+          connected && (
             <button className="btn" disabled={reading} onClick={() => void read(true)}>
               Try again
             </button>
-          )}
-        </div>
-      </section>
+          )
+        }
+      >
+        <SettingNote tone={loadError ? "bad" : unsupported ? "warn" : "muted"} role={loadError || unsupported ? "alert" : "status"}>
+          {unsupported ?? (loadError ? `Couldn't read the toolsets: ${loadError}` : connected ? "Reading the toolsets from Hermes…" : "Connect to Hermes to see the profile's toolsets.")}
+        </SettingNote>
+      </SettingsSection>
     );
   }
 
@@ -535,135 +556,142 @@ export function ToolsetSettings({
   // the tools inside them, which no switch here undoes.
   const unlisted = guards?.disabledEverywhere.filter((n) => !list.toolsets.some((t) => t.name === n)) ?? [];
   const row = (t: Toolset) => (
-    <Fragment key={t.name}>
-      <ToolsetRow
-        t={t}
-        write={write}
-        connected={connected}
-        locked={locked}
-        saving={savingHere}
-        checking={checking}
-        problem={problems[t.name]}
-        offEverywhere={guards?.disabledEverywhere.includes(t.name)}
-        inherited={guards && !guards.noMcpUnclear.includes(t.platform) ? !guards.savedLists.includes(t.platform) : undefined}
-        chat={chatHas(t, chatShown?.read)}
-        note={notes[t.name]}
-        onToggle={(x) => void toggle(x)}
-      />
-      {ask?.t.name === t.name && (
-        <div className="confirm toolset-ask" role="alertdialog" ref={askBox} aria-label={`Turn ${ask.t.label} ${onOff(ask.enabled)}`}>
-          <span className="confirm-msg">
-            <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
-          </span>
-          {ask.again && <span className="confirm-detail">Checked again just before sending, this changed since you were asked:</span>}
-          {ask.cautions.map((c, i) => (
-            <span className="confirm-detail" key={i}>
-              {cautionText(c, ask.t)}
+    <ToolsetRow
+      key={t.name}
+      t={t}
+      write={write}
+      connected={connected}
+      locked={locked}
+      saving={savingHere}
+      checking={checking}
+      problem={problems[t.name]}
+      offEverywhere={guards?.disabledEverywhere.includes(t.name)}
+      inherited={guards && !guards.noMcpUnclear.includes(t.platform) ? !guards.savedLists.includes(t.platform) : undefined}
+      chat={chatHas(t, chatShown?.read)}
+      note={notes[t.name]}
+      onToggle={(x) => void toggle(x)}
+      ask={
+        ask?.t.name === t.name && (
+          <div className="confirm toolset-ask" role="alertdialog" ref={askBox} aria-label={`Turn ${ask.t.label} ${onOff(ask.enabled)}`}>
+            <span className="confirm-msg">
+              <TriangleAlert size={12} /> Turn {ask.t.label} {onOff(ask.enabled)}?
             </span>
-          ))}
-          <div className="confirm-actions">
-            <button className="btn" onClick={decline}>
-              Keep it {onOff(ask.t.enabled)}
-            </button>
-            <button className="btn danger" disabled={!connected || !!pending} onClick={() => void confirm()}>
-              Turn {onOff(ask.enabled)}
-            </button>
+            {ask.again && <span className="confirm-detail">Checked again just before sending, this changed since you were asked:</span>}
+            {ask.cautions.map((c, i) => (
+              <span className="confirm-detail" key={i}>
+                {cautionText(c, ask.t)}
+              </span>
+            ))}
+            <div className="confirm-actions">
+              <button className="btn" onClick={decline}>
+                Keep it {onOff(ask.t.enabled)}
+              </button>
+              <button className="btn danger" disabled={!connected || !!pending} onClick={() => void confirm()}>
+                Turn {onOff(ask.enabled)}
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-    </Fragment>
+        )
+      }
+    />
   );
 
   return (
-    <section>
-      {intro}
-      {guards?.codingFocus && (
-        <p className="small warn-note toolset-scope" role="status">
-          This profile's agent.coding_context is focus: in a code workspace, Hermes gives new chats its own coding selection of toolsets instead of this list.
-        </p>
-      )}
-      {unlisted.length > 0 && (
-        <p className="small warn-note toolset-scope" role="status">
-          This profile's agent.disabled_toolsets also names {unlisted.join(", ")}, which turns off the tools inside{" "}
-          {unlisted.length === 1 ? "it" : "them"} on every platform. A toolset sharing those tools stays off: turning it on here won't take, and the app
-          says so when it reads it back.
-        </p>
-      )}
-      {runningReplies > 0 && (
-        <p className="small warn-note toolset-scope" role="status">
-          <TriangleAlert size={12} /> A reply is running in {runningReplies === 1 ? "a chat" : `${runningReplies} chats`} of this profile. A change here doesn't
-          reach {runningReplies === 1 ? "it" : "them"}.
-        </p>
-      )}
-      {!connected && (
-        <p className="small warn-note toolset-scope" role="status">
-          Not connected to Hermes. This is what Hermes had at {timeOf(list.readAt)}; it can't be changed until Hermes is back.
-        </p>
-      )}
-      {write && !write.ok && (
-        <p className="small warn-note toolset-scope" role="status">
-          {write.reason} Each toolset shows whether it's on.{" "}
-          {onGuide && (
-            <button className="link-btn" onClick={onGuide} aria-label="Compatibility guide: Toolset switches">
-              Compatibility guide
-            </button>
-          )}
-        </p>
-      )}
-      {guards && list.toolsets.some((t) => t.platform === "cli") && (
-        <p className="small muted toolset-scope" role="status">
-          {guards.noMcpUnclear.includes("cli")
-            ? "This app can't tell whether the profile has saved its own list: it's saved in a form this app can't read for certain."
-            : guards.savedLists.includes("cli")
-              ? "Saved in profile: the profile has its own list, shown here."
-              : "Inherited: the profile hasn't saved a list of its own, so it has Hermes's default. The first change here saves the whole list, as shown, into the profile."}{" "}
-          Forced values come on top: agent.disabled_toolsets turns toolsets off on every platform, and a server pin replaces the list.
-        </p>
-      )}
-      <div className="small muted toolset-scope toolset-chat-status" role="status" aria-label="This chat">
-        {!chat
-          ? "No chat is open, so there's no chat to compare with."
-          : !connected
-            ? `“${chat.title}”: what it has is read when Hermes is back.`
-            : !chat.runtimeId
-              ? `“${chat.title}” isn't open on Hermes yet, so it has no tools of its own: it gets the profile's list when Hermes opens it.`
-              : !chatShown?.read && !chatShown?.error
-                ? `Reading what “${chat.title}” has…`
-                : chatShown.error
-                  ? <span className="sign-in-error">Couldn't read what “{chat.title}” has: {chatShown.error}</span>
-                  : chatShown.read!.kind === "closed"
-                    ? `Hermes no longer has “${chat.title}” open: it gets the profile's list when it's opened again.`
-                    : chatShown.read!.kind === "unsupported"
-                      ? `${chatShown.read!.reason} Each toolset shows the profile's setting only.`
-                      : `“${chat.title}”: what Hermes offers it, read at ${timeOf(chatShown.read!.readAt)}, is under each toolset.`}
-        {chat?.running && connected && " A reply is running in it now; nothing here changes the tools it's using."}
-      </div>
-      {pending && pending.profile !== profile && (
-        <p className="small muted toolset-scope" role="status">
-          Waiting for a change in the {pending.profile} profile to finish before this one can change.
-        </p>
-      )}
-      <div className="settings-row toolset-status">
-        <div className="muted small" role="status">
-          {reading ? "Reading the toolsets from Hermes…" : loadError ? null : `Read from Hermes at ${timeOf(list.readAt)}.`}
-          {loadError && <span className="sign-in-error">Couldn't read them again: {loadError}</span>}
+    <>
+      <SettingsSection
+        title="Toolsets"
+        intro={intro}
+        more={how}
+        action={
+          <button className="btn" disabled={!connected || locked || reading} onClick={() => (void read(true), void readChat())}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+        }
+      >
+        {guards?.codingFocus && (
+          <SettingNote tone="warn" role="status">
+            This profile's agent.coding_context is focus: in a code workspace, Hermes gives new chats its own coding selection of toolsets instead of this list.
+          </SettingNote>
+        )}
+        {unlisted.length > 0 && (
+          <SettingNote tone="warn" role="status">
+            This profile's agent.disabled_toolsets also names {unlisted.join(", ")}, which turns off the tools inside{" "}
+            {unlisted.length === 1 ? "it" : "them"} on every platform. A toolset sharing those tools stays off: turning it on here won't take, and the app
+            says so when it reads it back.
+          </SettingNote>
+        )}
+        {runningReplies > 0 && (
+          <SettingNote tone="warn" role="status">
+            <TriangleAlert size={12} /> A reply is running in {runningReplies === 1 ? "a chat" : `${runningReplies} chats`} of this profile. A change here doesn't
+            reach {runningReplies === 1 ? "it" : "them"}.
+          </SettingNote>
+        )}
+        {!connected && (
+          <SettingNote tone="warn" role="status">
+            Not connected to Hermes. This is what Hermes had at {timeOf(list.readAt)}; it can't be changed until Hermes is back.
+          </SettingNote>
+        )}
+        {write && !write.ok && (
+          <SettingNote tone="warn" role="status">
+            <span>
+              {write.reason} Each toolset shows whether it's on.{" "}
+              {onGuide && (
+                <button className="link-btn" onClick={onGuide} aria-label="Compatibility guide: Toolset switches">
+                  Compatibility guide
+                </button>
+              )}
+            </span>
+          </SettingNote>
+        )}
+        {guards && list.toolsets.some((t) => t.platform === "cli") && (
+          <SettingNote role="status">
+            {guards.noMcpUnclear.includes("cli")
+              ? "This app can't tell whether the profile has saved its own list: it's saved in a form this app can't read for certain."
+              : guards.savedLists.includes("cli")
+                ? "Saved in profile: the profile has its own list, shown here."
+                : "Inherited: the profile hasn't saved a list of its own, so it has Hermes's default. The first change here saves the whole list, as shown, into the profile."}
+          </SettingNote>
+        )}
+        <SettingNote className="toolset-chat-status">
+          <div role="status" aria-label="This chat">
+            {!chat
+              ? "No chat is open, so there's no chat to compare with."
+              : !connected
+                ? `“${chat.title}”: what it has is read when Hermes is back.`
+                : !chat.runtimeId
+                  ? `“${chat.title}” isn't open on Hermes yet, so it has no tools of its own: it gets the profile's list when Hermes opens it.`
+                  : !chatShown?.read && !chatShown?.error
+                    ? `Reading what “${chat.title}” has…`
+                    : chatShown.error
+                      ? <span className="sign-in-error">Couldn't read what “{chat.title}” has: {chatShown.error}</span>
+                      : chatShown.read!.kind === "closed"
+                        ? `Hermes no longer has “${chat.title}” open: it gets the profile's list when it's opened again.`
+                        : chatShown.read!.kind === "unsupported"
+                          ? `${chatShown.read!.reason} Each toolset shows the profile's setting only.`
+                          : `“${chat.title}”: what Hermes offers it, read at ${timeOf(chatShown.read!.readAt)}, is under each toolset.`}
+            {chat?.running && connected && " A reply is running in it now; nothing here changes the tools it's using."}
+          </div>
+        </SettingNote>
+        {pending && pending.profile !== profile && (
+          <SettingNote role="status">Waiting for a change in the {pending.profile} profile to finish before this one can change.</SettingNote>
+        )}
+        <SettingNote role="status">
+          <span>
+            {reading ? "Reading the toolsets from Hermes…" : loadError ? null : `Read from Hermes at ${timeOf(list.readAt)}.`}
+            {loadError && <span className="sign-in-error">Couldn't read them again: {loadError}</span>}
+          </span>
+        </SettingNote>
+        <div className="toolset-list" role="group" aria-label="Toolsets for this app's chats">
+          {here.map(row)}
         </div>
-        <button className="btn" disabled={!connected || locked || reading} onClick={() => (void read(true), void readChat())}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
-      <div className="toolset-list" role="group" aria-label="Toolsets for this app's chats">
-        {here.map(row)}
-      </div>
+      </SettingsSection>
       {elsewhere.length > 0 && (
-        <>
-          <h3 className="toolset-subhead">Other platforms</h3>
-          <p className="muted small toolset-scope">These only reach the platform named on each, such as Hermes's Discord bot, not chats in this app.</p>
+        <SettingsSection title="Other platforms" intro="These only reach the platform named on each, such as Hermes's Discord bot, not chats in this app.">
           <div className="toolset-list" role="group" aria-label="Toolsets for other platforms">
             {elsewhere.map(row)}
           </div>
-        </>
+        </SettingsSection>
       )}
-    </section>
+    </>
   );
 }

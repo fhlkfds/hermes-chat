@@ -242,6 +242,8 @@ describe("Settings search and folds", () => {
     const { user } = await shown({ toolsets: true });
     await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "yolo");
     const note = await screen.findByText(/Toolsets aren't Approvals/);
-    await waitFor(() => expect((note.closest("details") as HTMLDetailsElement).open).toBe(true));
+    // Toolsets' "How a change applies" is behind the section's (i).
+    await waitFor(() => expect((note.closest(".set-more") as HTMLElement).hidden).toBe(false));
+    expect(screen.getByRole("button", { name: "About Toolsets" }).getAttribute("aria-expanded")).toBe("true");
   });
 });
