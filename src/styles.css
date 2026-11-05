@@ -957,9 +957,9 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .settings-row svg { vertical-align: -2px; }
 .badge.ok { background: rgba(74, 222, 128, 0.12); color: var(--ok); }
-.voice-side { padding: 12px 0 4px; border-top: 1px solid var(--line); }
-.voice-side h3 { margin: 0 0 2px; font-size: 1rem; }
-.voice-side > p { margin: 0 0 8px; }
+/* Settings → Voice → Speech providers: a side is its row and, under it, the providers and the picked one's settings. */
+.set-card > .voice-side + :is(.voice-side, .set-note) { border-top: 1px solid var(--line); }
+.voice-side > .set-block { padding-top: 0; }
 .voice-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; max-width: 520px; }
 .voice-field > span:first-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 500; }
 .voice-field .mono { font-size: calc(11rem / 14); font-weight: 400; }
@@ -971,9 +971,8 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 @media (min-width: 720px) { .voice-provider-tag { flex-basis: auto; } }
 .voice-picked { margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
 .voice-picked > p { margin: 0 0 4px; }
-.voice-save { padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.voice-unsupported { padding: 8px 12px; border: 1px dashed var(--line); border-radius: 8px; }
-.voice-unsupported p { margin: 4px 0; }
+.set-note.voice-save { justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px 18px; }
+.voice-save > :first-child { padding-top: 7px; }
 .conv-settings { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 /* updates */
 .settings-btn { position: relative; }
@@ -1003,8 +1002,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .appearance-label { min-width: 0; }
 .appearance-title { display: flex; align-items: center; gap: 4px; min-height: 24px; font-weight: 500; }
 .appearance-title .small-icon { width: 24px; height: 24px; }
-.appearance-pickers { display: flex; gap: 8px; flex: none; }
-.appearance-preview { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.appearance-preview { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .ui-preview { line-height: 1.6; font-size: calc(14.5rem / 14); }
 .code-preview { padding: 0; border: 0; }
 .code-preview .code { margin: 0; }
@@ -1146,11 +1144,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .disc-chev { flex: none; transition: transform 0.12s; }
 .disc[open] > summary .disc-chev { transform: rotate(90deg); }
 .disc[open] > summary { margin-bottom: 8px; }
-.toolset-how { margin: 4px 0 12px; }
-.persona-how { margin: 6px 0 0; }
-.persona-how .persona-effect { margin-top: 0; }
-.provider-fold { margin: 0 0 12px; }
-.appearance-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.provider-fold { margin: 0; }
 
 /* color scheme cards (ThemePicker.tsx) */
 .scheme-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -1252,8 +1246,9 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .theme-editor-actions .sign-in-error { margin-right: auto; }
 
 /* sliders */
-.slider-row { flex-wrap: wrap; }
 .slider { flex: 0 1 260px; min-width: 200px; }
+/* A row's control sizes to its content, so the slider is given its width there. */
+.set-control > .slider { flex: none; width: 260px; max-width: 100%; }
 .slider input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
 .slider-scale { display: flex; justify-content: space-between; color: var(--faint); margin-top: 2px; }
 .slider-value { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -1268,30 +1263,19 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .confirm-detail { white-space: pre-line; font-family: var(--mono); font-size: calc(12rem / 14); }
 
 /* Settings → Model (ModelSettings.tsx) */
-.model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
-.model-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.model-field { min-width: 0; }
-.model-field .select, .model-field input[type="number"] { width: 100%; min-width: 0; }
-.model-field input[type="number"] { height: 32px; padding: 0 10px; }
-.model-field .select:disabled { opacity: 0.55; }
+/* A row's pickers (provider, model, effort) at fixed widths, so a row's control doesn't shift as a pick changes. */
+.model-pick { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 100%; }
+.model-pick > .select { width: 180px; max-width: 100%; }
+.model-pick > .select.wide { width: 240px; }
+.model-pick > .select:disabled { opacity: 0.55; }
+.model-num { width: 90px; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--raised-2); border: 1px solid var(--line); outline: none; font-size: calc(13rem / 14); }
+.model-num:focus-visible { border-color: var(--line-2); }
 .check { display: inline-flex; align-items: center; gap: 8px; height: 32px; color: var(--text); font-size: calc(13rem / 14); }
 .check input { accent-color: var(--accent); width: 15px; height: 15px; }
-.model-apply { margin-top: 18px; align-items: flex-start; }
+/* A part's state and its Discard and Apply, or the guardrail asked in their place, on its card's last line. */
+.set-note.model-apply { justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px 18px; }
 .model-apply > .small { padding-top: 7px; }
-.model-card { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
-.settings p.model-note { margin: 12px 0 0; }
-.settings p.model-note svg { vertical-align: -2px; }
-.aux-list { margin-top: 6px; }
-.aux-row { display: flex; align-items: center; gap: 16px; padding: 8px 0; border-top: 1px solid var(--line); }
-.aux-row:first-child { border-top: 0; }
-.aux-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1 1 300px; min-width: 0; }
-.aux-head > .select { flex: none; width: 230px; }
-.aux-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.aux-pickers { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; flex: 1 1 380px; }
-@container settings (max-width: 820px) { .aux-row { flex-wrap: wrap; } }
-.aux-pickers .select { width: 100%; min-width: 0; }
-.guard { margin-top: 14px; }
-.guard .appearance-title svg { color: var(--muted); margin-right: 3px; }
+.model-guard .set-name svg { color: var(--muted); }
 
 /* chat menu (ChatMenu.tsx) */
 .menu {
@@ -1596,16 +1580,12 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
   .find input { width: 120px; }
 }
 /* Settings → Model → Text generation (ModelSettings.tsx): the composer's model controls, opening downward and left. */
-.text-gen { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-.text-gen-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.text-gen-title { display: flex; align-items: center; gap: 6px; }
 .text-gen .small-icon { width: 22px; height: 22px; border-radius: 6px; }
 .text-gen-controls { flex: none; border: 0; padding: 0; margin: 0; min-width: 0; }
 .text-gen .model-popover { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
 .text-gen .menu.pill-menu { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
 .text-gen .model-options { left: auto; right: calc(100% + 6px); }
 .text-gen .model-options::before { right: auto; left: 100%; }
-.model-status { margin-top: 10px; }
 /* ---------- setup (src/ui/Onboarding.tsx) ---------- */
 .setup {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; overflow-y: auto; padding: 32px 16px;
@@ -1691,12 +1671,20 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .memory-resource.on { background: var(--raised-2); border-color: var(--line-2); }
 .memory-resource:focus-visible { outline: 2px solid var(--line-2); outline-offset: 1px; }
 .memory-resource-name { font-weight: 500; font-size: calc(13rem / 14); }
-.memory-reload { margin-left: auto; align-self: center; }
-.settings p.memory-about { margin: 0 0 10px; }
 .memory-empty { padding: 14px; border: 1px dashed var(--line-2); border-radius: var(--radius); }
-.memory-entries { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+/* Settings → Memory's entries and External memory's providers: rows in their section's card (ADR 0059), each editor
+   in a set-block under its row. */
+.memory-entries { list-style: none; margin: 0; padding: 0; overflow: hidden; }
 .memory-entries li + li { border-top: 1px solid var(--line); }
-.memory-entry { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; text-align: left; font-size: calc(13rem / 14); }
+.set-card > * + :is(.memory-entries, .memory-provider-list), .set-card > :is(.memory-entries, .memory-provider-list) + * { border-top: 1px solid var(--line); }
+.set-card > :is(.memory-entries, .memory-provider-list):last-child { border-radius: 0 0 var(--radius) var(--radius); }
+.memory-path { overflow-wrap: anywhere; }
+.set-note.memory-problem { align-items: flex-start; }
+.memory-problem > svg { flex: none; margin-top: 3px; }
+.memory-problem > div { flex: 1; min-width: 0; }
+.memory-problem .btn { flex: none; }
+.memory-files .memory-select { margin: 0; }
+.memory-entry { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 16px; text-align: left; font-size: calc(13rem / 14); }
 .memory-entry:hover { background: var(--hover); }
 .memory-entry.on { background: var(--raised-2); }
 .memory-entry:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
@@ -1704,6 +1692,8 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .memory-entry .small { flex: none; }
 .memory-editor { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
 .memory-editor .field-label .badge { margin-left: 2px; }
+.memory-files .memory-editor { margin-top: 0; }
+.memory-entries .memory-editor { border-top: 1px solid var(--line); }
 .memory-text {
   width: 100%; resize: vertical; padding: 9px 11px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line-2);
   font-family: var(--mono); font-size: calc(12.5rem / 14); line-height: 1.55; outline: none; white-space: pre-wrap;
@@ -1721,14 +1711,17 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .memory-notice.ok { color: var(--ok); }
 .memory-notice.error, .memory-notice.conflict { color: var(--bad); }
 .memory-notice.unsure { color: var(--warn); }
+.set-card > .memory-notice { margin-top: 0; }
 .memory-recovered { margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(245, 184, 74, 0.35); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
+.memory-files .memory-recovered { margin-top: 0; border: 0; border-radius: 0; background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.memory-files .set-card > .memory-recovered:last-child { border-radius: 0 0 var(--radius) var(--radius); }
 .settings .memory-recovered p { margin: 0; }
 /* Settings → Memory → External memory (MemoryProviderSettings.tsx): every profile's provider, then one profile's. */
 .badge.ok { background: rgba(124, 196, 154, 0.14); color: var(--ok); }
 .badge.bad { background: rgba(227, 139, 139, 0.14); color: var(--bad); }
 .err-text { color: var(--bad); }
 .provider-status { white-space: nowrap; }
-.provider-overview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 0 8px; }
+.provider-overview h3 { margin-bottom: 8px; }
 .provider-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
 .provider-table { width: 100%; border-collapse: collapse; font-size: calc(12.5rem / 14); }
 .provider-table th, .provider-table td { text-align: left; vertical-align: top; padding: 7px 12px; }
@@ -1738,17 +1731,17 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .provider-table .provider-sharing { margin-top: 3px; }
 .provider-table tr.on { background: var(--raised-2); }
 .provider-table .mono { overflow-wrap: anywhere; }
-.provider-manage { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
 .provider-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.provider-list.memory-provider-list { border: 0; border-radius: 0; }
 .provider-list li + li { border-top: 1px solid var(--line); }
-.provider-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; text-align: left; font-size: calc(13rem / 14); }
+.provider-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 16px; text-align: left; font-size: calc(13rem / 14); }
 button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .provider-row.on { background: var(--raised-2); }
 .provider-row:focus-visible { outline: 2px solid var(--line-2); outline-offset: -2px; }
 .provider-row-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .provider-row-main > div { flex-basis: 100%; }
 .provider-row-name { font-weight: 500; }
-.provider-editor { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); }
+.provider-editor { display: flex; flex-direction: column; gap: 14px; border-top: 1px solid var(--line); }
 .provider-editor .memory-state { margin-bottom: 0; }
 .provider-group { display: flex; flex-direction: column; gap: 12px; }
 .provider-group-name { font-size: calc(11.5rem / 14); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
@@ -1765,15 +1758,15 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .provider-copy .field-hint { flex-basis: 100%; }
 .provider-steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .provider-output { margin: 4px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; background: var(--raised-2); border-radius: var(--radius); font-family: var(--mono); font-size: calc(11.5rem / 14); white-space: pre-wrap; }
-/* Settings → Skills (SkillSettings.tsx): the list reuses the toolset rows, the editor Memory's. */
-.skills-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+/* Settings → Skills (SkillSettings.tsx): the list is a card of rows (ADR 0059), the editor Memory's. */
+.skills-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .skills-search { flex: 1; min-width: 180px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .skills-search input { flex: 1; min-width: 0; }
-.skills-row-actions { display: flex; align-items: center; gap: 10px; flex: none; }
-.skills-list { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
-.skill-row { padding: 8px 12px; border-top: 1px solid var(--line); }
-.skill-row:first-child { border-top: 0; }
-.skill-row-main { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) 90px auto; gap: 14px; align-items: center; }
+/* The list is a block of the section's card (ADR 0059); each item holds a SettingRow, ruled from the one above. */
+.skills-list { list-style: none; margin: 0; padding: 0; }
+.skill-row + .skill-row { border-top: 1px solid var(--line); }
+.skills-where { overflow-wrap: anywhere; }
+.skills-state > div { flex: 1; min-width: 0; }
 .skill-name { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .skill-desc { position: relative; min-width: 0; }
 .skill-desc-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1785,11 +1778,6 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 }
 @media (hover: hover) { .skill-desc:hover .skill-desc-tip { display: block; } }
 .skill-category { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.skill-row .toolset-hint { margin-top: 6px; }
-@container settings (max-width: 820px) {
-  .skill-row-main { grid-template-columns: minmax(0, 1fr) auto; }
-  .skill-desc, .skill-category { grid-column: 1 / -1; }
-}
 /* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0057), in place of the profile's name. */
 .profile-pick {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 6px; outline: none; color: var(--text);
@@ -1822,10 +1810,9 @@ label.memory-pick { cursor: pointer; }
 .skills-bulk-result li.failed svg { color: var(--warn); }
 .skills-bulk-result .memory-entry-text { display: inline; white-space: normal; }
 .settings .skills-bulk-result p { margin: 4px 0 0; }
-.persona-copy { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-bottom: 8px; }
-.persona-copy .field { flex: 0 1 280px; min-width: 180px; }
+.skills-bulk > .skills-select, .skills-bulk > .skills-bulk-result { margin: 0; }
+.set-block.skills-editor { margin-top: 0; }
 .skills-editor > .back { align-self: flex-start; }
-.skills-name { margin: 2px 0 0; font-size: calc(15rem / 14); font-weight: 500; overflow-wrap: anywhere; }
 .skills-text { min-height: 240px; }
 .settings p.skills-note { margin: 0; line-height: 1.5; }
 .skills-note svg { vertical-align: -2px; margin-right: 4px; }
@@ -1836,15 +1823,9 @@ label.memory-pick { cursor: pointer; }
 /* The memory question shares the persona one's box (below), wider than a plain .confirm. */
 .leave-overlay .leave-dialog { max-width: 420px; }
 /* Settings → Persona (PersonaSettings.tsx) and the question before leaving an unsaved edit (LeavePersona.tsx) */
-.persona-where { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 6px 14px; margin: 4px 0 14px; font-size: calc(13rem / 14); }
-.persona-where dt { color: var(--muted); }
-.persona-where dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.persona-where:has(.persona-picker) { align-items: baseline; }
-.persona-picker { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.persona-picker .select { min-width: 180px; max-width: 100%; }
-.persona-picker .muted { font-family: var(--ui-font, Inter), sans-serif; }
-.settings p.persona-effect { margin: 0 0 8px; line-height: 1.55; }
-.settings p.persona-effect svg, .settings p.persona-note svg { vertical-align: -2px; }
+.persona-fact { overflow-wrap: anywhere; }
+.persona-profile { min-width: 180px; max-width: 100%; }
+.settings p.persona-note svg { vertical-align: -2px; }
 .settings p.persona-note { margin: 8px 0 0; }
 .persona-text {
   width: 100%; box-sizing: border-box; resize: vertical; min-height: max(160px, calc(100vh - 460px)); padding: 12px 14px; border-radius: var(--radius);
@@ -1868,10 +1849,6 @@ label.memory-pick { cursor: pointer; }
 .persona-missing p { margin-bottom: 4px; }
 .settings p.persona-saved { color: var(--ok); margin: 10px 0 0; }
 .persona .field-label .badge { margin-left: 2px; }
-.persona h2 svg { vertical-align: -2px; margin-right: 4px; }
-.persona-earlier { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.persona-earlier-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: calc(13rem / 14); }
-.persona-earlier-view { margin-top: 8px; }
 .leave-scrim { z-index: 60; align-items: flex-start; }
 .leave-dialog {
   width: min(460px, 92vw); padding: 18px 20px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 14px;
@@ -2141,25 +2118,21 @@ label.memory-pick { cursor: pointer; }
 }
 
 /* Settings → Toolsets (ToolsetSettings.tsx): one row per toolset, its switch, and what a change came to. */
-.settings p.toolset-scope { margin: 0 0 10px; }
 .settings p.toolset-scope svg { vertical-align: -2px; }
 .toolset-scopes { margin: 0 0 12px; display: grid; gap: 2px 0; }
 .toolset-scopes dt { font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 .toolset-scopes dd { margin: 0 0 4px; line-height: 1.45; }
-.toolset-chat-status { margin: 0 0 10px; overflow-wrap: anywhere; }
-.toolset-status { margin: 14px 0 6px; }
-.toolset-list { border: 1px solid var(--line); border-radius: var(--radius); padding: 0 14px; margin-top: 8px; }
-.toolset-row { padding: 11px 0; border-top: 1px solid var(--line); }
-.toolset-row:first-child { border-top: 0; }
-.toolset-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-.toolset-label { min-width: 0; }
-.toolset-label .appearance-title { gap: 8px; flex-wrap: wrap; }
+.toolset-chat-status { overflow-wrap: anywhere; }
+/* The rows sit in a group (for its name) inside the card, so the card's own row rules don't reach them. */
+.set-card > * + .toolset-list { border-top: 1px solid var(--line); }
+.toolset-list > .set-row + .set-row { border-top: 1px solid var(--line); }
+.toolset-row .set-name { flex-wrap: wrap; }
+/* Skills' rows use it too (SkillSettings.tsx). */
 .toolset-hint { margin-top: 4px; line-height: 1.5; }
-.settings h3.toolset-subhead { margin: 24px 0 6px; }
 .switch:disabled, .switch[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .badge.off { color: var(--faint); }
 .toolset-desc { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-line; }
-.toolset-ask { max-width: none; margin: 8px 0 4px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); }
+.toolset-ask { max-width: none; margin: 2px 0 0; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); }
 .toolset-ask .confirm-detail { font-family: inherit; font-size: inherit; }
 
 /* Scheduled jobs (ScheduledJobs.tsx) */
@@ -2967,17 +2940,12 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .diagnostics { container-type: inline-size; }
 @container settings (min-width: 1000px) {
   .diagnostics { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 0 32px; align-items: start; }
-  .diagnostics > section + section { border-top: 0; }
 }
-.diagnostics h2 { font-size: calc(15rem / 14); margin: 18px 0 6px; }
-.diag-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 10px 0 0; font-size: calc(13rem / 14); }
-.diag-facts dt { color: var(--muted); }
-.diag-facts dd { margin: 0; overflow-wrap: anywhere; }
-.diag-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.diag-head .spinner { vertical-align: -1px; margin-right: 4px; }
-.diag-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; flex: none; margin-top: 18px; }
-.diag-alert { display: flex; align-items: flex-start; gap: 6px; color: var(--warn); font-size: calc(13rem / 14); margin: 0 0 10px; }
-.diag-alert svg { flex: none; margin-top: 2px; }
+.diagnostics .set-intro .spinner { vertical-align: -1px; margin-right: 4px; }
+/* A fact's value sits beside its name when both fit, else under it, from the left. */
+.diag-fact .set-text { flex-basis: 140px; }
+.diag-fact .set-control { margin-left: 0; min-width: 0; }
+.diag-fact .set-value { overflow-wrap: anywhere; min-width: 0; }
 .diag-table { width: 100%; border-collapse: collapse; font-size: calc(13rem / 14); }
 .diag-table th, .diag-table td { text-align: left; vertical-align: top; padding: 9px 10px 9px 0; border-top: 1px solid var(--line); line-height: 1.45; overflow-wrap: anywhere; }
 .diag-table thead th { color: var(--muted); font-weight: 500; font-size: calc(12rem / 14); border-top: 0; }
@@ -2995,12 +2963,9 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .capability-missing p { margin: 0 0 10px; font-size: calc(13rem / 14); line-height: 1.55; overflow-wrap: anywhere; }
 .capability-missing-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 @container (max-width: 560px) {
-  .diag-head { flex-direction: column; }
-  .diag-actions { justify-content: flex-start; margin-top: 0; }
-  .diag-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-  .diag-facts dd { margin-bottom: 8px; }
   .diag-table thead { display: none; }
   .diag-table tr { display: block; border-top: 1px solid var(--line); padding: 8px 0; }
+  .diag-table tbody tr:first-child { border-top: 0; padding-top: 0; }
   .diag-table th, .diag-table td { display: block; width: auto !important; border: 0; padding: 2px 0; }
 }
 /* Repository → Worktrees (ADR 0043) */
