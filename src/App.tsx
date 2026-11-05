@@ -1179,6 +1179,13 @@ export function Main({
   };
   const shownOutputs = useMemo(() => scopedOutputs(outSnap), [outSnap, outputsChatKey, shownOutputsScope]);
   const outputsRefs = () => outputsChats.map((c) => ({ id: c.id, updatedAt: c.updatedAt }));
+  // Reads the chats that changed, then checks where every file shown is now, so a file deleted since (a chat's own
+  // `rm`, a scratch folder pruned) shows Missing before Edit or Preview is tried (#223). A chat opened on its own reads
+  // again the Outputs dropped to stay within the limit.
+  const refreshOutputs = async () => {
+    await outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
+    if (outputsIndex.getSnapshot().unsupported === undefined) await outputsIndex.check(scopedOutputs(outputsIndex.getSnapshot()));
+  };
   // The profile's list, once read from Hermes, is every chat it has: the records of the others go, whether or not
   // Outputs is open. A chat deleted, or no longer listed, keeps no record (outputs.ts `keepOnly`).
   const listedFromHermes = hermes.hasListed();
@@ -1190,8 +1197,7 @@ export function Main({
   // changing while it is open (a reply streaming) waits for Refresh, so a reply doesn't set off a read per word.
   useEffect(() => {
     if (!outputsOpen || status !== "connected") return;
-    // A chat opened on its own reads again the Outputs dropped to stay within the limit.
-    void outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
+    void refreshOutputs();
   }, [outputsOpen, status, outputsIndex, shownOutputsScope, outputsChatKey]);
   const where = routeLabel(route) ?? addressLabel(connection);
   const inbox = inboxEntries({ profile, chats, connected: status === "connected", others, live, seen });
@@ -2705,10 +2711,7 @@ export function Main({
             status={status}
             canAdd={shownOutputsScope !== "project"}
             onScope={setOutputsScope}
-            onRefresh={async () => {
-              await outputsIndex.index(outputsRefs(), false, shownOutputsScope === "chat");
-              if (outputsIndex.getSnapshot().unsupported === undefined) await outputsIndex.check(scopedOutputs(outputsIndex.getSnapshot()));
-            }}
+            onRefresh={refreshOutputs}
             onIndexMore={() => void outputsIndex.index(outputsRefs())}
             onAdd={(path) => outputsIndex.add(path, shownOutputsScope === "chat" ? (outputsChatId ?? undefined) : undefined)}
             onRemove={(key) => outputsIndex.remove(key)}

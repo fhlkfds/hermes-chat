@@ -247,9 +247,12 @@ export const typeOf = (path: string): OutputType => BY_EXTENSION.get(extensionOf
 /** The most an image preview reads: Hermes's `read-data-url` limit. Text previews show the first 512 KB of any size. */
 export const IMAGE_PREVIEW_MAX = 16 * 1024 * 1024;
 
+/** Why a missing file can't open, and how to look for it. */
+const GONE = "The file isn't at this path any more. Refresh checks again, or show its folder in Server files to look for it.";
+
 /** Whether the preview pane can show the file, and why not. */
 export function previewable(o: Output): { ok: true } | { ok: false; why: string } {
-  if (o.availability?.state === "missing") return { ok: false, why: "The file isn't at this path any more." };
+  if (o.availability?.state === "missing") return { ok: false, why: GONE };
   if (o.availability?.state === "folder") return { ok: false, why: "This path is a folder now." };
   const type = typeOf(o.path);
   if (type === "image" && o.size !== undefined && o.size > IMAGE_PREVIEW_MAX) return { ok: false, why: "It's too large to preview (over 16 MB)." };
@@ -268,7 +271,7 @@ const EDIT_MAX = 1024 * 1024;
  */
 export function editable(o: Output): { ok: true } | { ok: false; why: string } {
   if (o.how === "speech" || o.how === "image") return { ok: false, why: "Only text files can be edited." };
-  if (o.availability?.state === "missing") return { ok: false, why: "The file isn't at this path any more." };
+  if (o.availability?.state === "missing") return { ok: false, why: GONE };
   if (o.availability?.state === "folder") return { ok: false, why: "This path is a folder now." };
   if (o.size !== undefined && o.size > EDIT_MAX) return { ok: false, why: "It's over 1 MB, the most the editor opens." };
   const type = typeOf(o.path);
