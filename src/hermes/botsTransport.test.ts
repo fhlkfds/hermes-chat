@@ -103,6 +103,11 @@ describe("opening a bot's Bot Chat", () => {
     expect(await hermes.openBotChat(again)).toBe(a);
     expect(rpc(server, "session.create")).toHaveLength(1);
     expect(rpc(server, "session.list")).toHaveLength(2);
+
+    // Its first message doesn't rename it here, as a new chat's does: its title is what Hermes finds it by.
+    await hermes.open(a);
+    await hermes.send(a, "Watch the release disk tonight");
+    expect(hermes.getSnapshot().chats.find((c) => c.id === a)?.title).toBe(BOT_CHAT_TITLE);
   });
 
   it("opens the chat another client made between the lookup and the title, instead of a second one", async () => {

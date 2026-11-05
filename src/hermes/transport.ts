@@ -2474,7 +2474,8 @@ export class Hermes {
       settled: false,
       running: true,
       updatedAt: Date.now(),
-      title: c.items.length === 0 && c.runtimeId ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
+      // A new chat is named by its first message until Hermes titles it; a Bot Chat keeps its title, its identity.
+      title: c.items.length === 0 && c.runtimeId && !c.bot ? (text || attachments[0]?.name || c.title).slice(0, 48) : c.title,
       items: [...c.items, user],
     }));
     for (const fn of this.sendListeners) fn(profile, chatId);
