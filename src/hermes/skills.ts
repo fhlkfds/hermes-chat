@@ -530,7 +530,15 @@ export class SkillsApi {
         undefined,
         true,
       );
-    const category = row.category && creatableName(row.category) ? row.category : undefined;
+    // The copy keeps the category, as the question says, or isn't made: Hermes would put it at the top level otherwise.
+    if (row.category && !creatableName(row.category))
+      throw new SkillsError(
+        "refused",
+        `${name} is in the category "${row.category}", and Hermes takes a new skill's category only in lowercase letters, digits, dots, dashes and underscores, so the copy couldn't keep it. Rename that category's folder on the server first.`,
+        undefined,
+        true,
+      );
+    const category = row.category || undefined;
     const sent = asReadBack(source.content);
     const there = async () => {
       try {

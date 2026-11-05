@@ -141,6 +141,19 @@ describe("Settings → Skills for any profile", () => {
     expect(listed()).toContain("release-notes");
   });
 
+  it("moves nothing, and archives nothing, for a skill whose category a copy couldn't keep", async () => {
+    const { s, user } = await launch();
+    s.skills.add("default", { dir: `${HOME}/skills/DevOps/deploy`, source: "agent", category: "DevOps" }, skill("deploy", "Deploy."));
+    await openSkills(user);
+    await select(user, "deploy");
+    await user.click(screen.getByRole("button", { name: /Move to…/ }));
+    await user.click(screen.getByRole("button", { name: "Move 1 skill" }));
+    const result = (await screen.findByText("Moved 0 of 1 skill to spare.")).closest(".skills-bulk-result")!;
+    expect(result.textContent).toMatch(/the category "DevOps"/);
+    expect(s.restRequests.some((r) => r.method === "POST" || r.method === "DELETE")).toBe(false);
+    expect(listed()).toContain("deploy");
+  });
+
   it("deletes the selected Local skills by archiving them, after asking", async () => {
     const { s, user } = await launch();
     await openSkills(user);

@@ -414,6 +414,18 @@ describe("copying and archiving across profiles (ADR 0056)", () => {
     expect(server.restRequests.filter((r) => r.method === "POST").length).toBe(before);
   });
 
+  it("refuses to copy or move a skill whose category Hermes wouldn't take for a new one, rather than drop the category", async () => {
+    const { server, api } = await signedIn();
+    server.learningRoutes = true;
+    server.skills.add("default", { dir: `${HOME}/skills/DevOps/deploy`, source: "agent", category: "DevOps" }, skill("deploy", "Deploy."));
+    const e = await rejection(api.copy("default", "spare", await row(api, "default", "deploy"), [...LISTED, "deploy"]));
+    expect(e!.kind).toBe("refused");
+    expect(e!.unsent).toBe(true);
+    expect(e!.message).toContain(`the category "DevOps"`);
+    expect(server.restRequests.some((r) => r.method === "POST")).toBe(false);
+    expect((await api.list("spare")).skills.map((s) => s.name)).not.toContain("deploy");
+  });
+
   it("archives a Local skill, confirmed by its going from the list read back", async () => {
     const { server, api } = await signedIn();
     server.learningRoutes = true;
