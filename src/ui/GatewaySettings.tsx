@@ -4,7 +4,7 @@
 // has. Save reads the platform first and sends nothing if it changed on the server, then reads it again to confirm.
 // Check status asks Hermes how the connection is; it sends no message (gateways.ts).
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ExternalLink, Info, KeyRound, RefreshCw, Send, Trash2, Undo2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, Info, KeyRound, MessageCircle, RefreshCw, Send, Trash2, Undo2 } from "lucide-react";
 import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 import { SubNav, type SubNavItem } from "./SubNav";
 import { Spinner } from "./bits";
@@ -137,7 +137,7 @@ export function GatewaySettings({ api, profile, connected, picker, openUrl }: { 
   const gateways = list?.gateways ?? [];
   const g = gateways.find((x) => x.id === selected) ?? gateways[0];
 
-  const items: SubNavItem[] = gateways.map((x) => ({ id: x.id, label: x.name, icon: x.id === "telegram" ? <Send size={14} /> : <KeyRound size={14} /> }));
+  const items: SubNavItem[] = gateways.map((x) => ({ id: x.id, label: x.name, icon: x.id === "telegram" ? <Send size={14} /> : <MessageCircle size={14} /> }));
 
   if (problem)
     return (
