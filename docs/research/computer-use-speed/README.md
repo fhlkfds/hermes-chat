@@ -29,6 +29,8 @@ Latency is from "Xvnc has the frame" (the X server answered a sync after the dra
 
 The build machine is shared with other sessions, and its load average swung between 2 and 42 during these runs. WebKitGTK's software rendering, Xvnc and the bench all slow down with load, so the tables give the load, and the main ones were run only once it was under 6. A Codex review of the first version found that the poller timed sightings before reading the pixels, that colour reuse could hide a very late frame, and that the stage split subtracted medians. All three are fixed, and every table here except the batching A/B was re-measured with the fixed tools.
 
+The raw runs behind every table are in `runs.tar.xz`: each run's JSON (`v3-*` and `v3b-*` for the low-load tables, `v2-*` for the busy-machine rows, `ab-*` for the batching A/B, `s2-*` and `i-*` for its stage split), and the app's `BENCH` log lines for the instrumented runs. `analyze.py <run>.json` and `stages.py <run>.json <tag>.log <label>` recompute them.
+
 To reproduce: start `Xvnc` with the launcher's arguments, run `npx rolldown docs/research/computer-use-speed/bridge.ts --platform node -o bridge.mjs && node bridge.mjs 9119 <rfb.sock> <stats.jsonl>`, sign the app in to `http://127.0.0.1:9119`, open the Screen tab, then run `x11bench.py locate` once and `BENCH_SPOTS=… run.sh <app display> <Xvnc display> <label> <out dir>`.
 
 ## Step 1: Hermes's loop (read from the code, not timed)
