@@ -455,7 +455,7 @@ export function SkillSettings({
             {editing ? (
               <>
                 {/* The skill's own row, with its editor under it. */}
-                <SettingRow name={skillName(editing.row, false)} about={editing.row.name} hint={skillDesc(editing.row)} />
+                <SettingRow name={<span className="mono">{editing.row.name}</span>} nameAs="h3" about={editing.row.name} hint={skillDesc(editing.row)} />
                 <div className="set-block memory-editor skills-editor" role="group" aria-label={`Edit ${editing.row.name}`}>
                   <button className="back" autoFocus disabled={!!busy} onClick={() => unlessDirty("Discard your unsaved edit to this skill? Nothing of it has been saved to Hermes.", close)}>
                     <ArrowLeft size={15} /> All skills

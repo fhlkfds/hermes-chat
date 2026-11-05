@@ -527,7 +527,8 @@ export function MemorySettings({
       ) : (
         <ul className="memory-entries" aria-label={`${meta.name} entries`}>
           {resource?.entries.map((e) => (
-            <li key={e.id}>
+            // A save gives the entry a new id (it's a fingerprint of the text): the open one keeps its key, so its editor isn't remade.
+            <li key={editing?.entry.id === e.id ? "open-entry" : e.id}>
               {selecting ? (
                 <label className={`memory-entry memory-pick ${selected.has(e.text) ? "on" : ""}`}>
                   <input
@@ -626,6 +627,13 @@ export function MemorySettings({
       {!editing && leaveQuestion && <div className="set-block">{leaveQuestion}</div>}
       {editing && !editorInList && editorBlock}
       {notice && !editing && noticeLine(notice, true)}
+      {/* What can't be undone from here stays in view (ADR 0059): it's said before an edit or a delete, not after. */}
+      {resource && (
+        <SettingNote className="memory-restore-limits">
+          Restore previous version puts back what a save from here replaced, until you sign out or close Hermes Chat. It's kept only in this app,
+          never on the server or this computer's disk, and a removed entry can't be put back from here.
+        </SettingNote>
+      )}
     </>
   );
 
@@ -642,11 +650,7 @@ export function MemorySettings({
               It's kept in two files on the server, and editing here changes them there. The agent also adds, changes and removes entries itself during
               chats.
             </p>
-            <p>
-              To add a memory, ask Hermes in a chat to remember it. Hermes has no call for adding one from another app. Restore previous version puts back
-              what a save from here replaced, while the entry still holds what you saved, until you sign out or close Hermes Chat. It's kept only in this
-              app's memory, never on the server or this computer's disk, and a removed entry can't be put back from here.
-            </p>
+            <p>To add a memory, ask Hermes in a chat to remember it. Hermes has no call for adding one from another app.</p>
           </>
         }
         action={

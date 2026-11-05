@@ -39,6 +39,8 @@ describe("Settings → Voice → Speech providers", () => {
   it("lists the providers Hermes supports for each side, which is in use, and which are set up", async () => {
     await shown({ setUp: (s) => (s.voiceProviders.env.default = new Set(["ELEVENLABS_API_KEY"])) });
     await screen.findByRole("group", { name: "Speech-to-text" });
+    // Each side heads its providers, so it's a heading to jump to.
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(expect.arrayContaining(["Speech-to-text", "Text-to-speech"]));
     expect(listed("Speech-to-text")).toEqual([
       expect.stringMatching(/^Local Whisper\s*In use\s*Set up/),
       expect.stringMatching(/^Nous Subscription\s*Needs sign-in/),

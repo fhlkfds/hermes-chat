@@ -113,6 +113,18 @@ describe("Settings → Model as cards of rows (#174, ADR 0059)", () => {
   /** The card a control sits in, and whether it is a row's control there. */
   const inRow = (el: Element, heading: string) => !!el.closest(".set-row > .set-control") && el.closest(".set-card") === section(heading).querySelector(".set-card");
 
+  it("turns Fast mode on from its words as well as its box", async () => {
+    const { user } = await shown();
+    // The one model the stand-in gives a fast mode.
+    await user.selectOptions(select("Main provider"), "openai-codex");
+    await user.selectOptions(select("Main model"), "gpt-6.1-sol");
+    const box = screen.getByRole<HTMLInputElement>("checkbox", { name: "Fast mode" });
+    expect(box.disabled).toBe(false);
+    expect(box.checked).toBe(false);
+    await user.click(screen.getByText("Fast mode", { selector: "label" }));
+    expect(box.checked).toBe(true);
+  });
+
   it("puts each setting in a row of its section's card, with Apply on the card's last line", async () => {
     await shown();
     for (const heading of ["Main model", "Text generation", "Subagents", "Auxiliary models", "Guardrails", "Idle compaction"])

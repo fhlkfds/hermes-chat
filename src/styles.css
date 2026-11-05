@@ -1085,6 +1085,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 12px 16px; min-height: 58px; }
 .set-text { flex: 1 1 300px; min-width: 0; }
 .set-name-line { display: flex; align-items: center; gap: 4px; min-height: 22px; }
+.settings h3.set-name { margin: 0; font-size: calc(13.5rem / 14); font-weight: 500; }
 .set-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: calc(13.5rem / 14); font-weight: 500; color: var(--text); }
 .set-hint { margin-top: 2px; font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--muted); }
 .set-hint svg { vertical-align: -2px; }

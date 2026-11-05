@@ -406,8 +406,8 @@ describe("Settings → Skills as cards of rows (#174, ADR 0059)", () => {
     expect(group.classList.contains("set-block")).toBe(true);
     const row = group.previousElementSibling as HTMLElement;
     expect(row.classList.contains("set-row")).toBe(true);
-    expect(within(row).getByText("release-notes")).toBeTruthy();
-    expect(within(row).getByText("Local")).toBeTruthy();
+    // The skill's name heads its editor, as a heading of its own, named by the skill alone.
+    expect(within(row).getByRole("heading", { level: 3, name: "release-notes" })).toBeTruthy();
   });
 
   it("folds explanation behind an (i), and keeps consequences, warnings and states in view", async () => {

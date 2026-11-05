@@ -332,6 +332,7 @@ function ProviderSide({
     <div className="voice-side" role="group" aria-label={label}>
       <SettingRow
         name={label}
+        nameAs="h3"
         hint={USED_FOR[kind]}
         control={
           <select

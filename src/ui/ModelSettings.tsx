@@ -542,7 +542,7 @@ export function ModelSettings({
           name="Speed"
           hint={caps && !caps.fast && !m.fast ? "This model has no fast mode." : "Priority processing, where the provider bills more for it."}
           control={
-            <span className="check">
+            <label className="check">
               <input
                 type="checkbox"
                 aria-label="Fast mode"
@@ -551,7 +551,7 @@ export function ModelSettings({
                 onChange={(e) => edit("main", (d) => ({ ...d, main: { ...d.main, fast: e.target.checked } }))}
               />
               Fast mode
-            </span>
+            </label>
           }
         />
         <ApplyRow

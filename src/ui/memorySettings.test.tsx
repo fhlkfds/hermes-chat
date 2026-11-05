@@ -622,7 +622,12 @@ describe("Settings → Memory as cards of rows (ADR 0059)", () => {
     const help = memory.querySelector<HTMLElement>(".set-more")!;
     expect(help.hidden).toBe(true);
     expect(help.textContent).toMatch(/To add a memory, ask Hermes in a chat to remember it/);
-    expect(help.textContent).toMatch(/Restore previous version puts back what a save from here replaced/);
+    // What Restore can't do is said in view, not behind the (i).
+    expect(help.textContent).not.toMatch(/Restore previous version/);
+    const limits = memory.querySelector<HTMLElement>(".memory-restore-limits")!;
+    expect(limits.textContent).toMatch(/until you sign out or close Hermes Chat/);
+    expect(limits.textContent).toMatch(/a removed entry can't be put back from here/);
+    expect(folded(limits)).toBe(false);
     expect(searchText(memory)).toMatch(/To add a memory, ask Hermes in a chat/);
     // The (i) isn't part of the heading's name.
     expect(screen.getByRole("heading", { name: "Memory" })).toBeTruthy();
@@ -651,6 +656,19 @@ describe("Settings → Memory as cards of rows (ADR 0059)", () => {
     const kept = screen.getByRole("group", { name: "Your kept edit" });
     expect(folded(kept)).toBe(false);
     expect(kept.textContent).toMatch(/not saved anywhere/);
+  });
+
+  it("keeps the open entry's editor, and what the owner did to its box, across a save that changes the entry's id", async () => {
+    const { user } = await shown();
+    await user.click(entry(SHORT));
+    const box = editor();
+    box.style.height = "321px";
+    await user.type(box, " Mine");
+    await user.click(button("Save"));
+    await screen.findByText(/Saved, and read back from Hermes/);
+    // The same textarea, not a new one: its resized height and place stay.
+    expect(editor()).toBe(box);
+    expect(box.style.height).toBe("321px");
   });
 
   it("shows being offline as a note across the card", async () => {
