@@ -8,6 +8,7 @@ import { ContextInspector, type ContextApi } from "./ContextInspector";
 import { STATUS_BAR_ITEMS, getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { Menu } from "./ChatMenu";
 import { STATUS_LABEL, useReturnFocus } from "./bits";
+import { SettingRow } from "./SettingRows";
 
 type StatusItem = (typeof STATUS_BAR_ITEMS)[number];
 const LABEL: Record<StatusItem, string> = { context: "Context", yolo: "YOLO", model: "Model", status: "Connection" };
@@ -19,21 +20,29 @@ const useShown = (): StatusItem[] => {
 };
 const show = (items: StatusItem[]) => setUIPrefs({ statusBar: items });
 
-/** The Settings switch that shows the bar again with every item, or hides it. */
+/** The Settings switch that shows the bar again with every item, or hides it: a row in Settings, Appearance's Fonts card. */
 export function StatusBarSetting() {
   const shown = useShown().length > 0;
   return (
-    <div className="appearance-row">
-      <div className="appearance-label">
-        <div className="appearance-title" id="status-bar-label">
-          Status bar
-        </div>
-        <div className="muted small">Context, YOLO, model and connection under the chat. Right-click it to pick what it shows.</div>
-      </div>
-      <button className="switch" role="switch" aria-checked={shown} aria-labelledby="status-bar-label" onClick={() => show(shown ? [] : [...STATUS_BAR_ITEMS])}>
-        <span className="switch-knob" />
-      </button>
-    </div>
+    <SettingRow
+      name="Status bar"
+      nameId="status-bar-label"
+      hint="Context, YOLO, model and connection under the chat."
+      hintId="status-bar-help"
+      more={<p>Right-click the bar to pick what it shows, or to hide it. Turning it on here shows every item again.</p>}
+      control={
+        <button
+          className="switch"
+          role="switch"
+          aria-checked={shown}
+          aria-labelledby="status-bar-label"
+          aria-describedby="status-bar-help"
+          onClick={() => show(shown ? [] : [...STATUS_BAR_ITEMS])}
+        >
+          <span className="switch-knob" />
+        </button>
+      }
+    />
   );
 }
 

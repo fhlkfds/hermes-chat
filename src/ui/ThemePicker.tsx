@@ -4,6 +4,7 @@ import { useRef, useState, useSyncExternalStore, type CSSProperties } from "reac
 import { Check, Copy, Moon, Paintbrush, Pencil, Plus, RotateCcw, Sun, Trash2 } from "lucide-react";
 import { CHAT_WIDTHS, DEFAULT_APPEARANCE, MAX_CUSTOM_THEMES, themeOf, type Appearance, type AppearanceStore } from "./appearance";
 import { arrowSelect } from "./bits";
+import { SettingRow, SettingsSection } from "./SettingRows";
 import {
   BUILTIN_THEMES,
   PALETTE_KEYS,
@@ -346,34 +347,39 @@ function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<
   const pick = (t: Theme, m?: Mode) => set(m ? { themeId: t.id, scheme: m } : { themeId: t.id });
 
   return (
-    <>
-      <div className="appearance-head">
-        <h3>Themes</h3>
-        <div className="appearance-pickers">
+    <SettingsSection
+      title="Themes"
+      action={
+        <>
           <button className="btn" disabled={full} title={fullNote} onClick={() => startFrom(themeOf(a), "My theme")}>
             <Paintbrush size={14} /> Create theme
           </button>
           <button className="btn" disabled={full} title={fullNote} onClick={() => setEditing("import")}>
             <Plus size={14} /> Add theme
           </button>
+        </>
+      }
+    >
+      {editing && (
+        <div className="set-block">
+          {editing === "import" ? (
+            <ImportTheme
+              onCancel={() => setEditing(undefined)}
+              onImport={(t) => save({ name: freeName(t.name, names()), light: t.light, dark: t.dark })}
+            />
+          ) : (
+            <ThemeEditor
+              key={editing.session}
+              draft={editing}
+              contrast={a.contrast}
+              taken={names(editing.id)}
+              onSave={save}
+              onCancel={() => setEditing(undefined)}
+            />
+          )}
         </div>
-      </div>
-      {editing === "import" ? (
-        <ImportTheme
-          onCancel={() => setEditing(undefined)}
-          onImport={(t) => save({ name: freeName(t.name, names()), light: t.light, dark: t.dark })}
-        />
-      ) : editing ? (
-        <ThemeEditor
-          key={editing.session}
-          draft={editing}
-          contrast={a.contrast}
-          taken={names(editing.id)}
-          onSave={save}
-          onCancel={() => setEditing(undefined)}
-        />
-      ) : null}
-      <div className="theme-grid">
+      )}
+      <div className="set-block theme-grid">
         {all.map((t) => {
           const custom = !BUILTIN_THEMES.includes(t);
           return (
@@ -398,11 +404,11 @@ function Themes({ a, mode, set }: { a: Appearance; mode: Mode; set: (c: Partial<
           );
         })}
       </div>
-    </>
+    </SettingsSection>
   );
 }
 
-/** A labeled slider over a list of stops, with a reset once it's off the default. */
+/** A labeled slider over a list of stops, with a reset before it once it's off the default. */
 function SliderRow({
   title,
   hint,
@@ -431,36 +437,36 @@ function SliderRow({
   onReset: () => void;
 }) {
   return (
-    <div className="appearance-row slider-row">
-      <div className="appearance-label">
-        <div className="appearance-title">
-          {title}
+    <SettingRow
+      name={title}
+      hint={hint}
+      control={
+        <>
           {!isDefault && (
             <button className="icon-btn small-icon" aria-label={`Reset ${title.toLowerCase()}`} title="Back to the default" onClick={onReset}>
               <RotateCcw size={13} />
             </button>
           )}
-        </div>
-        <div className="muted small">{hint}</div>
-      </div>
-      <div className="slider">
-        <input
-          type="range"
-          aria-label={title}
-          aria-valuetext={label}
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-        />
-        <div className="slider-scale small">
-          <span>{low}</span>
-          <span className="slider-value">{label}</span>
-          <span>{high}</span>
-        </div>
-      </div>
-    </div>
+          <div className="slider">
+            <input
+              type="range"
+              aria-label={title}
+              aria-valuetext={label}
+              min={min}
+              max={max}
+              step={step}
+              value={value}
+              onChange={(e) => onChange(Number(e.target.value))}
+            />
+            <div className="slider-scale small">
+              <span>{low}</span>
+              <span className="slider-value">{label}</span>
+              <span>{high}</span>
+            </div>
+          </div>
+        </>
+      }
+    />
   );
 }
 
@@ -474,16 +480,13 @@ export function ThemeSettings({ store }: { store: AppearanceStore }) {
   const widthAt = Math.max(0, CHAT_WIDTHS.indexOf(a.chatWidth));
   return (
     <>
-      <section>
-        <h2>Color scheme</h2>
-        <p className="muted">System follows your desktop's light or dark setting.</p>
-        <SchemePicker a={a} set={set} />
-      </section>
-      <section>
-        <Themes a={a} mode={mode} set={set} />
-      </section>
-      <section>
-        <h2>Layout and contrast</h2>
+      <SettingsSection title="Color scheme" intro="System follows your desktop's light or dark setting.">
+        <div className="set-block">
+          <SchemePicker a={a} set={set} />
+        </div>
+      </SettingsSection>
+      <Themes a={a} mode={mode} set={set} />
+      <SettingsSection title="Layout and contrast">
         <SliderRow
           title="Contrast"
           hint="How far text, borders and panels stand out from the background."
@@ -511,7 +514,7 @@ export function ThemeSettings({ store }: { store: AppearanceStore }) {
           onChange={(i) => set({ chatWidth: CHAT_WIDTHS[i] })}
           onReset={() => set({ chatWidth: d.chatWidth })}
         />
-      </section>
+      </SettingsSection>
     </>
   );
 }

@@ -6,6 +6,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { RotateCcw } from "lucide-react";
 import { DEFAULT_APPEARANCE, MONO_SIZES, UI_SIZES, type Appearance, type AppearanceStore, type Fonts } from "./appearance";
 import { Markdown } from "./Markdown";
+import { SettingRow, SettingsSection } from "./SettingRows";
 import { StatusBarSetting } from "./StatusBar";
 import { ThemeSettings } from "./ThemePicker";
 
@@ -53,7 +54,7 @@ function SizeSelect({ label, value, sizes, onChange }: { label: string; value: n
   );
 }
 
-/** One font setting: its name, what it covers, the pickers, and a reset once it differs from the default. */
+/** One font setting: its name, what it covers, a reset once it differs from the default, and the pickers. */
 function FontRow({
   title,
   hint,
@@ -68,20 +69,20 @@ function FontRow({
   children: ReactNode;
 }) {
   return (
-    <div className="appearance-row">
-      <div className="appearance-label">
-        <div className="appearance-title">
-          {title}
+    <SettingRow
+      name={title}
+      hint={hint}
+      control={
+        <>
           {changed && (
             <button className="icon-btn small-icon" aria-label={`Reset ${title.toLowerCase()}`} title="Back to the default" onClick={onReset}>
               <RotateCcw size={13} />
             </button>
           )}
-        </div>
-        <div className="muted small">{hint}</div>
-      </div>
-      <div className="appearance-pickers">{children}</div>
-    </div>
+          {children}
+        </>
+      }
+    />
   );
 }
 
@@ -101,9 +102,7 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
   return (
     <>
       <ThemeSettings store={store} />
-      <section>
-        <h2>Fonts</h2>
-
+      <SettingsSection title="Fonts">
         <FontRow
           title="Interface font"
           hint="Everything outside code blocks and tool output."
@@ -113,7 +112,9 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
           <FontSelect label="Interface font" value={a.uiFont} groups={[["Installed fonts", fonts.all]]} onChange={(uiFont) => set({ uiFont })} />
           <SizeSelect label="Interface font size" value={a.uiSize} sizes={UI_SIZES} onChange={(uiSize) => set({ uiSize })} />
         </FontRow>
-        <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
+        <div className="set-block">
+          <div className="appearance-preview ui-preview">{UI_SAMPLE}</div>
+        </div>
 
         <FontRow
           title="Code font"
@@ -132,29 +133,32 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
           />
           <SizeSelect label="Code font size" value={a.monoSize} sizes={MONO_SIZES} onChange={(monoSize) => set({ monoSize })} />
         </FontRow>
-        <div className="appearance-preview code-preview">
-          <Markdown text={CODE_SAMPLE} />
+        <div className="set-block">
+          <div className="appearance-preview code-preview">
+            <Markdown text={CODE_SAMPLE} />
+          </div>
         </div>
 
-        <div className="appearance-row">
-          <div className="appearance-label">
-            <div className="appearance-title" id="word-wrap-label">
-              Word wrap
-            </div>
-            <div className="muted small">Wrap long lines in code blocks instead of scrolling sideways.</div>
-          </div>
-          <button
-            className="switch"
-            role="switch"
-            aria-checked={a.wordWrap}
-            aria-labelledby="word-wrap-label"
-            onClick={() => set({ wordWrap: !a.wordWrap })}
-          >
-            <span className="switch-knob" />
-          </button>
-        </div>
+        <SettingRow
+          name="Word wrap"
+          nameId="word-wrap-label"
+          hint="Wrap long lines in code blocks instead of scrolling sideways."
+          hintId="word-wrap-help"
+          control={
+            <button
+              className="switch"
+              role="switch"
+              aria-checked={a.wordWrap}
+              aria-labelledby="word-wrap-label"
+              aria-describedby="word-wrap-help"
+              onClick={() => set({ wordWrap: !a.wordWrap })}
+            >
+              <span className="switch-knob" />
+            </button>
+          }
+        />
         <StatusBarSetting />
-      </section>
+      </SettingsSection>
     </>
   );
 }
