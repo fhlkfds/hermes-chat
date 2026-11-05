@@ -9,7 +9,7 @@ Issue #95. A reply can hand parts of its work to subagents (Hermes's `delegate_t
 - **Pure functions fold everything in.** `onSubagentEvent`, `onRoster`, `onLost` and `onUnchecked` take the tree and return the next one. Out-of-order events, repeats and a reconnect's roster all go through the same rules:
   - Once Hermes says how a subagent ended (`completed`, `failed`, `error`, `timeout`, `interrupted`), no later event or roster changes that.
   - **Ended** is the app's state for a subagent that ended without the app knowing how: Hermes's completion named no status it defines, or it ended unheard while the app was disconnected. It is final too, except that Hermes's own word on how it ended replaces it. **Unknown** is only for a parent the app knows from its child's events, until its own arrive.
-  - What it last did only moves forward. Its tool count never goes down, a tool call numbered before the latest one known doesn't become its last activity, and once it ended its end stays its last activity.
+  - What it last did only moves forward. Its tool count never goes down. Each last-activity line carries how many tool calls Hermes had counted by then (0 for the start, the roster's `tool_count` for its `last_tool`). A line with a lower count than the one shown doesn't replace it, so a late start or a tool call the roster already counted past stays in the log only. Once it ended, its end stays its last activity.
   - A request heard after the start doesn't move it back to queued.
   - Tool calls are placed by Hermes's per-subagent `tool_count`, each once, and the end stays last.
   - A subagent heard from before its parent makes an undescribed parent row, which its parent's own events fill in.

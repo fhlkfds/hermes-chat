@@ -39,8 +39,11 @@ export type Subagent = {
   taskCount?: number;
   state: SubagentState;
   startedAt?: number;
-  /** When the app last heard of it doing something, and what. */
-  lastActivity?: { at: number; text: string };
+  /**
+   * When the app last heard of it doing something, and what. `seq`: how many tool calls Hermes had counted for it by
+   * then (0 at its start), which orders what the events and the roster say however late each arrives.
+   */
+  lastActivity?: { at: number; text: string; seq?: number };
   toolCount?: number;
   /** Hermes takes a steer for it now. Only `subagent.list` says; undefined until it has. */
   acceptingSteer?: boolean;
@@ -125,7 +128,7 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
     case "subagent.spawn_requested":
       return { ...base, state: "queued", partial: false };
     case "subagent.start":
-      return { ...base, state: "running", partial: false, lastActivity: { at, text: "Started" } };
+      return { ...base, state: "running", partial: false, lastActivity: { at, text: "Started", seq: 0 } };
     // Batched tool names, which `subagent.tool` has already reported one by one.
     case "subagent.progress":
       return { ...base, state: "running" };
@@ -136,7 +139,7 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
       return {
         ...base,
         state: "running",
-        lastActivity: { at, text: preview ? `${tool}: ${preview}` : tool },
+        lastActivity: { at, text: preview ? `${tool}: ${preview}` : tool, ...(seq !== undefined && { seq }) },
         activity: { kind: "tool", at, tool, ...(seq !== undefined && { seq }), ...(preview && { preview }) },
       };
     }
@@ -201,18 +204,17 @@ function nextState(was: SubagentState, reported?: SubagentState): SubagentState 
   return reported;
 }
 
-const latestTool = (log: SubagentActivity[]) => Math.max(-1, ...log.map((a) => (a.kind === "tool" && a.seq !== undefined ? a.seq : -1)));
-
 /**
  * A subagent with a report applied. What it last did only moves forward: once it ended, its end stays its last
- * activity, and a tool call Hermes numbered before the latest one known is old news. Its tool count never goes down.
+ * activity, and what Hermes had counted fewer tool calls for than the last activity known is old news, such as a late
+ * start or a tool call the roster has already counted past. Its tool count never goes down.
  */
 function merged(s: Subagent, r: Report): Subagent {
   const { activity, state, lastActivity, toolCount, ...fields } = r;
   const next = nextState(s.state, state);
   const endsNow = hasEnded(next) && next !== s.state;
-  const seq = activity?.kind === "tool" ? activity.seq : undefined;
-  const fresh = endsNow || (!hasEnded(s.state) && (seq === undefined || seq > latestTool(s.activity)));
+  const seq = lastActivity?.seq;
+  const fresh = endsNow || (!hasEnded(s.state) && (seq === undefined || seq >= (s.lastActivity?.seq ?? -1)));
   // A known outcome replaces the "ended" the app had put in its place.
   const log = endsNow && s.state === "ended" ? s.activity.filter((a) => a.kind !== "ended") : s.activity;
   return {
@@ -292,7 +294,7 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
       state: stateOf(row.status, "running"),
       ...(secondsAt(row.started_at) !== undefined && { startedAt: secondsAt(row.started_at) }),
       ...(typeof row.accepting_steer === "boolean" && { acceptingSteer: row.accepting_steer }),
-      ...(last && newer && { lastActivity: { at, text: last } }),
+      ...(last && newer && { lastActivity: { at, text: last, ...(int(row.tool_count) !== undefined && { seq: int(row.tool_count) }) } }),
     });
   }
   const known = tree?.subagents ?? [];

@@ -101,6 +101,16 @@ describe("The Subagents panel", () => {
     expect(server.interrupted).toEqual(["sa-auth"]);
   });
 
+  it("moves focus to the subagent's name when it ends while its Steer box has focus", async () => {
+    const { server, user, runtime } = await auditing();
+    await user.click(within(panel()).getByRole("button", { name: /Subagents/ }));
+    await user.click(within(panel()).getByRole("button", { name: /Read the tests/ }));
+    await user.click(within(panel()).getByLabelText(/Steer “Read the tests”/));
+    act(() => server.event(runtime, "subagent.complete", who("sa-tests", "Read the tests", { status: "completed", summary: "All green." })));
+    await waitFor(() => expect(document.activeElement).toBe(within(panel()).getByRole("heading", { name: "Read the tests" })));
+    expect(within(panel()).queryByLabelText(/Steer “Read the tests”/)).toBeNull();
+  });
+
   it("steers only the subagent named", async () => {
     const { server, user, runtime } = await auditing();
     await user.click(within(panel()).getByRole("button", { name: /Subagents/ }));

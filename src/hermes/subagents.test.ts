@@ -125,9 +125,19 @@ describe("The subagent tree from Hermes's events", () => {
     t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "grep", tool_count: 2 }), 1);
     t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "read_file", tool_count: 1 }), 2);
     expect(t!.subagents[0]).toMatchObject({ toolCount: 2, lastActivity: { text: "grep" } });
-    t = onSubagentEvent(t, "subagent.complete", who("a", "A", { status: "completed" }), 3);
-    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "terminal", tool_count: 3 }), 4);
-    expect(t!.subagents[0]).toMatchObject({ state: "completed", toolCount: 3, lastActivity: { text: "Finished" } });
+    // A late start is older than any tool call.
+    t = onSubagentEvent(t, "subagent.start", who("a", "A"), 3);
+    expect(t!.subagents[0].lastActivity!.text).toBe("grep");
+    // The roster has counted past the tool calls still on their way.
+    t = onRoster(t, { subagents: [{ subagent_id: "a", status: "running", tool_count: 7, last_tool: "patch" }] }, 4, 4);
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "terminal", tool_count: 6 }), 5);
+    expect(t!.subagents[0]).toMatchObject({ toolCount: 7, lastActivity: { text: "patch" } });
+    // The event for the tool the roster named says more about it.
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "patch", tool_preview: "src/auth.ts", tool_count: 7 }), 6);
+    expect(t!.subagents[0].lastActivity!.text).toBe("patch: src/auth.ts");
+    t = onSubagentEvent(t, "subagent.complete", who("a", "A", { status: "completed" }), 7);
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "terminal", tool_count: 8 }), 8);
+    expect(t!.subagents[0]).toMatchObject({ state: "completed", toolCount: 8, lastActivity: { text: "Finished" } });
   });
 
   it("keeps a subagent whose end Hermes didn't explain ended, whatever arrives late", () => {
