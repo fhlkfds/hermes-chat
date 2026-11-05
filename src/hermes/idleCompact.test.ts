@@ -56,7 +56,7 @@ describe("Idle compaction", () => {
     expect(idleCompactionNote(reports[0])).toBe("Compacted “NAS”, idle 15 min at 82% full: about 140,000 → 21,000 tokens, as Hermes estimates.");
   });
 
-  it("compacts each idle stretch once, though the meter still shows the measure from before, until something happens in the chat", async () => {
+  it("compacts a chat once, though the meter still shows the measure from before, until a reply measures it again", async () => {
     const { server, hermes, compactor, chats, check, asked } = await setUp();
     await check(15 * MIN);
     await check(40 * MIN);
@@ -74,6 +74,18 @@ describe("Idle compaction", () => {
     expect(asked()).toHaveLength(1);
     await check(137 * MIN);
     expect(asked()).toHaveLength(2);
+  });
+
+  it("doesn't compact the same measure again when the list's sync moves the chat's last activity", async () => {
+    const { compactor, chats, check, asked } = await setUp();
+    await check(15 * MIN);
+    expect(asked()).toHaveLength(1);
+    // Hermes stored the compaction, and the next sync brought the chat's newer last activity: a new idle stretch,
+    // with the meter still at the measure from before.
+    const synced = () => chats().map((c) => ({ ...c, updatedAt: c.updatedAt + 60_000 }));
+    compactor.observe(synced(), 16 * MIN);
+    await compactor.check(synced(), "connected", 60 * MIN);
+    expect(asked()).toHaveLength(1);
   });
 
   it("leaves alone a chat under the mark, one with a reply running, and everything while it's off", async () => {

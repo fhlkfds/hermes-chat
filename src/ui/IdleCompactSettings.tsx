@@ -25,7 +25,7 @@ export function IdleCompactSettings() {
           <div className="muted small" id="idle-compact-help">
             When a chat open in this app has had nothing happen in it for a while and its context window is past the mark below, Hermes compacts it, as
             Compact now does: older messages are swapped for a summary the model reads in their place. By then the provider's prompt cache has gone
-            cold, so your next message would pay for the whole context anyway. Each idle chat is compacted once, until something happens in it again.
+            cold, so your next message would pay for the whole context anyway. Each idle chat is compacted once, until a new reply measures it again.
           </div>
         </div>
         <button

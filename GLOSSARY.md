@@ -263,7 +263,7 @@ Hermes swapping a chat's older messages for one summary that the model reads in 
 _Avoid_: compression (Hermes's word, fine in server-side talk), summary (that is what a compaction leaves), truncation
 
 **Idle compaction**:
-This app having Hermes compact a chat the owner has left: one open in this app, idle for the time set in Settings → Model, whose context window Hermes last measured at the mark set there or past it. It compacts each idle stretch once, one chat at a time, and says what Hermes did. Off until the owner turns it on; kept on this computer. Hermes's own compaction when the window fills during a reply is separate (ADR 0056).
+This app having Hermes compact a chat the owner has left: one open in this app, idle for the time set in Settings → Model, whose context window Hermes last measured at the mark set there or past it. It compacts a chat once for each measure Hermes takes, one chat at a time, and says what Hermes did. Off until the owner turns it on; kept on this computer. Hermes's own compaction when the window fills during a reply is separate (ADR 0056).
 _Avoid_: auto-compact (Hermes's own compaction is automatic too), auto-compress, cleanup
 
 **Side panel**:

@@ -2,9 +2,10 @@
 // it for the owner's idle time, and Hermes last measured its context window at least the owner's percent full, the app
 // has Hermes compact it, as Compact now does (ADR 0025). Idle is when it costs least: the provider's prompt cache has
 // gone cold by then, so the next message pays for the whole context anyway, and it pays for less once compacted.
-// One compaction per idle stretch: the meter keeps Hermes's last measure until the next reply, so a chat compacted, or
-// one Hermes wouldn't compact, isn't asked again until something happens in it. Nothing here is kept; the prefs are
-// in uiPrefs.ts.
+// One compaction per measure: the meter keeps Hermes's last measure until the next reply, so a chat compacted, or one
+// Hermes wouldn't compact, isn't asked again until Hermes measures it anew. Its idle time alone can't re-arm it: Hermes
+// may move the chat's last activity as it compacts, and the list's sync then starts a new idle stretch with the same
+// stale measure. Nothing here is kept; the prefs are in uiPrefs.ts.
 import { isWaiting, type Chat, type ConnectionStatus } from "./model";
 import type { CompactResult } from "./contextInspect";
 import type { IdleCompactPrefs } from "./uiPrefs";
@@ -24,6 +25,12 @@ export type IdleCompaction = { chatId: string; title: string; percent: number; i
 /** What in a chat counts as something happening: a change in any of it starts a new idle stretch. */
 function activityOf(c: Chat): string {
   return [c.runtimeId ?? "", c.running ? 1 : 0, c.loading ? 1 : 0, c.items.length, c.updatedAt].join("|");
+}
+
+/** Hermes's measure of the chat's context window, as the meter shows it; a new reply brings a new one. */
+function measureOf(c: Chat): string {
+  const m = c.live?.context;
+  return m ? [c.runtimeId ?? "", m.used, m.max, m.percent].join("|") : "";
 }
 
 /**
@@ -48,7 +55,7 @@ export function isDue(c: Chat, prefs: IdleCompactPrefs, idleSince: number | unde
 export class IdleCompactor {
   /** Each chat's activity as last seen, and when it was first seen so. */
   private seen = new Map<string, { activity: string; since: number }>();
-  /** The idle stretch (its activity) each chat was last compacted for, or tried. */
+  /** The measure (`measureOf`) each chat was last compacted at, or tried. */
   private tried = new Map<string, string>();
   private running = false;
 
@@ -77,7 +84,7 @@ export class IdleCompactor {
     return chats
       .filter((c) => {
         const s = this.seen.get(c.id);
-        return s && this.tried.get(c.id) !== s.activity && isDue(c, prefs, s.since, now);
+        return s && this.tried.get(c.id) !== measureOf(c) && isDue(c, prefs, s.since, now);
       })
       .sort((a, b) => this.seen.get(a.id)!.since - this.seen.get(b.id)!.since);
   }
@@ -92,7 +99,7 @@ export class IdleCompactor {
     const c = this.due(chats, now)[0];
     if (!c) return;
     const s = this.seen.get(c.id)!;
-    this.tried.set(c.id, s.activity);
+    this.tried.set(c.id, measureOf(c));
     const base = { chatId: c.id, title: c.title, percent: c.live!.context!.percent, idleMinutes: Math.floor((now - s.since) / 60_000) };
     this.running = true;
     try {
