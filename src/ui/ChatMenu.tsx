@@ -28,7 +28,7 @@ export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: s
 export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
 
 /**
- * Clearing the chat from the Inbox, or putting it back (snooze.ts `ClearedStore`, ADR 0062): `cleared`, whether it is
+ * Clearing the chat from the Inbox, or putting it back (snooze.ts `ClearedStore`, ADR 0063): `cleared`, whether it is
  * cleared now, in Unsettled.
  */
 export type ChatClear = { cleared: boolean; onClear: (cleared: boolean) => void };

@@ -1,4 +1,4 @@
-// A stand-in Hermes dashboard for screenshots of the chat list's sections (#219, ADR 0062) in the real Tauri app:
+// A stand-in Hermes dashboard for screenshots of the chat list's sections (#219, ADR 0063) in the real Tauri app:
 // sign-in, the WS ticket, `/api/ws` and dashboard REST, all answered by the tests' FakeHermes with synthetic chats in
 // every state. Loopback only.
 //   npx rolldown docs/screenshots/inbox-sections/bridge.ts --platform node -o /tmp/inbox-bridge.mjs && node /tmp/inbox-bridge.mjs 47219

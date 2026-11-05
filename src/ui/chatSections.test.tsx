@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The chat list's sections as the side panel shows them (ADR 0062): each one collapsible, remembered across a restart;
+// The chat list's sections as the side panel shows them (ADR 0063): each one collapsible, remembered across a restart;
 // Settings → General picking which show, never none; and clearing a read, quiet chat from the Inbox until something
 // new happens in it. The list on its own first, then the whole app against a fake Hermes.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";

@@ -56,9 +56,9 @@ export type UIPrefs = {
   followUp: FollowUp;
   /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0059). */
   idleCompact: IdleCompactPrefs;
-  /** The chat list's sections that show, in their own order (ADR 0062). Never empty: at least one stays on. */
+  /** The chat list's sections that show, in their own order (ADR 0063). Never empty: at least one stays on. */
   chatSectionsShown: SectionKey[];
-  /** The chat list's sections the owner collapsed, kept across restarts (ADR 0062). */
+  /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
   chatSectionsCollapsed: SectionKey[];
 };
 

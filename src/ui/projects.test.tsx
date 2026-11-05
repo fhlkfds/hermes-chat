@@ -63,7 +63,7 @@ async function launch(s: FakeHermes) {
 
 const switcher = () => document.querySelector<HTMLElement>(".project-btn")!;
 const listedTitles = () => [...document.querySelectorAll(".sidebar .row-title")].map((e) => e.textContent);
-/** The Active chats the list shows: the Inbox and Working (ADR 0062), not Settled, which is in the same scroll. */
+/** The Active chats the list shows: the Inbox and Working (ADR 0063), not Settled, which is in the same scroll. */
 const activeTitles = () =>
   [...document.querySelectorAll('.sb-scroll .row:is([data-section="inbox"], [data-section="working"]) .row-open .row-title')].map((e) => e.textContent);
 const onScreen = () => document.querySelector(".chat-title span")?.textContent;

@@ -1,4 +1,4 @@
-// Snoozing, Clearing from the Inbox, and the chat list's sections (GLOSSARY.md, ADR 0036, ADR 0062). Hermes has
+// Snoozing, Clearing from the Inbox, and the chat list's sections (GLOSSARY.md, ADR 0036, ADR 0063). Hermes has
 // nowhere to keep a snooze or a clear, so each is kept on this computer only, in its own versioned localStorage
 // document, separately for each connection and profile (the scope projectLinks.ts `projectScope` gives), and never
 // sent to Hermes. A snooze is the time the chat wakes, in Unix ms; a clear is when the chat was last active as the owner

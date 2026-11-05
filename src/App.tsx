@@ -912,7 +912,7 @@ export function Main({
   // The side panel's Terminal (ADR 0022, ADR 0039): which shell is shown, kept in the prefs so it opens on the one picked
   // last (the Hermes server's until then, ADR 0051), and which are running, for the rail's dot.
   const termKind = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).terminalKind;
-  // The list holds the profile's archived chats only while its Archived section is shown (ADR 0062); a profile switch
+  // The list holds the profile's archived chats only while its Archived section is shown (ADR 0063); a profile switch
   // starts without them, so they are listed again then.
   const archivedShown = useSyncExternalStore(subscribeUIPrefs, getUIPrefs).chatSectionsShown.includes("archived");
   useEffect(() => {
@@ -1124,7 +1124,7 @@ export function Main({
   );
   // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
   const attention = useMemo(() => new AttentionClock(), [scope]);
-  // The chats cleared from the Inbox: kept on this computer for each connection and profile, like snoozes (ADR 0062).
+  // The chats cleared from the Inbox: kept on this computer for each connection and profile, like snoozes (ADR 0063).
   const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
   const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
   useEffect(() => {
@@ -1754,7 +1754,7 @@ export function Main({
   };
 
   // Clearing a chat from the Inbox is kept on this computer only, with when the chat was last active, so anything newer
-  // brings it back (ADR 0062). Undo does the opposite.
+  // brings it back (ADR 0063). Undo does the opposite.
   const clearFromInbox = (id: string, on: boolean) => {
     const chat = chats.find((c) => c.id === id);
     if (!chat) return;

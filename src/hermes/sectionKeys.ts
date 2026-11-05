@@ -1,4 +1,4 @@
-// The chat list's sections, in the order shown (ADR 0062). Their own module, so the display preferences (uiPrefs.ts)
+// The chat list's sections, in the order shown (ADR 0063). Their own module, so the display preferences (uiPrefs.ts)
 // and the sorting that fills them (snooze.ts) can both name them.
 
 export const SECTION_KEYS = ["inbox", "working", "snoozed", "unsettled", "settled", "archived"] as const;

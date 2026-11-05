@@ -849,7 +849,7 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 }
 
 /**
- * The chat list, in sections (snooze.ts `chatSections`, ADR 0062): the Inbox, the chats that need the owner or are done;
+ * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): the Inbox, the chats that need the owner or are done;
  * Working, the chats Hermes is replying in; Snoozed; Unsettled, the Active chats cleared from the Inbox; Settled; and
  * Archived. Settings → General picks the sections shown (uiPrefs.ts `chatSectionsShown`), and each one's header
  * collapses it, remembered across restarts. The sections are one list of rows and headers, so a row that moves between

@@ -1,4 +1,4 @@
-// Which of the chat list's sections show (ADR 0062). Kept in the display preferences (uiPrefs.ts), on this computer
+// Which of the chat list's sections show (ADR 0063). Kept in the display preferences (uiPrefs.ts), on this computer
 // only. Any mix of sections, but never none: the last one shown can't be turned off. A hidden section's chats are still
 // found by Search. Drawn as a card of rows (ADR 0059).
 import { useSyncExternalStore } from "react";
