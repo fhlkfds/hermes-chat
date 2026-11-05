@@ -1,21 +1,29 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
-// the same queue. Each message can be edited, moved and removed; the queue can be paused and resumed.
-import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
+// the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0069), and removed;
+// the queue can be paused and resumed.
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import { GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, isOutgoing, isWaiting } from "../hermes/model";
-import { composing } from "./bits";
+import { composing, slotAt } from "./bits";
 
 /** What the queue panel does, for a chat that has started. `add` returns why a message couldn't be queued. */
 export type QueueApi = {
   add: (text: string, attachments: Attachment[]) => string | undefined;
   edit: (id: string, text: string) => boolean;
   remove: (id: string) => void;
-  move: (id: string, by: number) => void;
+  /** Puts the message at place `index`, 0 first. */
+  moveTo: (id: string, index: number) => void;
   pause: () => void;
   resume: () => void;
   /** Keeps the queue from going while a message in it is edited; call the result when done. */
   hold: () => () => void;
 };
+
+/** The drag data type a queued message's id travels under. Nothing else in the app, the composer included, takes it. */
+const QUEUED_DRAG = "application/x-hermes-queued";
+// The message being dragged and its chat, kept because a drag's data can be read only on drop and the mark needs it
+// before. As with tabs (Tabs.tsx), trusted only while the drag carries its type.
+let queueDrag: { chat: string; id: string } | null = null;
 
 /** What the next queued message waits for, when the queue isn't paused. */
 function waitingFor(chat: Chat, status: ConnectionStatus): string {
@@ -29,24 +37,37 @@ function waitingFor(chat: Chat, status: ConnectionStatus): string {
 export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: ChatQueue; status: ConnectionStatus; api: QueueApi }) {
   const rootRef = useRef<HTMLDivElement>(null);
   // After a move or removal, focus stays with the message moved, or goes to the one now in the removed one's place.
-  const [focus, setFocus] = useState<{ id?: string; index: number; button?: string }>();
+  const [focus, setFocus] = useState<{ id?: string; index: number }>();
+  // While a drop would move a message: before which row it lands, `items.length` after the last.
+  const [over, setOver] = useState<number | null>(null);
+  const [dragging, setDragging] = useState<string>();
   const items = queue?.items ?? [];
   useEffect(() => {
     if (!focus) return;
     setFocus(undefined);
     const rows = Array.from(rootRef.current?.querySelectorAll<HTMLElement>(".queue-item") ?? []);
     const row = rows.find((r) => r.dataset.queued === focus.id) ?? rows[Math.min(focus.index, rows.length - 1)];
-    const target = (focus.button && row?.querySelector<HTMLElement>(`[data-action="${focus.button}"]:not(:disabled)`)) || row;
-    if (target) target.focus();
+    if (row) row.focus();
     else rootRef.current?.closest(".chat")?.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus();
   });
   // The panel goes with its last message; the wrapper stays, so focus can be put back in the pane.
   if (!items.length) return <div ref={rootRef} />;
 
   const paused = queue?.paused !== undefined;
-  const move = (item: Queued, by: number, button?: string) => {
-    api.move(item.id, by);
-    setFocus({ id: item.id, index: 0, button });
+  const move = (id: string, index: number) => {
+    api.moveTo(id, index);
+    setFocus({ id, index: 0 });
+  };
+  // Where a drop here would put the dragged message, or nothing for a drag that isn't one of this chat's queued
+  // messages, or a drop that would leave it where it is.
+  const dropAt = (e: DragEvent) => {
+    if (!e.dataTransfer.types.includes(QUEUED_DRAG) || queueDrag?.chat !== chat.id) return undefined;
+    const { id } = queueDrag;
+    const from = items.findIndex((i) => i.id === id);
+    const slot = slotAt(Array.from(rootRef.current?.querySelectorAll(".queue-item") ?? []), e.clientY, "y");
+    if (from < 0 || slot === undefined) return undefined;
+    const to = slot > from ? slot - 1 : slot;
+    return to === from ? undefined : { id, to, slot };
   };
   const remove = (item: Queued, index: number) => {
     api.remove(item.id);
@@ -55,7 +76,26 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
 
   return (
     <div ref={rootRef}>
-      <section className={`queue${paused ? " paused" : ""}`} aria-label="Queued messages">
+      <section
+        className={`queue${paused ? " paused" : ""}`}
+        aria-label="Queued messages"
+        onDragOver={(e) => {
+          const drop = dropAt(e);
+          if (!drop) return setOver(null);
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (over !== drop.slot) setOver(drop.slot);
+        }}
+        onDragLeave={(e) => e.currentTarget.contains(e.relatedTarget as Node) || setOver(null)}
+        onDrop={(e) => {
+          setOver(null);
+          const drop = dropAt(e);
+          queueDrag = null;
+          if (!drop) return;
+          e.preventDefault();
+          move(drop.id, drop.to);
+        }}
+      >
         <div className="queue-head">
           <ListOrdered size={13} aria-hidden />
           <span className="queue-title">Queued · {items.length}</span>
@@ -85,9 +125,16 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               index={i}
               count={items.length}
               state={paused ? "Paused" : i === 0 ? "Next" : "Queued"}
+              mark={over === i ? "insert-before" : over === items.length && i === items.length - 1 ? "insert-after" : ""}
+              dragged={dragging === item.id}
               api={api}
-              onMove={(by, button) => move(item, by, button)}
+              onMove={(to) => move(item.id, to)}
               onRemove={() => remove(item, i)}
+              onDrag={(on) => {
+                queueDrag = on ? { chat: chat.id, id: item.id } : null;
+                setDragging(on ? item.id : undefined);
+                if (!on) setOver(null);
+              }}
             />
           ))}
         </ol>
@@ -102,17 +149,23 @@ function QueueRow({
   index,
   count,
   state,
+  mark,
+  dragged,
   api,
   onMove,
   onRemove,
+  onDrag,
 }: {
   item: Queued;
   index: number;
   count: number;
   state: string;
+  mark: string;
+  dragged: boolean;
   api: QueueApi;
-  onMove: (by: number, button?: string) => void;
+  onMove: (index: number) => void;
   onRemove: () => void;
+  onDrag: (on: boolean) => void;
 }) {
   const [editing, setEditing] = useState<string>();
   const [gone, setGone] = useState(false);
@@ -134,22 +187,35 @@ function QueueRow({
   return (
     <li
       ref={rowRef}
-      className="queue-item"
+      className={`queue-item ${mark}${dragged ? " dragging" : ""}`}
       data-queued={item.id}
       tabIndex={0}
+      // A message being edited stays put: its words are being changed, and a drag would take the text selection.
+      draggable={editing === undefined}
+      onDragStart={(e) => {
+        // A text selection dragged out of the edit box bubbles here too.
+        if (e.target !== e.currentTarget) return;
+        e.dataTransfer.setData(QUEUED_DRAG, item.id);
+        e.dataTransfer.effectAllowed = "move";
+        onDrag(true);
+      }}
+      onDragEnd={(e) => e.target === e.currentTarget && onDrag(false)}
       aria-label={`Queued message ${index + 1} of ${count}${files ? `, ${files} ${files === 1 ? "file" : "files"}` : ""}: ${item.text}`}
       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Delete"
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget || composing(e)) return;
         if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
           e.preventDefault();
-          onMove(e.key === "ArrowUp" ? -1 : 1);
+          onMove(index + (e.key === "ArrowUp" ? -1 : 1));
         } else if (e.key === "Delete") {
           e.preventDefault();
           onRemove();
         }
       }}
     >
+      <span className="queue-grip" title="Drag to move, or Alt+↑/↓" aria-hidden>
+        <GripVertical size={13} />
+      </span>
       <span className="queue-pos" aria-hidden>
         {index + 1}
       </span>
@@ -199,26 +265,6 @@ function QueueRow({
               onClick={() => (setGone(false), setEditing(item.text))}
             >
               <Pencil size={13} />
-            </button>
-            <button
-              className="icon-btn"
-              data-action="up"
-              title="Move up (Alt+↑)"
-              aria-label={`Move queued message ${index + 1} up`}
-              disabled={index === 0}
-              onClick={() => onMove(-1, "up")}
-            >
-              <ArrowUp size={13} />
-            </button>
-            <button
-              className="icon-btn"
-              data-action="down"
-              title="Move down (Alt+↓)"
-              aria-label={`Move queued message ${index + 1} down`}
-              disabled={index === count - 1}
-              onClick={() => onMove(1, "down")}
-            >
-              <ArrowDown size={13} />
             </button>
             <button className="icon-btn" data-action="remove" title="Remove (Delete)" aria-label={`Remove queued message ${index + 1}`} onClick={onRemove}>
               <Trash2 size={13} />

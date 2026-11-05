@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Queueing the next messages while Hermes replies (ADR 0018), driven the way the owner would, against a fake Hermes.
 // Each test checks what is on screen and what reached Hermes.
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
@@ -28,6 +28,39 @@ const panes = () => Array.from(document.querySelectorAll<HTMLElement>(".pane"));
 const composerIn = (el: HTMLElement) => within(el).getByPlaceholderText<HTMLTextAreaElement>("Message Hermes");
 const queueIn = (el: HTMLElement) => within(el).queryByRole("region", { name: "Queued messages" });
 const queuedTexts = (el: HTMLElement) => Array.from(el.querySelectorAll(".queue-text")).map((t) => t.textContent);
+const rowsIn = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>(".queue-item"));
+const rowOf = (el: HTMLElement, text: string) => rowsIn(el).find((r) => r.querySelector(".queue-text")?.textContent === text)!;
+
+/**
+ * Drags `source` over `target` with the pointer at `clientY`, the queue's rows laid out 40 pixels tall from the top, and
+ * drops it there unless `drop` is false. Returns whether the drop was allowed, as the browser decides it: by the
+ * dragover's default being prevented.
+ */
+function drag(source: Element, target: Element, clientY: number, { drop = true } = {}) {
+  const data = new Map<string, string>();
+  let readable = false;
+  const dataTransfer = {
+    types: [] as string[],
+    setData: (k: string, v: string) => (data.set(k, v), dataTransfer.types.push(k)),
+    getData: (k: string) => (readable ? (data.get(k) ?? "") : ""),
+    effectAllowed: "",
+    dropEffect: "",
+  };
+  for (const row of document.querySelectorAll<HTMLElement>(".queue-item")) {
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
+      const top = Array.from(row.parentElement!.children).indexOf(row) * 40;
+      return { left: 0, top, width: 600, height: 40, right: 600, bottom: top + 40, x: 0, y: top, toJSON: () => {} };
+    });
+  }
+  const at = (e: Event) => Object.defineProperties(e, { clientX: { value: 10 }, clientY: { value: clientY } });
+  fireEvent.dragStart(source, { dataTransfer });
+  const allowed = !fireEvent(target, at(createEvent.dragOver(target, { dataTransfer })));
+  if (!drop) return allowed;
+  readable = true;
+  if (allowed) fireEvent(target, at(createEvent.drop(target, { dataTransfer })));
+  fireEvent.dragEnd(source, { dataTransfer });
+  return allowed;
+}
 
 /** Signed in, with "Nightly backup" open and a reply streaming in it. */
 async function replying() {
@@ -114,10 +147,104 @@ describe("While Hermes replies", () => {
     expect(queuedTexts(queue())).toEqual(["first", "second, edited"]);
     expect(document.activeElement?.textContent).toContain("first");
     await s.user.click(within(queue()).getByRole("button", { name: "Remove queued message 2" }));
-    await s.user.click(within(queue()).getByRole("button", { name: "Move queued message 1 down" }));
 
     await s.finish();
     expect(prompts(s.server)).toEqual(["Unlock it", "first"]);
+  });
+
+  it("moves a message dragged to the top, the middle or the bottom, marking the place first", async () => {
+    const s = await replying();
+    for (const t of ["a", "b", "c", "d"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    const marks = () => rowsIn(queue()).map((r) => (r.classList.contains("insert-before") ? "^" : r.classList.contains("insert-after") ? "v" : "-")).join("");
+    expect(rowsIn(queue()).every((r) => r.draggable)).toBe(true);
+
+    expect(drag(rowOf(queue(), "d"), queue(), 5, { drop: false })).toBe(true);
+    expect(marks()).toBe("^---");
+    expect(rowOf(queue(), "d").classList.contains("dragging")).toBe(true);
+    drag(rowOf(queue(), "d"), queue(), 5);
+    expect(queuedTexts(queue())).toEqual(["d", "a", "b", "c"]);
+    expect(marks()).toBe("----");
+    expect(rowOf(queue(), "d").classList.contains("dragging")).toBe(false);
+    expect(document.activeElement).toBe(rowOf(queue(), "d"));
+
+    // Below the middle of the second row: in front of the third, so second.
+    drag(rowOf(queue(), "d"), queue(), 70);
+    expect(queuedTexts(queue())).toEqual(["a", "d", "b", "c"]);
+
+    expect(drag(rowOf(queue(), "a"), queue(), 155, { drop: false })).toBe(true);
+    expect(marks()).toBe("---v");
+    drag(rowOf(queue(), "a"), queue(), 155);
+    expect(queuedTexts(queue())).toEqual(["d", "b", "c", "a"]);
+
+    // Where it already is, either side of itself: nothing is marked and the drop is refused.
+    expect(drag(rowOf(queue(), "b"), queue(), 45, { drop: false })).toBe(false);
+    expect(drag(rowOf(queue(), "b"), queue(), 75)).toBe(false);
+    expect(marks()).toBe("----");
+    expect(queuedTexts(queue())).toEqual(["d", "b", "c", "a"]);
+
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "d"]);
+  });
+
+  it("refuses a queued message dropped outside the queue, and the composer takes nothing from it", async () => {
+    const s = await replying();
+    for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = queueIn(document.body)!;
+    const box = composerIn(document.body);
+    expect(drag(rowOf(queue, "second"), box, 0)).toBe(false);
+    expect(drag(rowOf(queue, "second"), document.querySelector(".pane-drop")!, 0)).toBe(false);
+    expect(drag(rowOf(queue, "second"), document.querySelector(".tab-strip")!, 0)).toBe(false);
+    expect(box.value).toBe("");
+    expect(queuedTexts(queue)).toEqual(["first", "second"]);
+    expect(rowsIn(queue).some((r) => r.classList.contains("dragging"))).toBe(false);
+    // A chat from the list, dragged over the queue, is the pane's to take (a new tab), not the queue's: nothing is marked.
+    drag(document.querySelector(".row-open")!, queue, 5, { drop: false });
+    expect(queue.querySelector(".insert-before, .insert-after")).toBeNull();
+  });
+
+  it("can't drag a message while it is being edited, nor take its text selection as one", async () => {
+    const s = await replying();
+    for (const t of ["first", "second", "third"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    await s.user.click(within(queue()).getByRole("button", { name: "Edit queued message 3" }));
+    const edit = within(queue()).getByRole<HTMLTextAreaElement>("textbox", { name: "Edit queued message 3" });
+    expect(rowsIn(queue()).map((r) => r.draggable)).toEqual([true, true, false]);
+    expect(drag(edit, queue(), 5)).toBe(false);
+    expect(queuedTexts(queue())).toEqual(["first", "second"]);
+    expect(edit.value).toBe("third");
+
+    drag(rowOf(queue(), "first"), queue(), 75);
+    expect(queuedTexts(queue())).toEqual(["second", "first"]);
+    expect(rowsIn(queue())[2].querySelector("textarea")).toBe(edit);
+  });
+
+  it("drops nothing when the dragged message goes before the drop", async () => {
+    const s = await replying();
+    for (const t of ["first", "second", "third"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    const dataTransfer = { types: [] as string[], setData: (k: string) => dataTransfer.types.push(k), getData: () => "", effectAllowed: "", dropEffect: "" };
+    fireEvent.dragStart(rowOf(queue(), "first"), { dataTransfer });
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "first"]);
+    const over = createEvent.dragOver(queue(), { dataTransfer });
+    Object.defineProperty(over, "clientY", { value: 75 });
+    expect(fireEvent(queue(), over)).toBe(true);
+    expect(queuedTexts(queue())).toEqual(["second", "third"]);
+  });
+
+  it("goes by Tab from a message to its Edit and Remove, then to the next message", async () => {
+    const s = await replying();
+    for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = queueIn(document.body)!;
+    rowsIn(queue)[0].focus();
+    const stops: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      stops.push((document.activeElement?.getAttribute("aria-label") ?? "").replace(/:.*/, ""));
+      await s.user.tab();
+    }
+    expect(stops).toEqual(["Queued message 1 of 2", "Edit queued message 1", "Remove queued message 1", "Queued message 2 of 2", "Edit queued message 2"]);
+    expect(within(queue).queryByRole("button", { name: /Move queued message/ })).toBeNull();
   });
 
   it("Escape cancels an edit, and nothing goes while one is open", async () => {
@@ -171,5 +298,22 @@ describe("The same chat in both panes", () => {
     await s.finish();
     await s.finish();
     expect(prompts(s.server)).toEqual(["Unlock it", "from the right", "from the left"]);
+  });
+
+  it("shows a message dragged in one pane in its new place in both, and takes a drag from one pane's queue in the other's", async () => {
+    const s = await replying();
+    await s.user.keyboard("{Control>}\\{/Control}");
+    const [left, right] = panes();
+    for (const t of ["one", "two", "three"]) await s.user.type(composerIn(left), `${t}{Enter}`);
+    drag(rowOf(queueIn(left)!, "three"), queueIn(left)!, 5);
+    expect(queuedTexts(queueIn(left)!)).toEqual(["three", "one", "two"]);
+    expect(queuedTexts(queueIn(right)!)).toEqual(["three", "one", "two"]);
+
+    drag(rowOf(queueIn(left)!, "three"), queueIn(right)!, 155);
+    expect(queuedTexts(queueIn(right)!)).toEqual(["one", "two", "three"]);
+    expect(queuedTexts(queueIn(left)!)).toEqual(["one", "two", "three"]);
+
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "one"]);
   });
 });
