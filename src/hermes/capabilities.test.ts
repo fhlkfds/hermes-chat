@@ -33,6 +33,7 @@ const NEW: Record<string, unknown> = {
   "RPC commands.catalog": { pairs: [] },
   "RPC session.active_list": { sessions: [] },
   "RPC learning.detail": { ok: false, message: "skill '__hermes_chat_probe__' not found" },
+  "RPC profiles.list": { profiles: [{ name: "default", is_default: true, canonical_session: null }], bot_mode_protocol: true },
   "GET api/tools/toolsets": [],
   "GET api/profiles/default/soul": { content: "", exists: false },
   "GET api/skills": [],
@@ -53,6 +54,7 @@ const OLD: Record<string, unknown> = {
   "RPC gateway.capabilities": noMethod("gateway.capabilities"),
   "RPC projects.list": noMethod("projects.list"),
   "RPC learning.detail": noMethod("learning.detail"),
+  "RPC profiles.list": noMethod("profiles.list"),
   "GET api/files": noRoute(),
   "GET api/fs/list": noRoute(),
 };
@@ -110,7 +112,7 @@ describe("the capability contract", () => {
   });
 
   it("checks only by reading: a GET, or a JSON-RPC method that only reads", () => {
-    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail"]);
+    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list"]);
     for (const c of CAPABILITIES) {
       if (!c.probe) continue;
       if (c.probe.kind === "rpc") expect(reads.has(c.probe.method), c.id).toBe(true);
@@ -141,6 +143,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       scheduledJobs: "supported",
       automations: "supported",
       outputs: "supported",
+      botMode: "supported",
     });
     expect(snap.facts).toEqual({
       version: "0.17.0",
@@ -162,7 +165,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
   it("sends nothing that writes", async () => {
     const t = store(NEW);
     await connectAndCheck(t);
-    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail)$/.test(c))).toBe(true);
+    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list)$/.test(c))).toBe(true);
   });
 });
 
@@ -182,6 +185,7 @@ describe("a check of an old Hermes (0.16.0)", () => {
       memory: "unsupported",
       serverFiles: "unsupported",
       outputs: "unsupported",
+      botMode: "unsupported",
       toolsets: "supported",
       scheduledJobs: "supported",
       persona: "supported",
@@ -235,6 +239,15 @@ describe("partial and malformed answers", () => {
     expect(t.caps.get("toolsets")).toMatchObject({ state: "unknown", source: "probed", why: expect.stringMatching(/other than what this app reads/) });
     expect(t.caps.get("skills")).toMatchObject({ state: "unknown", why: "Hermes answered with something that isn't JSON." });
     expect(t.caps.get("liveSessions").state).toBe("unknown");
+  });
+
+  it("finds Bot Mode unsupported on a profiles.list whose rows don't report a Bot Chat, and unknown on another shape", async () => {
+    const t = store({ ...NEW, "RPC profiles.list": { profiles: [{ name: "default", is_default: true }, { name: "ops" }] } });
+    await connectAndCheck(t);
+    expect(t.caps.get("botMode")).toMatchObject({ state: "unsupported", source: "probed", why: expect.stringMatching(/doesn't report their Bot Chats/) });
+    const odd = store({ ...NEW, "RPC profiles.list": { roster: [] } });
+    await connectAndCheck(odd);
+    expect(odd.caps.get("botMode").state).toBe("unknown");
   });
 
   it("reads Approvals from the client.capabilities answer, whatever its shape", () => {

@@ -1,16 +1,17 @@
 // Icon rail beside a chat list (ADR 0001), ported from the prototype's variants C and A, with the profile's tools in one
 // Server group and tips that show at once (ADR 0050, 0055). Server files and the Terminal live in the side panel only. The list's header is the profile switcher. Settings opens from the
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/transport";
-import { chatSections, wakeFull, wakeLabel, type Snoozes } from "../hermes/snooze";
-import { ChatMenu, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
+import { SECTION_LABEL, canClear, chatSections, wakeFull, wakeLabel, type Cleared, type SectionKey, type Snoozes } from "../hermes/snooze";
+import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
+import { ChatMenu, type ChatClear, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
@@ -31,6 +32,9 @@ export function Rail({
   onInbox,
   inboxOpen = false,
   inboxCount = 0,
+  onBots,
+  botsOpen = false,
+  botsNeedYou = false,
   onOutputs,
   outputsOpen = false,
   onSettings,
@@ -63,6 +67,10 @@ export function Rail({
   onInbox?: () => void;
   inboxOpen?: boolean;
   inboxCount?: number;
+  /** Opens or closes the Bots view (Bots.tsx, ADR 0066); none when this Hermes has no Bot Mode. `botsNeedYou`: a bot waits on the owner. */
+  onBots?: () => void;
+  botsOpen?: boolean;
+  botsNeedYou?: boolean;
   /** Opens Outputs, the files Hermes's tools wrote (Outputs.tsx). */
   onOutputs?: () => void;
   outputsOpen?: boolean;
@@ -157,6 +165,18 @@ export function Rail({
           >
             <InboxIcon size={18} />
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
+          </button>
+        )}
+        {onBots && (
+          <button
+            className={`icon-btn rail-primary bots-btn ${botsOpen ? "on" : ""}`}
+            aria-label={botsNeedYou ? "Bots, one needs you" : "Bots"}
+            aria-expanded={botsOpen}
+            onClick={onBots}
+            {...bind("bots", { label: "Bots", note: botsNeedYou ? "A bot needs you" : "Each profile as a bot, with its Bot Chat" })}
+          >
+            <BotIcon size={18} />
+            {botsNeedYou && <span className="dot" aria-hidden />}
           </button>
         )}
       </div>
@@ -362,6 +382,7 @@ function ChatRow({
   projects,
   tags,
   snooze,
+  clear,
   section,
   hidden,
 }: {
@@ -387,6 +408,8 @@ function ChatRow({
   projects?: ChatProjects;
   tags?: ChatTags;
   snooze?: ChatSnooze;
+  /** Clearing the chat from the Inbox, or putting it back, where either can be done. */
+  clear?: ChatClear;
   section?: string;
   /** In a collapsed section: kept, with its rename box or menu, but out of sight. */
   hidden?: boolean;
@@ -471,6 +494,19 @@ function ChatRow({
           )}
         </span>
       </button>
+      {clear && (
+        <button
+          className="row-action"
+          title={clear.cleared ? "Back to the Inbox" : "Clear from the Inbox"}
+          aria-label={clear.cleared ? "Back to the Inbox" : "Clear from the Inbox"}
+          onClick={(e) => {
+            e.stopPropagation();
+            clear.onClear(!clear.cleared);
+          }}
+        >
+          {clear.cleared ? <InboxIcon size={14} /> : <CheckCheck size={14} />}
+        </button>
+      )}
       {!chat.archived && (
         <SettleButton
           settled={chat.settled}
@@ -501,6 +537,7 @@ function ChatRow({
           y={menu.y}
           split={split}
           snooze={snooze}
+          clear={clear}
           onOpenIn={onOpenIn}
           onOpenTab={onOpenTab}
           onRename={() => setRenaming(true)}
@@ -812,11 +849,13 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 }
 
 /**
- * The chat list, in sections (snooze.ts `chatSections`): first, unlabeled, the chats that need the owner or are done;
- * then Working, the chats Hermes is replying in; then Snoozed, collapsed; and Settled, a drawer at the foot. The
- * first three are one list of rows and headings, so a row that moves between them, as a reply starts or ends, keeps
- * its menu, rename box and focus. The Custom snooze dialog belongs to the list, not a row, for the same reason.
- * `archivedListed`: it shows the profile's archived chats instead.
+ * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): the Inbox, the chats that need the owner or are done;
+ * Working, the chats Hermes is replying in; Snoozed; Unsettled, the Active chats cleared from the Inbox; Settled; and
+ * Archived. Settings → General picks the sections shown (uiPrefs.ts `chatSectionsShown`), and each one's header
+ * collapses it, remembered across restarts. The sections are one list of rows and headers, so a row that moves between
+ * them, as a reply starts or ends, keeps its menu, rename box and focus; a collapsed section keeps its Active rows,
+ * hidden, for the same reason. The Custom snooze dialog belongs to the list, not a row, for the same reason too.
+ * Archived chats are in `chats` only while the Archived section is shown (App.tsx lists them then).
  * `projectSwitcher` sits under the profile's name; `chats` are only the shown project's when one is picked there.
  * `projectsOf`: the projects a chat's menu offers to put it in or take it out of.
  */
@@ -830,7 +869,6 @@ export function ChatList({
   status,
   others,
   chats,
-  archivedListed,
   syncError,
   selectedId,
   alsoShownId = null,
@@ -841,10 +879,11 @@ export function ChatList({
   onSettle,
   snoozes = {},
   attentionSince,
+  cleared = {},
+  onClear,
   onSnooze,
   onWake,
   onArchive,
-  onListArchived,
   onDelete,
   onRename,
   onRegenTitle,
@@ -867,7 +906,6 @@ export function ChatList({
   status: ConnectionStatus;
   others: OtherProfiles;
   chats: Chat[];
-  archivedListed: boolean;
   syncError?: string;
   /** The chat in the active pane. */
   selectedId: string | null;
@@ -884,10 +922,13 @@ export function ChatList({
   snoozes?: Snoozes;
   /** When each chat last stopped working, so the top lists it as new then (snooze.ts `AttentionClock`). */
   attentionSince?: Readonly<Record<string, number>>;
+  /** The chats cleared from the Inbox, each with when it was last active then (snooze.ts `ClearedStore`). */
+  cleared?: Cleared;
+  /** Clears a chat from the Inbox, or puts it back. */
+  onClear?: (id: string, cleared: boolean) => void;
   onSnooze?: (id: string, until: number) => void;
   onWake?: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
-  onListArchived: (on: boolean) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string, from: string) => Promise<unknown>;
   onRegenTitle: (id: string) => Promise<unknown>;
@@ -903,8 +944,11 @@ export function ChatList({
   onNew?: () => void;
   onSearch?: () => void;
 }) {
-  const [settledOpen, setSettledOpen] = useState(false);
-  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const { chatSectionsShown: shown, chatSectionsCollapsed: collapsed } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const setCollapsed = (key: SectionKey, on: boolean) => {
+    const now = getUIPrefs().chatSectionsCollapsed;
+    if (now.includes(key) !== on) setUIPrefs({ chatSectionsCollapsed: on ? [...now, key] : now.filter((k) => k !== key) });
+  };
   // The chat whose Custom snooze dialog is open.
   const [customFor, setCustomFor] = useState<Chat>();
   // The chat the Delete question is open for, and what had focus when it was asked.
@@ -912,7 +956,7 @@ export function ChatList({
   const deletingGone = !!deleting && !chats.some((c) => c.id === deleting.chat.id && !c.running);
   // Re-sorts the list when the next snooze wakes.
   const now = useSnoozeClock(snoozes);
-  const { top, working, snoozed, settled, archived } = chatSections(chats, snoozes, now, attentionSince);
+  const sections = chatSections(chats, snoozes, now, attentionSince, cleared);
   // The dialog closes if its chat leaves the list, or is settled or archived meanwhile (in another window or client).
   const customGone = !!customFor && !chats.some((c) => c.id === customFor.id && !c.settled && !c.archived);
   useEffect(() => {
@@ -921,17 +965,13 @@ export function ChatList({
   useEffect(() => {
     if (deletingGone) setDeleting(undefined);
   }, [deletingGone]);
-  // Opening a Settled or Snoozed chat, say from a search, shows it in the list; settling or snoozing the chat on
-  // screen doesn't.
-  const selectedSettled = settled.some((c) => c.id === selectedId);
-  const selectedSnoozed = snoozed.some((c) => c.id === selectedId);
+  // Opening a chat in a collapsed section, say from a search, opens the section; settling, snoozing or clearing the
+  // chat on screen doesn't.
+  const selectedIn = shown.find((k) => sections[k].some((c) => c.id === selectedId));
   useEffect(() => {
-    if (selectedSettled) setSettledOpen(true);
-    if (selectedSnoozed) setSnoozedOpen(true);
+    if (selectedIn) setCollapsed(selectedIn, false);
   }, [selectedId]);
-  const settledUnread = settled.filter((c) => c.unread).length;
-  const snoozedUnread = snoozed.filter((c) => c.unread).length;
-  const row = (c: Chat, section?: string, hidden?: boolean) => (
+  const row = (c: Chat, section?: SectionKey, hidden?: boolean) => (
     <ChatRow
       key={c.id}
       section={section}
@@ -957,8 +997,18 @@ export function ChatList({
           ? { until: snoozes[c.id], onSnooze: (until) => onSnooze(c.id, until), onCustom: () => setCustomFor(c), onWake: () => onWake(c.id) }
           : undefined
       }
+      clear={
+        onClear && (section === "unsettled" || (section === "inbox" && canClear(c)))
+          ? { cleared: section === "unsettled", onClear: (on) => onClear(c.id, on) }
+          : undefined
+      }
     />
   );
+  // Settled and Archived can hold every chat the profile has ever had, so a collapsed one draws no rows.
+  const keepsHidden = (k: SectionKey) => k !== "settled" && k !== "archived";
+  // Working and Snoozed come and go with what is happening; the others keep their header when empty.
+  const drawnEmpty = (k: SectionKey) => k !== "working" && k !== "snoozed";
+  const busy = sections.working.length + sections.snoozed.length > 0;
   return (
     <aside className="sidebar" onKeyDown={moveBetweenChats}>
       <div className="sb-head">
@@ -970,14 +1020,6 @@ export function ChatList({
           onCheckOthers={onCheckOthers}
           onSwitch={onSwitchProfile}
         />
-        <button
-          className={`icon-btn ${archivedListed ? "on" : ""}`}
-          title={archivedListed ? "Back to the chat list" : "Archived chats"}
-          aria-pressed={archivedListed}
-          onClick={() => onListArchived(!archivedListed)}
-        >
-          <EyeOff size={16} />
-        </button>
       </div>
       {(onNew || onSearch) && (
         <div className="sb-actions">
@@ -1008,51 +1050,36 @@ export function ChatList({
             {syncError}
           </div>
         )}
-        {archivedListed ? (
-          <>
-            <div className="section-label">Archived</div>
-            {archived.length ? archived.map((c) => row(c)) : <div className="empty-hint">No archived chats.</div>}
-          </>
-        ) : (
+        {
           // One keyed array, so React keeps a row that moves from one section to another.
-          [
-            ...top.map((c) => row(c, "top")),
-            !top.length && (
-              <div key="empty" className="empty-hint">
-                {working.length || snoozed.length ? "Nothing needs you right now." : "Nothing needs you. Start a new chat."}
-              </div>
-            ),
-            working.length > 0 && (
-              <div key="working" className="section-label">
-                Working <span className="count">{working.length}</span>
-              </div>
-            ),
-            ...working.map((c) => row(c, "working")),
-            snoozed.length > 0 && (
-              <button key="snoozed" className="section-toggle" aria-expanded={snoozedOpen} onClick={() => setSnoozedOpen((o) => !o)}>
-                <ChevronRight size={14} className={`chev ${snoozedOpen ? "open" : ""}`} />
-                Snoozed
-                <span className="count">{snoozed.length}</span>
-                {snoozedUnread > 0 && !snoozedOpen && <span className="dot" title={`${snoozedUnread} unread`} />}
-              </button>
-            ),
-            // Kept while collapsed, hidden, so a row snoozed meanwhile (from another window) keeps its rename box.
-            ...snoozed.map((c) => row(c, "snoozed", !snoozedOpen)),
-          ]
-        )}
+          shown.flatMap((k) => {
+            const list = sections[k];
+            if (!list.length && !drawnEmpty(k)) return [];
+            const open = !collapsed.includes(k);
+            const unread = list.filter((c) => c.unread).length;
+            return [
+              <button
+                key={`section-${k}`}
+                className="section-toggle"
+                data-section-head={k}
+                aria-expanded={open}
+                onClick={() => setCollapsed(k, open)}
+              >
+                <ChevronRight size={14} className={`chev ${open ? "open" : ""}`} />
+                {SECTION_LABEL[k]}
+                <span className="count">{list.length}</span>
+                {unread > 0 && !open && <span className="dot" title={`${unread} unread`} />}
+              </button>,
+              ...(open || keepsHidden(k) ? list.map((c) => row(c, k, !open)) : []),
+              open && !list.length && (
+                <div key={`empty-${k}`} className="empty-hint">
+                  {k === "inbox" ? (busy ? "Nothing needs you right now." : "Nothing needs you. Start a new chat.") : `No ${SECTION_LABEL[k].toLowerCase()} chats.`}
+                </div>
+              ),
+            ];
+          })
+        }
       </div>
-      {/* Settled is pinned to the foot of the list and opens upward as a drawer with its own scroll. */}
-      {!archivedListed && (
-        <div className={`settled-section ${settledOpen ? "open" : ""}`}>
-          <button className="section-toggle" aria-expanded={settledOpen} onClick={() => setSettledOpen((o) => !o)}>
-            <ChevronRight size={14} className={`chev ${settledOpen ? "open" : ""}`} />
-            Settled
-            <span className="count">{settled.length}</span>
-            {settledUnread > 0 && !settledOpen && <span className="dot" title={`${settledUnread} unread`} />}
-          </button>
-          {settledOpen && <div className="settled-list">{settled.map((c) => row(c, "settled"))}</div>}
-        </div>
-      )}
       {customFor && !customGone && (
         <SnoozeDialog
           title={customFor.title}

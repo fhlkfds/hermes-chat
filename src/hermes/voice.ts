@@ -38,6 +38,11 @@ const other = (name: string): ProviderInfo => ({ label: name, needs: "A provider
 
 /** The speech-to-text provider the profile names; none named means Hermes picks, Local Whisper first. */
 export function sttProvider(setup: VoiceSetup): ProviderInfo {
+  if (setup.sttLocal)
+    return {
+      label: `${setup.sttLocal.label ?? "An engine"} on this computer`,
+      needs: "Runs on this computer: the recording never leaves it, and only the text goes to Hermes.",
+    };
   const name = setup.sttProvider?.toLowerCase();
   if (!name) return { label: "Picked by Hermes", needs: "Hermes uses Local Whisper if it's installed on the server, else the first cloud provider with a key." };
   return STT[name] ?? other(setup.sttProvider!);
@@ -52,6 +57,7 @@ export function ttsProvider(setup: VoiceSetup): ProviderInfo {
 /** Why Dictation can't be used with this set-up, or undefined if it can be tried. */
 export function dictationBlocked(setup: VoiceSetup | undefined): string | undefined {
   if (!setup) return undefined;
+  if (setup.sttLocal) return setup.sttLocal.problem ? `${setup.sttLocal.problem} See Settings → Voice.` : undefined;
   if (!setup.transcribe) return "This Hermes server can't transcribe recordings. Updating Hermes adds it.";
   if (setup.sttEnabled === false) return "Speech-to-text is turned off for this profile in Hermes (stt.enabled is false).";
   return undefined;
