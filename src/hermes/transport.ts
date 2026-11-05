@@ -944,7 +944,7 @@ export class Hermes {
   );
 
   /**
-   * Settings → Gateways' reads and writes (gateways.ts, ADR 0069): a profile's Telegram and Discord settings. Each call
+   * Settings → Gateways' reads and writes (gateways.ts, ADR 0070): a profile's Telegram and Discord settings. Each call
    * names its profile, and goes only over a connection that is up.
    */
   readonly gateways = new GatewaysApi((method, pathAndQuery, body) => this.connectedRest(method, pathAndQuery, body));

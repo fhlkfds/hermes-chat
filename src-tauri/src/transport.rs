@@ -952,7 +952,7 @@ impl Dashboard {
     /// the Automations writes (`webhook_write`, ADR 0036), Settings → Memory's external memory writes
     /// (`memory_provider_write`, ADR 0045), and Settings → Voice's provider pick and key save (`voice_provider_write`,
     /// ADR 0055), Settings → MCP servers' add, switch, test, sign-in and catalog install (`mcp::relayed`, ADR 0068), and
-    /// Settings → Gateways' Telegram and Discord save and status check (`gateway_write`, ADR 0069).
+    /// Settings → Gateways' Telegram and Discord save and status check (`gateway_write`, ADR 0070).
     /// Returns the response body on 2xx.
     pub async fn request(&self, method: &str, path_and_query: &str, body: Option<String>) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
@@ -1675,7 +1675,7 @@ pub fn voice_provider_write(path: &str, body: Option<&str>) -> bool {
     }
 }
 
-/// Settings → Gateways' writes (ADR 0069, Hermes's `hermes_cli/web_routers/messaging.py`), for Telegram and Discord
+/// Settings → Gateways' writes (ADR 0070, Hermes's `hermes_cli/web_routers/messaging.py`), for Telegram and Discord
 /// only: `PUT api/messaging/platforms/{id}` with a JSON object of at most `enabled` (a bool), `env` (one-line values
 /// under that platform's own env var names) and `clear_env` (those names), and nothing else, a profile included; and
 /// `POST api/messaging/platforms/{id}/test` with no body, which only reports the state. A token goes from the webview

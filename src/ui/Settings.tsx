@@ -215,7 +215,7 @@ export function SettingsScreen({
   toolsets?: ToolsetsApi;
   /** Each profile's MCP servers on Hermes (ADR 0068); without it there is no MCP servers tab. */
   mcp?: McpApi;
-  /** Each profile's Telegram and Discord gateways on Hermes (ADR 0069); without it there is no Gateways tab. */
+  /** Each profile's Telegram and Discord gateways on Hermes (ADR 0070); without it there is no Gateways tab. */
   gateways?: GatewaysApi;
   /** Opens a page in the browser: an MCP server's OAuth sign-in. */
   openUrl?: (url: string) => Promise<void> | void;

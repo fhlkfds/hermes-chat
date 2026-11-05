@@ -1,4 +1,4 @@
-// A fake Hermes's messaging gateways, for tests of Settings → Gateways (ADR 0069): the `/api/messaging/platforms` routes
+// A fake Hermes's messaging gateways, for tests of Settings → Gateways (ADR 0070): the `/api/messaging/platforms` routes
 // as the deployed `f0d94882` answers them (`hermes_cli/web_routers/messaging.py`): the list with redacted previews and
 // the state ladder of `_messaging_platform_payload`, the write that checks the whole request before touching `.env` or
 // config.yaml, and the status check that sends no message. Each profile keeps its own `.env`, switches and gateway.

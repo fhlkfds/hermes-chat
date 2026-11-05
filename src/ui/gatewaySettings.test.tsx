@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Settings → Gateways on screen (GatewaySettings.tsx, ADR 0069), against the fake dashboard's messaging routes
+// Settings → Gateways on screen (GatewaySettings.tsx, ADR 0070), against the fake dashboard's messaging routes
 // (fakeGateways.ts): the sub-nav of platforms, the state, token rows that keep, replace or remove, the switch, Save with
 // its read back, a change on the server meanwhile, Check status, the three problems in their own words, and answers for
 // another profile dropped. Every token here is synthetic.

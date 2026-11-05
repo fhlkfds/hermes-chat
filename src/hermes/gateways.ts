@@ -1,4 +1,4 @@
-// Settings → Gateways (ADR 0069): a profile's Telegram and Discord gateways, read and changed through the dashboard's
+// Settings → Gateways (ADR 0070): a profile's Telegram and Discord gateways, read and changed through the dashboard's
 // messaging routes at the deployed `f0d94882` (`hermes_cli/web_routers/messaging.py`). Every route takes `?profile=`:
 //
 // - `GET /api/messaging/platforms` lists every platform Hermes knows, with its on/off state, whether its required

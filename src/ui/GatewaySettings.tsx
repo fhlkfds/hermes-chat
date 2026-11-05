@@ -1,4 +1,4 @@
-// Settings → Gateways (ADR 0069): a profile's Telegram and Discord gateways on the server, one platform at a time beside
+// Settings → Gateways (ADR 0070): a profile's Telegram and Discord gateways on the server, one platform at a time beside
 // a sub-nav. Each shows its state as Hermes reports it, its on/off switch, and its settings. A token is write-only: the
 // row shows Hermes's redacted preview, and Replace or Remove changes it only on Save; a row left alone keeps what Hermes
 // has. Save reads the platform first and sends nothing if it changed on the server, then reads it again to confirm.
