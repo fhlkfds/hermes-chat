@@ -103,17 +103,23 @@ export function Office({
   // Opening, and switching views, puts focus on the first desk, or on Close when there is none.
   useEffect(() => void (desks()[0] ?? root.current?.querySelector<HTMLElement>(".office-close"))?.focus(), [view]);
   // A desk with focus can go, as when its reply ends and its room with it. Focus then goes to the desk now in its place,
-  // or Close, rather than to the page, where the office's keys don't reach.
+  // or Close, rather than to the page, where the office's keys don't reach. Where the desk with focus is, is read
+  // again after every change, since desks before it can go or move while it stays.
   const lastDesk = useRef<{ key: string; index: number }>(undefined);
+  const remember = (all: HTMLButtonElement[], at: number) => {
+    if (at >= 0) lastDesk.current = { key: all[at].dataset.desk!, index: at };
+  };
   useEffect(() => {
+    const all = desks();
+    const at = all.indexOf(document.activeElement as HTMLButtonElement);
+    if (at >= 0) return remember(all, at);
     const was = lastDesk.current;
     if (!was || (document.activeElement && document.activeElement !== document.body)) return;
-    const all = desks();
     (all.find((d) => d.dataset.desk === was.key) ?? all[Math.min(was.index, all.length - 1)] ?? root.current?.querySelector<HTMLElement>(".office-close"))?.focus();
   });
   const onFocus = (e: FocusEvent<HTMLElement>) => {
-    const key = e.target instanceof HTMLElement ? e.target.dataset.desk : undefined;
-    if (key) lastDesk.current = { key, index: desks().indexOf(e.target as HTMLButtonElement) };
+    const all = desks();
+    remember(all, all.indexOf(e.target as HTMLButtonElement));
   };
 
   const open = (room: Room, desk: Desk) => (room.profile !== profile && leaving ? setAsking({ room, desk }) : onOpen(room, desk));

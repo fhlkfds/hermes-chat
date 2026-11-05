@@ -676,8 +676,8 @@ type Pane = {
   draftError?: string;
   picked?: { found: Found; at: number };
   jump?: JumpTarget;
-  /** A subagent to open in the chat's Subagents panel, from the agent office; `at` tells one request from the next. */
-  subagent?: { id: SubagentId; at: number };
+  /** A subagent of the chat `chatId` to open in its Subagents panel, from the agent office; `at` tells one request from the next. */
+  subagent?: { chatId: string; id: SubagentId; at: number };
   /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0043). */
   worktree?: WorktreeStart;
 };
@@ -1325,7 +1325,7 @@ export function Main({
       navGen.current++;
       setPanelHidden(true);
       if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
-      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, subagent: subagent && { id: subagent, at: Date.now() }, worktree, ...(fresh && { draftError: undefined }) });
+      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, subagent: subagent && id ? { chatId: id, id: subagent, at: Date.now() } : undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
@@ -1399,7 +1399,7 @@ export function Main({
     navGen.current++;
     setPanelHidden(true);
     hermes.reveal(found);
-    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
+    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined, subagent: undefined });
     setReopening(undefined);
     rememberChat(found.chatId);
     setSearchOpen(false);
@@ -1519,7 +1519,7 @@ export function Main({
     setPanelHidden(true);
     const panesNow = out.panes.map((p) => {
       const was = before.get(p.key);
-      return was && was.chatId !== p.chatId ? { ...p, view: newView(), picked: undefined, jump: undefined, worktree: undefined } : p;
+      return was && was.chatId !== p.chatId ? { ...p, view: newView(), picked: undefined, jump: undefined, subagent: undefined, worktree: undefined } : p;
     });
     panesRef.current = panesNow;
     setPanes(panesNow);
@@ -2284,7 +2284,7 @@ export function Main({
           started={!!listed}
           picked={p.picked}
           jump={p.jump}
-          showSubagent={p.subagent}
+          showSubagent={p.subagent?.chatId === p.chatId ? p.subagent : undefined}
           active={!covered && !covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}

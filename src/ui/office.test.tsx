@@ -271,6 +271,19 @@ describe("A desk that goes while it has focus", () => {
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
   });
+
+  it.each(["desks", "list"] as const)("follows the desk as the desks before it go, so the one after it takes its place (%s)", (view) => {
+    const desk = (id: string) => ({ key: `default audit ${id}`, agent: { kind: "subagent" as const, id: id as never, depth: 0 }, name: `Task ${id}`, state: "running" as const });
+    const audit = (ids: string[]): Room => ({ key: "default audit", profile: "default", chatId: "audit", title: "Audit", desks: ids.map(desk) });
+    const first = sample()[0];
+    const props = { view, onView: () => {}, server: "hermes", profile: "default", connected: true, onOpen: () => {}, onClose: () => {} };
+    const { rerender } = render(<Office rooms={[first, audit(["a", "b", "c", "d"])]} {...props} />);
+    document.querySelector<HTMLElement>('[data-desk="default audit b"]')!.focus();
+    rerender(<Office rooms={[audit(["a", "b", "c", "d"])]} {...props} />);
+    expect(document.activeElement?.getAttribute("data-desk")).toBe("default audit b");
+    rerender(<Office rooms={[audit(["a", "c", "d"])]} {...props} />);
+    expect(document.activeElement?.getAttribute("data-desk")).toBe("default audit c");
+  });
 });
 
 /** Signed in, with "Audit" open, its reply running with two subagents and one under the first, and an Approval asked. */
@@ -323,6 +336,30 @@ describe("The office in the app", () => {
     await user.click(within(screen.getByRole("region", { name: "Audit" })).getByRole("button", { name: /^The chat's reply, Waiting for your approval/ }));
     await waitFor(() => expect(document.activeElement?.closest(".approval")).toBeTruthy());
     expect(writes(server)).toHaveLength(before);
+  });
+
+  it("focuses a subagent's name each time its desk opens it, and leaves the next chat's panel as it was", async () => {
+    const { server, hermes, user } = await auditing();
+    await user.click(screen.getByRole("button", { name: /^Other/ }));
+    await act(async () => void (await hermes.idle()));
+    act(() => server.event(server.runtimeIdOf("other")!, "subagent.start", who("sa-docs", "Tidy the docs")));
+
+    const desk = () => within(screen.getByRole("region", { name: "Audit" })).getByRole("button", { name: /^Read the auth code, Running/ });
+    const heading = () => within(screen.getByRole("region", { name: "Subagents" })).getByRole("heading", { name: "Read the auth code" });
+    await user.click(officeButton()!);
+    await user.click(desk());
+    await waitFor(() => expect(document.activeElement).toBe(heading()));
+    await user.click(officeButton()!);
+    await user.click(desk());
+    await waitFor(() => expect(document.activeElement).toBe(heading()));
+
+    await user.click(screen.getByRole("button", { name: "Search all chats (Ctrl+K)" }));
+    await user.type(screen.getByPlaceholderText("Search all chats, including Settled"), "Other");
+    await user.click(await within(screen.getByRole("dialog", { name: "Search chats" })).findByRole("button", { name: /Other/ }));
+    await act(async () => void (await hermes.idle()));
+    expect(document.querySelector(".chat-head")!.textContent).toContain("Other");
+    const panel = screen.getByRole("region", { name: "Subagents" });
+    expect(within(panel).getByRole("button", { name: /Subagents/ }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("isn't drawn, and stops asking Hermes for checks, while the window is hidden to the tray or minimized", async () => {

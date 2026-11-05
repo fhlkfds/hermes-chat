@@ -86,10 +86,13 @@ export function SubagentsPanel({
   const backTo = useRef<SubagentId | undefined>(undefined);
   const shown = picked && tree?.subagents.find((s) => s.id === picked);
 
+  // Each request from the office focuses the subagent's name, even the one already open.
+  const [asked, setAsked] = useState(0);
   useEffect(() => {
     if (!show) return;
     setOpen(true);
     setPicked(show.id);
+    setAsked(show.at);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show?.at]);
 
@@ -117,7 +120,7 @@ export function SubagentsPanel({
       {open && <SyncNote tree={tree} />}
       {open &&
         (shown ? (
-          <SubagentView tree={tree} s={shown} api={api} onBack={back} onOpen={setPicked} />
+          <SubagentView tree={tree} s={shown} api={api} asked={asked} onBack={back} onOpen={setPicked} />
         ) : (
           <div className="subagents-body">
             {approvalWaiting && (
@@ -165,17 +168,20 @@ function SubagentView({
   tree,
   s,
   api,
+  asked,
   onBack,
   onOpen,
 }: {
   tree: SubagentTree;
   s: Subagent;
   api?: SubagentsApi;
+  /** When the office last asked for a subagent to be shown. */
+  asked: number;
   onBack: () => void;
   onOpen: (id: SubagentId) => void;
 }) {
   const headRef = useRef<HTMLHeadingElement>(null);
-  useEffect(() => headRef.current?.focus(), [s.id]);
+  useEffect(() => headRef.current?.focus(), [s.id, asked]);
   // Steer and Stop go once it ends; focus that was on them goes to its name rather than nowhere.
   const running = live(s);
   useEffect(() => {

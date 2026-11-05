@@ -53,6 +53,10 @@ describe("The office's rooms", () => {
     expect(rooms([], { others: { byName: { work: listed } } })[0].desks[0].stale).toBeUndefined();
     const failed = rooms([], { others: { byName: { work: listed }, error: "Couldn't list the profiles: 502" } });
     expect(failed[0].desks[0]).toMatchObject({ state: "unread", stale: "As last seen: Hermes couldn't be checked." });
+    // A failure the app saw there before switching away shows first, and is as last seen with the rest.
+    const seen = { ...listed, failures: [{ chatId: "w1", title: "Deploy", itemId: "e-1", mark: "x" }] };
+    for (const others of [{ byName: { work: seen }, error: "502" }, { byName: { work: { ...seen, error: "502" } } }])
+      expect(rooms([], { others })[0].desks[0]).toMatchObject({ state: "failed", stale: "As last seen: Hermes couldn't be checked." });
   });
 
   it("says why every desk is as last seen while disconnected, and never calls a reply it can't see idle", () => {
