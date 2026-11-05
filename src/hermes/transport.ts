@@ -499,6 +499,8 @@ export class Hermes {
   private generation = 0;
   /** The connections (by generation) whose Hermes answered that it has no `session.compress`. */
   private noCompact = new Set<number>();
+  /** Compactions asked of Hermes and not yet answered, by chat. A message sent meanwhile waits for it (`deliver`). */
+  private compacting = new Map<string, Promise<unknown>>();
   /** The pipe being opened is waiting for `gateway.ready`. */
   private onReady?: (payload: Record<string, unknown>) => void;
   /** Ends the dial under way with this error. */
@@ -2415,13 +2417,18 @@ export class Hermes {
         this.setOutgoing(profile, chatId, user.id, (r) =>
           withOutgoing(r, { sent: { prompt: shown ?? prompt, ...(this.knownRow.has(chatId) && { after: this.knownRow.get(chatId) }) } }),
         );
-      const submitting = this.resume(chatId).then(async (runtimeId) => {
-        if (!skill) return this.submit(runtimeId, text, attachments, goingOut, !!queued);
-        // Hermes builds the skill's text for this session; nothing reaches the chat until it is sent below.
-        const ran = await runSkill((method, params) => this.request(method, params), runtimeId, skill);
-        shown = ran.display;
-        this.setOutgoing(profile, chatId, user.id, (r) => ({ ...r, text: ran.display }));
-        return this.submit(runtimeId, ran.message, attachments, goingOut, !!queued);
+      // A compaction Hermes hasn't answered yet goes first: the message mustn't land while it rewrites the context.
+      const submitting = this.resume(chatId).then((runtimeId) => {
+        const go = async () => {
+          if (!skill) return this.submit(runtimeId, text, attachments, goingOut, !!queued);
+          // Hermes builds the skill's text for this session; nothing reaches the chat until it is sent below.
+          const ran = await runSkill((method, params) => this.request(method, params), runtimeId, skill);
+          shown = ran.display;
+          this.setOutgoing(profile, chatId, user.id, (r) => ({ ...r, text: ran.display }));
+          return this.submit(runtimeId, ran.message, attachments, goingOut, !!queued);
+        };
+        const compacting = this.compacting.get(chatId);
+        return compacting ? compacting.then(go) : go();
       });
       this.submitting.set(chatId, submitting);
       const rowId = submitting.then(
@@ -2748,12 +2755,20 @@ export class Hermes {
    * Has Hermes compact the chat now (`session.compress`, Hermes's `/compress`): it summarizes the older messages into
    * one summary the model reads in their place. Hermes refuses while a reply runs. The chat's usage is read again
    * afterwards. Rejects when the chat isn't open on Hermes here, when Hermes refuses, or when this Hermes can't
-   * compact (and then the chat isn't offered it again on this connection).
+   * compact (and then the chat isn't offered it again on this connection). One compaction at a time for a chat: asked
+   * again before Hermes answers, it is busy. A message sent meanwhile goes once Hermes has answered (`deliver`), so it
+   * never lands while Hermes rewrites what the model reads (Idle compaction, ADR 0059).
    */
   async compact(chatId: string): Promise<CompactResult> {
     const { runtimeId, still } = this.liveScope(chatId);
-    if (this.snapshot.chats.find((c) => c.id === chatId)?.running) throw new Error("Wait for the reply to finish: Hermes compacts only between replies.");
-    const res = await this.request("session.compress", { session_id: runtimeId }).catch((e: unknown) => {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (chat?.running || this.submitting.has(chatId)) throw new Error("Wait for the reply to finish: Hermes compacts only between replies.");
+    if (this.compacting.has(chatId)) return { kind: "busy", message: "Hermes is already compacting this chat." };
+    const asked = this.request("session.compress", { session_id: runtimeId });
+    const settled = asked.catch(() => undefined);
+    this.compacting.set(chatId, settled);
+    void settled.then(() => this.compacting.get(chatId) === settled && this.compacting.delete(chatId));
+    const res = await asked.catch((e: unknown) => {
       if (e instanceof RpcError && e.code === NO_SUCH_METHOD) {
         this.noCompact.add(this.generation);
         this.update({});

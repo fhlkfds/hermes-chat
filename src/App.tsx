@@ -57,6 +57,7 @@ import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
 import { AttentionClock, SNOOZE_KEY, SnoozeStore, chatSections, wakeFull } from "./hermes/snooze";
+import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
 import { LeavePersona, type LeaveWhat } from "./ui/LeavePersona";
@@ -1006,6 +1007,30 @@ export function Main({
   // every change in the chats, to tell when a troubleshooting reply has ended.
   const troubleshoots = useMemo(() => new TroubleshootStore(), [hermes]);
   useEffect(() => hermes.subscribe(() => troubleshoots.observe(hermes.getSnapshot())), [hermes, troubleshoots]);
+  // Idle compaction (idleCompact.ts, ADR 0059): a chat open on Hermes here that has sat idle with its context window
+  // past the owner's mark is compacted, one at a time. It sees every change in the chats, to time how long each has
+  // been idle, and looks for one that is due every IDLE_COMPACT_CHECK_MS. Off unless turned on in Settings → Model.
+  const compactor = useMemo(
+    () =>
+      new IdleCompactor(hermes, () => getUIPrefs().idleCompact, (c) => {
+        const text = idleCompactionNote(c);
+        if (text) setToast({ text, at: Date.now() });
+      }),
+    [hermes],
+  );
+  useEffect(() => {
+    const look = () => {
+      const snap = hermes.getSnapshot();
+      void compactor.check(snap.chats, snap.status, Date.now());
+    };
+    const unsubscribe = hermes.subscribe(() => compactor.observe(hermes.getSnapshot().chats, Date.now()));
+    compactor.observe(hermes.getSnapshot().chats, Date.now());
+    const timer = setInterval(look, IDLE_COMPACT_CHECK_MS);
+    return () => {
+      unsubscribe();
+      clearInterval(timer);
+    };
+  }, [hermes, compactor]);
   // Keep the same store and request queue when returning to a profile: a write still finishing for that profile
   // must share ordering with its new reads and writes, rather than commit from an abandoned snapshot.
   const projectStores = useMemo(() => new Map<string, ProjectsStore>(), [hermes]);

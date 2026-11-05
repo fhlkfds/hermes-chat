@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 } });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -69,6 +69,7 @@ describe("reading", () => {
         previewWidth: 12.5,
         terminalKind: "laptop",
         followUp: "interrupt",
+        idleCompact: { enabled: "yes", percent: 100, idleMinutes: 30 },
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -82,6 +83,7 @@ describe("reading", () => {
       modelFavorites: ["openai/gpt-5", "anthropic/claude-opus-5-5"],
       statusBar: ["model", "tokens"],
       previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue",
+      idleCompact: { enabled: false, percent: 70, idleMinutes: 30 },
     });
   });
 
@@ -113,6 +115,17 @@ describe("reading", () => {
       localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, terminalKind: bad }));
       expect(getUIPrefs().terminalKind).toBe("server");
     }
+  });
+
+  it("keeps Idle compaction, off until turned on, each field checked on its own", () => {
+    expect(getUIPrefs().idleCompact).toEqual({ enabled: false, percent: 70, idleMinutes: 15 });
+    setUIPrefs({ idleCompact: { enabled: true, percent: 80, idleMinutes: 30 } });
+    expect(stored().idleCompact).toEqual({ enabled: true, percent: 80, idleMinutes: 30 });
+    // A value no window could mean leaves the old one.
+    setUIPrefs({ idleCompact: { enabled: true, percent: 4, idleMinutes: 2.5 } });
+    expect(getUIPrefs().idleCompact).toEqual({ enabled: true, percent: 80, idleMinutes: 30 });
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, idleCompact: "on" }));
+    expect(getUIPrefs().idleCompact).toEqual({ enabled: false, percent: 70, idleMinutes: 15 });
   });
 
   it("keeps what sending does while a reply runs, queueing until steering is picked", () => {

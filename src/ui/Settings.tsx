@@ -1,7 +1,8 @@
 // The Settings screen, in nine tabs. General, ported from the prototype: the connection and Sign out, what shows on
 // launch, screenshots, updates, the local cache, older history, importing transcripts, and backups. Appearance: how the app looks on this
-// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx). Voice: Dictation, Read
-// aloud and voice conversations, and the profile's speech providers on Hermes (VoiceProviderSettings.tsx). Toolsets: which tools
+// computer (AppearanceSettings.tsx). Model: the profile's models on Hermes (ModelSettings.tsx), and Idle compaction on this computer
+// (IdleCompactSettings.tsx). Voice: Dictation, Read aloud and voice
+// conversations, and the profile's speech providers on Hermes (VoiceProviderSettings.tsx). Toolsets: which tools
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx). Diagnostics: what the connected Hermes is and what it
@@ -21,6 +22,7 @@ import type { AppearanceStore, Fonts } from "./appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 import type { ModelSettingsApi } from "../hermes/modelSettings";
 import { ModelSettings } from "./ModelSettings";
+import { IdleCompactSettings } from "./IdleCompactSettings";
 import type { ToolsetsApi } from "../hermes/toolsets";
 import { ToolsetSettings, type OpenChat } from "./ToolsetSettings";
 import type { MemoryApi } from "../hermes/memory";
@@ -714,8 +716,14 @@ export function SettingsScreen({
       case "appearance":
         return <AppearanceSettings store={appearance} listFonts={listFonts} />;
       case "model":
-        // A draft lives only while this tab is open, and for one profile.
-        return <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={searching ? undefined : showTextGeneration} />;
+        // A draft lives only while this tab is open, and for one profile. Idle compaction is this computer's, and shows
+        // whether or not Hermes is reachable.
+        return (
+          <>
+            <ModelSettings key={profile} api={modelSettings} profile={profile} connected={status === "connected"} showTextGeneration={searching ? undefined : showTextGeneration} />
+            <IdleCompactSettings />
+          </>
+        );
       case "voice":
         return (
           <>

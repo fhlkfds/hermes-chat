@@ -270,6 +270,10 @@ _Avoid_: context (alone, for memory), prompt, tokens (for the window)
 Hermes swapping a chat's older messages for one summary that the model reads in their place, when the window fills or when the owner asks with **Compact now**. Every message stays in the chat and in Hermes, but the model no longer reads the ones taken out word for word. The context inspector lists the compactions Hermes stored, with the summary it kept. Compact now asks first, and is offered only between replies on a Hermes that can compact.
 _Avoid_: compression (Hermes's word, fine in server-side talk), summary (that is what a compaction leaves), truncation
 
+**Idle compaction**:
+This app having Hermes compact a chat the owner has left: one open in this app, idle for the time set in Settings → Model, whose context window Hermes last measured at the mark set there or past it. It compacts a chat once for each measure Hermes takes, one chat at a time, and says what Hermes did. Off until the owner turns it on; kept on this computer. Hermes's own compaction when the window fills during a reply is separate (ADR 0059).
+_Avoid_: auto-compact (Hermes's own compaction is automatic too), auto-compress, cleanup
+
 **Side panel**:
 The resizable panel beside the chat, with four tabs: Preview, Terminal, Files and Screen. It opens from the chat's header, and at a tab from the rail, a link or a tool call. In a window too narrow for both, it covers the chat until the owner goes back to it. Closing it, or going to another tab, leaves what runs in it running (ADR 0039).
 _Avoid_: drawer, sidebar (that is the chat list), inspector
