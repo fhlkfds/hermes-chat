@@ -1,42 +1,12 @@
 // Markdown with highlighted, copyable code blocks and find-in-chat marks. Ported from the prototype. Single newlines
 // are kept as line breaks, since replies often put one item per line. Links open in the preview pane, never in the
 // app's own window (previewContext.tsx).
-import { Children, isValidElement, memo, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, memo, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import rehypeHighlight from "rehype-highlight";
 import { Check, Copy } from "lucide-react";
-import { escapeRe } from "./bits";
 import { PreviewLink } from "./previewContext";
-
-type HastNode = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: HastNode[] };
-
-/**
- * Rehype plugin: wraps each case-insensitive occurrence of `query` in `<mark class="hit">`. It runs after
- * rehype-highlight, so code blocks are marked too, except where a match spans two highlighted tokens.
- */
-function rehypeFind(query: string) {
-  return () => (tree: HastNode) => {
-    if (!query) return;
-    const re = new RegExp(`(${escapeRe(query)})`, "gi");
-    const walk = (node: HastNode) => {
-      if (!node.children) return;
-      node.children = node.children.flatMap((child): HastNode[] => {
-        if (child.type !== "text" || !child.value) {
-          walk(child);
-          return [child];
-        }
-        return child.value
-          .split(re)
-          .flatMap((part, i): HastNode[] =>
-            !part ? [] : i % 2 ? [{ type: "element", tagName: "mark", properties: { className: ["hit"] }, children: [{ type: "text", value: part }] }] : [{ type: "text", value: part }],
-          );
-      });
-    };
-    walk(tree);
-  };
-}
+import { splitBlocks, type Blocks } from "./markdownBlocks";
+import { rehypePlugins, remarkPlugins } from "./markdownPipeline";
 
 /** The language a highlighted `<code>` element names in its class, `language-ts`, or "" for none. */
 function codeLanguage(children: ReactNode): string {
@@ -69,13 +39,6 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-// The highlighter is made once: rehype-highlight builds a fresh highlight.js instance, with every grammar to compile
-// again, each time the plugin is attached, and ReactMarkdown attaches its plugins on every render.
-const highlightCode = rehypeHighlight({ detect: true });
-
-const remarkPlugins = [remarkGfm, remarkBreaks];
-const highlightOnly = [() => highlightCode];
-
 // Made once, not on each render: a new `pre` function would be a new component type to React, which would throw away
 // every code block's DOM and build it again on each streamed delta (#224).
 const components: Components = {
@@ -87,12 +50,40 @@ const components: Components = {
   ),
 };
 
-/** `query`: the find-in-chat text to mark. */
-export const Markdown = memo(function Markdown({ text, query = "" }: { text: string; query?: string }) {
-  const rehypePlugins = useMemo(() => (query ? [() => highlightCode, rehypeFind(query)] : highlightOnly), [query]);
+/**
+ * One piece of Markdown, rendered again only when its text, the find-in-chat query, or whether it is still growing
+ * changes. `growing`: it is the end of a reply still streaming in, and ends in code that isn't finished, which stays
+ * plain until it is.
+ */
+const Part = memo(function Part({ text, query, growing }: { text: string; query: string; growing: boolean }) {
+  const plugins = useMemo(() => rehypePlugins(query, growing ? text : undefined), [query, growing, text]);
   return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
+    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={plugins} components={components}>
       {text}
     </ReactMarkdown>
   );
+});
+
+/**
+ * `query`: the find-in-chat text to mark. `streaming`: the text is a reply still coming in, a delta at a time. From then
+ * on, for as long as it stays on screen, it renders a top-level block at a time, so a delta parses only the last block
+ * again, not every block before it, and code still coming in is highlighted once it is finished (ADR 0068). Once
+ * finished, it comes out as the text rendered in one piece would.
+ */
+export const Markdown = memo(function Markdown({ text, query = "", streaming = false }: { text: string; query?: string; streaming?: boolean }) {
+  const streamed = useRef(false);
+  const split = useRef<Blocks | undefined>(undefined);
+  streamed.current ||= streaming;
+  if (!streamed.current) return <Part text={text} query={query} growing={false} />;
+  // A cache of the last split, so each delta parses only from the last blocks on; the same text gives the same blocks.
+  const blocks = (split.current = splitBlocks(text, split.current));
+  if (blocks.whole) return <Part text={text} query={query} growing={streaming} />;
+  const last = blocks.blocks.length - 1;
+  // A "\n" between blocks, as between the top-level elements of the text rendered in one piece.
+  return blocks.blocks.map((b, i) => (
+    <Fragment key={i}>
+      {i > 0 && "\n"}
+      <Part text={b.text} query={query} growing={streaming && i === last && b.open} />
+    </Fragment>
+  ));
 });

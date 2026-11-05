@@ -108,7 +108,7 @@ async function streamCode(blocks: number, tagged: boolean, chunk = 12) {
   current = makeChat(4);
   flushSync(() => root.render(<Host key={++opened} initial={current} />));
   await painted();
-  const reply = codeReply(blocks, tagged);
+  const reply = codeReply(blocks, tagged, String(opened));
   const before: Item[] = [...current.items, { kind: "user", id: "u-live", text: "Stream something." }];
   flushSync(() => setChat({ ...current, items: before, running: true }));
   await painted();

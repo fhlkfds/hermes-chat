@@ -88,10 +88,12 @@ const LOADER = [
 
 /**
  * The reply #224 measured: a sentence plus a 40-line code block, `blocks` times. `tagged`: the fences say `ts`;
- * otherwise highlighting has to guess the language of each.
+ * otherwise highlighting has to guess the language of each. Each block names its function apart (`salt`, then its
+ * place), as real code blocks differ, so none is highlighted from the cache of one already seen.
  */
-export function codeReply(blocks: number, tagged: boolean): string {
+export function codeReply(blocks: number, tagged: boolean, salt = ""): string {
   const code = Array.from({ length: 40 }, (_, i) => LOADER[i % LOADER.length]).join("\n");
-  const one = "Here is the next part of the loader, with the retry kept as it was.\n\n```" + (tagged ? "ts" : "") + "\n" + code + "\n```";
-  return Array.from({ length: blocks }, () => one).join("\n\n");
+  const one = (k: number) =>
+    "Here is the next part of the loader, with the retry kept as it was.\n\n```" + (tagged ? "ts" : "") + "\n" + code.replaceAll("load", `load_${salt}${k}`) + "\n```";
+  return Array.from({ length: blocks }, (_, k) => one(k)).join("\n\n");
 }
