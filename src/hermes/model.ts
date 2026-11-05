@@ -185,7 +185,7 @@ export type Chat = {
    */
   usage?: ChatUsage;
   usageError?: string;
-  /** The Subagents its replies started that this connection has heard of (subagents.ts, ADR 0069). Kept until the app closes. */
+  /** The Subagents its replies started that this connection has heard of (subagents.ts, ADR 0070). Kept until the app closes. */
   subagents?: SubagentTree;
 };
 

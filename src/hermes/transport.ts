@@ -3170,7 +3170,7 @@ export class Hermes {
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
       return;
     }
-    // Subagents are kept apart from the transcript, in the chat's own tree (ADR 0069).
+    // Subagents are kept apart from the transcript, in the chat's own tree (ADR 0070).
     if (type.startsWith("subagent.")) {
       const at = Date.now();
       this.patchChat(chat.id, (c) => ({ ...c, subagents: onSubagentEvent(c.subagents, type, payload, at) }));

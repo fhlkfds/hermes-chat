@@ -1,4 +1,4 @@
-// The Subagents a chat's reply started (ADR 0069), above the composer: a tree of who started whom, and one subagent's
+// The Subagents a chat's reply started (ADR 0070), above the composer: a tree of who started whom, and one subagent's
 // own activity and output apart from the chat. Steer and Stop act on one subagent, named in full before they go.
 import { useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, RefreshCw, Workflow } from "lucide-react";
