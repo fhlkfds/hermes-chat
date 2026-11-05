@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# Launches and tears down an isolated, WebDriver-driven Hermes Chat for verification. See ../SKILL.md.
+#   hv bootstrap         install the headless tools privately under $HV_HOME (once per machine)
+#   hv build             build the frontend and the debug app with the frontend embedded
+#   hv up [--dashboard URL]   start Xvfb, a window manager, a private D-Bus, the stand-in dashboard and tauri-driver
+#   hv doctor            read-only: is this run worth driving?
+#   hv shot <name>       screenshot the whole X screen (window frame, native dialogs) into the run's evidence
+#   hv state             print what the stand-in dashboard holds (sessions and transcripts)
+#   hv x <xdotool args>  xdotool on the run's display, for native GTK dialogs WebDriver can't reach
+#   hv down              stop everything this run started and delete its scratch state; evidence stays
+# Every command but bootstrap/build/up reads $HV_RUN, which `hv up` prints.
+set -euo pipefail
+
+HV_HOME=${HV_HOME:-$HOME/.cache/hermes-verify}
+ROOT=$HV_HOME/root
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(git -C "$HERE" rev-parse --show-toplevel)
+TARGET=${HV_TARGET:-$HV_HOME/target}
+APP=$TARGET/debug/hermes-chat
+CARGO=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
+DEB_PKGS="xvfb xdotool libxdo3 x11-apps x11-xkb-utils xkb-data xserver-common libunwind8 libxfont2 libfontenc1
+  openbox libobrender32v5 libobt2v5 libimlib2t64 libstartup-notification0 libxcb-util1 webkitgtk-webdriver"
+
+die() { echo "hv: $*" >&2; exit 1; }
+# A tool from PATH, else from the private root.
+tool() { command -v "$1" 2>/dev/null || { [ -x "$ROOT/usr/bin/$1" ] && echo "$ROOT/usr/bin/$1"; } || true; }
+xenv() { export LD_LIBRARY_PATH="$ROOT/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$PATH:$ROOT/usr/bin"; }
+# What the app is built from: HEAD plus any uncommitted change to the app's sources.
+source_rev() {
+  local paths=(src src-tauri/src src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/capabilities index.html package.json vite.config.ts)
+  echo "$(git -C "$REPO" rev-parse --short HEAD)-$( { git -C "$REPO" diff HEAD -- "${paths[@]}"; git -C "$REPO" ls-files -o --exclude-standard -- "${paths[@]}" | (cd "$REPO" && xargs -r sha1sum); } | sha1sum | cut -c1-8)"
+}
+load() {
+  [ -n "${HV_RUN:-}" ] && [ -f "$HV_RUN/state.env" ] || die "HV_RUN is unset or has no state.env; run \`hv up\` and export the HV_RUN it prints"
+  # shellcheck disable=SC1091
+  . "$HV_RUN/state.env"
+}
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+# Process group $1 still has a member, even if its leader has exited (a driver whose WebKitWebDriver outlived it).
+# The kernel doesn't hand out a PID still in use as a group ID, so its members are still the ones we started.
+group_alive() { [ -n "${1:-}" ] && pgrep -g "$1" >/dev/null 2>&1; }
+# Waits up to $2 seconds for command $1 to succeed.
+wait_for() { local i; for ((i = 0; i < $2 * 5; i++)); do eval "$1" >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
+# Display $1 is served by the X server in process group $2: its socket exists and its lock file names a member of
+# that group. Another run's server on the same number fails this, so a lost race is never taken for our own start.
+xvfb_ours() {
+  local lock_pid
+  lock_pid=$(tr -d ' \n' <"/tmp/.X$1-lock" 2>/dev/null) && [ -n "$lock_pid" ] && [ -S "/tmp/.X11-unix/X$1" ] &&
+    [ "$(ps -o pgid= -p "$lock_pid" 2>/dev/null | tr -d ' ')" = "$2" ]
+}
+# Starts Xvfb (1400x900, 24-bit) on display $1 in its own process group, logging to $2, and prints the group's PID.
+# A private Xvfb looks for xkbcomp in its compiled-in /usr/bin: overlay ours there.
+start_xvfb() {
+  local xvfb; xvfb=$(tool Xvfb)
+  if [ "$xvfb" = "$ROOT/usr/bin/Xvfb" ]; then
+    setsid bwrap --dev-bind / / --overlay-src /usr/bin --overlay-src "$ROOT/usr/bin" --ro-overlay /usr/bin \
+      "$xvfb" ":$1" -screen 0 1400x900x24 -nolisten tcp -xkbdir "$ROOT/usr/share/X11/xkb" >>"$2" 2>&1 </dev/null &
+  else
+    setsid "$xvfb" ":$1" -screen 0 1400x900x24 -nolisten tcp >>"$2" 2>&1 </dev/null &
+  fi
+  echo $!
+}
+# Everything a later command, or the cleanup of a failed `hv up`, needs. Rewritten as each process starts.
+# Reads cmd_up's locals. Written to a temp file and renamed, so a reader never sees half of it.
+save_state() {
+  cat >"$run/state.env.tmp" <<STATE
+RUN='$run'
+EVIDENCE='$ev'
+APP='$APP'
+BUILD_REV='$(cat "$TARGET/hv-build-rev" 2>/dev/null)'
+DISPLAY_NUM='$display'
+DASHBOARD_URL='$url'
+STANDIN='$([ -z "$dashboard" ] && echo yes || echo no)'
+BRIDGE_PORT='$bridge_port'
+DRIVER_PORT='$driver_port'
+NATIVE_PORT='$native_port'
+DBUS_ADDR='$dbus_addr'
+XVFB_PID='$xvfb_pid'
+WM_PID='$wm_pid'
+DBUS_PID='$dbus_pid'
+BRIDGE_PID='$bridge_pid'
+DRIVER_PID='$driver_pid'
+STATE
+  mv -f "$run/state.env.tmp" "$run/state.env"
+}
+# The EXIT trap of a failed `hv up`: stop what it started and delete its run dir, as `hv down` does.
+up_failed() {
+  local code=$?
+  trap - EXIT INT TERM
+  echo "hv: up failed; stopping what this run started" >&2
+  (HV_RUN=$1 cmd_down >&2) || true
+  exit "$code"
+}
+
+cmd_bootstrap() {
+  local missing=() t
+  for t in Xvfb xwd xdotool openbox WebKitWebDriver; do [ -n "$(tool $t)" ] || missing+=("$t"); done
+  for t in node npm dbus-daemon bwrap python3; do command -v $t >/dev/null || die "$t is not installed; install it with the system package manager"; done
+  [ -x "$CARGO" ] || die "cargo not found (not on PATH, not at ~/.cargo/bin/cargo)"
+  if [ ${#missing[@]} -gt 0 ]; then
+    if command -v apt-get >/dev/null; then
+      echo "hv: fetching ${missing[*]} and their libraries into $ROOT (no root needed)"
+      mkdir -p "$HV_HOME/pkgs" "$ROOT"
+      # shellcheck disable=SC2086
+      (cd "$HV_HOME/pkgs" && apt-get download $DEB_PKGS >/dev/null)
+      for d in "$HV_HOME"/pkgs/*.deb; do dpkg -x "$d" "$ROOT"; done
+    elif command -v pacman >/dev/null; then
+      die "missing ${missing[*]}: sudo pacman -S --needed xorg-server-xvfb xorg-xwd xdotool openbox webkit2gtk-4.1"
+    else
+      die "missing ${missing[*]}; install them with the system package manager"
+    fi
+  fi
+  if [ ! -x "$HV_HOME/cargo/bin/tauri-driver" ] && ! command -v tauri-driver >/dev/null; then
+    echo "hv: installing tauri-driver 2.1.0 into $HV_HOME/cargo"
+    "$CARGO" install tauri-driver --version 2.1.0 --locked --root "$HV_HOME/cargo" >/dev/null 2>&1 || die "cargo install tauri-driver failed"
+  fi
+  for t in Xvfb xwd xdotool openbox WebKitWebDriver; do [ -n "$(tool $t)" ] || die "$t still missing after bootstrap"; done
+  echo "hv: bootstrap ok"
+}
+
+cmd_build() {
+  cd "$REPO"
+  [ -d node_modules ] && [ node_modules/.package-lock.json -nt package-lock.json ] || npm ci --no-audit --no-fund
+  npm run build
+  CARGO_TARGET_DIR=$TARGET "$CARGO" build --manifest-path src-tauri/Cargo.toml --features tauri/custom-protocol --bins
+  source_rev >"$TARGET/hv-build-rev"
+  echo "hv: built $APP from $(cat "$TARGET/hv-build-rev")"
+}
+
+cmd_up() {
+  local dashboard=""
+  while [ $# -gt 0 ]; do case $1 in --dashboard) dashboard=$2; shift 2 ;; *) die "unknown option $1" ;; esac; done
+  [ -x "$APP" ] || die "no app at $APP; run \`hv build\`"
+  [ "$(cat "$TARGET/hv-build-rev" 2>/dev/null)" = "$(source_rev)" ] || echo "hv: WARNING the build is stale ($(cat "$TARGET/hv-build-rev" 2>/dev/null || echo none) vs source $(source_rev)); run \`hv build\` before proving a change" >&2
+  local driver n
+  driver=$(command -v tauri-driver || echo "$HV_HOME/cargo/bin/tauri-driver")
+  [ -x "$driver" ] && [ -n "$(tool WebKitWebDriver)" ] && [ -n "$(tool Xvfb)" ] || die "tools missing; run \`hv bootstrap\`"
+  local name; name=$(date +%m%d-%H%M%S)-$$
+  local run=$HV_HOME/runs/$name ev=$HV_HOME/evidence/$name
+  mkdir -p "$run"/{home,data,config,cache} "$ev"
+  install -d -m 700 "$run/runtime"
+  local display="" url="" bridge_port driver_port native_port dbus_addr="" xvfb_pid="" wm_pid="" dbus_pid="" bridge_pid="" driver_pid=""
+  bridge_port=$(free_port); driver_port=$(free_port); native_port=$(free_port)
+  save_state
+  # From here on, any failure (or Ctrl-C) stops what this run started, through the same path as `hv down`.
+  # shellcheck disable=SC2064
+  trap "up_failed '$run'" EXIT
+  trap 'exit 130' INT TERM
+  xenv
+
+  # X server. Another run can take a free-looking display between our check and Xvfb's lock, so the display is ours
+  # only once our Xvfb holds its lock. Otherwise our Xvfb exits (or is killed here) and we try the next number.
+  for n in $(seq 140 199); do
+    { [ -e "/tmp/.X11-unix/X$n" ] || [ -e "/tmp/.X$n-lock" ]; } && continue
+    echo "hv: trying display :$n" >>"$ev/xvfb.log"
+    xvfb_pid=$(start_xvfb "$n" "$ev/xvfb.log")
+    save_state
+    if wait_for "xvfb_ours $n $xvfb_pid || ! alive $xvfb_pid" 15 && xvfb_ours "$n" "$xvfb_pid"; then
+      display=:$n
+      break
+    fi
+    kill -KILL -- "-$xvfb_pid" 2>/dev/null || true
+    xvfb_pid=""
+  done
+  [ -n "$display" ] || die "no display in :140-:199 came up for this run; see $ev/xvfb.log"
+  save_state
+
+  # A window manager, so GTK dialogs get focus; its theme lives in the private root when installed there.
+  XDG_DATA_DIRS="$ROOT/usr/share:/usr/share" XDG_CONFIG_DIRS="$ROOT/etc/xdg:/etc/xdg" DISPLAY=$display setsid "$(tool openbox)" >"$ev/openbox.log" 2>&1 &
+  wm_pid=$!
+  save_state
+
+  # A private session bus: the app never reaches the owner's keyring, notifications or another Hermes Chat.
+  local dbus_out; dbus_out=$(dbus-daemon --session --fork --print-address=1 --print-pid=1) || die "the private D-Bus daemon didn't start"
+  dbus_addr=$(sed -n 1p <<<"$dbus_out"); dbus_pid=$(sed -n 2p <<<"$dbus_out")
+  save_state
+
+  if [ -z "$dashboard" ]; then
+    (cd "$REPO" && npx rolldown "$HERE/bridge.ts" --platform node -o "$run/bridge.mjs" >/dev/null 2>&1) || die "bundling the stand-in failed: cd $REPO && npx rolldown $HERE/bridge.ts --platform node -o $run/bridge.mjs"
+    setsid node "$run/bridge.mjs" "$bridge_port" "$ev/server-state.json" >"$ev/bridge.log" 2>&1 &
+    bridge_pid=$!
+    save_state
+    wait_for "grep -q 'stand-in dashboard ready' '$ev/bridge.log'" 20 || die "stand-in didn't start; see $ev/bridge.log"
+    url=http://127.0.0.1:$bridge_port
+  else
+    url=$dashboard
+  fi
+
+  # tauri-driver passes its environment through WebKitWebDriver to the app it launches.
+  env DISPLAY="$display" DBUS_SESSION_BUS_ADDRESS="$dbus_addr" HOME="$run/home" XDG_DATA_HOME="$run/data" \
+    XDG_CONFIG_HOME="$run/config" XDG_CACHE_HOME="$run/cache" XDG_RUNTIME_DIR="$run/runtime" \
+    WEBKIT_DISABLE_DMABUF_RENDERER=1 HERMES_CHAT_NEW_INSTANCE=1 LIBGL_ALWAYS_SOFTWARE=1 NO_AT_BRIDGE=1 \
+    setsid "$driver" --port "$driver_port" --native-port "$native_port" --native-driver "$(tool WebKitWebDriver)" >"$ev/driver.log" 2>&1 &
+  driver_pid=$!
+  save_state
+  wait_for "curl -sf http://127.0.0.1:$driver_port/status" 20 || die "tauri-driver didn't answer; see $ev/driver.log"
+
+  trap - EXIT INT TERM
+  echo "hv: up. Run this in every later command (each shell starts fresh):"
+  echo "export HV_RUN=$run"
+  echo "dashboard: $url$([ -z "$dashboard" ] && echo "  (stand-in: username verify, password verify-pass)")"
+  echo "evidence:  $ev"
+}
+
+cmd_doctor() {
+  load
+  local bad=0
+  ok() { echo "ok   $*"; }
+  no() { echo "FAIL $*"; bad=1; }
+  owns() { alive "$1" && grep -q -- "$2" "/proc/$1/cmdline" 2>/dev/null; }
+  owns "$XVFB_PID" Xvfb && [ -S "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ] && ok "Xvfb $DISPLAY_NUM (pid $XVFB_PID)" || no "Xvfb $DISPLAY_NUM not running"
+  owns "$WM_PID" openbox && ok "openbox (pid $WM_PID)" || no "openbox not running (GTK dialogs won't get focus)"
+  owns "$DBUS_PID" dbus-daemon && ok "private D-Bus (pid $DBUS_PID)" || no "private D-Bus not running"
+  if [ "$STANDIN" = yes ]; then
+    owns "$BRIDGE_PID" bridge.mjs && curl -sf "$DASHBOARD_URL/__state" >/dev/null && ok "stand-in dashboard $DASHBOARD_URL (pid $BRIDGE_PID)" || no "stand-in dashboard $DASHBOARD_URL not answering"
+    ss -ltnpH "sport = :$BRIDGE_PORT" 2>/dev/null | grep -q "pid=$BRIDGE_PID," && ok "port $BRIDGE_PORT is ours" || no "port $BRIDGE_PORT is not held by our stand-in"
+  else
+    curl -s -o /dev/null -w '%{http_code}' "$DASHBOARD_URL/api/status" | grep -q '^[23]' && ok "dashboard $DASHBOARD_URL answers /api/status" || no "dashboard $DASHBOARD_URL doesn't answer /api/status"
+  fi
+  owns "$DRIVER_PID" tauri-driver && curl -sf "http://127.0.0.1:$DRIVER_PORT/status" >/dev/null && ok "tauri-driver :$DRIVER_PORT (pid $DRIVER_PID)" || no "tauri-driver :$DRIVER_PORT not answering"
+  [ "$BUILD_REV" = "$(source_rev)" ] && ok "build $BUILD_REV matches the source" || no "build $BUILD_REV != source $(source_rev): run \`hv down\`, \`hv build\`, \`hv up\`"
+  if [ -s "$RUN/session" ]; then
+    local sid; sid=$(cat "$RUN/session")
+    curl -sf "http://127.0.0.1:$DRIVER_PORT/session/$sid/title" | grep -q '"value"' && ok "WebDriver session $sid answers (window title $(curl -s "http://127.0.0.1:$DRIVER_PORT/session/$sid/title" | python3 -c 'import json,sys; print(repr(json.load(sys.stdin)["value"]))'))" || no "WebDriver session $sid is dead: \`wd.mjs close\` then \`wd.mjs open\`"
+    local app_pid; app_pid=$(ps -eo pid=,args= | awk -v a="$APP" '$2 == a {print $1}' | while read -r p; do grep -qz "^DISPLAY=$DISPLAY_NUM$" "/proc/$p/environ" 2>/dev/null && echo "$p"; done | head -1)
+    [ -n "$app_pid" ] && ok "app pid $app_pid on $DISPLAY_NUM" || no "no app process on $DISPLAY_NUM"
+  else
+    echo "--   no WebDriver session yet (\`wd.mjs open\` launches the app)"
+  fi
+  return $bad
+}
+
+cmd_shot() {
+  load; xenv
+  [ -n "${1:-}" ] || die "usage: hv shot <name>"
+  DISPLAY=$DISPLAY_NUM "$(tool xwd)" -root -silent >"$RUN/shot.xwd"
+  python3 "$HERE/xwd2png.py" "$RUN/shot.xwd" "$EVIDENCE/$1.png"
+  rm -f "$RUN/shot.xwd"
+  echo "$EVIDENCE/$1.png"
+}
+
+cmd_state() {
+  load
+  [ "$STANDIN" = yes ] || die "this run uses a real dashboard; read its state through the dashboard's own API"
+  curl -sf "$DASHBOARD_URL/__state"
+}
+
+cmd_x() { load; xenv; DISPLAY=$DISPLAY_NUM "$(tool xdotool)" "$@"; }
+
+cmd_down() {
+  load
+  if [ -s "$RUN/session" ]; then curl -s -X DELETE "http://127.0.0.1:$DRIVER_PORT/session/$(cat "$RUN/session")" >/dev/null || true; fi
+  # Each was started with setsid, so its process group holds what it spawned (WebKitWebDriver, the app, the app's ssh).
+  local pid
+  for pid in "$DRIVER_PID" "$BRIDGE_PID" "$WM_PID" "$XVFB_PID"; do
+    group_alive "$pid" && kill -TERM -- "-$pid" 2>/dev/null || true
+  done
+  alive "$DBUS_PID" && kill -TERM "$DBUS_PID" 2>/dev/null || true
+  sleep 1
+  for pid in "$DRIVER_PID" "$BRIDGE_PID" "$WM_PID" "$XVFB_PID"; do
+    group_alive "$pid" && kill -KILL -- "-$pid" 2>/dev/null || true
+  done
+  # The app's own processes, if any escaped the group: only ones on this run's display.
+  [ -z "$DISPLAY_NUM" ] || ps -eo pid=,args= | awk -v a="$APP" '$2 == a {print $1}' | while read -r pid; do
+    grep -qz "^DISPLAY=$DISPLAY_NUM$" "/proc/$pid/environ" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+  done
+  # Kept with the evidence: the display, ports and PIDs this run had.
+  cp "$RUN/state.env" "$EVIDENCE/state.env" 2>/dev/null || true
+  case "$RUN" in "$HV_HOME"/runs/*) rm -rf "$RUN" ;; *) die "refusing to delete $RUN: not under $HV_HOME/runs" ;; esac
+  echo "hv: down. Evidence kept in $EVIDENCE:"
+  ls -1 "$EVIDENCE"
+}
+
+case "${1:-}" in
+  bootstrap | build | up | doctor | shot | state | x | down) c=$1; shift; "cmd_$c" "$@" ;;
+  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

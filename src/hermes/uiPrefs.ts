@@ -1,11 +1,12 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
 // the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
-// reply runs, and Idle compaction. All preferences live in one versioned localStorage document.
+// reply runs, Idle compaction, and which of the chat list's sections show and which are collapsed. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
 import { fromKey, isEffort, type ModelPick } from "./models";
+import { SECTION_KEYS, isSectionKey, type SectionKey } from "./sectionKeys";
 import { toTemplates, type Template } from "./templates";
 import type { TerminalKind } from "./terminal";
 
@@ -55,6 +56,10 @@ export type UIPrefs = {
   followUp: FollowUp;
   /** Idle compaction: compact a chat open on Hermes here once it has sat idle with its context window this full (ADR 0059). */
   idleCompact: IdleCompactPrefs;
+  /** The chat list's sections that show, in their own order (ADR 0063). Never empty: at least one stays on. */
+  chatSectionsShown: SectionKey[];
+  /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
+  chatSectionsCollapsed: SectionKey[];
 };
 
 export type FollowUp = "queue" | "steer";
@@ -92,6 +97,8 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
+  chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
+  chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -184,6 +191,18 @@ function toIdleCompact(v: unknown, d: IdleCompactPrefs): IdleCompactPrefs | unde
   };
 }
 
+/** Sections as stored, each once and in the list's order; undefined when it isn't a list. */
+function toSections(v: unknown): SectionKey[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return SECTION_KEYS.filter((k) => v.some((x) => isSectionKey(x) && x === k));
+}
+
+/** The sections shown, as stored: never none, so a list with none of them is no value at all. */
+const toShown = (v: unknown) => {
+  const shown = toSections(v);
+  return shown?.length ? shown : undefined;
+};
+
 /** The most profiles `lastOpenChat` keeps; a document edited by hand can't grow the prefs without end. */
 const LAST_OPEN_LIMIT = 100;
 
@@ -213,6 +232,8 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     terminalKind: doc.terminalKind === "server" || doc.terminalKind === "local" ? doc.terminalKind : d.terminalKind,
     followUp: doc.followUp === "queue" || doc.followUp === "steer" ? doc.followUp : d.followUp,
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
+    chatSectionsShown: toShown(doc.chatSectionsShown) ?? [...d.chatSectionsShown],
+    chatSectionsCollapsed: toSections(doc.chatSectionsCollapsed) ?? [...d.chatSectionsCollapsed],
   };
 }
 

@@ -366,7 +366,7 @@ export function VoiceSettings({
             Change the providers under Speech providers, below. The microphone is
             open only while you record, or while a voice conversation is on; a conversation pauses when you leave its chat pane or hide the window,
             and only you can resume it. Recordings stay in memory here and go to Hermes, and on to the provider if it's a cloud one; Hermes deletes
-            its copy once it has the text. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
+            its copy once it has the text. With Speech to text set to This computer, they never leave this computer. Recordings stop by themselves after {MAX_RECORDING_SECONDS / 60} minutes.
           </p>
         </>
       }
