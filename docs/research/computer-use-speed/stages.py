@@ -9,7 +9,8 @@ Stages, from Xvnc having the frame ("draw done", x11bench.py's clock, CLOCK_MONO
   last JS   the webview's channel handler has the last of them (`BENCH js`, wall clock, mapped to monotonic with the
             `BENCH clock` pairs Rust logs)
   glass     both markers show in the app's window (x11bench.py's poller, attributed as analyze.py does)
-Each duration (channel = last JS - last tx, noVNC+paint = glass - last JS) is worked out per frame, then the median is
+Each duration (channel = last JS - last tx, noVNC+paint = glass - last JS, and the app's whole share, glass - last tx)
+is worked out per frame, then the median is
 taken. Only frames shown before the next one was drawn are split, since after that two frames' bytes interleave; the
 others are counted as `excluded`. So this is for the page and small scenarios, not busy.
 """
@@ -51,14 +52,15 @@ def main(run_path, log_path, label):
             excluded += 1
             continue
         ms = lambda x: (x - d["done"]) * 1000
-        rows.append({"msgs": len(t), "last_tx": ms(t[-1]), "channel": (j[-1] - t[-1]) * 1000, "paint": (glass - j[-1]) * 1000, "glass": ms(glass)})
+        rows.append({"msgs": len(t), "last_tx": ms(t[-1]), "channel": (j[-1] - t[-1]) * 1000, "paint": (glass - j[-1]) * 1000,
+                     "app": (glass - t[-1]) * 1000, "glass": ms(glass)})
     if not rows:
         print(f"{label}: no frame with all stages ({excluded} excluded)")
         return
     med = lambda key: statistics.median(r[key] for r in rows)
     print(
         f"{label}: n={len(rows)} excluded={excluded} | channel msgs/frame {med('msgs'):.0f} | last tx {med('last_tx'):.0f} ms"
-        f" | channel {med('channel'):.0f} | noVNC+paint {med('paint'):.0f} | glass {med('glass'):.0f}  (medians of per-frame values)"
+        f" | channel {med('channel'):.0f} | noVNC+paint {med('paint'):.0f} | app (channel+noVNC+paint) {med('app'):.0f} | glass {med('glass'):.0f}  (medians of per-frame values)"
     )
 
 

@@ -2,7 +2,7 @@
 
 Measured on 2026-11-04 to find out why computer use (Hermes driving its Bot Desktop, watched in the Screen tab) feels slow, and what this app can do about it.
 
-**Short answer.** In this setup (a real Xvnc and the real app, with a stand-in for Hermes's bridge and emulated remote links), the Screen tab keeps up. At low load, a page change on the Bot Desktop reached the glass in about 50 ms over loopback, about 115 ms over an emulated 50 ms-RTT, 20 Mbit/s link, and 286 ms over an emulated 5 Mbit/s link. A busy screen showed all 10 of its frames a second on every link except the 5 Mbit/s one. The app's own share of a page change (the Rust relay, the Tauri channel, noVNC and painting) was 24 to 33 ms on loopback and 18 to 27 ms over the emulated links. The one app-side change tried, batching the relayed bytes, made the stream slower, so it is not shipped (ADR 0052).
+**Short answer.** In this setup (a real Xvnc and the real app, with a stand-in for Hermes's bridge and emulated remote links), the Screen tab keeps up. At low load, a page change on the Bot Desktop reached the glass in about 50 ms over loopback, about 115 ms over an emulated 50 ms-RTT, 20 Mbit/s link, and 286 ms over an emulated 5 Mbit/s link. A busy screen showed all 10 of its frames a second on every link except the 5 Mbit/s one. The app's own share of a page change (the Rust relay, the Tauri channel, noVNC and painting) had a median of 25 to 34 ms on loopback and 18 to 31 ms over the emulated links (glass minus last tx, per frame). The one app-side change tried, batching the relayed bytes, made the stream slower, so it is not shipped (ADR 0052).
 
 What this could not measure is Hermes's loop: model latency, and `cua-driver`'s capture time. The code shows one or two model round trips per action, each carrying a full-resolution screenshot (Step 1). A step is very likely slow because of those round trips, not the stream, but that is an inference from the code, not a measurement. What Hermes would need is under Step 3.
 
@@ -66,17 +66,17 @@ An earlier run of the same five links, mostly at load 20 to 33 (6 to 12 for the 
 
 ### Where a page change's time goes
 
-For the page scenario, each duration is worked out per frame and then the median is taken (`stages.py`). "Last tx": ms from Xvnc having the frame until Rust hands the last of its bytes to the Tauri channel (Xvnc's encoding, the bridge and the link). "Channel": from there until the webview's handler has them. "noVNC+paint": from there to the glass. Medians of parts don't add up to the median of the whole.
+For the page scenario, each duration is worked out per frame and then the median is taken (`stages.py`). "Last tx": ms from Xvnc having the frame until Rust hands the last of its bytes to the Tauri channel (Xvnc's encoding, the bridge and the link). "Channel": from there until the webview's handler has them. "noVNC+paint": from there to the glass. "App" is the app's whole share, from the last tx to the glass, also worked out per frame. Medians of parts don't add up to the median of the whole.
 
-| Link | Load | Channel messages a page | Last tx | Channel | noVNC+paint | Glass |
-| --- | --- | --- | --- | --- | --- | --- |
-| Direct, loopback | 3.9 | 182 | 21 | 18 | 15 | 54 |
-| SSH tunnel, loopback | 2.9 | 154 | 22 | 14 | 10 | 48 |
-| Emulated 25 ms / 20 Mbit/s | 4.2 | 184 | 90 | 0 | 23 | 118 |
-| Same, through the SSH tunnel | 4.3 | 170 | 94 | 0 | 18 | 114 |
-| Emulated 40 ms / 5 Mbit/s | 3.8 | 126 | 264 | 5 | 22 | 286 |
-| Direct, loopback, busy machine | 22 | 46 | 179 | 11 | 10 | 217 |
-| Emulated 25 ms / 20 Mbit/s, busy machine | 29 | 61 | 182 | 31 | 45 | 265 |
+| Link | Load | Channel messages a page | Last tx | Channel | noVNC+paint | App (glass − last tx) | Glass |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Direct, loopback | 3.9 | 182 | 21 | 18 | 15 | 34 | 54 |
+| SSH tunnel, loopback | 2.9 | 154 | 22 | 14 | 10 | 25 | 48 |
+| Emulated 25 ms / 20 Mbit/s | 4.2 | 184 | 90 | 0 | 23 | 25 | 118 |
+| Same, through the SSH tunnel | 4.3 | 170 | 94 | 0 | 18 | 18 | 114 |
+| Emulated 40 ms / 5 Mbit/s | 3.8 | 126 | 264 | 5 | 22 | 31 | 286 |
+| Direct, loopback, busy machine | 22 | 46 | 179 | 11 | 10 | 20 | 217 |
+| Emulated 25 ms / 20 Mbit/s, busy machine | 29 | 61 | 182 | 31 | 45 | 80 | 265 |
 
 For a small change, the channel took 0 to 4 ms and noVNC+paint 13 to 19 ms on every link at low load.
 
@@ -118,7 +118,7 @@ Load during the A/B was 9 to 29. These runs were made before the review fixes to
 
 ## Step 3: what Hermes would need
 
-The app can't make a computer-use step much faster. These would, on the server:
+In this setup the app's share of the stream was tens of milliseconds, and the model loop, which couldn't be timed here, costs one or two model round trips per action. So the app very likely can't make a computer-use step much faster, and these would, on the server (an inference from the code, to be confirmed with the timing in item 6):
 
 1. **One round trip per action, not two.** Take a capture after every state-changing action by default (or make `capture_after` default to true for click, type, key, scroll and drag), so the model sees the result in the same tool result. This removes about half the model calls in a typical run.
 2. **Several actions per call.** Accept a short list of actions in one `computer_use` call (for example, click a field, type, press Enter), with one capture at the end.
