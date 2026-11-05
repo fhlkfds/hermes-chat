@@ -3,12 +3,13 @@
 `rx` is when Rust got a chunk from /api/display/ws, `js` when the webview's handler got it, `flip` when noVNC drew to
 the visible canvas; all wall-clock ms on one machine. A change is the chunks after a quiet gap of over 150 ms.
 
-    python3 app_trace.py runs/app-stream.log
+    python3 app_trace.py runs/app-stream.log.xz
 """
+import lzma
 import sys
 
 rx, js, flips = [], [], []
-for line in open(sys.argv[1]):
+for line in (lzma.open if sys.argv[1].endswith(".xz") else open)(sys.argv[1], "rt"):
     p = line.split()
     if p[1] == "rx":
         rx.append((float(p[2]), int(p[3])))

@@ -132,7 +132,6 @@ export async function connectRfb(url, opts = {}) {
   const fences = []; // client-initiated fence round trips, ms
   let continuous = false;
   let pendingFence = null;
-  let tightResets = 0;
 
   const compactLen = async () => {
     let b = (await r.take(1))[0];
@@ -147,7 +146,6 @@ export async function connectRfb(url, opts = {}) {
 
   async function tightRect(w, h) {
     const ctl = (await r.take(1))[0];
-    tightResets += ctl & 0x0f ? 1 : 0;
     const kind = ctl >> 4;
     if (kind === 0x08) return void (await r.take(3)); // fill
     if (kind === 0x09) return void (await r.skip(await compactLen())); // JPEG
