@@ -119,6 +119,14 @@ const RUNTIME_KIND: Record<string, ProblemKind> = {
   discord_intents_required: "permission",
 };
 
+/**
+ * The kind of a runtime error. The gateway says `adapter_unavailable` when it couldn't build the adapter at all, which
+ * for a platform with its token set means the library (or the plugin) isn't there: Hermes builds Telegram's and
+ * Discord's adapters only once their library imports (seen live at `f0d94882` with lazy installs off).
+ */
+const runtimeKind = (code: string, configured: boolean): ProblemKind =>
+  RUNTIME_KIND[code] ?? (code === "adapter_unavailable" && configured ? "missing-dependency" : "other");
+
 function fieldOf(v: unknown): GatewayField | undefined {
   const f = obj(v);
   const key = str(f.key);
@@ -154,7 +162,7 @@ function gatewayOf(v: unknown, typed: readonly string[]): Gateway | undefined {
     configured: g.configured === true,
     gatewayRunning: g.gateway_running === true,
     state: str(g.state) || "unknown",
-    error: code || message ? { kind: RUNTIME_KIND[code] ?? "other", text: redact(message || code, typed) } : undefined,
+    error: code || message ? { kind: runtimeKind(code, g.configured === true), text: redact(message || code, typed) } : undefined,
     fields: (Array.isArray(g.env_vars) ? g.env_vars : []).flatMap((f) => fieldOf(f) ?? []),
   };
 }

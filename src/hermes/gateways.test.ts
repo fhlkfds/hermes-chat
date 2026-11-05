@@ -201,6 +201,16 @@ describe("Gateways: problems told apart", () => {
     expect(fake.writes.at(-1)).toEqual({ profile: "default", what: "test telegram" });
   });
 
+  it("an adapter the gateway couldn't build for a platform with its token set is a missing library", async () => {
+    const { api, fake } = await setUp();
+    const unavailable = { state: "fatal", error_code: "adapter_unavailable", error_message: "No adapter available for enabled discord; check the plugin, dependencies, and credentials." };
+    fake.enabled.default.discord = true;
+    fake.gateway.default = { running: true, platforms: { discord: unavailable } };
+    expect((await api.list("default")).gateways[1].error?.kind).toBe("other");
+    fake.env.default.DISCORD_BOT_TOKEN = "x";
+    expect((await api.list("default")).gateways[1].error).toEqual({ kind: "missing-dependency", text: unavailable.error_message });
+  });
+
   it("Discord's privileged intents are a permission problem; a check that connects is ok", async () => {
     const { api, fake } = await setUp();
     fake.env.default.DISCORD_BOT_TOKEN = "x";

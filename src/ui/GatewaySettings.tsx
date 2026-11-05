@@ -72,7 +72,7 @@ function ProblemText({ problem, g }: { problem: Problem; g: Gateway }) {
   const after: Record<Problem["kind"], string> = {
     permission: "Hermes, or the platform, doesn't allow this. Nothing here can change that; check the account or the server's settings.",
     "invalid-token": `Paste a new token from ${ABOUT[g.id].tokenFrom}.`,
-    "missing-dependency": `${g.name} needs a library that isn't installed where Hermes runs. Install Hermes's "${ABOUT[g.id].extra}" extra there, then restart the gateway.`,
+    "missing-dependency": `Hermes couldn't load what ${g.name} needs where it runs, usually its library. Install Hermes's "${ABOUT[g.id].extra}" extra there, then restart the gateway.`,
     other: "",
   };
   return (
