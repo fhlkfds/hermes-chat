@@ -163,7 +163,8 @@ export function TerminalScreen({
   const running = state.kind === "connecting" || state.kind === "open";
   const submit = () => {
     if (!target.trim() || running) return;
-    onTarget?.(target.trim());
+    // Connecting again to the target worked out from the web address keeps it a guess, following the address.
+    if (!(guessed && target.trim() === initialTarget.trim())) onTarget?.(target.trim());
     connect(target);
   };
   const what = kind === "local" ? "A shell on this computer" : "A shell on the Hermes server";

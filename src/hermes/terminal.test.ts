@@ -177,10 +177,12 @@ describe("ssh target from a web address", () => {
     expect(sshTargetFromUrl(" https://user:pw@Hermes.example.org./dash ")).toBe("hermes.example.org");
     expect(sshTargetFromUrl("http://100.100.64.121:9119")).toBe("100.100.64.121");
     expect(sshTargetFromUrl("http://[fd7a:115c::1]:9119")).toBe("fd7a:115c::1");
+    // An IPv4-mapped address off this computer is still the server's.
+    expect(sshTargetFromUrl("http://[::ffff:100.100.64.121]:9119")).toBe("::ffff:6464:4079");
   });
 
   it("is nothing for this computer, a bad address, or another scheme", () => {
-    for (const u of ["http://localhost:9119", "http://LOCALHOST", "http://app.localhost", "http://127.0.0.1:9119", "http://127.1.2.3", "http://0.0.0.0:9119", "http://[::1]:9119", "http://[::]:9119", "ftp://hermes", "hermes:9119", "", undefined])
+    for (const u of ["http://localhost:9119", "http://LOCALHOST", "http://app.localhost", "http://127.0.0.1:9119", "http://127.1.2.3", "http://0.0.0.0:9119", "http://[::1]:9119", "http://[::]:9119", "http://[::ffff:127.0.0.1]:9119", "http://[::ffff:7f12:3456]", "http://[::ffff:0.0.0.0]", "ftp://hermes", "hermes:9119", "", undefined])
       expect(sshTargetFromUrl(u), String(u)).toBe("");
   });
 });

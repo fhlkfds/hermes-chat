@@ -287,6 +287,22 @@ describe("Which computer the Terminal opens on", () => {
     expect(screen.queryByText(/from the address you sign in with/)).toBeNull();
   });
 
+  it("keeps a worked-out target a guess when connecting again to it, and saves one the owner types", async () => {
+    const server = new FakeTerminals();
+    const onTarget = vi.fn();
+    render(<Panel server={server} local={new FakeTerminals()} initialTarget="hermes" guessed onTarget={onTarget} />);
+    await act(async () => {});
+    act(() => server.opened[0].emit({ kind: "exit", code: 0 }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Connect again/ })));
+    expect(server.opened.map((o) => o.target)).toEqual(["hermes", "hermes"]);
+    expect(onTarget).not.toHaveBeenCalled();
+    act(() => server.opened[1].emit({ kind: "exit", code: 255 }));
+    expect(screen.getByText(/from the address you sign in with/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("SSH target"), { target: { value: "liam@hermes" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Connect again/ })));
+    expect(onTarget).toHaveBeenCalledWith("liam@hermes");
+  });
+
   it("doesn't blame the guess when the owner ended the session", async () => {
     const server = new FakeTerminals();
     render(<Panel server={server} local={new FakeTerminals()} initialTarget="hermes" guessed />);

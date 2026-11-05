@@ -36,7 +36,9 @@ export const terminalTargetKey = (c: { id?: string; legacy?: unknown }) => (c.le
 /** What a sign-in says about reaching the Hermes server over ssh. `url` is read only for a web-address sign-in. */
 export type SignInAddress = { mode: "ssh" | "url"; sshTarget: string; url?: string };
 
-const LOOPBACK = /^(localhost|.*\.localhost|127(\.\d{1,3}){3}|0\.0\.0\.0|::1?|::ffff:127(\.\d{1,3}){3})$/i;
+// Hosts as `URL` normalises them: IPv4 in dotted decimal, IPv6 compressed, and IPv4-mapped IPv6 in hex
+// (`[::ffff:127.0.0.1]` reads `::ffff:7f00:1`), so 127.0.0.0/8 there is `::ffff:7fXX:XXXX`.
+const LOOPBACK = /^(localhost|.*\.localhost|127(\.\d{1,3}){3}|0\.0\.0\.0|::1?|::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}|::ffff:0:0)$/i;
 
 /**
  * The SSH target a web-address sign-in points at: the address's host, with no user, so ssh's own defaults pick the
