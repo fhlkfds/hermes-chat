@@ -2945,8 +2945,9 @@ export class Hermes {
     const unchecked = (why: string) => this.patchChat(chatId, (c) => (c.subagents ? { ...c, subagents: onUnchecked(c.subagents, why) } : c));
     if (this.noSubagentList === gen) return unchecked(NO_SUBAGENT_LIST);
     try {
+      const askedAt = Date.now();
       const res = await this.request("subagent.list", { session_id: runtimeId });
-      if (current()) this.patchChat(chatId, (c) => ({ ...c, subagents: onRoster(c.subagents, res, Date.now()) }));
+      if (current()) this.patchChat(chatId, (c) => ({ ...c, subagents: onRoster(c.subagents, res, Date.now(), askedAt) }));
     } catch (e) {
       const missing = e instanceof RpcError && e.code === NO_SUCH_METHOD;
       if (missing) this.noSubagentList = gen;

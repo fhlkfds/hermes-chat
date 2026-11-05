@@ -77,18 +77,26 @@ describe("The Subagents panel", () => {
     expect(document.activeElement?.getAttribute("data-subagent")).toBe("sa-auth");
   });
 
-  it("stops only the subagent named, saying what else stops with it", async () => {
+  it("stops only the subagent named, saying what else stops with it, from the keyboard", async () => {
     const { server, user, runtime } = await auditing();
     await user.click(within(panel()).getByRole("button", { name: /Subagents/ }));
     await user.click(within(panel()).getByRole("button", { name: /Read the auth code/ }));
-    await user.click(within(panel()).getByRole("button", { name: "Stop it…" }));
+    const trigger = within(panel()).getByRole("button", { name: "Stop it…" });
+    await user.click(trigger);
     const ask = within(panel()).getByRole("group", { name: "Stop this subagent?" });
     expect(ask.textContent).toMatch(/Stop “Read the auth code” \(sa-auth\)\? The subagent it started that is still running stop/);
     expect(ask.textContent).toMatch(/The chat's reply and the other subagents keep going/);
+    // Cancel puts focus back where the question came from, and nothing is sent.
+    expect(document.activeElement).toBe(within(ask).getByRole("button", { name: "Stop it" }));
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(within(panel()).queryByRole("group", { name: "Stop this subagent?" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
     expect(server.requests.filter((r) => r.method === "subagent.interrupt")).toEqual([]);
 
-    await user.click(within(ask).getByRole("button", { name: "Stop it" }));
-    await waitFor(() => expect(within(panel()).getByText(/Asked Hermes to stop “Read the auth code”/)).toBeTruthy());
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(within(panel()).getByText(/Asked Hermes to stop “Read the auth code”/)).toBe(document.activeElement));
     expect(server.requests.filter((r) => r.method === "subagent.interrupt").map((r) => r.params)).toEqual([{ session_id: runtime, subagent_id: "sa-auth" }]);
     expect(server.interrupted).toEqual(["sa-auth"]);
   });
@@ -102,6 +110,9 @@ describe("The Subagents panel", () => {
     await user.paste("Skip the snapshot tests");
     await user.click(within(panel()).getByRole("button", { name: "Steer it" }));
     await waitFor(() => expect(within(panel()).getByText(/Steered “Read the tests”/)).toBeTruthy());
+    // The box, disabled while the steer went, has focus again, empty for the next one.
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    expect((box as HTMLTextAreaElement).value).toBe("");
     expect(server.requests.filter((r) => r.method === "subagent.steer").map((r) => r.params)).toEqual([
       { session_id: runtime, subagent_id: "sa-tests", text: "Skip the snapshot tests" },
     ]);

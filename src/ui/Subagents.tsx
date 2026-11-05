@@ -36,6 +36,7 @@ const STATE_LABEL: Record<SubagentState, string> = {
   error: "Failed",
   timeout: "Timed out",
   interrupted: "Stopped",
+  ended: "Ended",
   unknown: "Unknown",
 };
 
@@ -146,7 +147,7 @@ function Branch({ tree, parent, onOpen }: { tree: SubagentTree; parent?: Subagen
 }
 
 function StateBadge({ state }: { state: SubagentState }) {
-  const tone = isLive(state) ? "live" : isFailure(state) ? "bad" : state === "unknown" || state === "interrupted" ? "dim" : "ok";
+  const tone = isLive(state) ? "live" : isFailure(state) ? "bad" : state === "unknown" || state === "ended" || state === "interrupted" ? "dim" : "ok";
   return <span className={`subagent-state ${tone}`}>{STATE_LABEL[state]}</span>;
 }
 
@@ -165,6 +166,11 @@ function SubagentView({
 }) {
   const headRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => headRef.current?.focus(), [s.id]);
+  // Steer and Stop go once it ends; focus that was on them goes to its name rather than nowhere.
+  const running = live(s);
+  useEffect(() => {
+    if (!running && (!document.activeElement || document.activeElement === document.body)) headRef.current?.focus();
+  }, [running]);
   const parent = s.parent && tree.subagents.find((p) => p.id === s.parent);
   const under = descendantsOf(tree, s.id);
   const kids = childrenOf(tree, s.id);
@@ -189,7 +195,8 @@ function SubagentView({
         <dt>State</dt>
         <dd>
           <StateBadge state={s.state} />
-          {s.state === "unknown" && <span className="subagent-why"> Hermes no longer lists it, and the app didn't hear how it ended.</span>}
+          {s.state === "ended" && <span className="subagent-why"> Hermes didn't say how it ended.</span>}
+          {s.state === "unknown" && <span className="subagent-why"> The app knows it only as the parent of a subagent it heard from.</span>}
         </dd>
         <dt>Started by</dt>
         <dd>
@@ -330,6 +337,17 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
   const [confirming, setConfirming] = useState(false);
   const [sent, setSent] = useState<Sent>({ state: "idle" });
   const steerId = useId();
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const stopRef = useRef<HTMLButtonElement>(null);
+  const saidRef = useRef<HTMLParagraphElement>(null);
+  // Where focus goes once the controls it was on are gone or disabled, as soon as that place is there to take it.
+  const [focusNext, setFocusNext] = useState<"box" | "stop" | "said">();
+  useEffect(() => {
+    const el = focusNext && { box: boxRef, stop: stopRef, said: saidRef }[focusNext].current;
+    if (!el || ("disabled" in el && el.disabled)) return;
+    setFocusNext(undefined);
+    el.focus();
+  });
   const target = `“${nameOf(s)}” (${shortId(s.id)})`;
   const busy = sent.state === "busy";
   const run = async (what: () => Promise<{ text: string; ok: boolean }>) => {
@@ -343,6 +361,7 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
   const steer = () =>
     run(async () => {
       const words = text.trim();
+      setFocusNext("box");
       if ((await api.steer(s.id, words)) !== "queued")
         return { ok: false, text: "Hermes didn't take it: this subagent isn't taking steers now, or an earlier session of this chat started it." };
       setText("");
@@ -351,6 +370,7 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
   const stop = () =>
     run(async () => {
       setConfirming(false);
+      setFocusNext("said");
       return (await api.stop(s.id))
         ? { ok: true, text: `Asked Hermes to stop ${target}. It shows as Stopped once Hermes ends it.` }
         : { ok: false, text: "Hermes didn't find it to stop: it may have ended, or an earlier session of this chat started it." };
@@ -368,6 +388,7 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
         <b>Steer</b> {target}
       </label>
       <textarea
+        ref={boxRef}
         id={steerId}
         rows={2}
         value={text}
@@ -390,11 +411,9 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
         <button className="btn" disabled={busy || !text.trim()} onClick={() => void steer()}>
           Steer it
         </button>
-        {!confirming ? (
-          <button className="btn danger" disabled={busy} onClick={() => setConfirming(true)}>
-            Stop it…
-          </button>
-        ) : null}
+        <button ref={stopRef} className="btn danger" disabled={busy || confirming} aria-expanded={confirming} onClick={() => setConfirming(true)}>
+          Stop it…
+        </button>
       </div>
       {confirming && (
         <div className="subagent-confirm" role="group" aria-label="Stop this subagent?">
@@ -407,14 +426,20 @@ function Controls({ s, under, api }: { s: Subagent; under: number; api: Subagent
             <button className="btn danger" autoFocus onClick={() => void stop()}>
               Stop it
             </button>
-            <button className="btn" onClick={() => setConfirming(false)}>
+            <button
+              className="btn"
+              onClick={() => {
+                setConfirming(false);
+                setFocusNext("stop");
+              }}
+            >
               Cancel
             </button>
           </div>
         </div>
       )}
       {sent.state === "said" && (
-        <p className={`subagent-said ${sent.ok ? "ok" : "bad"}`} role="status">
+        <p ref={saidRef} tabIndex={-1} className={`subagent-said ${sent.ok ? "ok" : "bad"}`} role="status">
           {sent.text}
         </p>
       )}

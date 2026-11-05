@@ -2,7 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { connect } from "./transport";
 import { CapabilityUnsupportedError } from "./capabilities";
-import { ACTIVITY_MAX, SUBAGENTS_MAX, childrenOf, descendantsOf, onRoster, onSubagentEvent, tally, type SubagentId, type SubagentTree } from "./subagents";
+import { ACTIVITY_MAX, SUBAGENTS_MAX, childrenOf, descendantsOf, onLost, onRoster, onSubagentEvent, tally, type SubagentId, type SubagentTree } from "./subagents";
+
+/** Holds back the server's answers to `method` until the returned function is called. */
+function hold(server: FakeHermes, method: string) {
+  const handler = server.handlers[method];
+  const held: (() => void)[] = [];
+  server.handlers[method] = (r) => void held.push(() => handler(r));
+  return () => {
+    server.handlers[method] = handler;
+    held.splice(0).forEach((answer) => answer());
+  };
+}
 
 /** A new chat with a reply under way. */
 async function replying(server = new FakeHermes()) {
@@ -109,6 +120,25 @@ describe("The subagent tree from Hermes's events", () => {
     expect(t!.subagents.slice(0, 2).map((s) => s.id)).toEqual(["s1", "s4"]);
   });
 
+  it("keeps what it last did moving forward: a late tool call or one after the end doesn't take its place", () => {
+    let t: SubagentTree | undefined;
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "grep", tool_count: 2 }), 1);
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "read_file", tool_count: 1 }), 2);
+    expect(t!.subagents[0]).toMatchObject({ toolCount: 2, lastActivity: { text: "grep" } });
+    t = onSubagentEvent(t, "subagent.complete", who("a", "A", { status: "completed" }), 3);
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "terminal", tool_count: 3 }), 4);
+    expect(t!.subagents[0]).toMatchObject({ state: "completed", toolCount: 3, lastActivity: { text: "Finished" } });
+  });
+
+  it("keeps a subagent whose end Hermes didn't explain ended, whatever arrives late", () => {
+    let t = onSubagentEvent(undefined, "subagent.complete", who("a", "A"), 1);
+    expect(t!.subagents[0].state).toBe("ended");
+    t = onSubagentEvent(t, "subagent.start", who("a", "A"), 2);
+    t = onSubagentEvent(t, "subagent.tool", who("a", "A", { tool_name: "grep", tool_count: 1 }), 3);
+    t = onRoster(t, { subagents: [{ subagent_id: "a", status: "running" }] }, 4, 4);
+    expect(t!.subagents[0].state).toBe("ended");
+  });
+
   it("names every subagent under one, at any depth", () => {
     let t: SubagentTree | undefined;
     t = onSubagentEvent(t, "subagent.start", who("a", "A"), 1);
@@ -163,7 +193,7 @@ describe("Recovering the tree after a reconnect", () => {
     expect(agent("n")).toMatchObject({ state: "running", model: "gpt-5", partial: true, startedAt: 1_700_000_100_000 });
   });
 
-  it("marks a subagent the roster no longer lists, with no word of how it ended, as unknown", async () => {
+  it("marks a subagent the roster no longer lists, with no word of how it ended, as ended unheard", async () => {
     vi.useFakeTimers();
     const { server, hermes, id, runtime, agent } = await replying();
     server.transcripts[id] = [{ role: "user", text: "Audit the repo" }];
@@ -171,7 +201,34 @@ describe("Recovering the tree after a reconnect", () => {
     server.drop();
     await vi.advanceTimersByTimeAsync(1_000);
     await hermes.idle();
-    expect(agent("a")!.state).toBe("unknown");
+    expect(agent("a")).toMatchObject({ state: "ended", lastActivity: { text: "Ended while the app wasn't listening" } });
+    // Hermes's own word on how it ended, should it come, replaces that.
+    server.event(server.runtimeIdOf(id)!, "subagent.complete", who("a", "Read the auth code", { status: "completed", summary: "Done." }));
+    expect(agent("a")).toMatchObject({ state: "completed", summary: "Done." });
+    expect(agent("a")!.activity.filter((a) => a.kind === "ended")).toEqual([expect.objectContaining({ text: "Finished" })]);
+  });
+
+  it("keeps a subagent heard from while the recovery roster was on its way", () => {
+    let t = onSubagentEvent(undefined, "subagent.start", who("old", "Before the drop"), 5);
+    t = onLost(t, 6);
+    // Asked for at 10; the start of "new" arrives at 11; the roster, made before it, comes at 12 without either.
+    t = onSubagentEvent(t, "subagent.start", who("new", "After the ask"), 11);
+    t = onRoster(t, { subagents: [], delegations: [] }, 12, 10)!;
+    expect(t.subagents.map((s) => [s.id, s.state])).toEqual([
+      ["old", "ended"],
+      ["new", "running"],
+    ]);
+  });
+
+  it("matches a failed background task only to the subagent known by its place in the call, however often it's read", () => {
+    // Known only from the roster, whose live rows carry no task index.
+    let t = onRoster(undefined, { subagents: [{ subagent_id: "sib", delegation_id: "d1", status: "running", goal: "Sibling" }] }, 1, 1)!;
+    const failed = { delegation_id: "d1", task_index: 0, status: "failed", goal: "Task zero", error: "Boom.", completed_at: 2 };
+    for (let n = 0; n < 2; n++) t = onRoster(t, { subagents: [{ subagent_id: "sib", delegation_id: "d1", status: "running" }], delegations: [failed] }, 3 + n, 3 + n)!;
+    expect(t.subagents.map((s) => [s.id, s.state, s.summary])).toEqual([
+      ["sib", "running", undefined],
+      ["task:d1:0", "failed", "Boom."],
+    ]);
   });
 
   it("lists a chat's subagents when the app opens it, so a run from before the app started shows", async () => {
@@ -224,9 +281,35 @@ describe("Recovering the tree after a reconnect", () => {
     expect(agent("p")!.lastActivity!.text).toBe("read_file: src/auth.ts");
   });
 
-  it("drops a roster that arrives after the chat's session changed", () => {
-    // The tree is the roster's only input; the transport checks the session before applying it. A roster with nothing
-    // in it and no tree makes no tree.
+  it("drops a roster, an output read and a stop that Hermes answers after the connection changed", async () => {
+    vi.useFakeTimers();
+    const { server, hermes, id, runtime, tree } = await replying();
+    server.transcripts[id] = [{ role: "user", text: "Audit the repo" }];
+    server.event(runtime, "subagent.start", who("a", "Read the auth code"));
+    server.subagents[id] = [{ subagent_id: "a", owner: runtime, status: "running", accepting_steer: true, tail: "old session" }];
+    const lists = hold(server, "subagent.list");
+    const tails = hold(server, "subagent.tail");
+    const stops = hold(server, "subagent.interrupt");
+    const refreshed = hermes.refreshSubagents(id);
+    const output = hermes.subagentOutput(id, sid("a"));
+    const stopped = hermes.stopSubagent(id, sid("a"));
+    server.drop();
+    await expect(output).rejects.toThrow();
+    await expect(stopped).rejects.toThrow();
+    await refreshed;
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The old answers arrive once the new connection is up, then the new roster.
+    server.subagents[id] = [{ subagent_id: "a", owner: server.runtimeIdOf(id)!, status: "running", tool_count: 3, last_tool: "grep" }];
+    lists();
+    tails();
+    stops();
+    await hermes.idle();
+    expect(server.interrupted).toEqual([]);
+    expect(tree().sync).toEqual({ kind: "live" });
+    expect(tree().subagents).toEqual([expect.objectContaining({ id: "a", state: "running", toolCount: 3 })]);
+  });
+
+  it("makes no tree from a roster with nothing in it", () => {
     expect(onRoster(undefined, { subagents: [], delegations: [] }, 1)).toBeUndefined();
     expect(onRoster(undefined, { nonsense: true }, 1)).toBeUndefined();
   });

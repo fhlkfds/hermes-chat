@@ -7,14 +7,15 @@
 export type SubagentId = string & { readonly __subagent: unique symbol };
 
 /**
- * Hermes's own lifecycle (`SubagentStatus`), plus `unknown`: the app knows the subagent was there but not how it is
- * now, as when it ended while the app was disconnected and Hermes no longer lists it.
+ * Hermes's own lifecycle (`SubagentStatus`), plus two of the app's. `ended`: it ended, but the app doesn't know how, as
+ * when Hermes's completion named no status it defines, or it ended unheard while the app was disconnected. `unknown`: a
+ * subagent the app knows only as the parent of one it heard from.
  */
-export type SubagentState = "queued" | "running" | "completed" | "failed" | "error" | "timeout" | "interrupted" | "unknown";
+export type SubagentState = "queued" | "running" | "completed" | "failed" | "error" | "timeout" | "interrupted" | "ended" | "unknown";
 
 const HERMES_STATES = new Set<string>(["queued", "running", "completed", "failed", "error", "timeout", "interrupted"]);
-const ENDED = new Set<SubagentState>(["completed", "failed", "error", "timeout", "interrupted"]);
-/** Hermes's last word on it: no later event or roster changes its state. */
+const ENDED = new Set<SubagentState>(["completed", "failed", "error", "timeout", "interrupted", "ended"]);
+/** It ended: no later event or roster brings it back. Only Hermes's own word on how can replace `ended`. */
 export const hasEnded = (s: SubagentState) => ENDED.has(s);
 export const isFailure = (s: SubagentState) => s === "failed" || s === "error" || s === "timeout";
 
@@ -52,6 +53,8 @@ export type Subagent = {
   partial?: boolean;
   /** Known only from Hermes's store of failed background delegations: there's no running subagent to steer or stop. */
   stored?: boolean;
+  /** When an event about it last arrived. */
+  heardAt?: number;
 };
 
 /**
@@ -144,11 +147,12 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
     }
     case "subagent.complete": {
       // A completion without a status Hermes defines says it ended, not how.
-      const state = stateOf(p.status, "unknown");
+      const reported = stateOf(p.status, "ended");
+      const state = hasEnded(reported) ? reported : "ended";
       const summary = str(p.summary)?.trim();
       return {
         ...base,
-        state: state === "running" || state === "queued" ? "unknown" : state,
+        state,
         ...(summary && { summary }),
         ...(num(p.duration_seconds) !== undefined && { durationS: num(p.duration_seconds) }),
         lastActivity: { at, text: ENDED_TEXT[state] ?? "Ended" },
@@ -166,7 +170,10 @@ const ENDED_TEXT: Partial<Record<SubagentState, string>> = {
   error: "Failed with an error",
   timeout: "Timed out",
   interrupted: "Stopped",
+  ended: "Ended",
 };
+
+const UNHEARD = "Ended while the app wasn't listening";
 
 const blank = (id: SubagentId): Subagent => ({ id, depth: 0, goal: "", state: "unknown", activity: [] });
 
@@ -188,19 +195,33 @@ function withActivity(log: SubagentActivity[], a: SubagentActivity): SubagentAct
  * the end can't bring it back. Queued is the earliest state, so a request heard after the start doesn't undo it.
  */
 function nextState(was: SubagentState, reported?: SubagentState): SubagentState {
-  if (!reported || hasEnded(was)) return was;
+  if (!reported) return was;
+  if (hasEnded(was)) return was === "ended" && hasEnded(reported) ? reported : was;
   if (reported === "queued") return was === "unknown" ? "queued" : was;
   return reported;
 }
 
+const latestTool = (log: SubagentActivity[]) => Math.max(-1, ...log.map((a) => (a.kind === "tool" && a.seq !== undefined ? a.seq : -1)));
+
+/**
+ * A subagent with a report applied. What it last did only moves forward: once it ended, its end stays its last
+ * activity, and a tool call Hermes numbered before the latest one known is old news. Its tool count never goes down.
+ */
 function merged(s: Subagent, r: Report): Subagent {
-  const { activity, state, lastActivity, ...fields } = r;
+  const { activity, state, lastActivity, toolCount, ...fields } = r;
+  const next = nextState(s.state, state);
+  const endsNow = hasEnded(next) && next !== s.state;
+  const seq = activity?.kind === "tool" ? activity.seq : undefined;
+  const fresh = endsNow || (!hasEnded(s.state) && (seq === undefined || seq > latestTool(s.activity)));
+  // A known outcome replaces the "ended" the app had put in its place.
+  const log = endsNow && s.state === "ended" ? s.activity.filter((a) => a.kind !== "ended") : s.activity;
   return {
     ...s,
     ...fields,
-    state: nextState(s.state, state),
-    lastActivity: lastActivity && (!s.lastActivity || lastActivity.at >= s.lastActivity.at) ? lastActivity : s.lastActivity,
-    activity: activity ? withActivity(s.activity, activity) : s.activity,
+    state: next,
+    toolCount: toolCount === undefined ? s.toolCount : Math.max(toolCount, s.toolCount ?? 0),
+    lastActivity: lastActivity && (!s.lastActivity || fresh) ? lastActivity : s.lastActivity,
+    activity: activity ? withActivity(log, activity) : log,
   };
 }
 
@@ -243,17 +264,18 @@ function bounded(subagents: Subagent[]): Subagent[] {
 export function onSubagentEvent(tree: SubagentTree | undefined, type: string, payload: unknown, at: number): SubagentTree | undefined {
   const r = eventReport(type, payload, at);
   // One first heard of after it started has done things the app didn't hear, until its start turns up.
-  return r ? applied(tree, [r], () => ({ partial: true })) : tree;
+  return r ? applied(tree, [{ ...r, heardAt: at }], () => ({ partial: true })) : tree;
 }
 
 /**
  * The tree with Hermes's roster (`subagent.list`) applied, now `live`. Hermes lists the subagents still running, and
  * background delegations that failed lately. After a drop, a running or queued subagent the roster leaves out has ended
- * without the app hearing how, so it's `unknown`. The roster is also how the app hears of a nested subagent's tools: Hermes relays only
+ * without the app hearing how, so it's `ended`, unless an event about it arrived after the roster was asked for
+ * (`askedAt`). The roster is also how the app hears of a nested subagent's tools: Hermes relays only
  * its start and end (`delegate_tool_progress._normalize_event` drops the rest). Undefined when there's no tree and
  * nothing listed.
  */
-export function onRoster(tree: SubagentTree | undefined, result: unknown, at: number): SubagentTree | undefined {
+export function onRoster(tree: SubagentTree | undefined, result: unknown, at: number, askedAt = at): SubagentTree | undefined {
   const res = obj(result);
   const rows = Array.isArray(res?.subagents) ? res.subagents.map(obj).filter((r) => !!r) : [];
   const failed = Array.isArray(res?.delegations) ? res.delegations.map(obj).filter((r) => !!r) : [];
@@ -276,14 +298,15 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
   const known = tree?.subagents ?? [];
   const failures: Report[] = [];
   for (const row of failed) {
-    const index = int(row.task_index) ?? 0;
+    const index = int(row.task_index);
     const delegationId = str(row.delegation_id);
-    // The live subagent this failure was, when the app knew it; otherwise it stands on its own.
-    const match = delegationId && known.find((s) => s.delegationId === delegationId && (s.taskIndex ?? 0) === index);
+    // The live subagent this failure was, when both name its place in the call; otherwise it stands on its own. The
+    // roster's live rows carry no task index, so a subagent known only from them never matches.
+    const match = delegationId && index !== undefined && known.find((s) => s.delegationId === delegationId && s.taskIndex === index);
     const error = str(row.error)?.trim();
     const ended = secondsAt(row.completed_at) ?? at;
     failures.push({
-      ...(match ? { id: match.id } : { ...identity(row, `task:${delegationId ?? ""}:${index}` as SubagentId), stored: true }),
+      ...(match ? { id: match.id } : { ...identity(row, `task:${delegationId ?? ""}:${index ?? 0}` as SubagentId), stored: true }),
       state: stateOf(row.status, "failed"),
       ...(error && { summary: error }),
       ...(!match && secondsAt(row.dispatched_at) !== undefined && { startedAt: secondsAt(row.dispatched_at) }),
@@ -297,7 +320,9 @@ export function onRoster(tree: SubagentTree | undefined, result: unknown, at: nu
   // just before it started (or, queued, before Hermes registers it) leaves it out without meaning anything.
   const recovering = tree?.sync.kind !== "live";
   const gone: Report[] = recovering
-    ? known.filter((s) => (s.state === "running" || s.state === "queued") && !ids.has(s.id)).map((s) => ({ id: s.id, state: "unknown" }))
+    ? known
+        .filter((s) => (s.state === "running" || s.state === "queued") && !ids.has(s.id) && (s.heardAt ?? 0) < askedAt)
+        .map((s): Report => ({ id: s.id, state: "ended", lastActivity: { at, text: UNHEARD }, activity: { kind: "ended", at, text: UNHEARD } }))
     : [];
   // One the roster brings that the app hadn't heard of was running before the app could hear it.
   const next = applied(tree, [...listed, ...failures, ...gone], (r) => (r.stored ? {} : { partial: true }));
