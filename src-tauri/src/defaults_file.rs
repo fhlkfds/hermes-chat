@@ -1,13 +1,11 @@
 //! A project's defaults for new chats (ADR 0017) live in one JSON file in the app's data folder, which every running
 //! Hermes Chat on this computer shares. The webview only reads it, and changes it by compare-and-swap: the new text is
-//! written only if the file still holds what the webview read, checked and written while holding an exclusive `flock`
-//! on a lock file beside it. Separate app instances have separate webview storage and lock registries, so this is
+//! written only if the file still holds what the webview read, checked and written while holding an exclusive lock
+//! (`flock`, or `LockFileEx` on Windows) on a lock file beside it. Separate app instances have separate webview storage and lock registries, so this is
 //! what keeps one instance's save from silently replacing another's. Tags and Saved filters (ADR 0026) are kept the
 //! same way, in a file of their own.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -16,6 +14,14 @@ use tauri::{AppHandle, Manager};
 /// The files kept this way, by name: `<name>.json`, swapped under `<name>.lock`.
 const DEFAULTS: &str = "project-defaults";
 const TAGS: &str = "tags";
+
+/// Opens files only their owner can read: mode 0600 on Unix. On Windows a new file takes its folder's access list, and
+/// the app's data folder in the user's profile is already the user's own.
+pub(crate) fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(options, 0o600);
+    options
+}
 
 /// What a swap did: `swapped`, or not because the file held `current` instead of what was expected.
 #[derive(Debug, Serialize, PartialEq)]
@@ -41,11 +47,9 @@ pub fn read(dir: &Path, name: &str) -> io::Result<Option<String>> {
 /// instance takes. The write goes to a private temporary file renamed over the old one, so a crash leaves either.
 pub fn swap(dir: &Path, name: &str, expected: Option<&str>, next: &str) -> io::Result<Swap> {
     fs::create_dir_all(dir)?;
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(dir.join(format!("{name}.lock")))?;
-    // SAFETY: flock on a descriptor this function owns; the lock goes when `lock` is closed at the end.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let lock = owner_only(OpenOptions::new().create(true).truncate(false).write(true)).open(dir.join(format!("{name}.lock")))?;
+    // Released when `lock` is closed at the end.
+    lock.lock()?;
     let path = dir.join(format!("{name}.json"));
     let current = read_file(&path)?;
     if current.as_deref() != expected {
@@ -53,7 +57,7 @@ pub fn swap(dir: &Path, name: &str, expected: Option<&str>, next: &str) -> io::R
     }
     let tmp: PathBuf = dir.join(format!("{name}.json.{}.tmp", std::process::id()));
     {
-        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut f = owner_only(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
         f.write_all(next.as_bytes())?;
         f.sync_all()?;
     }
@@ -116,8 +120,11 @@ mod tests {
         assert_eq!(swap(&d, DEFAULTS, None, "two").unwrap(), Swap { swapped: false, current: Some("one".into()) });
         assert!(swap(&d, DEFAULTS, Some("one"), "two").unwrap().swapped);
         assert_eq!(read(&d, DEFAULTS).unwrap().as_deref(), Some("two"));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(d.join("project-defaults.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(d.join("project-defaults.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         fs::remove_dir_all(&d).unwrap();
     }
 

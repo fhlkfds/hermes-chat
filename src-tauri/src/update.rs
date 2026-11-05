@@ -4,7 +4,8 @@
 // - a standalone AppImage built with an update key: Tauri's updater downloads the release, checks its signature against
 //   the key built into the app, and swaps the AppImage. Nothing else ever goes through the updater, because with no
 //   bundle type it would overwrite whatever file the binary runs from.
-// - anything else (a build from source): nothing here updates it.
+// - anything else (a build from source, or the Windows installer's copy): nothing here updates it. A Windows install is
+//   updated by running a newer installer; the updater would need a signing key this build doesn't have.
 // The webview checks GitHub for the pacman case itself (src/hermes/updates.ts).
 use serde::Serialize;
 use std::path::PathBuf;
@@ -36,7 +37,12 @@ pub enum Install {
     Pacman { package: String, running: String, installed: Option<String> },
     /// `updater`: built with an update key and endpoint, so it can update itself.
     AppImage { version: String, updater: bool },
-    Unmanaged { version: String },
+    /// `installer`: the bundle that put it in place, when that says how to update it (`nsis`: run a newer installer).
+    Unmanaged {
+        version: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        installer: Option<&'static str>,
+    },
 }
 
 #[derive(Serialize)]
@@ -72,8 +78,11 @@ async fn package_version(package: &str) -> Option<String> {
 }
 
 /// The package that owns the binary the app started from, and its version. None without pacman, or for a file no
-/// package owns.
+/// package owns. Only Linux has a pacman that can own it; an MSYS2 pacman on Windows owns its own tree, never this app.
 async fn owner(exe: PathBuf) -> Option<(String, String)> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     let package = pacman(&["-Qqo".as_ref(), exe.as_os_str()]).await?;
     let version = package_version(&package).await?;
     Some((package, version))
@@ -105,7 +114,7 @@ pub async fn update_install_kind(app: AppHandle, state: State<'_, Updates>) -> R
     state.start().await;
     Ok(match state.started.get().cloned().flatten() {
         Some((package, running)) => Install::Pacman { installed: package_version(&package).await, package, running },
-        None => Install::Unmanaged { version },
+        None => Install::Unmanaged { version, installer: (bundle_type() == Some(BundleType::Nsis)).then_some("nsis") },
     })
 }
 
@@ -165,12 +174,11 @@ fn drafts_file(app: &AppHandle) -> Result<PathBuf, String> {
 /// the next launch to mistake for a restart's drafts.
 fn write_whole(path: &std::path::Path, text: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().expect("a file in a directory");
     std::fs::create_dir_all(dir)?;
     let part = path.with_extension("json.part");
     let written = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&part)?;
+        let mut file = crate::defaults_file::owner_only(std::fs::OpenOptions::new().write(true).create(true).truncate(true)).open(&part)?;
         file.write_all(text)?;
         file.sync_all()?;
         std::fs::rename(&part, path)
@@ -180,7 +188,9 @@ fn write_whole(path: &std::path::Path, text: &[u8]) -> std::io::Result<()> {
     }
     written?;
     // Best effort: the copy is in place now, and reporting a failure here would leave it behind a restart that didn't
-    // happen, for an ordinary launch later to put back over newer drafts.
+    // happen, for an ordinary launch later to put back over newer drafts. Windows can't open a folder this way, and
+    // NTFS journals the rename itself.
+    #[cfg(unix)]
     let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
     Ok(())
 }
@@ -368,13 +378,16 @@ mod tests {
 
     #[test]
     fn saves_the_drafts_private_and_whole() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = scratch("save");
         let path = dir.join("restart-drafts.json");
         std::fs::write(&path, "an older, longer copy that must not show through").unwrap();
         write_whole(&path, br#"{"a":"b"}"#).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"a":"b"}"#);
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         assert!(!dir.join("restart-drafts.json.part").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -442,5 +455,9 @@ mod tests {
         );
         let i = Install::AppImage { version: "0.1.0".into(), updater: false };
         assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"appImage","version":"0.1.0","updater":false}"#);
+        let i = Install::Unmanaged { version: "0.1.0".into(), installer: None };
+        assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"unmanaged","version":"0.1.0"}"#);
+        let i = Install::Unmanaged { version: "0.1.0".into(), installer: Some("nsis") };
+        assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"unmanaged","version":"0.1.0","installer":"nsis"}"#);
     }
 }

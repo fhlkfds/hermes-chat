@@ -7,11 +7,12 @@
 //!
 //! Only programs found on `PATH` under a known engine's name, or one the owner picked in the native Open dialog, are
 //! ever run, and only with an argument list built here: no shell. The webview names an engine and model only by
-//! choosing among what Rust found or was given through a dialog. The recording goes to a private folder (0700) that is
-//! deleted once the text is read, and the engine is killed after a timeout. The choice lives in `local-stt.json` in the
+//! choosing among what Rust found or was given through a dialog. The recording goes to a private folder (0700; on
+//! Windows, the user's own temp folder's ACL) that is deleted once the text is read, and the engine is killed after a timeout. The choice lives in `local-stt.json` in the
 //! app's config folder, for this computer, not per connection or profile.
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -69,37 +70,84 @@ impl Kind {
 /// The program names looked for on `PATH`.
 const NAMES: [&str; 5] = ["whisper-cli", "whisper-cpp", "whisper", "whisper-ctranslate2", "vosk-transcriber"];
 
+/// What follows a program's name in its file name: nothing on Linux, where the mode says what runs; on Windows, the
+/// extensions Windows runs (pip's and whisper.cpp's programs are `.exe`), in the order looked for.
+#[cfg(unix)]
+pub const PROGRAM_SUFFIXES: &[&str] = &[""];
+#[cfg(windows)]
+pub const PROGRAM_SUFFIXES: &[&str] = &[".exe", ".cmd", ".bat", ".com"];
+
+/// A program's name without the suffix its platform gives it (`whisper-cli.exe` is `whisper-cli` on Windows, where
+/// case doesn't count), or `None` when it has none of `suffixes`.
+pub fn program_name(file_name: &str, suffixes: &[&str]) -> Option<String> {
+    suffixes.iter().find_map(|suffix| {
+        let cut = file_name.len().checked_sub(suffix.len())?;
+        let (name, end) = (file_name.get(..cut)?, file_name.get(cut..)?);
+        end.eq_ignore_ascii_case(suffix).then(|| if suffix.is_empty() { name.to_owned() } else { name.to_ascii_lowercase() })
+    })
+}
+
 /// Which engine a program is, by its file name. `whisper` is both whisper.cpp's old name and OpenAI Whisper's Python
-/// script, so a script (`#!`) is OpenAI's.
+/// script, so a script (`#!`) is OpenAI's. On Windows pip installs that script as a launcher `.exe` with the script
+/// zipped onto its end, so one with a `__main__.py` in its last bytes is OpenAI's.
 pub fn kind_of(binary: &Path) -> Option<Kind> {
-    match binary.file_name()?.to_str()? {
+    match program_name(binary.file_name()?.to_str()?, PROGRAM_SUFFIXES)?.as_str() {
         "whisper-cli" | "whisper-cpp" => Some(Kind::WhisperCpp),
         "whisper-ctranslate2" => Some(Kind::FasterWhisper),
         "vosk-transcriber" => Some(Kind::Vosk),
         "whisper" => {
             let mut head = [0u8; 2];
             let script = std::fs::File::open(binary).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)).is_ok() && &head == b"#!";
+            #[cfg(windows)]
+            let script = script || is_pip_launcher(binary);
             Some(if script { Kind::OpenaiWhisper } else { Kind::WhisperCpp })
         }
         _ => None,
     }
 }
 
+/// A pip console-script launcher: an `.exe` with a zip holding `__main__.py` appended, whose directory is at the end.
+#[cfg(windows)]
+fn is_pip_launcher(binary: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 64 * 1024;
+    let Ok(mut f) = std::fs::File::open(binary) else { return false };
+    let Ok(len) = f.seek(SeekFrom::End(0)) else { return false };
+    let mut tail = Vec::new();
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() || f.read_to_end(&mut tail).is_err() {
+        return false;
+    }
+    tail.windows(b"__main__.py".len()).any(|w| w == b"__main__.py")
+}
+
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Windows runs a file by its extension, not a mode.
+#[cfg(windows)]
+fn is_executable(path: &Path) -> bool {
+    let named = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| program_name(n, PROGRAM_SUFFIXES).is_some());
+    named && std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
 /// The engines on `path` (a `PATH` value): for each known name, the first executable with it, as the shell would run.
 pub fn on_path(path: &OsStr) -> Vec<(Kind, PathBuf)> {
     NAMES
         .iter()
-        .filter_map(|name| std::env::split_paths(path).map(|dir| dir.join(name)).find(|p| p.is_absolute() && is_executable(p)))
+        .filter_map(|name| {
+            std::env::split_paths(path)
+                .flat_map(|dir| PROGRAM_SUFFIXES.iter().map(move |suffix| dir.join(format!("{name}{suffix}"))))
+                .find(|p| p.is_absolute() && is_executable(p))
+        })
         .filter_map(|p| Some((kind_of(&p)?, p)))
         .collect()
 }
 
-/// The folders models usually sit in: the XDG data and cache folders, Hugging Face's cache, the home folder, and the
-/// folder this app downloads whisper.cpp models into.
+/// The folders models usually sit in: the XDG data and cache folders (on Windows `%LOCALAPPDATA%` and `~\.cache`,
+/// which OpenAI Whisper, Hugging Face and Vosk use there too), Hugging Face's cache, the home folder, and the folder
+/// this app downloads whisper.cpp models into.
 pub struct Places {
     pub home: PathBuf,
     pub data: PathBuf,
@@ -110,9 +158,15 @@ pub struct Places {
 
 impl Places {
     fn from_env(app_models: Option<PathBuf>) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         let var = |name: &str, or: PathBuf| std::env::var_os(name).filter(|v| !v.is_empty()).map_or(or, PathBuf::from);
+        #[cfg(unix)]
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        #[cfg(unix)]
         let data = var("XDG_DATA_HOME", home.join(".local/share"));
+        #[cfg(windows)]
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        #[cfg(windows)]
+        let data = var("LOCALAPPDATA", home.join(r"AppData\Local"));
         let cache = var("XDG_CACHE_HOME", home.join(".cache"));
         let hf = var("HF_HOME", cache.join("huggingface"));
         Places { home, data, cache, hf, app_models }
@@ -129,6 +183,16 @@ fn name_of(p: &Path) -> &str {
     p.file_name().and_then(|n| n.to_str()).unwrap_or("")
 }
 
+/// The system's shared data folders, and Vosk's models among them. Windows has none that these engines use.
+#[cfg(unix)]
+const SYSTEM_SHARES: &[&str] = &["/usr/share", "/usr/local/share"];
+#[cfg(unix)]
+const SYSTEM_VOSK: &[&str] = &["/usr/share/vosk"];
+#[cfg(windows)]
+const SYSTEM_SHARES: &[&str] = &[];
+#[cfg(windows)]
+const SYSTEM_VOSK: &[&str] = &[];
+
 /// The models of `kind` in their usual folders under `places` (and the system's `/usr/share`, `/usr/local/share`).
 pub fn models(kind: Kind, places: &Places) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = match kind {
@@ -137,7 +201,7 @@ pub fn models(kind: Kind, places: &Places) -> Vec<PathBuf> {
             // folder, and their `models`. A download in progress is a hidden `.part` file, so it isn't listed.
             let mut dirs: Vec<PathBuf> = places.app_models.iter().cloned().collect();
             dirs.extend([places.cache.join("whisper.cpp"), places.home.join("whisper.cpp/models")]);
-            for share in [places.data.clone(), "/usr/share".into(), "/usr/local/share".into()] {
+            for share in std::iter::once(places.data.clone()).chain(SYSTEM_SHARES.iter().map(PathBuf::from)) {
                 for d in children(&share).into_iter().filter(|d| name_of(d).starts_with("whisper")) {
                     dirs.push(d.join("models"));
                     dirs.push(d);
@@ -153,7 +217,10 @@ pub fn models(kind: Kind, places: &Places) -> Vec<PathBuf> {
             .flat_map(|d| children(&d.join("snapshots")))
             .filter(|s| s.join("model.bin").exists())
             .collect(),
-        Kind::Vosk => [places.cache.join("vosk"), places.data.join("vosk"), "/usr/share/vosk".into()]
+        Kind::Vosk => [places.cache.join("vosk"), places.data.join("vosk")]
+            .into_iter()
+            .chain(SYSTEM_VOSK.iter().map(PathBuf::from))
+            .collect::<Vec<_>>()
             .iter()
             .flat_map(|d| children(d))
             .filter(|d| d.join("am").is_dir())
@@ -328,6 +395,15 @@ pub fn clean(text: &str) -> String {
         .join(" ")
 }
 
+/// An engine's program to run, without a console window flashing up on Windows.
+fn command(program: &Path) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut command = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
 /// A private folder for one recording, deleted with everything in it when dropped.
 struct Scratch(PathBuf);
 
@@ -337,8 +413,13 @@ impl Scratch {
         static N: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let dir = std::env::temp_dir().join(format!("hermes-chat-stt-{}-{nanos}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-        // `create`, not `create_all`: it fails if anything, a link included, is already there.
-        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        // `create`, not `create_all`: it fails if anything, a link included, is already there. On Windows the folder
+        // takes the ACL of the user's own temp folder.
+        #[allow(unused_mut)]
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder.create(&dir)?;
         Ok(Scratch(dir))
     }
 }
@@ -368,11 +449,15 @@ pub async fn transcribe(engine: &Engine, wav: &[u8], limit: Duration, language: 
     let wav_path = scratch.0.join("audio.wav");
     {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&wav_path).map_err(|e| format!("Couldn't save the recording to transcribe: {e}"))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut f = options.open(&wav_path).map_err(|e| format!("Couldn't save the recording to transcribe: {e}"))?;
         f.write_all(wav).map_err(|e| format!("Couldn't save the recording to transcribe: {e}"))?;
     }
     let label = engine.kind.label();
-    let child = tokio::process::Command::new(&engine.binary)
+    let child = command(&engine.binary)
         .args(args(engine, model, &wav_path, &scratch.0, language))
         .current_dir(&scratch.0)
         // faster-whisper's model is already here; it must never fetch one.
@@ -943,7 +1028,7 @@ fn found_now(app_models: Option<PathBuf>) -> Vec<(Kind, PathBuf, Vec<PathBuf>)> 
 
 /// The first line a program prints for `--version`, if it answers in 5 s.
 async fn version(binary: &Path) -> Option<String> {
-    let run = tokio::process::Command::new(binary).arg("--version").stdin(Stdio::null()).kill_on_drop(true).output();
+    let run = command(binary).arg("--version").stdin(Stdio::null()).kill_on_drop(true).output();
     let out = tokio::time::timeout(Duration::from_secs(5), run).await.ok()?.ok()?;
     if !out.status.success() {
         return None;
@@ -1065,7 +1150,11 @@ async fn pick(app: &AppHandle, title: &str, folder: bool) -> Result<Option<PathB
 #[tauri::command]
 pub async fn local_stt_pick_program(app: AppHandle) -> Result<Option<State>, String> {
     let Some(binary) = pick(&app, "Choose a speech-to-text program", false).await? else { return Ok(None) };
-    let kind = kind_of(&binary).ok_or("Hermes Chat can run whisper-cli, whisper-cpp, whisper, whisper-ctranslate2 or vosk-transcriber.")?;
+    let kind = kind_of(&binary).ok_or(if cfg!(windows) {
+        "Hermes Chat can run whisper-cli.exe, whisper-cpp.exe, whisper.exe, whisper-ctranslate2.exe or vosk-transcriber.exe."
+    } else {
+        "Hermes Chat can run whisper-cli, whisper-cpp, whisper, whisper-ctranslate2 or vosk-transcriber."
+    })?;
     if !is_executable(&binary) {
         return Err(format!("{} can't be run: it isn't an executable file.", binary.display()));
     }
@@ -1107,13 +1196,48 @@ mod tests {
     fn file(path: &Path, text: &str, mode: u32) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        #[cfg(windows)]
+        let _ = mode;
     }
 
     fn settings(on_this_computer: bool, engine: Option<Engine>) -> Settings {
         Settings { on_this_computer, engine, ..Settings::default() }
     }
 
+    #[test]
+    fn a_programs_name_drops_only_its_platforms_suffix() {
+        let windows = &[".exe", ".cmd", ".bat", ".com"];
+        assert_eq!(program_name("whisper-cli.exe", windows).as_deref(), Some("whisper-cli"));
+        assert_eq!(program_name("Whisper-CLI.EXE", windows).as_deref(), Some("whisper-cli"));
+        assert_eq!(program_name("whisper.cmd", windows).as_deref(), Some("whisper"));
+        assert_eq!(program_name("whisper-cli", windows), None);
+        assert_eq!(program_name("whisper-cli.exe.txt", windows), None);
+        assert_eq!(program_name("whisper-cli", &[""]).as_deref(), Some("whisper-cli"));
+        // Linux names keep their case and any dots.
+        assert_eq!(program_name("Whisper-cli.exe", &[""]).as_deref(), Some("Whisper-cli.exe"));
+        assert_eq!(program_name("\u{e9}.exe", windows).as_deref(), Some("\u{e9}"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_engines_are_found_on_path_by_name_and_extension() {
+        let d = temp("path-windows");
+        let (a, b) = (d.join("a"), d.join("b"));
+        file(&a.join("whisper-cli.exe"), "MZ", 0);
+        file(&b.join("whisper-cli.exe"), "MZ", 0);
+        file(&a.join("vosk-transcriber"), "MZ", 0); // no extension: Windows wouldn't run it
+        let launcher = [b"MZ".as_slice(), &[0; 100], b"#!python.exe\nPK\x03\x04__main__.pyPK\x05\x06"].concat();
+        std::fs::write(b.join("whisper.exe"), launcher).unwrap();
+        let path = std::env::join_paths([&a, &b]).unwrap();
+        assert_eq!(on_path(&path), vec![(Kind::WhisperCpp, a.join("whisper-cli.exe")), (Kind::OpenaiWhisper, b.join("whisper.exe"))]);
+        file(&a.join("whisper.exe"), "MZ", 0);
+        assert_eq!(kind_of(&a.join("whisper.exe")), Some(Kind::WhisperCpp));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn engines_are_found_on_path_by_name_first_match_wins_and_only_if_executable() {
         let d = temp("path");
@@ -1253,6 +1377,7 @@ mod tests {
     }
 
     /// Each in its own folder: rewriting a program just run can fail with "text file busy".
+    #[cfg(unix)]
     fn fake_engine(dir: &Path, name: &str, script: &str) -> Engine {
         let binary = dir.join(name).join("whisper-cli");
         file(&binary, &format!("#!/bin/sh\n{script}\n"), 0o755);
@@ -1266,6 +1391,7 @@ mod tests {
         children(&std::env::temp_dir()).iter().filter(|p| name_of(p).starts_with(&prefix)).count()
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_run_reads_the_transcript_and_deletes_the_recording_whatever_happens() {
         let d = temp("run");
@@ -1290,6 +1416,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_failure_printed_only_on_stdout_is_still_said() {
         let d = temp("stdout");
@@ -1312,6 +1439,7 @@ mod tests {
     }
 
     /// The routing `hermes_transcribe` follows, with the settings file it reads.
+    #[cfg(unix)]
     #[tokio::test]
     async fn with_this_computer_chosen_and_no_backup_a_recording_never_goes_to_hermes() {
         let d = temp("route");
@@ -1351,6 +1479,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_backup_transcribes_when_the_primary_fails_and_the_text_says_so() {
         let d = temp("backup");

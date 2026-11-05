@@ -1175,7 +1175,9 @@ pub fn run(screenshot: bool, link: Option<String>) {
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
-            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on.
+            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on. WebView2 has it, and asks
+            // `permission` for the microphone.
+            #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
                     use webkit2gtk::{SettingsExt, WebViewExt};

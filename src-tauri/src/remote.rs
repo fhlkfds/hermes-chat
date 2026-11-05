@@ -1,35 +1,45 @@
 //! `hermes-chat --screenshot`, for a desktop shortcut that works while another window is focused. Wayland doesn't let
 //! an app listen for keys it isn't focused for, so the owner binds a key in their desktop to run that command. It
-//! asks the Hermes Chat already running, over the session bus, to take a screenshot; with none running, the app starts
-//! and takes one once it is signed in. Either way the request waits in Rust until a signed-in window takes it, so one
-//! made at the sign-in screen isn't lost (lib.rs, `screenshot_pending_request`).
+//! asks the Hermes Chat already running to take a screenshot; with none running, the app starts and takes one once it
+//! is signed in. Either way the request waits in Rust until a signed-in window takes it, so one made at the sign-in
+//! screen isn't lost (lib.rs, `screenshot_pending_request`).
 //!
 //! `hermes-chat --show` and `hermes-chat --toggle` are the same idea for the window itself (summon.rs): a key bound in
-//! the desktop (a Hyprland `bind`, say) runs one, and the running app brings its one window forward (or, for
-//! `--toggle`, hides it when it is already in front). With none running, the app starts. A plain `hermes-chat` with
-//! one already running shows that one too, so there is only ever one Hermes Chat.
+//! the desktop (a Hyprland `bind`, say, or a Windows shortcut's key) runs one, and the running app brings its one
+//! window forward (or, for `--toggle`, hides it when it is already in front). With none running, the app starts. A
+//! plain `hermes-chat` with one already running shows that one too, so there is only ever one Hermes Chat.
 //!
 //! `hermes-chat <link>` is how the desktop opens a chat link (links.rs, ADR 0037): with Hermes Chat running, the link
 //! goes to it and its window comes forward; with none running, the app starts and keeps the link for its window.
 //!
-//! The running app owns the bus name `net.l0cky12.HermesChat` and answers `Screenshot`, `Show`, `Toggle` and
-//! `OpenLink`. Only this user's own programs can reach their session bus. A screenshot request only opens the picker:
-//! nothing is captured until the owner picks, and nothing is sent until they send the message. A link only shows a
-//! chat, once the window has checked it. `Show`, `Toggle` and `OpenLink` take the Wayland activation token the desktop
-//! gave the command, if any, so the compositor lets the window take focus.
+//! The requests travel over the session bus on Linux (remote/bus.rs) and over a named pipe of this user's on Windows
+//! (remote/pipe.rs); either way only this user's own programs can send one. A screenshot request only opens the
+//! picker: nothing is captured until the owner picks, and nothing is sent until they send the message. A link only
+//! shows a chat, once the window has checked it. On Wayland `Show`, `Toggle` and `OpenLink` take the activation token
+//! the desktop gave the command, if any, so the compositor lets the window take focus.
 
-use dbus::blocking::Connection;
-use dbus::channel::MatchingReceiver;
-use dbus::message::{MatchRule, MessageType};
+#[cfg(target_os = "linux")]
+mod bus;
+#[cfg(target_os = "linux")]
+use bus as desktop;
+#[cfg(windows)]
+mod pipe;
+#[cfg(windows)]
+use pipe as desktop;
+#[cfg(not(any(target_os = "linux", windows)))]
+mod desktop {
+    pub(super) fn hand_over(_: Option<super::Request>, _: &'static super::Inbox) -> bool {
+        false
+    }
+}
+
+use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Mutex,
 };
 use std::time::{Duration, Instant};
 
-pub const NAME: &str = "net.l0cky12.HermesChat";
-const PATH: &str = "/net/l0cky12/HermesChat";
-const IFACE: &str = "net.l0cky12.HermesChat";
 /// The event that tells the webview a desktop shortcut asked for a screenshot.
 pub const EVENT: &str = "screenshot-requested";
 
@@ -68,7 +78,8 @@ impl Requests {
 }
 
 /// What the command line asks the running app for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Request {
     Screenshot,
     /// Bring the window forward. `token`: the desktop's Wayland activation token, if it gave one.
@@ -108,31 +119,52 @@ pub fn request_of(args: impl IntoIterator<Item = String>, token: Option<String>,
     }
 }
 
-/// Asks the running app for a screenshot. An error when no Hermes Chat is running (or the bus can't be reached).
-pub fn forward() -> Result<(), dbus::Error> {
-    send(&Request::Screenshot)
+/// Hands the command line's request to the Hermes Chat already running, or, when this one is the first, starts
+/// answering requests for its window. True when the running one took it, so this process has nothing left to do.
+/// `None` (an update's restart, a developer's second copy): this one starts and takes over once the other exits.
+pub fn hand_over(request: Option<Request>) -> bool {
+    desktop::hand_over(request, &INBOX)
 }
 
-/// Asks the running app. An error when no Hermes Chat is running (or the bus can't be reached).
-pub fn send(request: &Request) -> Result<(), dbus::Error> {
-    send_on(&Connection::new_session()?, request)
+/// The longest request a running app reads from the pipe: a link at its longest, with room for the rest.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WIRE_MAX: usize = crate::links::MAX_LEN + 1024;
+
+/// One request as one line on the pipe.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn encode(request: &Request) -> String {
+    serde_json::to_string(request).expect("a request is plain strings")
 }
 
-fn send_on(conn: &Connection, request: &Request) -> Result<(), dbus::Error> {
-    let proxy = conn.with_proxy(NAME, PATH, Duration::from_secs(5));
-    match request {
-        Request::Screenshot => proxy.method_call(IFACE, "Screenshot", ()),
-        Request::Show { token } => proxy.method_call(IFACE, "Show", (token.clone().unwrap_or_default(),)),
-        Request::Toggle { token } => proxy.method_call(IFACE, "Toggle", (token.clone().unwrap_or_default(),)),
-        Request::OpenLink { link, token } => proxy.method_call(IFACE, "OpenLink", (link.as_str(), token.clone().unwrap_or_default())),
+/// A request read off the pipe, held to what the bus allows: a link must be one that could be a chat link, and an
+/// empty token is no token.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn decode(line: &str) -> Result<Request, String> {
+    if line.len() > WIRE_MAX {
+        return Err("That request is too long.".into());
     }
+    let request: Request = serde_json::from_str(line.trim_end()).map_err(|_| {
+        "Hermes Chat only answers screenshot, show, toggle and openLink.".to_owned()
+    })?;
+    let token = |t: Option<String>| t.filter(|t| !t.is_empty());
+    Ok(match request {
+        Request::Screenshot => Request::Screenshot,
+        Request::Show { token: t } => Request::Show { token: token(t) },
+        Request::Toggle { token: t } => Request::Toggle { token: token(t) },
+        Request::OpenLink { link, token: t } if crate::links::candidate(&link) => Request::OpenLink { link, token: token(t) },
+        Request::OpenLink { .. } => return Err("That isn't a Hermes Chat link.".into()),
+    })
 }
 
-/// Takes the bus name unless another Hermes Chat has it. The bus decides atomically, so of two apps starting at once
-/// exactly one gets it, before either has a window. Whether this one did.
-pub fn claim(conn: &Connection) -> Result<bool, dbus::Error> {
-    use dbus::blocking::stdintf::org_freedesktop_dbus::RequestNameReply;
-    Ok(matches!(conn.request_name(NAME, false, false, true)?, RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner))
+/// The pipe the running app listens on: one per Windows user and sign-in session, so a request never reaches another
+/// user's app, nor this user's app in another session. Pipe names allow anything but a backslash; the rest is folded
+/// so the same user always gets the same name.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pipe_name(domain: &str, user: &str, session: &str) -> String {
+    let part = |s: &str| -> String {
+        s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c.to_ascii_lowercase() } else { '_' }).collect()
+    };
+    format!(r"\\.\pipe\net.l0cky12.HermesChat-{}-{}-{}", part(domain), part(user), part(session))
 }
 
 /// Where requests go: the app's handler once it is set up, and until then a list it takes over, so a request that
@@ -166,75 +198,6 @@ static INBOX: std::sync::LazyLock<Inbox> = std::sync::LazyLock::new(Inbox::defau
 /// Sends requests to `f` from now on, after any that came while the app started.
 pub fn set_handler(f: impl Fn(Request) + Send + 'static) {
     INBOX.set_handler(f);
-}
-
-/// Answers calls on `conn`, on a thread of its own. `queue`: the name is another Hermes Chat's, so this one waits in
-/// line and takes over once that one exits, as after an update's restart (update.rs `relaunch`).
-pub fn serve(conn: Connection, queue: bool) {
-    serve_into(conn, queue, &INBOX);
-}
-
-fn serve_into(conn: Connection, queue: bool, inbox: &'static Inbox) {
-    std::thread::spawn(move || {
-        if queue {
-            use dbus::blocking::stdintf::org_freedesktop_dbus::RequestNameReply;
-            match conn.request_name(NAME, false, false, false) {
-                Ok(RequestNameReply::PrimaryOwner) | Ok(RequestNameReply::AlreadyOwner) => {}
-                Ok(RequestNameReply::InQueue) => {
-                    eprintln!("hermes-chat: another Hermes Chat is running; desktop shortcuts go to it until it closes")
-                }
-                Ok(_) => return eprintln!("hermes-chat: another Hermes Chat is running; desktop shortcuts go to it"),
-                Err(e) => return eprintln!("hermes-chat: couldn't take {NAME}: {e}"),
-            }
-        }
-        conn.start_receive(
-            MatchRule::new_method_call(),
-            Box::new(move |msg, conn| {
-                if msg.msg_type() != MessageType::MethodCall {
-                    return true;
-                }
-                let iface = msg.interface().map(|i| i.to_string());
-                let member = msg.member().map(|m| m.to_string());
-                let path = msg.path().map(|p| p.to_string());
-                let reply = match (iface.as_deref(), member.as_deref(), path.as_deref()) {
-                    (Some(IFACE) | None, Some("Screenshot"), Some(PATH)) => {
-                        inbox.dispatch(Request::Screenshot);
-                        msg.method_return()
-                    }
-                    (Some(IFACE) | None, Some(m @ ("Show" | "Toggle")), Some(PATH)) => {
-                        let token = msg.read1::<&str>().ok().filter(|t| !t.is_empty()).map(str::to_owned);
-                        inbox.dispatch(if m == "Show" { Request::Show { token } } else { Request::Toggle { token } });
-                        msg.method_return()
-                    }
-                    // Anything that can't be a link is refused here, and the window reads the rest (chatLinks.ts).
-                    (Some(IFACE) | None, Some("OpenLink"), Some(PATH)) => match msg.get2::<&str, &str>() {
-                        (Some(link), token) if crate::links::candidate(link) => {
-                            let token = token.filter(|t| !t.is_empty()).map(str::to_owned);
-                            inbox.dispatch(Request::OpenLink { link: link.to_owned(), token });
-                            msg.method_return()
-                        }
-                        _ => msg.error(
-                            &"org.freedesktop.DBus.Error.InvalidArgs".into(),
-                            &std::ffi::CString::new("That isn't a Hermes Chat link.").unwrap(),
-                        ),
-                    },
-                    (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),
-                    _ => msg.error(
-                        &"org.freedesktop.DBus.Error.UnknownMethod".into(),
-                        &std::ffi::CString::new("Hermes Chat only answers Screenshot, Show, Toggle and OpenLink.").unwrap(),
-                    ),
-                };
-                use dbus::channel::Sender;
-                let _ = conn.send(reply);
-                true
-            }),
-        );
-        loop {
-            if let Err(e) = conn.process(Duration::from_secs(3600)) {
-                return eprintln!("hermes-chat: desktop shortcuts stopped reaching this window: {e}");
-            }
-        }
-    });
 }
 
 #[cfg(test)]
@@ -278,118 +241,42 @@ mod tests {
         assert_eq!(request_of(vec![link.clone()], None, false), Some(Request::Show { token: None }));
     }
 
-    /// A private session bus of its own, so tests never touch the owner's.
-    struct PrivateBus {
-        address: String,
-        daemon: std::process::Child,
-        dir: std::path::PathBuf,
-    }
-
-    impl Drop for PrivateBus {
-        fn drop(&mut self) {
-            let _ = self.daemon.kill();
-            let _ = self.daemon.wait();
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn private_bus() -> PrivateBus {
-        use std::io::BufRead;
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("hermes-chat-test-bus-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config = dir.join("bus.conf");
-        std::fs::write(
-            &config,
-            format!(
-                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig><type>session</type><listen>unix:dir={}</listen><auth>EXTERNAL</auth>
-<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
-                dir.display()
-            ),
-        )
-        .unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .arg(format!("--config-file={}", config.display()))
-            .args(["--nofork", "--print-address=1"])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("dbus-daemon");
-        let mut line = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        PrivateBus { address: line.trim().to_owned(), daemon, dir }
-    }
-
-    fn connect(address: &str) -> Connection {
-        let mut ch = dbus::channel::Channel::open_private(address).unwrap();
-        ch.register().unwrap();
-        Connection::from(ch)
-    }
-
     #[test]
-    fn of_apps_starting_at_once_exactly_one_owns_the_name() {
-        let bus = private_bus();
-        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let launches: Vec<_> = (0..8)
-            .map(|_| {
-                let (address, start) = (bus.address.clone(), start.clone());
-                std::thread::spawn(move || {
-                    let conn = connect(&address);
-                    start.wait();
-                    let owner = claim(&conn).unwrap();
-                    // Kept alive until every launch has asked, as a running app keeps it.
-                    std::thread::sleep(Duration::from_millis(500));
-                    owner
-                })
-            })
-            .collect();
-        let owners = launches.into_iter().map(|t| t.join().unwrap()).filter(|o| *o).count();
-        assert_eq!(owners, 1);
-    }
-
-    #[test]
-    fn a_second_launch_reaches_the_first_while_it_is_still_starting() {
-        let bus = private_bus();
-        let first = connect(&bus.address);
-        assert!(claim(&first).unwrap());
-        let inbox: &'static Inbox = Box::leak(Box::default());
-        serve_into(first, false, inbox);
-        // The second launch can't take the name, so it asks the first, whose window isn't set up yet.
-        let second = connect(&bus.address);
-        assert!(!claim(&second).unwrap());
-        send_on(&second, &Request::Show { token: Some("tok".into()) }).unwrap();
-        send_on(&second, &Request::Toggle { token: None }).unwrap();
-        // Once it is, it gets both, in order.
-        let got = std::sync::Arc::new(Mutex::new(vec![]));
-        let g = got.clone();
-        inbox.set_handler(move |r| g.lock().unwrap().push(r));
-        send_on(&second, &Request::Screenshot).unwrap();
-        assert_eq!(
-            *got.lock().unwrap(),
-            vec![Request::Show { token: Some("tok".into()) }, Request::Toggle { token: None }, Request::Screenshot]
-        );
-    }
-
-    #[test]
-    fn a_link_reaches_the_running_app_and_anything_else_is_refused_on_the_bus() {
-        let bus = private_bus();
-        let first = connect(&bus.address);
-        assert!(claim(&first).unwrap());
-        let inbox: &'static Inbox = Box::leak(Box::default());
-        let got = std::sync::Arc::new(Mutex::new(vec![]));
-        let g = got.clone();
-        inbox.set_handler(move |r| g.lock().unwrap().push(r));
-        serve_into(first, false, inbox);
-        let second = connect(&bus.address);
+    fn a_request_crosses_the_pipe_as_it_was_sent() {
         let link = "hermes-chat://chat?v=1&connection=abcdefghijklmnopqrst&profile=work&id=c9".to_owned();
-        send_on(&second, &Request::OpenLink { link: link.clone(), token: Some("tok".into()) }).unwrap();
-        let proxy = second.with_proxy(NAME, PATH, Duration::from_secs(5));
-        let refused: Result<(), dbus::Error> = proxy.method_call(IFACE, "OpenLink", ("https://example.com", ""));
-        assert_eq!(refused.unwrap_err().name(), Some("org.freedesktop.DBus.Error.InvalidArgs"));
-        let long: Result<(), dbus::Error> = proxy.method_call(IFACE, "OpenLink", (format!("hermes-chat://{}", "a".repeat(2000)), ""));
-        assert!(long.is_err());
-        assert_eq!(*got.lock().unwrap(), vec![Request::OpenLink { link, token: Some("tok".into()) }]);
+        for request in [
+            Request::Screenshot,
+            Request::Show { token: None },
+            Request::Toggle { token: Some("t".into()) },
+            Request::OpenLink { link: link.clone(), token: None },
+        ] {
+            let line = encode(&request);
+            assert!(!line.contains('\n'), "{line}");
+            assert_eq!(decode(&format!("{line}\n")), Ok(request));
+        }
+        assert_eq!(encode(&Request::Screenshot), r#"{"kind":"screenshot"}"#);
+        assert_eq!(decode(r#"{"kind":"show","token":""}"#), Ok(Request::Show { token: None }));
+    }
+
+    #[test]
+    fn the_pipe_refuses_what_the_bus_refuses() {
+        assert!(decode(r#"{"kind":"openLink","link":"https://example.com","token":null}"#).is_err());
+        let long = format!(r#"{{"kind":"openLink","link":"hermes-chat://{}","token":null}}"#, "a".repeat(2000));
+        assert!(decode(&long).is_err());
+        assert!(decode(r#"{"kind":"quit"}"#).is_err());
+        assert!(decode("not json").is_err());
+        assert!(decode(&"x".repeat(WIRE_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn each_user_and_session_has_a_pipe_of_its_own() {
+        let name = pipe_name("WORKGROUP", "Liam O'Neil", "Console");
+        assert_eq!(name, r"\\.\pipe\net.l0cky12.HermesChat-workgroup-liam_o_neil-console");
+        assert_eq!(name, pipe_name("workgroup", "LIAM O'NEIL", "console"));
+        assert_ne!(name, pipe_name("WORKGROUP", "Liam O'Neil", "RDP-Tcp#3"));
+        assert_ne!(name, pipe_name("WORKGROUP", "Ann", "Console"));
+        // A backslash would start a new path part; it never gets through.
+        assert_eq!(pipe_name(r"A\B", "u", "s").matches('\\').count(), 4);
     }
 
     #[test]

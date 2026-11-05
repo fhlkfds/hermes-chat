@@ -3,6 +3,7 @@
 // themselves need a desktop; they were checked by hand (see the PR).
 use hermes_chat::screenshot::{self, portal, CaptureError, Captures, Method, Windows};
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -131,6 +132,7 @@ fn reads_what_grim_answers() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn reads_the_portal_answer() {
     assert_eq!(
@@ -249,6 +251,7 @@ fn fresh_root(tag: &str) -> (Root, Captures) {
     (Root(base), captures)
 }
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
+#[cfg(unix)]
 fn mode(p: &Path) -> u32 {
     std::fs::metadata(p).unwrap().permissions().mode() & 0o777
 }
@@ -265,10 +268,13 @@ fn stages_captures_privately_and_deletes_the_portals_scratch_copy() {
     assert_eq!(a.file_name().unwrap(), "screenshot-2026-11-02-153417.png");
     assert!(a.starts_with(captures.mine()), "{a:?}");
     assert_eq!(std::fs::read(&a).unwrap(), PNG);
-    assert_eq!(mode(&a), 0o600);
-    assert_eq!(mode(a.parent().unwrap()), 0o700);
-    assert_eq!(mode(captures.mine()), 0o700);
-    assert_eq!(mode(&root.0), 0o700);
+    #[cfg(unix)]
+    {
+        assert_eq!(mode(&a), 0o600);
+        assert_eq!(mode(a.parent().unwrap()), 0o700);
+        assert_eq!(mode(captures.mine()), 0o700);
+        assert_eq!(mode(&root.0), 0o700);
+    }
     assert!(!source.exists(), "the scratch copy is deleted");
 
     // A copy the desktop saved elsewhere is kept, and the same name twice is two files.
@@ -343,6 +349,7 @@ fn sweeps_captures_left_by_a_process_that_is_gone() {
     assert!(running.exists() && other.exists() && kept.exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn counts_only_a_running_hermes_chat_as_alive() {
     // This test binary is running, under its own name.
@@ -369,6 +376,7 @@ fn counts_only_a_running_hermes_chat_as_alive() {
     child.wait().unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_a_captures_folder_someone_else_could_open() {
     let base = std::env::temp_dir().join(format!("hermes-chat-test-open-{}", std::process::id()));
@@ -402,6 +410,22 @@ fn knows_a_scratch_file_from_the_desktops_own_copy() {
     assert!(!screenshot::is_scratch(Path::new("/etc/hostname")));
     assert!(!screenshot::is_scratch(&root.0));
     assert!(!screenshot::is_scratch(&root.0.join("missing.png")));
+}
+
+#[cfg(windows)]
+#[test]
+fn counts_only_a_running_hermes_chat_as_alive_on_windows() {
+    assert!(screenshot::instance_alive(std::process::id()));
+    // The System process runs, but isn't this program.
+    assert!(!screenshot::instance_alive(4));
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(!screenshot::instance_alive(pid));
 }
 
 #[test]
@@ -449,6 +473,7 @@ fn a_reused_process_slot_never_overwrites_an_outbox_capture() {
     let (root, captures) = fresh_root("slot-reuse");
     let old = captures.mine().join("0");
     std::fs::create_dir_all(&old).unwrap();
+    #[cfg(unix)]
     std::fs::set_permissions(captures.mine(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let old_file = old.join("old.png");
     std::fs::write(&old_file, PNG).unwrap();
@@ -478,6 +503,7 @@ fn shutdown_before_retention_ipc_preserves_bytes_for_startup_reconciliation() {
     assert!(!pending.exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn cleanup_never_follows_linked_instances_or_retargeted_outbox_ancestors() {
     use std::os::unix::fs::symlink;

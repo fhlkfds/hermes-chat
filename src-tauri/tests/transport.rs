@@ -1544,7 +1544,7 @@ async fn refuses_a_folder_a_missing_file_or_a_relative_path_for_the_preview() {
     let dir = scratch("local-refused");
     let err = |p: String| async move { transport::read_local_text(&p).await.err().unwrap().to_string() };
     assert_eq!(err(path_of(&dir)).await, "it's a folder");
-    assert_eq!(err(path_of(&dir.join("gone.txt"))).await, "No such file or directory (os error 2)");
+    assert_eq!(err(path_of(&dir.join("gone.txt"))).await, std::io::Error::from_raw_os_error(2).to_string());
     assert_eq!(err("notes.txt".into()).await, "it isn't a full path");
 }
 
@@ -1560,6 +1560,7 @@ async fn only_files_picked_in_the_open_dialog_can_be_read_for_the_preview() {
     assert!(picked.read(&format!("{path}/../secret")).await.is_err());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn reload_uses_the_picked_file_even_after_path_or_symlink_replacement() {
     use std::os::unix::fs::symlink;
@@ -1583,6 +1584,7 @@ async fn reload_uses_the_picked_file_even_after_path_or_symlink_replacement() {
     assert_eq!(b.unwrap().text, "updated");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn local_preview_refuses_fifos_and_devices_without_waiting_for_a_writer() {
     let dir = scratch("picked-fifo");
@@ -1764,7 +1766,6 @@ fn refuses_extra_headers_that_are_malformed_reserved_or_set_twice() {
 
 #[test]
 fn stages_a_pasted_file_as_a_private_temp_file() {
-    use std::os::unix::fs::PermissionsExt;
     let png = b"\x89PNG\r\n\x1a\npasted";
     let a = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
     let b = transport::stage_clipboard_file("clipboard-2026-11-02T153000.png", png).unwrap();
@@ -1773,8 +1774,12 @@ fn stages_a_pasted_file_as_a_private_temp_file() {
         assert!(p.starts_with(std::env::temp_dir().join("hermes-chat")), "{p:?}");
         assert_eq!(p.file_name().unwrap(), "clipboard-2026-11-02T153000.png");
         assert_eq!(std::fs::read(p).unwrap(), png);
-        let folder = std::fs::metadata(p.parent().unwrap()).unwrap();
-        assert_eq!(folder.permissions().mode() & 0o777, 0o700, "{p:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let folder = std::fs::metadata(p.parent().unwrap()).unwrap();
+            assert_eq!(folder.permissions().mode() & 0o777, 0o700, "{p:?}");
+        }
     }
     // The same screenshot pasted twice is two files, so both attach.
     assert_ne!(a, b);
@@ -2065,6 +2070,12 @@ async fn a_refused_or_broken_download_leaves_the_destination_as_it_was() {
     assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
     assert_eq!(std::fs::read_to_string(&dest).unwrap(), "kept");
     assert_eq!(names_in(&dir), ["keep.txt"], "the part file was removed");
+    #[cfg(unix)]
+    a_download_into_a_locked_folder_leaves_nothing(&dashboard, &dir).await;
+}
+
+#[cfg(unix)]
+async fn a_download_into_a_locked_folder_leaves_nothing(dashboard: &Dashboard, dir: &std::path::Path) {
     // A folder this user can't write to: nothing is read past the answer's start, and nothing is left.
     let locked = dir.join("locked");
     std::fs::create_dir(&locked).unwrap();

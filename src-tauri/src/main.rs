@@ -13,23 +13,8 @@ fn main() {
     let screenshot = remote::asked(std::env::args());
     // Kept for this app's own window if it is the one that starts (links.rs).
     let link = hermes_chat::links::from_args(std::env::args());
-    let request = remote::request_of(std::env::args(), token, new_instance);
-    match (dbus::blocking::Connection::new_session(), request) {
-        // Taken atomically before there is a window, so two launches at once can't both open one.
-        (Ok(conn), Some(request)) => match remote::claim(&conn) {
-            Ok(true) => remote::serve(conn, false),
-            Ok(false) => {
-                if remote::send(&request).is_ok() {
-                    return;
-                }
-                eprintln!("hermes-chat: the Hermes Chat already running didn't answer, so this one starts too");
-                remote::serve(conn, true);
-            }
-            Err(e) => eprintln!("hermes-chat: couldn't ask the session bus for {}: {e}", remote::NAME),
-        },
-        // An update's restart, or a development copy: start, and take the name once the other one exits.
-        (Ok(conn), None) => remote::serve(conn, true),
-        (Err(e), _) => eprintln!("hermes-chat: no session bus, so desktop shortcuts won't reach this window: {e}"),
+    if remote::hand_over(remote::request_of(std::env::args(), token, new_instance)) {
+        return;
     }
     hermes_chat::run(screenshot, link)
 }
