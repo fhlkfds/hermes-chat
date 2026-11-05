@@ -24,3 +24,11 @@ Shots 8–11 are signed in to a local stand-in: the repo's `FakeHermes` (`fakeVo
 - `11-unsupported-stand-in.png`: `GET /__old` answers the speech-provider routes with FastAPI's 404, as a Hermes without them would. The section says so and points to `hermes tools`. The Voice rows above still show the providers the profile names.
 
 To run the stand-in: `npx rolldown docs/screenshots/voice-providers/bridge.ts --platform node -o /tmp/voice-bridge.mjs && node /tmp/voice-bridge.mjs 47868`, then sign in by URL to `http://127.0.0.1:47868` with any username and password, using the app's own `XDG_*` folders and a private D-Bus session so nothing reaches your keyring.
+
+## After merging main's Settings sub-nav (`ea830da`)
+
+Shots 1–11 were taken before main's Settings sub-nav (#195) was merged in. It widened the content column, and the screen is otherwise the same. Shots 12–16 were taken again from a build of the merged branch:
+
+- `12-merged-general-screenshots-group-real.png`: General's sub-nav. Its third group, "Voice & screenshots" on main, is "Screenshots" here, since the voice rows moved to the Voice tab.
+- `13-merged-voice-tab-real.png` and `14-merged-text-to-speech-real.png`: the Voice tab in the wider column, against the real `f0d94882e8` dashboard (its providers reset by the live test to Local Whisper and Edge).
+- `15-merged-voice-panel-link-stand-in.png` and `16-merged-opened-from-panel-stand-in.png`: the voice panel's "Change voice settings", and the Voice tab it opens, on the stand-in.
