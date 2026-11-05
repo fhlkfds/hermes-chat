@@ -374,7 +374,7 @@ describe("Chat list by keyboard", () => {
     expect(focused()).toBe(button(/All chats/));
     // Then the Inbox section's header, which collapses it, and its chats.
     await s.user.tab();
-    expect(focused()).toBe(button(/^Inbox/));
+    expect(focused()).toBe(document.querySelector('[data-section-head="inbox"]'));
     await s.user.tab();
     expect(focused()).toBe(rowButton("Nightly backup"));
     await s.user.keyboard("{Enter}");
@@ -449,9 +449,12 @@ describe("Chat list by keyboard", () => {
     expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
   });
 
-  it("reaches Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
+  it("reaches Clear, Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
     const s = await signedIn();
     rowButton("Nightly backup").focus();
+    // A read, quiet chat in the Inbox can be cleared from it first (ADR 0062).
+    await s.user.tab();
+    expect(focused()).toBe(screen.getAllByRole("button", { name: "Clear from the Inbox" })[0]);
     await s.user.tab();
     expect(focused()).toBe(screen.getAllByRole("button", { name: "Settle" })[0]);
     await s.user.tab();
