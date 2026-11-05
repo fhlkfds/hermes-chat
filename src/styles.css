@@ -2176,8 +2176,6 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 /* xterm's scrollbar thumb is a `.slider` too; keep the Settings sliders' sizing off it. */
 .terminal-host .xterm-scrollable-element .slider { min-width: 0; flex: none; border-radius: 4px; }
 .terminal-foot { flex: none; margin: 0; padding: 8px 22px 12px; font-size: calc(12rem / 14); }
-.terminal-btn { position: relative; }
-.terminal-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--ok); }
 
 /* ---------- saved connections (Connections.tsx, ADR 0049) ---------- */
 .rail-conns { position: relative; }

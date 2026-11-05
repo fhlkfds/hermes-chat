@@ -54,7 +54,7 @@ describe("Being brought forward", () => {
     const { hermes, rust, user } = await signedIn();
     await user.click(screen.getByRole("button", { name: /^Nightly backup/ }));
     await act(async () => void (await hermes.idle()));
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /^NAS disks/ }));
     await act(async () => void (await hermes.idle()));
     await user.click(composerIn(0));

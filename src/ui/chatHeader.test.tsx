@@ -39,29 +39,27 @@ async function openChat() {
 }
 
 describe("The chat header", () => {
-  it("keeps Search and the side panel on the bar, and the split buttons on the tab strip, all reached with Tab", async () => {
+  it("keeps Search and the side panel on the bar, with no split buttons anywhere, all reached with Tab", async () => {
     const { user } = await openChat();
     const actions = document.querySelector<HTMLElement>(".chat-head-actions")!;
     // Only these are buttons on the bar now; the rest went into More or onto the tab strip.
     expect([...actions.querySelectorAll("button")].map(named)).toEqual(["Open the side panel", "Find in chat", "More"]);
     for (const gone of ["Export as Markdown", "Copy chat link", "Settle", "Archive", "Split into two panes"])
       expect(actions.querySelector(`[aria-label="${gone}"], [title="${gone}"]`)).toBeNull();
-    const strip = document.querySelector<HTMLElement>(".tab-strip")!;
-    expect(strip.querySelector('[aria-label="Split into two panes"]')!.getAttribute("title")).toContain("(Ctrl+\\)");
+    // Splitting is Ctrl+\, a tab's menu or a drag (ADR 0055), so the tab strip has no split buttons either.
+    expect(document.querySelector('.tab-strip [aria-label^="Split into two panes"]')).toBeNull();
     expect(screen.getByRole("button", { name: "Find in chat" }).title).toBe("Find in chat (Ctrl+F)");
 
     // From the tab, Tab walks the strip's buttons, then the header's, in the order they are shown.
     screen.getByRole("tab", { name: "Nightly backup" }).focus();
     const order: string[] = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) {
       await user.tab();
       order.push(named(document.activeElement));
     }
     const at = (n: string) => order.indexOf(n);
     expect(at("New tab")).toBeGreaterThanOrEqual(0);
-    expect(at("New tab")).toBeLessThan(at("Split into two panes"));
-    expect(at("Split into two panes")).toBeLessThan(at("Split into two panes, one above the other"));
-    expect(at("Split into two panes, one above the other")).toBeLessThan(at("Open the side panel"));
+    expect(at("New tab")).toBeLessThan(at("Open the side panel"));
     expect(at("Open the side panel")).toBeLessThan(at("Find in chat"));
     expect(at("Find in chat")).toBeLessThan(at("More"));
   });
@@ -104,7 +102,7 @@ describe("The chat header", () => {
 
   it("keeps one More menu open across two panes: opening the other pane's closes the first", async () => {
     const { user } = await openChat();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     const [left, right] = screen.getAllByRole("button", { name: "More" });
     await user.click(left);
     expect(screen.getAllByRole("menu")).toHaveLength(1);

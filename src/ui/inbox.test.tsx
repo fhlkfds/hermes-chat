@@ -94,6 +94,48 @@ describe("The inbox", () => {
     expect(document.activeElement).toBe(inboxButton());
   });
 
+  it("closes on a click anywhere outside it, such as another rail tool, and its own button still toggles it", async () => {
+    const { user } = await launch();
+    await user.click(inboxButton());
+    // Clicks inside it keep it open.
+    await user.click(filter(/^Completed/));
+    expect(inbox()).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Outputs" }));
+    expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Outputs" }).getAttribute("aria-pressed")).toBe("true");
+
+    await user.click(inboxButton());
+    expect(inbox()).toBeTruthy();
+    await user.click(document.querySelector<HTMLElement>(".main")!);
+    expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull();
+
+    await user.click(inboxButton());
+    expect(inbox()).toBeTruthy();
+    await user.click(inboxButton());
+    expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull();
+  });
+
+  it("closes when focus goes into a frame, such as a page in the Preview, but not when the window loses focus to another app", async () => {
+    const { user } = await launch();
+    await user.click(inboxButton());
+    // Another app: focus stays on the entry, and the inbox stays.
+    act(() => void window.dispatchEvent(new FocusEvent("blur")));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(inbox()).toBeTruthy();
+    // A press in a frame never reaches the page; the frame takes focus and the window blurs.
+    const frame = document.createElement("iframe");
+    document.querySelector(".main")!.append(frame);
+    try {
+      act(() => {
+        frame.focus();
+        window.dispatchEvent(new FocusEvent("blur"));
+      });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /Inbox/ })).toBeNull());
+    } finally {
+      frame.remove();
+    }
+  });
+
   it("opens an entry in another profile by switching to it, and shows the chat waiting on an Approval", async () => {
     const { server, hermes, user } = await launch();
     // Hermes still waits in work's chat, so resuming it brings back the card.

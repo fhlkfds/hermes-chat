@@ -111,7 +111,7 @@ const chips = () =>
 describe("Taking a screenshot for the composer", () => {
   it("routes captures to the focused pane and retains each pane's staged captures across focus changes", async () => {
     const { rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     await user.click(within(left).getByRole("button", { name: "Attach a screenshot" }));
@@ -131,7 +131,7 @@ describe("Taking a screenshot for the composer", () => {
 
   it("moves a capture to the newly focused pane if attachment validation finishes after focus changes", async () => {
     const { hermes, rust, user } = await signedIn();
-    await user.click(screen.getByRole("button", { name: "Split into two panes" }));
+    await user.keyboard("{Control>}\\{/Control}");
     await user.click(screen.getByRole("button", { name: /Nightly backup/ }));
     const [left, right] = [...document.querySelectorAll<HTMLElement>(".pane")];
     const check = hermes.checkAttachments.bind(hermes);
