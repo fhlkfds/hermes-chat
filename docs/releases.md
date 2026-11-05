@@ -93,10 +93,19 @@ The app trusts exactly one public key, the one it was built with. A release sign
 **Planned rotation:**
 
 1. Make the new key (`npx tauri signer generate -w ~/.tauri/hermes-chat-2.key`) and keep it, with its password, outside the repo and in an offline backup.
-2. Build a bridge release, signed with the **old** key, whose `tauri.release.conf.json` carries the **new** public key and a new endpoint file name, for example `latest-2.json`.
-3. Publish it with both `latest.json` and `latest-2.json` pointing at it.
-4. Replace the repository secrets with the new key and password.
-5. Every later release publishes `latest-2.json` for itself, and a copy of the bridge's `latest.json`, so a copy still on the old key always finds the bridge first.
+2. Bump the version, and in `tauri.release.conf.json` put the **new** public key in `pubkey` and a new endpoint file name in `endpoints`, for example `…/releases/latest/download/latest-2.json`. Commit that.
+3. Build the bridge release signed with the **old** key, and verify it against the **old** public key, which is what installed copies trust:
+
+   ```sh
+   HERMES_CHAT_UPDATER_KEY=~/.tauri/hermes-chat.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=… \
+     HERMES_CHAT_SIGNED_BY="$(cat ~/.tauri/hermes-chat.key.pub)" scripts/release/dry-run.sh
+   cp release/latest.json release/latest-2.json
+   ```
+
+   `tauri build` warns that the key doesn't match `pubkey`. For a bridge, that is expected. `release/updater.key.pub` holds the old public key, and `verify.sh` has checked the staged AppImage against it.
+4. Publish the bridge with both `latest.json` and `latest-2.json` pointing at it.
+5. Replace the repository secrets with the new key and password.
+6. Every later release is built as usual with the new key, publishes its own `latest-2.json`, and attaches a copy of the bridge's `latest.json`, so a copy still on the old key always finds the bridge first.
 
 **Lost key.** No installed copy can be updated through the updater again. Make a new key, publish a release signed with it, and tell owners to download that AppImage by hand. The README and release notes say so.
 

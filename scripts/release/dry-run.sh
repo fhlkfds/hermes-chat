@@ -7,7 +7,9 @@
 #   HERMES_CHAT_UPDATER_KEY=<key file> scripts/release/dry-run.sh   # the owner's key
 #
 # With the owner's key, TAURI_SIGNING_PRIVATE_KEY_PASSWORD must hold its password and
-# src-tauri/tauri.release.conf.json its public key. Needs node_modules (npm ci) and minisign.
+# src-tauri/tauri.release.conf.json its public key. For a key rotation's bridge release, that config holds the new
+# public key while the old key signs: HERMES_CHAT_SIGNED_BY then holds the old public key, which the staged release is
+# verified against (docs/releases.md, "Key rotation and recovery"). Needs node_modules (npm ci) and minisign.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -50,9 +52,9 @@ printf 'A dry run from commit %s. Not a release.\n' "$(git rev-parse HEAD)" > "$
 rm -rf release
 node scripts/release/manifest.mjs "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/appimage" release \
   "https://github.com/l0cky12/hermes-chat/releases/download/v$version" "$work/notes.txt"
-printf '%s' "$pubkey" > release/updater.key.pub
+printf '%s' "${HERMES_CHAT_SIGNED_BY:-$pubkey}" > release/updater.key.pub
 
-scripts/release/verify.sh release "$pubkey"
+scripts/release/verify.sh release "${HERMES_CHAT_SIGNED_BY:-$pubkey}"
 if grep -rqF -f "$key" release; then
   echo "the private key is in release/" >&2
   exit 1

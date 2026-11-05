@@ -164,28 +164,33 @@ pub async fn update_download_and_install(state: State<'_, Updates>, on_progress:
     let Some(update) = state.found.lock().await.take() else {
         return Err("Check for updates again first.".into());
     };
-    if appimage_owned().await {
-        return Err("A package owns this AppImage now, so only the package manager may replace it.".into());
-    }
     let (mut downloaded, mut sent) = (0u64, 0u64);
-    let result = update
-        .download_and_install(
-            |chunk, total| {
-                downloaded += chunk as u64;
-                // About 200 messages for a 100 MB download, rather than one per chunk.
-                if downloaded - sent >= 512 * 1024 || Some(downloaded) == total {
-                    sent = downloaded;
-                    let _ = on_progress.send(Progress::Downloading { downloaded, total });
-                }
-            },
-            || {
-                let _ = on_progress.send(Progress::Installing);
-            },
-        )
-        .await;
+    let result = async {
+        let bytes = update
+            .download(
+                |chunk, total| {
+                    downloaded += chunk as u64;
+                    // About 200 messages for a 100 MB download, rather than one per chunk.
+                    if downloaded - sent >= 512 * 1024 || Some(downloaded) == total {
+                        sent = downloaded;
+                        let _ = on_progress.send(Progress::Downloading { downloaded, total });
+                    }
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        // Asked after the download, right before the AppImage is replaced: a package can take it over meanwhile.
+        if appimage_owned().await {
+            return Err("A package owns this AppImage now, so only the package manager may replace it.".to_owned());
+        }
+        let _ = on_progress.send(Progress::Installing);
+        update.install(bytes).map_err(|e| e.to_string())
+    }
+    .await;
     if let Err(e) = result {
         *state.found.lock().await = Some(update);
-        return Err(e.to_string());
+        return Err(e);
     }
     Ok(())
 }
