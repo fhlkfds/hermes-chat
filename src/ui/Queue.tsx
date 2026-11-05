@@ -1,5 +1,5 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
-// the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0069), and removed;
+// the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), and removed;
 // the queue can be paused and resumed.
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
