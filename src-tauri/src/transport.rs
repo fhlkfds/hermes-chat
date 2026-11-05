@@ -1219,8 +1219,10 @@ impl Dashboard {
     /// the profile's SSH workspace when it has one, else the dashboard's own. Hermes stages the text beside the file and
     /// renames it into place, and checks nothing else, so the webview checks the file's revision first and reads it
     /// back after; this only writes. Only a full path is sent, never a credential file (`protected_server_path`: Hermes
-    /// doesn't guard this route), and never more than Hermes takes. Returns Hermes's answer.
-    pub async fn write_agent_text(&self, profile: &str, path: &str, text: &str) -> Result<String, TransportError> {
+    /// doesn't guard this route), and never more than Hermes takes. `session`: the chat whose sandbox the path is in
+    /// (ADR 0062), sent as `session_id` so Hermes saves where `read-data-url` with the same chat read. Returns Hermes's
+    /// answer.
+    pub async fn write_agent_text(&self, profile: &str, path: &str, text: &str, session: Option<&str>) -> Result<String, TransportError> {
         if !(path.starts_with('/') || path.starts_with("~/")) || path.contains('\0') || path.ends_with('/') {
             return Err(TransportError::NotRelayed(format!("writes to {path}: not a full path to a file")));
         }
@@ -1234,9 +1236,9 @@ impl Dashboard {
         if size > AGENT_TEXT_MAX_BYTES {
             return Err(TransportError::FileTooLarge { size, max: AGENT_TEXT_MAX_BYTES });
         }
+        let body = agent_text_body(path, text, session)?;
         let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
         let (url, _) = relay_url(&self.base, "api/fs/write-text", &query)?;
-        let body = serde_json::json!({ "path": path, "content": text });
         let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).json(&body).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
@@ -2089,9 +2091,35 @@ impl Dashboard {
     }
 }
 
+/// The body of `POST api/fs/write-text` (`FsWriteText` at `f0d94882`): the path, the whole text, and the chat whose
+/// sandbox the path is in when there is one. A chat id is Hermes's stored session id; anything blank, over 256
+/// characters or holding a control character isn't one, and isn't sent.
+fn agent_text_body(path: &str, text: &str, session: Option<&str>) -> Result<serde_json::Value, TransportError> {
+    let mut body = serde_json::json!({ "path": path, "content": text });
+    if let Some(id) = session {
+        if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+            return Err(TransportError::NotRelayed(format!("writes to {path} for a chat id that isn't one")));
+        }
+        body["session_id"] = serde_json::Value::String(id.to_owned());
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{memory_entry_edit_allowed, memory_provider_write, provider_key_name, skill_create_allowed, webhook_write};
+    use super::{agent_text_body, memory_entry_edit_allowed, memory_provider_write, provider_key_name, skill_create_allowed, webhook_write, TransportError};
+
+    #[test]
+    fn an_artifact_save_names_the_chat_whose_sandbox_the_file_is_in() {
+        let plain = agent_text_body("/workspace/a.sh", "echo", None).unwrap();
+        assert_eq!(plain, serde_json::json!({ "path": "/workspace/a.sh", "content": "echo" }));
+        let scoped = agent_text_body("/workspace/a.sh", "echo", Some("20261104_215039_395729")).unwrap();
+        assert_eq!(scoped, serde_json::json!({ "path": "/workspace/a.sh", "content": "echo", "session_id": "20261104_215039_395729" }));
+        let long = "x".repeat(257);
+        for bad in ["", "  ", "a\nb", long.as_str()] {
+            assert!(matches!(agent_text_body("/workspace/a.sh", "echo", Some(bad)), Err(TransportError::NotRelayed(_))), "{bad:?}");
+        }
+    }
 
     #[test]
     fn only_a_skill_copy_creates_a_skill() {

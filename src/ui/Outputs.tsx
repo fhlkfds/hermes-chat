@@ -37,7 +37,7 @@ const AVAILABILITY: Record<string, string> = {
 
 const CHECKING = "Checking whether it's still there…";
 
-function Availability({ o, pending }: { o: Output; pending: boolean }) {
+function Availability({ o, pending, onRecheck, busy }: { o: Output; pending: boolean; onRecheck?: () => void; busy: boolean }) {
   const a = o.availability;
   if (pending) return <span className="muted" title={CHECKING}>Checking…</span>;
   if (!a) return <span className="muted" title="Refresh checks whether the file is still there">Not checked</span>;
@@ -46,6 +46,11 @@ function Availability({ o, pending }: { o: Output; pending: boolean }) {
     <span className={`out-avail ${a.state}`} title={tip}>
       {AVAILABILITY[a.state] ?? a.state}
       {a.why && a.state !== "available" && <span className="out-why muted small">{a.why}</span>}
+      {a.state !== "available" && onRecheck && (
+        <button className="link-btn small" disabled={busy} onClick={onRecheck} title="Check again whether the file is at its path">
+          Check again
+        </button>
+      )}
     </span>
   );
 }
@@ -68,6 +73,7 @@ export function OutputsScreen({
   onPreview,
   onEdit,
   unsavedEdit,
+  onRecheck,
   onJump,
   onShowFolder,
   onClose,
@@ -96,6 +102,8 @@ export function OutputsScreen({
   onEdit?: (o: Output) => void;
   /** Whether the file has an edit open that isn't saved to Hermes. */
   unsavedEdit?: (o: Output) => boolean;
+  /** Checks one file again, for a row that says it's missing or couldn't be checked (ADR 0062). */
+  onRecheck?: (o: Output) => void;
   onJump: (o: Output) => void;
   onShowFolder: (o: Output) => void;
   onClose: () => void;
@@ -334,7 +342,7 @@ export function OutputsScreen({
                         {o.size !== undefined ? fmtSize(o.size) : "—"}
                       </td>
                       <td>
-                        <Availability o={o} pending={pending} />
+                        <Availability o={o} pending={pending} busy={!connected || !!snapshot.checking} onRecheck={onRecheck && (() => onRecheck(o))} />
                       </td>
                       <td className="out-source">
                         {title && <span className="out-chat">{title}</span>}

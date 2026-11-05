@@ -22,6 +22,10 @@ import {
   type EditIo,
   type RemoteGet,
   type SaveOutcome,
+  SANDBOX_COPY_MISSING,
+  SANDBOX_MISSING,
+  SANDBOX_NOT_FOUND_PREFIX,
+  SESSION_GONE,
 } from "./remoteFiles";
 import { EDIT_MAX_BYTES, MINE_MARK, merge3 } from "./textEdit";
 import {
@@ -47,11 +51,14 @@ import {
 /**
  * Which file an artifact is. `scope`: the connection and profile it was opened in (projects.ts `projectScope`), so
  * two sign-ins or profiles never share one. `host`: on the dashboard's own machine. `chatId`: the chat whose tool made
- * it, whose model "Ask Hermes" borrows while the chat is live in this app.
+ * it, whose model "Ask Hermes" borrows while the chat is live in this app. `session`: the chat whose sandbox the path
+ * is in (outputs.ts `sessionOf`, ADR 0062): every read and save names it, so Hermes looks in that chat's own
+ * `/workspace`, and the same path from two chats is two files.
  */
-export type ArtifactRef = { scope: string; profile: string; path: string; host: boolean; chatId?: string };
+export type ArtifactRef = { scope: string; profile: string; path: string; host: boolean; chatId?: string; session?: string };
 
-export const artifactKey = (r: Pick<ArtifactRef, "scope" | "host" | "path">) => `${r.scope}\n${r.host ? "host" : "tools"}\n${r.path}`;
+export const artifactKey = (r: Pick<ArtifactRef, "scope" | "host" | "path" | "session">) =>
+  `${r.scope}\n${r.host ? "host" : "tools"}\n${r.session ? `${r.session}\n` : ""}${r.path}`;
 export const artifactName = (path: string) => path.slice(path.lastIndexOf("/") + 1) || path;
 
 /** How an artifact reaches its file and Hermes: the editing calls of `textEditing`, and asking for an edit. */
@@ -66,7 +73,7 @@ export type AskHermes = (o: { profile: string; chatId?: string; instructions: st
 
 /** The read and write an artifact on the tools' machine uses (src-tauri `fs_save_text`). */
 export type AgentFsPipe = {
-  saveText(id: number, profile: string, path: string, text: string): Promise<string>;
+  saveText(id: number, profile: string, path: string, text: string, session?: string): Promise<string>;
   cancel(id: number): Promise<void>;
 };
 
@@ -91,6 +98,8 @@ function refusedBeforeWriting(message: string): boolean {
     413: (d) => d === "Content too large" || d === "File too large",
     // The SSH workspace couldn't be reached at all.
     503: (d) => d === "SSH workspace is unavailable",
+    // The chat's own copy of the file is gone, and Hermes won't save into another sandbox instead (ADR 0062).
+    409: (d) => d === SANDBOX_COPY_MISSING,
     // The temp file couldn't be written or renamed into place: Hermes removed it, and the file is as it was.
     500: (d) => d.startsWith("Could not write file:"),
   };
@@ -121,7 +130,9 @@ function explainFs(message: string, what: "read" | "write"): RemoteFilesError {
       // As it came.
     }
     if (detail in known) return new RemoteFilesError(known[detail][1], known[detail][0]);
-    if (/^File not found/.test(detail)) return new RemoteFilesError("That file isn't on the server, or is gone now.", 404);
+    if (detail === SANDBOX_COPY_MISSING) return new RemoteFilesError("Its chat's copy of the file is gone, so Hermes won't save it into another sandbox.", 409);
+    if (detail.startsWith(SANDBOX_NOT_FOUND_PREFIX)) return new RemoteFilesError(SANDBOX_MISSING, 404);
+    if (detail === "File not found") return new RemoteFilesError("That file isn't on the server, or is gone now.", 404);
   }
   return explain(message, what);
 }
@@ -129,16 +140,27 @@ function explainFs(message: string, what: "read" | "write"): RemoteFilesError {
 /**
  * The editing calls for a file where `profile`'s tools run: exact bytes from `GET /api/fs/read-data-url`, saves
  * through `POST /api/fs/write-text` (ADR 0029), a copy's free name from `GET /api/fs/list`. Every request names the
- * profile.
+ * profile. `session`: the chat whose sandbox the file is in (ADR 0062). Reads and saves name it as `session_id`, so a
+ * container path such as `/workspace/…` is that chat's own. If Hermes no longer has the chat ("Session not found"),
+ * reads ask without it from then on, as before, and saves follow the read, so a save lands where the read did.
  */
-export function agentFsEditIo(get: RemoteGet, pipe: AgentFsPipe, profile: string): EditIo {
+export function agentFsEditIo(get: RemoteGet, pipe: AgentFsPipe, profile: string, session?: string): EditIo {
   // A data URL of the whole file: about 4/3 of it, plus a little.
   const answerMax = Math.ceil(EDIT_MAX_BYTES / 3) * 4 + 64 * 1024;
+  let chat = session;
+  const read = (path: string) => get(`api/fs/read-data-url?${new URLSearchParams({ path, profile, ...(chat && { session_id: chat }) })}`, answerMax);
   return {
     async readBytes(path) {
       let body: string;
       try {
-        body = await deadline(get(`api/fs/read-data-url?${new URLSearchParams({ path, profile })}`, answerMax), EDIT_DEADLINES.readMs);
+        body = await deadline(
+          read(path).catch((e) => {
+            if (!chat || !SESSION_GONE.test(errorText(e))) throw e;
+            chat = undefined;
+            return read(path);
+          }),
+          EDIT_DEADLINES.readMs,
+        );
       } catch (e) {
         throw e instanceof TimedOut ? new RemoteFilesError(e.message) : explainFs(errorText(e), "read");
       }
@@ -157,7 +179,7 @@ export function agentFsEditIo(get: RemoteGet, pipe: AgentFsPipe, profile: string
       // `write-text` has no "don't replace": a copy relies on the name it picked being free when listed (ADR 0029).
       const id = newTransferId();
       try {
-        await deadline(pipe.saveText(id, profile, path, text), EDIT_DEADLINES.writeMs);
+        await deadline(pipe.saveText(id, profile, path, text, chat), EDIT_DEADLINES.writeMs);
       } catch (e) {
         if (e instanceof TimedOut) void pipe.cancel(id).catch(() => {});
         const message = errorText(e);

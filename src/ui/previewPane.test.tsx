@@ -32,7 +32,8 @@ const pane = () => {
   return el;
 };
 const paneOpen = () => !!document.querySelector("aside.preview:not([hidden])");
-const fsReads = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/fs/"));
+/** The preview's file reads. The Outputs capability probe's `GET /api/fs/list` at sign-in may land at any time. */
+const fsReads = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/fs/") && r.path !== "/api/fs/list");
 
 /** A local disk the Open dialog picks from: `pick` is what the owner picks next (null cancels). */
 function localDisk(files: Record<string, FileView | Error>) {

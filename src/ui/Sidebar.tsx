@@ -3,7 +3,7 @@
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, EyeOff, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -31,6 +31,9 @@ export function Rail({
   onInbox,
   inboxOpen = false,
   inboxCount = 0,
+  onBots,
+  botsOpen = false,
+  botsNeedYou = false,
   onOutputs,
   outputsOpen = false,
   onSettings,
@@ -63,6 +66,10 @@ export function Rail({
   onInbox?: () => void;
   inboxOpen?: boolean;
   inboxCount?: number;
+  /** Opens or closes the Bots view (Bots.tsx, ADR 0066); none when this Hermes has no Bot Mode. `botsNeedYou`: a bot waits on the owner. */
+  onBots?: () => void;
+  botsOpen?: boolean;
+  botsNeedYou?: boolean;
   /** Opens Outputs, the files Hermes's tools wrote (Outputs.tsx). */
   onOutputs?: () => void;
   outputsOpen?: boolean;
@@ -157,6 +164,18 @@ export function Rail({
           >
             <InboxIcon size={18} />
             {inboxCount > 0 && <span className="badge" aria-hidden>{inboxCount > 99 ? "99+" : inboxCount}</span>}
+          </button>
+        )}
+        {onBots && (
+          <button
+            className={`icon-btn rail-primary bots-btn ${botsOpen ? "on" : ""}`}
+            aria-label={botsNeedYou ? "Bots, one needs you" : "Bots"}
+            aria-expanded={botsOpen}
+            onClick={onBots}
+            {...bind("bots", { label: "Bots", note: botsNeedYou ? "A bot needs you" : "Each profile as a bot, with its Bot Chat" })}
+          >
+            <BotIcon size={18} />
+            {botsNeedYou && <span className="dot" aria-hidden />}
           </button>
         )}
       </div>

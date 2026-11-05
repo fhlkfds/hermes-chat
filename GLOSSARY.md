@@ -83,6 +83,18 @@ A separate Hermes agent setup on the server, with its own chats. The app shows o
 Switching profile happens in place, with the same sign-in: the list shows what this computer saved for the profile, says it is connecting and loading, and is remembered for the next launch only once its chats load. If they can't, it says why and offers to try again or go back. Each profile keeps its own drafts, Saved copies and Model pick, and nothing that arrives for the profile left shows in the new one. If a reply is running or an Approval waiting, the switcher asks first. Hermes keeps the reply going, and the Approval waits until Hermes stops waiting; switching back brings both back.
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the server signed in to, which covers every profile)
 
+**Bot Mode**:
+Hermes's way of treating each profile as a bot with a lasting identity, each with one Bot Chat. The Bots view shows it, opened from the rail. A Hermes without Bot Mode has no Bots button, and Connection diagnostics says why (ADR 0066).
+_Avoid_: agents mode, roster (Hermes's desktop calls its list that, but here it is the Bots view)
+
+**Bot**:
+A profile as the Bots view shows it: its name, picture and description, from Hermes. Its row shows its Bot Chat's last message, and whether it is Replying or Needs you. Clicking the row opens its Bot Chat; the pen beside it starts an ordinary chat in that profile.
+_Avoid_: agent (Hermes's own word for what runs the chat), assistant, persona (that is the profile's SOUL.md)
+
+**Bot Chat**:
+A bot's one chat that always continues: the profile's chat titled exactly "Bot Chat". Hermes finds it by that title each time it opens, never by a remembered id or by which chat is newest. It is created only when the bot has none, with no message sent. It stays out of the chat list and search: the bot's row is the way to it. `/new` in it compacts it instead of starting a new chat (ADR 0066).
+_Avoid_: forever chat, canonical chat, DM, main chat
+
 **Connection**:
 A Hermes server this computer can sign in to, saved with a name, its Routes, its dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, and when that one is removed, the sign-in screen offers the others and waits (ADR 0049).
 _Avoid_: server (the machine itself), account, sign-in (the act of signing in), profile (an agent setup on the server)
