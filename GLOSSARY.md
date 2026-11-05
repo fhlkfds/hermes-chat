@@ -160,8 +160,12 @@ A message the owner reuses, kept in a library on this computer: a name, an optio
 _Avoid_: snippet, macro, prompt (for the template itself), quick command (Hermes's own)
 
 **Dictation**:
-Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
+Speaking a message instead of typing it. The microphone is open only between the owner starting a recording and pressing Done or cancelling. Hermes turns the recording into text with the profile's speech-to-text provider, or an engine on this computer does when the owner chose Speech to text on this computer (ADR 0062), and the text goes into the composer after anything already typed, for the owner to edit and send. Nothing reaches the chat until the owner sends it. Cancelling, or opening another chat, drops the recording. A recording Hermes couldn't transcribe is held in memory until the owner tries again or discards it. Recordings are never saved on this computer.
 _Avoid_: voice message, voice mode (Hermes's own hands-free voice chat), speech input
+
+**Speech to text on this computer**:
+The owner's choice, in Settings → Voice, to have Dictation and Voice conversations transcribed by a speech-to-text engine already installed here (whisper.cpp, faster-whisper, OpenAI Whisper or Vosk) instead of by Hermes. The recording never leaves this computer then, not even when the engine can't run; only the text goes to Hermes. The choice is kept on this computer, for every connection and profile (ADR 0062).
+_Avoid_: local mode, offline transcription, Local Whisper (Hermes's own server-side provider)
 
 **Read aloud**:
 The owner's action that has Hermes speak one reply with the profile's text-to-speech provider, played on this computer. One reply plays at a time, and opening another chat stops it. The audio isn't saved.

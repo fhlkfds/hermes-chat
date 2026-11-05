@@ -91,6 +91,24 @@ describe("the profile's voice providers", () => {
   });
 });
 
+describe("speech to text on this computer (ADR 0062)", () => {
+  const server = { transcribe: true, speak: true, sttEnabled: true, sttProvider: "groq" };
+
+  it("names the local engine and says the audio stays here", () => {
+    expect(sttProvider({ ...server, sttLocal: { label: "whisper.cpp" } })).toEqual({
+      label: "whisper.cpp on this computer",
+      needs: expect.stringMatching(/never leaves it/),
+    });
+  });
+
+  it("doesn't depend on the server's transcription, but blocks Dictation while the engine can't run", () => {
+    expect(dictationBlocked({ ...server, transcribe: false, sttEnabled: false, sttLocal: { label: "Vosk" } })).toBeUndefined();
+    expect(dictationBlocked({ ...server, sttLocal: { problem: "No speech-to-text engine is chosen on this computer." } })).toBe(
+      "No speech-to-text engine is chosen on this computer. See Settings → Voice.",
+    );
+  });
+});
+
 describe("Hermes's voice calls", () => {
   it("read the set-up once per connection and profile", async () => {
     const server = new FakeHermes();
