@@ -1545,11 +1545,13 @@ div.setup-body { display: flex; flex-direction: column; gap: 16px; }
 .setup-ok { color: var(--ok); }
 .setup-warn svg, .setup-ok svg { vertical-align: -2px; }
 .setup-warn .badge { margin-right: 2px; }
-.field select {
+/* A bare select in a form field. One with .select keeps that look: this rule's padding on .select's fixed 32px height
+   left no room for the text, cutting the Model page's pickers off. */
+.field select:not(.select) {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 10px; outline: none; color: var(--text);
   font: inherit; font-size: calc(13rem / 14);
 }
-.field select:focus { border-color: var(--line-3); }
+.field select:not(.select):focus { border-color: var(--line-3); }
 .link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; }
 .link:hover:not(:disabled) { color: var(--text); }
 .setup-link { align-self: center; font-size: calc(12.5rem / 14); }

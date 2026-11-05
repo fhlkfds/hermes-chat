@@ -123,15 +123,20 @@ describe("The Screen tab", () => {
     await connected();
     fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
     await screen.findByText(/You're in control/);
-    expect(onHeld).toHaveBeenLastCalledWith(true);
-    expect(api.held.at(-1)).toBe("viewer-1");
-    expect(FakeRfb.made[0].viewOnly).toBe(false);
+    // viewOnly, onHeld and noteHeld follow `held` in effects, which can run a tick after the text shows.
+    await waitFor(() => {
+      expect(onHeld).toHaveBeenLastCalledWith(true);
+      expect(api.held.at(-1)).toBe("viewer-1");
+      expect(FakeRfb.made[0].viewOnly).toBe(false);
+    });
     expect(document.querySelector(".screen-view.held")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Hand back/ }));
     await screen.findByText("Watching: Hermes is in control.");
-    expect(FakeRfb.made[0].viewOnly).toBe(true);
-    expect(onHeld).toHaveBeenLastCalledWith(false);
-    expect(api.held.at(-1)).toBeUndefined();
+    await waitFor(() => {
+      expect(FakeRfb.made[0].viewOnly).toBe(true);
+      expect(onHeld).toHaveBeenLastCalledWith(false);
+      expect(api.held.at(-1)).toBeUndefined();
+    });
   });
 
   it("watches again on a fresh ticket, as the same viewer, when someone else takes over", async () => {
