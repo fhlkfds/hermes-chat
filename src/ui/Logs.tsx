@@ -1,8 +1,8 @@
-// The Logs screen (ADR 0033): one source at a time, this app's own diagnostics or one of the profile's Hermes logs,
-// followed as lines arrive or paused to read. Filters, copy and export act on what's shown; the support bundle gathers
-// the sources read here into one file, after showing what goes in it and what was redacted.
+// Logs, in Settings → Diagnostics (ADR 0033, 0080): one source at a time, this app's own diagnostics or one of the
+// profile's Hermes logs, followed as lines arrive or paused to read. Filters, copy and export act on what's shown; the
+// support bundle gathers the sources read here into one file, after showing what goes in it and what was redacted.
 import { useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, CircleAlert, Copy, Download, LifeBuoy, Pause, Play, ScrollText } from "lucide-react";
+import { CircleAlert, Copy, Download, LifeBuoy, Pause, Play } from "lucide-react";
 import {
   LEVELS,
   LogFollower,
@@ -34,25 +34,27 @@ const noSubscribe = () => () => {};
 const idle = () => IDLE;
 const fileStamp = (at: number) => new Date(at).toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
 
-export function LogsScreen({
+/** What Logs needs from the app, for the profile in use. */
+export type LogsWiring = {
+  /** How the app reaches Hermes, as the support bundle names it. */
+  connection: string;
+  /** `GET /api/logs` for the profile: one log's last `lines` lines. */
+  read: (file: RemoteLog, lines: number) => Promise<unknown>;
+  /** Saves text where the owner picks; the path, or null when they cancelled. */
+  save: (text: string, fileName: string) => Promise<string | null>;
+};
+
+export function LogsPanel({
   profile,
   connected,
   connection,
   read,
   save,
-  onClose,
   app = appLog,
   pollMs,
-}: {
+}: LogsWiring & {
   profile: string;
   connected: boolean;
-  /** How the app reaches Hermes, as the support bundle names it. */
-  connection: string;
-  /** `GET /api/logs` for `profile`: one log's last `lines` lines. */
-  read: (file: RemoteLog, lines: number) => Promise<unknown>;
-  /** Saves text where the owner picks; the path, or null when they cancelled. */
-  save: (text: string, fileName: string) => Promise<string | null>;
-  onClose: () => void;
   app?: LogBuffer;
   pollMs?: number;
 }) {
@@ -157,139 +159,130 @@ export function LogsScreen({
   })();
 
   return (
-    <div className="settings logs-screen">
-      <div className="settings-inner logs-inner">
-        <button className="back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back to chat
+    <div className="logs-panel" role="region" aria-label="Logs">
+      <div className="usage-filters logs-filters" role="group" aria-label="What to show">
+        <label>
+          <span>Source</span>
+          <select value={source} onChange={(e) => pick(e.target.value as Source)}>
+            {SOURCES.map((s) => (
+              <option key={s} value={s}>
+                {titleOf(s)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Level</span>
+          <select value={min} onChange={(e) => setMin(e.target.value as Level | "")}>
+            <option value="">Every level</option>
+            {LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l} and above
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="logs-search">
+          <span>Containing</span>
+          <input type="search" value={text} onChange={(e) => setText(e.target.value)} placeholder="Text to find" />
+        </label>
+        <label>
+          <span>Received time</span>
+          <select value={fmt} onChange={(e) => setFmt(e.target.value as TimeFormat)}>
+            <option value="local">This computer's time</option>
+            <option value="utc">UTC</option>
+            <option value="off">Hidden</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="logs-actions">
+        <button className="btn" aria-pressed={!following} onClick={() => (following ? pause() : setFrozen(undefined))}>
+          {following ? <Pause size={14} /> : <Play size={14} />} {following ? "Pause" : waiting ? `Follow (${waiting} new)` : "Follow"}
         </button>
-        <h1 className="project-title">
-          <ScrollText size={20} /> <span>Logs</span>
-        </h1>
+        <button className="btn" onClick={() => void copy()} title="Copy the selected text, or every line shown" disabled={!shown.length}>
+          <Copy size={14} /> Copy
+        </button>
+        <button className="btn" onClick={() => void exportShown()} disabled={!shown.length}>
+          <Download size={14} /> Export shown…
+        </button>
+        <button className="btn" ref={bundleButton} onClick={() => setBundle(parts())}>
+          <LifeBuoy size={14} /> Support bundle…
+        </button>
+        {note && (
+          <span className="muted small" role="status">
+            {note}
+          </span>
+        )}
+      </div>
 
-        <div className="usage-filters logs-filters" role="group" aria-label="What to show">
-          <label>
-            <span>Source</span>
-            <select value={source} onChange={(e) => pick(e.target.value as Source)}>
-              {SOURCES.map((s) => (
-                <option key={s} value={s}>
-                  {titleOf(s)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Level</span>
-            <select value={min} onChange={(e) => setMin(e.target.value as Level | "")}>
-              <option value="">Every level</option>
-              {LEVELS.map((l) => (
-                <option key={l} value={l}>
-                  {l} and above
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="logs-search">
-            <span>Containing</span>
-            <input type="search" value={text} onChange={(e) => setText(e.target.value)} placeholder="Text to find" />
-          </label>
-          <label>
-            <span>Received time</span>
-            <select value={fmt} onChange={(e) => setFmt(e.target.value as TimeFormat)}>
-              <option value="local">This computer's time</option>
-              <option value="utc">UTC</option>
-              <option value="off">Hidden</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="logs-actions">
-          <button className="btn" aria-pressed={!following} onClick={() => (following ? pause() : setFrozen(undefined))}>
-            {following ? <Pause size={14} /> : <Play size={14} />} {following ? "Pause" : waiting ? `Follow (${waiting} new)` : "Follow"}
-          </button>
-          <button className="btn" onClick={() => void copy()} title="Copy the selected text, or every line shown" disabled={!shown.length}>
-            <Copy size={14} /> Copy
-          </button>
-          <button className="btn" onClick={() => void exportShown()} disabled={!shown.length}>
-            <Download size={14} /> Export shown…
-          </button>
-          <button className="btn" ref={bundleButton} onClick={() => setBundle(parts())}>
-            <LifeBuoy size={14} /> Support bundle…
-          </button>
-          {note && (
-            <span className="muted small" role="status">
-              {note}
-            </span>
-          )}
-        </div>
-
-        <p className="muted small logs-status" role="status">
-          {state.kind === "reading" && <Spinner />} {status}{" "}
-          {view.lines} line{view.lines === 1 ? "" : "s"} kept{view.dropped ? `, ${view.dropped} older dropped` : ""}
-          {shownLines !== view.lines ? `, ${shownLines} shown` : ""}.
-          {remote && " Times in Hermes's lines are the server's clock; the received time is this computer's."}
+      <p className="muted small logs-status" role="status">
+        {state.kind === "reading" && <Spinner />} {status}{" "}
+        {view.lines} line{view.lines === 1 ? "" : "s"} kept{view.dropped ? `, ${view.dropped} older dropped` : ""}
+        {shownLines !== view.lines ? `, ${shownLines} shown` : ""}.
+        {remote && " Times in Hermes's lines are the server's clock; the received time is this computer's."}
+      </p>
+      {remote && state.kind === "failed" && (
+        <p className="logs-problem" role="alert">
+          <CircleAlert size={14} aria-hidden /> Couldn't read the {REMOTE_LOGS[source as RemoteLog].label} log: {state.reason}. Trying again.
         </p>
-        {remote && state.kind === "failed" && (
-          <p className="logs-problem" role="alert">
-            <CircleAlert size={14} aria-hidden /> Couldn't read the {REMOTE_LOGS[source as RemoteLog].label} log: {state.reason}. Trying again.
-          </p>
-        )}
-        {remote && state.kind === "unsupported" && (
-          <p className="logs-problem" role="alert">
-            <CircleAlert size={14} aria-hidden /> {state.reason}
-          </p>
-        )}
-        {frozen && (
-          <p className="logs-paused" role="status">
-            <Pause size={13} aria-hidden /> Paused: the lines stay where they are while you read.{" "}
-            {waiting ? `${waiting} new line${waiting === 1 ? "" : "s"} since. ` : ""}
-            <button className="link-btn" onClick={() => setFrozen(undefined)}>
-              Follow new lines
-            </button>
-          </p>
-        )}
+      )}
+      {remote && state.kind === "unsupported" && (
+        <p className="logs-problem" role="alert">
+          <CircleAlert size={14} aria-hidden /> {state.reason}
+        </p>
+      )}
+      {frozen && (
+        <p className="logs-paused" role="status">
+          <Pause size={13} aria-hidden /> Paused: the lines stay where they are while you read.{" "}
+          {waiting ? `${waiting} new line${waiting === 1 ? "" : "s"} since. ` : ""}
+          <button className="link-btn" onClick={() => setFrozen(undefined)}>
+            Follow new lines
+          </button>
+        </p>
+      )}
 
-        <div
-          ref={list}
-          className="logs-list"
-          role="log"
-          aria-live="off"
-          aria-label={`${titleOf(source)} log`}
-          tabIndex={0}
-          onWheel={(e) => e.deltaY < 0 && pause()}
-          onPointerDown={pause}
-          onKeyDown={(e) => ["ArrowUp", "PageUp", "Home"].includes(e.key) && pause()}
-        >
-          {view.dropped > 0 && (
-            <div className="log-row log-mark">
-              <span className="log-text">
-                {view.dropped} older line{view.dropped === 1 ? "" : "s"} dropped: Logs keeps only the latest {buffer.capacity}.
-              </span>
-            </div>
-          )}
-          {shown.map((e) => (
-            <div key={e.seq} className={`log-row ${e.kind === "mark" ? "log-mark" : `lvl-${(e.level ?? "none").toLowerCase()}`}`}>
-              {fmt !== "off" && (
-                <time className="log-time" dateTime={new Date(e.at).toISOString()}>
-                  {stamp(e.at, fmt)}
-                </time>
-              )}
-              <span className="log-text">{e.text}</span>
-            </div>
-          ))}
-          {!shown.length && (
-            <p className="muted logs-empty">
-              {view.entries.length
-                ? "No lines match these filters."
-                : remote
-                  ? state.kind === "ok"
-                    ? "This log is empty, or Hermes hasn't written it yet."
-                    : state.kind === "reading"
-                      ? "Reading…"
-                      : "Nothing read yet."
-                  : "Nothing yet."}
-            </p>
-          )}
-        </div>
+      <div
+        ref={list}
+        className="logs-list"
+        role="log"
+        aria-live="off"
+        aria-label={`${titleOf(source)} log`}
+        tabIndex={0}
+        onWheel={(e) => e.deltaY < 0 && pause()}
+        onPointerDown={pause}
+        onKeyDown={(e) => ["ArrowUp", "PageUp", "Home"].includes(e.key) && pause()}
+      >
+        {view.dropped > 0 && (
+          <div className="log-row log-mark">
+            <span className="log-text">
+              {view.dropped} older line{view.dropped === 1 ? "" : "s"} dropped: Logs keeps only the latest {buffer.capacity}.
+            </span>
+          </div>
+        )}
+        {shown.map((e) => (
+          <div key={e.seq} className={`log-row ${e.kind === "mark" ? "log-mark" : `lvl-${(e.level ?? "none").toLowerCase()}`}`}>
+            {fmt !== "off" && (
+              <time className="log-time" dateTime={new Date(e.at).toISOString()}>
+                {stamp(e.at, fmt)}
+              </time>
+            )}
+            <span className="log-text">{e.text}</span>
+          </div>
+        ))}
+        {!shown.length && (
+          <p className="muted logs-empty">
+            {view.entries.length
+              ? "No lines match these filters."
+              : remote
+                ? state.kind === "ok"
+                  ? "This log is empty, or Hermes hasn't written it yet."
+                  : state.kind === "reading"
+                    ? "Reading…"
+                    : "Nothing read yet."
+                : "Nothing yet."}
+          </p>
+        )}
       </div>
       {bundle && (
         <SupportBundle

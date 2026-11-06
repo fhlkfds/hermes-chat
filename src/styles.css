@@ -2987,11 +2987,9 @@ label.memory-pick { cursor: pointer; }
 .msg.user .variant-nav { justify-content: flex-end; }
 .branch-unfinished .btn { margin-left: 4px; padding: 2px 8px; font-size: calc(12rem / 14); }
 
-/* ---------- Logs (Logs.tsx, ADR 0033) ---------- */
-/* A screen tall enough for the list: the list scrolls, the controls above it stay. */
-.logs-screen { display: flex; overflow: hidden; }
-.settings-inner.logs-inner { max-width: 1240px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; padding-bottom: 20px; }
-.logs-inner > * { flex-shrink: 0; }
+/* ---------- Logs (Logs.tsx, Settings → Diagnostics, ADR 0033, 0080) ---------- */
+/* The list scrolls inside a window-tall box, so the controls above it stay in view. */
+.settings-split-body > .logs-panel { padding-top: 4px; }
 .logs-search input { min-width: 220px; }
 .logs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
 .logs-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
@@ -3003,7 +3001,7 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .logs-paused { border-color: var(--warn); }
 .logs-paused svg { color: var(--warn); }
 .logs-list {
-  flex: 1 1 auto; min-height: 200px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
+  height: max(260px, calc(100vh - 400px)); overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
   background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.92); line-height: 1.5; padding: 6px 0;
 }
 .logs-list:focus-visible { outline: 2px solid var(--line-3); outline-offset: 1px; }

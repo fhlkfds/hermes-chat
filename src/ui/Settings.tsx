@@ -6,11 +6,12 @@
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx). Diagnostics: what the connected Hermes is and what it
-// supports (Diagnostics.tsx); a tab whose feature Hermes lacks says so in its place.
+// supports (Diagnostics.tsx), and Logs, this app's and the profile's Hermes logs (Logs.tsx, ADR 0080); a tab whose
+// feature Hermes lacks says so in its place.
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, RadioTower, Search, Server, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
+import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, RadioTower, ScrollText, Search, Server, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
 import { SubNav, type SubNavItem } from "./SubNav";
 import { SettingRow, SettingsSearching, SettingsSection } from "./SettingRows";
@@ -55,6 +56,7 @@ import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
 import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
 import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
+import { LogsPanel, type LogsWiring } from "./Logs";
 import type { ScreenApi } from "../hermes/screen";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
 import { ProfilePicker } from "./ProfilePicker";
@@ -76,6 +78,8 @@ const GEN_GROUPS: SubNavItem[] = [
   { id: "screenshots", label: "Screenshots", icon: <Camera size={14} /> },
   { id: "storage", label: "Storage & data", icon: <HardDrive size={14} /> },
 ];
+/** Diagnostics' two groups (ADR 0080): what the connected Hermes supports, and the logs. */
+type DiagGroup = "server" | "logs";
 /** What the Memory tab shows beside its list: one of the profile's two memory files, or one profile's external memory. */
 type MemSel = { kind: "file"; source: MemorySource } | { kind: "profile"; name: string };
 const memKey = (m: MemSel) => (m.kind === "file" ? `file:${m.source}` : `profile:${m.name}`);
@@ -106,7 +110,8 @@ const ABOUT: Partial<Record<Tab, string>> = {
   persona: "Who Hermes is and how it speaks in this profile's chats: the profile's SOUL.md, edited on the server.",
   memory: "What Hermes remembers about you and your work between chats, changed or removed entry by entry.",
   skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
-  diagnostics: "The connected Hermes's version, protocol and sign-in, which features this server supports, and whether its Bot Desktop has a browser.",
+  diagnostics:
+    "The connected Hermes's version, protocol and sign-in, which features this server supports, and whether its Bot Desktop has a browser. Logs: this app's own diagnostics and the profile's Hermes logs, followed, filtered, exported, or saved as a support bundle.",
 };
 
 /** How the connection signs in, in words, for diagnostics: this app signs in only with the dashboard's username and password. */
@@ -189,6 +194,7 @@ export function SettingsScreen({
   openGuide = () => {},
   showDiagnostics,
   screen,
+  logs,
   connectionManager,
   listProfiles,
 }: {
@@ -283,7 +289,7 @@ export function SettingsScreen({
   connectionManager?: ReactNode;
   /** Set (to a new object each time) to show the Memory tab. */
   showMemory?: object;
-  /** What the connected Hermes supports; without it there is no Diagnostics tab and no tab is held back. */
+  /** What the connected Hermes supports; without it no tab is held back, and Diagnostics shows only Logs, if anything. */
   capabilities?: CapabilityStore;
   /** Opens a compatibility guide page in the browser. */
   openGuide?: OpenGuide;
@@ -291,6 +297,8 @@ export function SettingsScreen({
   showDiagnostics?: { id?: CapabilityId };
   /** The profile's Bot Desktop, for Diagnostics' browser check. */
   screen?: Pick<ScreenApi, "status">;
+  /** Diagnostics → Logs (ADR 0033, 0080); without it Diagnostics has no Logs. */
+  logs?: LogsWiring;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -311,6 +319,7 @@ export function SettingsScreen({
   const [tab, setTabNow] = useState<Tab>(
     showTextGeneration ? "model" : showMemory && memory ? "memory" : showDiagnostics && capabilities ? "diagnostics" : showVoice ? "voice" : "general",
   );
+  const [diagGroup, setDiagGroup] = useState<DiagGroup>("server");
   // The Voice tab's set-up rows read again after a save there (or a Toolsets speech-to-text switch).
   const voiceChanges = useVoiceChanges(onVoiceChange ? { onChange: onVoiceChange } : undefined);
   // A new object each time a note asks for a capability, so the row is focused again even for the same one.
@@ -353,7 +362,7 @@ export function SettingsScreen({
       (t.id !== "persona" || persona) &&
       (t.id !== "memory" || memory) &&
       (t.id !== "skills" || skills) &&
-      (t.id !== "diagnostics" || capabilities),
+      (t.id !== "diagnostics" || capabilities || logs),
   );
   // Leaving the Persona, Memory or Skills tab asks first while it holds an unsaved edit.
   const setTab = (t: Tab) => t !== tab && guard(() => setTabNow(t));
@@ -377,6 +386,7 @@ export function SettingsScreen({
     if (!showDiagnostics || !capabilities) return;
     setQuery("");
     setDiagFocus(showDiagnostics.id ? { id: showDiagnostics.id } : undefined);
+    setDiagGroup("server");
     setTab("diagnostics");
   }, [showDiagnostics]);
   /** A tab's note about a feature Hermes lacks opens Diagnostics at it. */
@@ -384,6 +394,7 @@ export function SettingsScreen({
     guard(() => {
       setQuery("");
       setDiagFocus({ id });
+      setDiagGroup("server");
       setTabNow("diagnostics");
     });
   /** `body`, unless the connected Hermes lacks capability `id`; then the note saying so, and nothing of `body` runs. */
@@ -842,23 +853,41 @@ export function SettingsScreen({
             />
           )
         );
-      case "diagnostics":
+      case "diagnostics": {
+        // Server and Logs, one at a time beside a sub-nav, as General's groups are (ADR 0051, 0080). Logs reads Hermes
+        // only while it's shown; what it read goes when another group, tab or profile is shown.
+        const group: DiagGroup = !capabilities || (diagGroup === "logs" && logs) ? "logs" : "server";
+        const body =
+          group === "server" ? (
+            capabilities && (
+              <DiagnosticsSettings
+                store={capabilities}
+                connected={status === "connected"}
+                server={routeLabel(route)}
+                signIn={signInText(route)}
+                headers={headers.length}
+                unsecure={unsecure}
+                profile={profile}
+                openGuide={openGuide}
+                focus={diagFocus}
+                screen={screen}
+              />
+            )
+          ) : (
+            logs && <LogsPanel key={profile} {...logs} profile={profile} connected={status === "connected"} />
+          );
+        if (!capabilities || !logs) return body;
+        const items: SubNavItem[] = [
+          { id: "server", label: "Server", icon: <Stethoscope size={14} /> },
+          { id: "logs", label: "Logs", icon: <ScrollText size={14} /> },
+        ];
         return (
-          capabilities && (
-            <DiagnosticsSettings
-              store={capabilities}
-              connected={status === "connected"}
-              server={routeLabel(route)}
-              signIn={signInText(route)}
-              headers={headers.length}
-              unsecure={unsecure}
-              profile={profile}
-              openGuide={openGuide}
-              focus={diagFocus}
-              screen={screen}
-            />
-          )
+          <div className="settings-split">
+            <SubNav label="Diagnostics" items={items} selected={group} onPick={(id) => setDiagGroup(id as DiagGroup)} compact />
+            <div className="settings-split-body">{body}</div>
+          </div>
         );
+      }
       case "general":
         return general;
     }

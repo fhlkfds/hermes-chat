@@ -76,8 +76,7 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { OutputsScreen, type OutputsScope } from "./ui/Outputs";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
-import { LogsScreen } from "./ui/Logs";
-import { note } from "./hermes/logs";
+import { note, type RemoteLog } from "./hermes/logs";
 import { OutputsIndex, outputsIn, sessionOf, splitPath, type Output } from "./hermes/outputs";
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { ProjectScreen, ProjectSwitcher, type ProjectUnread } from "./ui/Projects";
@@ -967,8 +966,16 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
-  // Logs covers the chat panes too (ADR 0033). What it read goes when it closes; this app's own diagnostics stay.
-  const [logsOpen, setLogsOpen] = useState(false);
+  // Settings → Diagnostics → Logs reads the profile's Hermes logs (ADR 0033, 0080). What it read goes when it closes;
+  // this app's own diagnostics stay.
+  const logs = useMemo(
+    () => ({
+      connection: route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL",
+      read: (file: RemoteLog, lines: number) => hermes.readLog(profile, file, lines),
+      save: (text: string, fileName: string) => invoke<string | null>("logs_export", { text, fileName }),
+    }),
+    [route?.kind, hermes, profile],
+  );
   const listProfiles = useCallback(() => hermes.profiles(), [hermes]);
   const update = useSyncExternalStore(updates.subscribe, updates.getSnapshot);
   const updateWaiting = needsAttention(update);
@@ -1185,7 +1192,6 @@ export function Main({
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
-    setLogsOpen(false);
     setShowTextGeneration(undefined);
     setShowMemory(undefined);
     setShowDiagnostics(undefined);
@@ -1340,7 +1346,6 @@ export function Main({
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
-      setLogsOpen(false);
       if (remember) rememberChat(id);
     };
     if (keepSettings) go();
@@ -1356,7 +1361,6 @@ export function Main({
       setSettingsOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
-      setLogsOpen(false);
       setRepoOpen(false);
       setAutomationsOpen(false);
       setJobsAt((a) => ({ id, n: (a?.n ?? 0) + 1 }));
@@ -1395,7 +1399,6 @@ export function Main({
       setJobsOpen(false); setAutomationsOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
-      setLogsOpen(false);
       setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
       setRepoOpen(true);
     });
@@ -1414,7 +1417,6 @@ export function Main({
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
-    setLogsOpen(false);
   });
 
   // A second pane opens to the right and becomes the active one. Both panes may show the same chat: they are two views
@@ -1436,7 +1438,6 @@ export function Main({
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
-    setLogsOpen(false);
     rememberChat(chatId);
   });
 
@@ -1467,7 +1468,6 @@ export function Main({
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
-      setLogsOpen(false);
       setSearchOpen(false);
       if (!previewFits) setPanelHidden(true);
     });
@@ -2215,10 +2215,10 @@ export function Main({
   const previewFits = !mainWidth || mainWidth >= CHAT_MIN_WIDTH + PANE_MIN_WIDTH;
   const paneMax = mainWidth ? mainWidth - CHAT_MIN_WIDTH : 1200;
   const paneWidth = Math.min(Math.max(dragWidth ?? previewWidth ?? PREVIEW_DEFAULT_WIDTH, PANE_MIN_WIDTH), Math.max(PANE_MIN_WIDTH, paneMax));
-  // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage,
-  // Logs and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
+  // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage
+  // and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
   // open there.
-  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || logsOpen || repoOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || repoOpen;
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
@@ -2321,7 +2321,6 @@ export function Main({
                   setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
-                  setLogsOpen(false);
                   setShowTextGeneration(undefined);
                   setShowDiagnostics(undefined);
                   setShowVoice(undefined);
@@ -2390,7 +2389,6 @@ export function Main({
             setJobsOpen(false); setAutomationsOpen(false);
             setRepoOpen(false);
             setUsageOpen(false);
-            setLogsOpen(false);
             setOutputsOpen((o) => !o);
           })
         }
@@ -2432,7 +2430,6 @@ export function Main({
             setSettingsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
-            setLogsOpen(false);
             setRepoOpen(false);
             setAutomationsOpen(false);
             setJobsAt(undefined);
@@ -2446,7 +2443,6 @@ export function Main({
             setSettingsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
-            setLogsOpen(false);
             setRepoOpen(false);
             setJobsOpen(false);
             setAutomationsOpen(true);
@@ -2460,7 +2456,6 @@ export function Main({
             setJobsOpen(false); setAutomationsOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
-            setLogsOpen(false);
             setRepoAt(undefined);
             setRepoOpen((o) => !o);
           })
@@ -2473,24 +2468,10 @@ export function Main({
             setJobsOpen(false); setAutomationsOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
-            setLogsOpen(false);
             setUsageOpen((o) => !o);
           })
         }
         usageOpen={usageOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen}
-        onLogs={() =>
-          guard(() => {
-            setProjectOpen(false);
-            setSettingsOpen(false);
-            setJobsOpen(false);
-            setAutomationsOpen(false);
-            setOutputsOpen(false);
-            setUsageOpen(false);
-            setRepoOpen(false);
-            setLogsOpen((o) => !o);
-          })
-        }
-        logsOpen={logsOpen && !settingsOpen && !projectScreenOpen && !jobsOpen && !automationsOpen && !usageOpen}
         updateWaiting={updateWaiting}
         connectionsMenu={
           onSwitchConnection && (
@@ -2529,7 +2510,6 @@ export function Main({
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
-                    setLogsOpen(false);
                     setProjectOpen(true);
                   });
                 }}
@@ -2540,7 +2520,6 @@ export function Main({
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
-                    setLogsOpen(false);
                     setProjectOpen(true);
                     void projects.readDefaults();
                   })
@@ -2599,7 +2578,6 @@ export function Main({
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
-            setLogsOpen(false);
             // One destination at a time: an earlier Memory shortcut mustn't switch Settings away from this one.
             setShowMemory(undefined);
             setShowDiagnostics(undefined);
@@ -2799,6 +2777,7 @@ export function Main({
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
             screen={hermes.screen}
+            logs={logs}
             onClearCache={() => hermes.clearCache()}
             importer={{
               imports: hermes.imports,
@@ -2863,19 +2842,6 @@ export function Main({
             saveCsv={(csv, fileName) => invoke<string | null>("usage_export", { csv, fileName })}
             onClose={() => {
               flushSync(() => setUsageOpen(false));
-              focusPane(active.key);
-            }}
-          />
-        ) : logsOpen ? (
-          <LogsScreen
-            key={profile}
-            profile={profile}
-            connected={status === "connected"}
-            connection={route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL"}
-            read={(file, lines) => hermes.readLog(profile, file, lines)}
-            save={(text, fileName) => invoke<string | null>("logs_export", { text, fileName })}
-            onClose={() => {
-              flushSync(() => setLogsOpen(false));
               focusPane(active.key);
             }}
           />

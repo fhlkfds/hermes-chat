@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The Logs screen (Logs.tsx, ADR 0033): following and pausing a Hermes log, filters, an unreadable source, the support
-// bundle, and opening it from the rail against a fake Hermes whose `GET /api/logs` answers as `bf0203a` does.
+// Logs (Logs.tsx, ADR 0033, 0080): following and pausing a Hermes log, filters, an unreadable source, the support
+// bundle, and opening it in Settings → Diagnostics against a fake Hermes whose `GET /api/logs` answers as `bf0203a` does.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { FakeHermes } from "../hermes/fakeHermes";
 import { LogBuffer, note, type RemoteLog } from "../hermes/logs";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
-import { LogsScreen } from "./Logs";
+import { LogsPanel } from "./Logs";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -33,11 +33,11 @@ function logs() {
   return { files, write, read };
 }
 
-function screenWith(l = logs(), more: Partial<Parameters<typeof LogsScreen>[0]> = {}) {
+function screenWith(l = logs(), more: Partial<Parameters<typeof LogsPanel>[0]> = {}) {
   const save = vi.fn(async (_text: string, _name: string) => "/home/me/hermes-logs.txt" as string | null);
   const app = new LogBuffer(100);
-  const props = { profile: "default", connected: true, connection: "SSH tunnel", read: l.read, save, onClose: () => {}, app, pollMs: 30, ...more };
-  const r = render(<LogsScreen {...props} />);
+  const props = { profile: "default", connected: true, connection: "SSH tunnel", read: l.read, save, app, pollMs: 30, ...more };
+  const r = render(<LogsPanel {...props} />);
   return { ...l, save, app, props, ...r };
 }
 
@@ -105,10 +105,10 @@ describe("Logs screen", () => {
     l.write("agent", "2026-11-04 10:00:00,000 INFO agent: before");
     const t = screenWith(l);
     await waitFor(() => expect(rows()).toHaveLength(1));
-    t.rerender(<LogsScreen {...t.props} connected={false} />);
+    t.rerender(<LogsPanel {...t.props} connected={false} />);
     expect(screen.getByText(/Not connected to Hermes\. Reading starts again/)).toBeTruthy();
     l.write("agent", "2026-11-04 10:00:05,000 INFO agent: during");
-    t.rerender(<LogsScreen {...t.props} connected />);
+    t.rerender(<LogsPanel {...t.props} connected />);
     await waitFor(() => expect(rows()).toHaveLength(3));
     expect(rows()[1]).toMatch(/^Not read from .*: the connection to Hermes was lost$/);
     expect(rows()[2]).toBe("2026-11-04 10:00:05,000 INFO agent: during");
@@ -180,8 +180,8 @@ describe("Logs screen", () => {
   });
 });
 
-describe("Logs from the rail", () => {
-  it("opens over the chat and reads the shown profile's agent log", async () => {
+describe("Logs in Settings → Diagnostics", () => {
+  it("is a group of Diagnostics, not a rail button, and reads the shown profile's agent log only while it's shown", { timeout: 15_000 }, async () => {
     const s = new FakeHermes();
     s.rest["GET /api/logs"] = (req) => ({ file: req.query.get("file"), lines: [`2026-11-04 10:00:00,000 INFO agent: hello from ${req.query.get("profile")}\n`] });
     const hermes = await connect(s.openPipe);
@@ -189,12 +189,40 @@ describe("Logs from the rail", () => {
     render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
     await waitFor(() => expect(hermes.hasListed()).toBe(true));
     await act(async () => void (await hermes.idle()));
-    await userEvent.click(screen.getByRole("button", { name: "Logs" }));
-    expect(screen.getByRole("heading", { name: "Logs" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Logs" })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    const groups = screen.getByRole("navigation", { name: "Diagnostics" });
+    // Server comes first, as Diagnostics opened before Logs moved here; Hermes's logs aren't read until Logs is picked.
+    expect(within(groups).getByRole("button", { name: "Server" }).getAttribute("aria-current")).toBe("true");
+    expect(s.restRequests.some((r) => r.path === "/api/logs")).toBe(false);
+
+    await user.click(within(groups).getByRole("button", { name: "Logs" }));
+    expect(screen.getByRole("region", { name: "Logs" })).toBeTruthy();
     await waitFor(() => expect(rows()).toEqual(["2026-11-04 10:00:00,000 INFO agent: hello from default"]));
     const asked = s.restRequests.find((r) => r.path === "/api/logs")!;
     expect(Object.fromEntries(asked.query)).toEqual({ file: "agent", lines: "500", profile: "default" });
-    await userEvent.click(screen.getByRole("button", { name: /Back to chat/ }));
-    expect(screen.queryByRole("heading", { name: "Logs" })).toBeNull();
+
+    await user.click(within(groups).getByRole("button", { name: "Server" }));
+    expect(screen.queryByRole("region", { name: "Logs" })).toBeNull();
+    await user.click(within(screen.getByRole("navigation", { name: "Diagnostics" })).getByRole("button", { name: "Logs" }));
+    expect(screen.getByRole("region", { name: "Logs" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    expect(screen.queryByRole("region", { name: "Logs" })).toBeNull();
+  });
+
+  it("is named by a search for its words, which opens Diagnostics", { timeout: 20_000 }, async () => {
+    const s = new FakeHermes();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
+    await waitFor(() => expect(hermes.hasListed()).toBe(true));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("searchbox", { name: "Search settings" }));
+    await user.paste("support bundle");
+    await user.click(await screen.findByRole("button", { name: "Open Diagnostics" }));
+    expect(screen.getByRole("tab", { name: /Diagnostics/, selected: true })).toBeTruthy();
   });
 });
