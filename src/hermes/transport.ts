@@ -1017,6 +1017,7 @@ export class Hermes {
         if (e.kind === "closed" && !up) this.abortDial?.(new Error(`The connection closed before Hermes was ready: ${e.reason}`));
         else this.handle(e);
       }, profile, stop.signal);
+      pipe.attempt?.ready();
       const payload = await Promise.race([
         ready,
         failed,
@@ -1027,7 +1028,9 @@ export class Hermes {
       if (failure) throw failure;
       if (payload.session_authority) throw new ProtocolMismatchError();
       readyPayload = payload;
+      pipe.attempt?.connected();
     } catch (e) {
+      pipe?.attempt?.failed(e);
       this.generation++;
       await pipe?.close().catch(() => {});
       throw e;

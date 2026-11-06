@@ -55,14 +55,22 @@ pub fn swap(dir: &Path, name: &str, expected: Option<&str>, next: &str) -> io::R
     if current.as_deref() != expected {
         return Ok(Swap { swapped: false, current });
     }
-    let tmp: PathBuf = dir.join(format!("{name}.json.{}.tmp", std::process::id()));
+    replace(&path, next.as_bytes())?;
+    Ok(Swap { swapped: true, current: Some(next.to_owned()) })
+}
+
+/// Puts `bytes` at `path` (mode 0600) whole: written to a private temporary file beside it, then renamed over it, so a
+/// crash leaves the old file or the new one. The caller holds the lock that keeps other writers out.
+pub(crate) fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
     {
         let mut f = owner_only(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
-        f.write_all(next.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, &path)?;
-    Ok(Swap { swapped: true, current: Some(next.to_owned()) })
+    fs::rename(&tmp, path)
 }
 
 fn dir(app: &AppHandle) -> Result<PathBuf, String> {

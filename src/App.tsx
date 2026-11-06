@@ -30,7 +30,8 @@ import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbo
 import { ConnectionManager, RailConnections, RemoveConnection, SwitchConnection } from "./ui/Connections";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
-import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
+import { reachRoute, tauriAttemptStore, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
+import { AttemptLog } from "./hermes/attempts";
 import { readMethods } from "./hermes/signInMethods";
 import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";
@@ -177,8 +178,14 @@ const savedConnections = () => (connectionStore ??= new Connections(localStorage
 /** How each connection's routes did lately, for this run of the app (routes.ts `RouteHealth`). */
 const routeHealth = new Map<string, RouteHealth>();
 const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, new RouteHealth()).get(id)!;
-/** A connection's pipe: its routes in order, and the server id the first route that names one reports kept (ADR 0056). */
-const pipeFor = (c: SavedConnection, d: SignInDetails) => tauriPipe(d, { onServer: (server) => savedConnections().setServer(c.id, server), health: healthOf(c.id) });
+/** The record of recent connection attempts, kept on disk between launches (attempts.ts, #270). */
+const connectionAttempts = new AttemptLog(tauriAttemptStore);
+/**
+ * A connection's pipe: its routes in order, and the server id the first route that names one reports kept (ADR 0056).
+ * Each opening is kept in the record of connection attempts.
+ */
+const pipeFor = (c: SavedConnection, d: SignInDetails) =>
+  tauriPipe(d, { onServer: (server) => savedConnections().setServer(c.id, server), health: healthOf(c.id), attempts: connectionAttempts });
 
 const account: Account = {
   get connections() {
@@ -974,6 +981,7 @@ export function Main({
       connection: route?.kind === "ssh" ? "SSH tunnel" : "dashboard URL",
       read: (file: RemoteLog, lines: number) => hermes.readLog(profile, file, lines),
       save: (text: string, fileName: string) => invoke<string | null>("logs_export", { text, fileName }),
+      attempts: connectionAttempts,
     }),
     [route?.kind, hermes, profile],
   );

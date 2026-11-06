@@ -7,6 +7,7 @@
 // Before a password goes over a route, Rust reads the dashboard's public `/api/status` and checks that it is a Hermes
 // dashboard, and the same install the connection signed in to before (`server`, a hash of Hermes's install id). A route
 // that reaches anything else is "wrong server" and gets nothing.
+import type { AttemptRecorder, AttemptTrace, Step } from "./attempts";
 import type { Address } from "./connections";
 import type { OpenPipe, Pipe, Route } from "./pipe";
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
@@ -196,8 +197,11 @@ export function sshAddressOf(c: Address & { routes?: SavedRoute[] }): { mode: "s
 
 // ── connecting ──────────────────────────────────────────────────────────────
 
-/** Opens one route. `expectServer`: the install the route must reach. `quick`: give up on a dead route sooner. */
-export type OpenRoute = (d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string }) => OpenPipe;
+/**
+ * Opens one route. `expectServer`: the install the route must reach. `quick`: give up on a dead route sooner. `onStep`:
+ * told as each step of opening it starts (attempts.ts).
+ */
+export type OpenRoute = (d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step) => void }) => OpenPipe;
 
 export const NO_ROUTES = "Every route of this connection is turned off, or needs the password typed again. Edit the connection to turn one on, or sign in again.";
 /** What Rust and transport say when connecting was stopped. */
@@ -252,6 +256,8 @@ export type RoutedHooks = {
   /** The server's id, the first time a route reports one; the connection keeps it (ADR 0056). */
   onServer?: (server: string) => void;
   health?: RouteHealth;
+  /** Keeps a record of each opening: the routes tried, their steps, how it ended (attempts.ts, #270). */
+  attempts?: AttemptRecorder;
 };
 
 /**
@@ -264,6 +270,18 @@ export type RoutedHooks = {
 export function routedPipe(d: SignInDetails, open: OpenRoute, hooks: RoutedHooks = {}): OpenPipe {
   let expect = d.server;
   return async (onEvent, profile, signal) => {
+    const attempt = hooks.attempts?.begin(d);
+    try {
+      const pipe = await openRoutes(attempt, onEvent, profile, signal);
+      return attempt ? { ...pipe, attempt } : pipe;
+    } catch (e) {
+      // Every route failed: their own errors say why, and the list of them names their addresses.
+      attempt?.failed(e instanceof RoutesFailedError ? undefined : e);
+      throw e;
+    }
+  };
+
+  async function openRoutes(attempt: AttemptTrace | undefined, onEvent: Parameters<OpenPipe>[0], profile: string, signal?: AbortSignal): Promise<Pipe> {
     const all = routesOf(d);
     const on = all.filter((r) => !r.off && !r.locked);
     if (!on.length) throw new Error(NO_ROUTES);
@@ -272,11 +290,17 @@ export function routedPipe(d: SignInDetails, open: OpenRoute, hooks: RoutedHooks
     const failures: { route: RouteDetails; message: string }[] = [];
     for (const r of hooks.health?.order(on) ?? on) {
       if (signal?.aborted) throw new Error(STOPPED);
+      const trying = attempt?.route(r);
       let pipe: Pipe;
       try {
-        pipe = await open(singleRoute(d, r), { ...(expect && { expectServer: expect }), quick, ...(sshRoute && { sshRoute }) })(onEvent, profile, signal);
+        pipe = await open(singleRoute(d, r), { ...(expect && { expectServer: expect }), quick, ...(sshRoute && { sshRoute }), ...(trying && { onStep: trying.step }) })(
+          onEvent,
+          profile,
+          signal,
+        );
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        trying?.failed(e);
         if (!quick || FINAL.test(message) || signal?.aborted) throw e;
         hooks.health?.failed(r.id);
         failures.push({ route: r, message });
@@ -296,7 +320,7 @@ export function routedPipe(d: SignInDetails, open: OpenRoute, hooks: RoutedHooks
     // Every route turned the token down or couldn't use it: that is the failure, not the routes.
     if (failures.length && failures.every((f) => TOKEN_REFUSED.test(f.message))) throw new Error(failures[0].message);
     throw new RoutesFailedError(failures);
-  };
+  }
 }
 
 // ── going back to a preferred route ─────────────────────────────────────────

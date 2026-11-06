@@ -17,6 +17,7 @@
 //! a Hermes dashboard, and the same one the connection signed in to before (ADR 0056).
 
 use base64::Engine;
+use crate::connect_steps::{Step, Steps};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
@@ -1049,13 +1050,10 @@ impl Dashboard {
     }
 
     /// Mint a WS ticket and open `/api/ws` for `profile`. Every frame the server sends, starting with
-    /// `gateway.ready`, goes to `on_event`.
-    pub async fn open_pipe(&self, profile: &str, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Pipe, TransportError> {
-        let ticket = self
-            .http
-            .post(endpoint(&self.base, "api/auth/ws-ticket"))
-            .header(header::COOKIE, self.cookie_header())
-            .send()
+    /// `gateway.ready`, goes to `on_event`. The ticket and the socket are each a step of `steps`.
+    pub async fn open_pipe(&self, profile: &str, on_event: impl Fn(PipeEvent) + Send + 'static, steps: &Steps) -> Result<Pipe, TransportError> {
+        let ticket = steps
+            .run(Step::Ticket, self.http.post(endpoint(&self.base, "api/auth/ws-ticket")).header(header::COOKIE, self.cookie_header()).send())
             .await
             .map_err(unreachable)?;
         self.keep_cookies(&ticket);
@@ -1072,7 +1070,8 @@ impl Dashboard {
         })?;
 
         let handshake = self.ws_handshake("api/ws", &[("ticket", ticket), ("profile", profile)])?;
-        let (ws, _) = tokio_tungstenite::connect_async(handshake)
+        let (ws, _) = steps
+            .run(Step::WebSocket, tokio_tungstenite::connect_async(handshake))
             .await
             .map_err(|e| TransportError::WebSocket(e.to_string()))?;
 
@@ -2283,11 +2282,15 @@ pub async fn probe_expecting(base: &Url, sign_in: &SignIn, profile: &str, step: 
     let tx = Mutex::new(Some(tx));
     let pipe = match tokio::time::timeout(
         step,
-        dashboard.open_pipe(profile, move |e| {
-            if let Some(tx) = tx.lock().unwrap().take() {
-                let _ = tx.send(e);
-            }
-        }),
+        dashboard.open_pipe(
+            profile,
+            move |e| {
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(e);
+                }
+            },
+            &Steps::default(),
+        ),
     )
     .await
     {
