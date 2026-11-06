@@ -1,4 +1,4 @@
-// Which of the chat list's sections show (ADR 0063). Kept in the display preferences (uiPrefs.ts), on this computer
+// Which of the chat list's sections show (ADR 0063, ADR 0090). Kept in the display preferences (uiPrefs.ts), on this computer
 // only. Any mix of sections, but never none: the last one shown can't be turned off. A hidden section's chats are still
 // found by Search. Drawn as a card of rows (ADR 0059).
 import { useSyncExternalStore } from "react";
@@ -11,8 +11,7 @@ const HINT: Readonly<Record<SectionKey, string>> = {
   inbox: "Chats that need you or have finished: an Approval waiting, a failure, a reply done, something new.",
   working: "Chats with a reply running.",
   snoozed: "Chats you snoozed, until they wake.",
-  unsettled: "Active chats you cleared from the Inbox. Something new in one brings it back.",
-  settled: "Chats you put out of the way.",
+  settled: "Chats you settled, in a drawer at the foot of the list that opens and closes.",
   archived: "Chats hidden in every Hermes client. Listing them asks Hermes for them on each refresh.",
 };
 
