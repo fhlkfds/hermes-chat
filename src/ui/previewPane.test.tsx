@@ -911,4 +911,18 @@ describe("The link menu (issue #240)", () => {
     expect(document.activeElement).toBe(link);
   });
 
+  it("is on a tool call's web page chip too, and not on its file or Output chips", async () => {
+    const { user, web } = await signedIn();
+    await openTool(user, "browser_navigate");
+    expect(rightClick(screen.getByRole("button", { name: "crash" }))).toBe(false);
+    expect(menuItems()).toEqual(["Open in the Preview", "Open in your browser", "Copy link"]);
+    await user.click(item("Open in your browser"));
+    expect(web.opened).toEqual([DOCS]);
+
+    await openTool(user, "read_file");
+    expect(rightClick(screen.getByRole("button", { name: "main.py" }))).toBe(true);
+    await openTool(user, "patch");
+    expect(rightClick(screen.getByRole("button", { name: "Output" }))).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
 });

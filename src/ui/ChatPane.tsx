@@ -32,9 +32,9 @@ import { ConversationPanel, StartConversationButton, conversationAway, startBloc
 import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
-import { useOpenPreview } from "./previewContext";
+import { useLinkMenu, useOpenPreview } from "./previewContext";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
-import { previewName, toolTargets, withoutBidi } from "../hermes/preview";
+import { linkTarget, previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
@@ -1057,6 +1057,7 @@ function ToolRow({ t }: { t: ToolItem }) {
  */
 function ToolPreviews({ t }: { t: ToolItem }) {
   const open = useOpenPreview();
+  const menu = useLinkMenu();
   if (!open) return null;
   const targets = toolTargets(t, location.origin);
   const output = t.status !== "running" && t.result ? t.result : undefined;
@@ -1064,17 +1065,21 @@ function ToolPreviews({ t }: { t: ToolItem }) {
   return (
     <div className="tool-previews">
       <span className="tool-label">Preview</span>
-      {targets.map((x) => (
-        <button
-          key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
-          className="preview-chip"
-          title={x.kind === "server" ? `${withoutBidi(x.path)}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
-          onClick={() => open(x)}
-        >
-          {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
-          <span>{withoutBidi(previewName(x))}</span>
-        </button>
-      ))}
+      {targets.map((x) => {
+        const link = x.kind === "web" ? linkTarget(x.url, location.origin) : undefined;
+        return (
+          <button
+            key={x.kind === "server" ? `s:${x.path}` : x.kind === "web" ? `w:${x.url}` : x.kind}
+            className="preview-chip"
+            title={x.kind === "server" ? `${withoutBidi(x.path)}\nOn the Hermes server` : x.kind === "web" ? x.url : undefined}
+            onClick={() => open(x)}
+            onContextMenu={menu && link && ((e) => menu(e, link))}
+          >
+            {x.kind === "server" ? <Server size={12} /> : <Globe size={12} />}
+            <span>{withoutBidi(previewName(x))}</span>
+          </button>
+        );
+      })}
       {output && (
         <button className="preview-chip" title="What the tool call returned" onClick={() => open({ kind: "tool", name: t.name, text: output })}>
           <Wrench size={12} />
