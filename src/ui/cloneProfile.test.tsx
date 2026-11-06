@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-// Clone a profile from the profile switcher, in the running app against a fake Hermes: what the dialog shows before
-// anything is written, picking categories, the opt-in full copy and its warning, a taken name, a refusal, deleting a
-// clone that didn't fully copy, and opening the clone only once it's read back. All data is synthetic.
+// Clone a profile from the profile switcher, in the running app against a fake Hermes: the reads it makes when it
+// opens and none while the owner types or picks, what the dialog shows before anything is written, picking categories,
+// the opt-in full copy and its warning, a taken name, a refusal, deleting a clone that didn't fully copy, and opening
+// the clone only once it's read back. All data is synthetic.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -28,7 +29,33 @@ afterEach(async () => {
 let launches = 0;
 const HOME = "/home/liam/.hermes";
 
-async function launch() {
+/** Holds each dashboard answer while `on`, until `release`, and lists every REST path asked for meanwhile. */
+function gate() {
+  const waiting: (() => void)[] = [];
+  const g = {
+    on: false,
+    asked: [] as string[],
+    release: () => waiting.splice(0).forEach((go) => go()),
+    wrap:
+      (open: FakeHermes["openPipe"]): FakeHermes["openPipe"] =>
+      async (...args) => {
+        const pipe = await open(...args);
+        return {
+          ...pipe,
+          request: async (method, path, body) => {
+            if (g.on) {
+              g.asked.push(path.split("?")[0]);
+              await new Promise<void>((go) => waiting.push(go));
+            }
+            return pipe.request(method, path, body);
+          },
+        };
+      },
+  };
+  return g;
+}
+
+async function launch(held?: ReturnType<typeof gate>) {
   const server = new FakeHermes();
   server.otherProfiles = { work: [] };
   server.souls = { default: "You are Hermes.\n", work: "You are Work, a terse release engineer.\n" };
@@ -37,7 +64,7 @@ async function launch() {
   server.profileEnv.default = { OPENROUTER_API_KEY: "sk-or-synthetic-91" };
   server.memory.default = { memory: ["Ships on Fridays."], profile: [] };
   server.skills.add("default", { dir: `${HOME}/skills/release-notes`, source: "agent" }, "---\nname: release-notes\ndescription: Draft release notes\n---\n\n# Notes\n");
-  const hermes = await connect(server.openPipe, undefined, memoryCache());
+  const hermes = await connect(held ? held.wrap(server.openPipe) : server.openPipe, undefined, memoryCache());
   running.push(hermes);
   render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: `liam@hermes-clone-${++launches}`, url: "", username: "liam" }} onSignOut={async () => {}} />);
   await waitFor(() => expect(hermes.hasListed()).toBe(true));
@@ -131,6 +158,30 @@ describe("Clone a profile", () => {
     );
     expect(within(dialog).getByRole("button", { name: "Clone" })).toBeTruthy();
     expect(server.otherProfiles["default-copy"]).toBeUndefined();
+  });
+
+  it("reads the list, SOUL.md and skills in one round when it opens, and nothing while the name is typed or parts are picked", async () => {
+    const held = gate();
+    const { user } = await launch(held);
+    await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
+    const item = await screen.findByRole("button", { name: "Clone a profile…" });
+    held.on = true;
+    await user.click(item);
+    const dialog = await screen.findByRole("dialog", { name: "Clone a profile" });
+    await waitFor(() => expect(held.asked).toEqual(expect.arrayContaining(["api/profiles", "api/profiles/default/soul", "api/skills"])));
+
+    held.release();
+    const name = await within(dialog).findByDisplayValue("default-copy");
+    await within(dialog).findByRole("table", { name: "What the clone copies" });
+    const opened = held.asked.length;
+    await user.type(name, "-for-the-release-team");
+    for (const part of ["Copy Persona (SOUL.md)", "Copy Own skills", "Copy Persona (SOUL.md)", "Copy Own skills"]) await user.click(within(dialog).getByRole("checkbox", { name: part }));
+
+    expect(name).toHaveProperty("value", "default-copy-for-the-release-team");
+    expect(held.asked.slice(opened)).toEqual([]);
+    expect(held.asked.filter((p) => p === "api/config")).toEqual([]);
+    held.on = false;
+    held.release();
   });
 
   it("says the clone isn't full when a part didn't copy, and deletes it when asked", async () => {
