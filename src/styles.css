@@ -3001,7 +3001,7 @@ p.logs-status { margin: 0 0 8px; line-height: 1.5; }
 .logs-paused { border-color: var(--warn); }
 .logs-paused svg { color: var(--warn); }
 .logs-list {
-  height: max(260px, calc(100vh - 400px)); overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
+  height: max(260px, calc(100vh - 448px)); overflow-y: auto; overflow-x: hidden; border: 1px solid var(--line-2); border-radius: var(--radius);
   background: var(--code-bg); font-family: var(--mono); font-size: calc(var(--mono-size) * 0.92); line-height: 1.5; padding: 6px 0;
 }
 .logs-list:focus-visible { outline: 2px solid var(--line-3); outline-offset: 1px; }

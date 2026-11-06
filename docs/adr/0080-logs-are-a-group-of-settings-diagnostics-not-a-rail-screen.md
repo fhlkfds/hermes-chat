@@ -19,4 +19,4 @@ The owner asked for the Logs screen (ADR 0033) to move into Settings, under Diag
 
 ## Gaps
 
-- The list's height is the window's less a fixed allowance for Settings' header and Logs' controls (`calc(100vh - 400px)`, never under 260 px). A very wide set of controls that wraps to more lines pushes the list's foot below the window, where Settings scrolls to it.
+- The list's height is the window's less a fixed allowance for Settings' header and Logs' controls (`calc(100vh - 448px)`, never under 260 px). A very wide set of controls that wraps to more lines pushes the list's foot below the window, where Settings scrolls to it.
