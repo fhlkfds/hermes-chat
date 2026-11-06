@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "bump": "node scripts/release/version.mjs bump",
     "tauri": "tauri"
   },
   "dependencies": {

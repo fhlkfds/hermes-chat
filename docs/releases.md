@@ -72,9 +72,27 @@ The version and target come from the AppImage's file name, which `tauri build` d
 
 The manifest itself isn't signed. The signature covers the AppImage and, through `--app-version` (which `tauri build` passes), the version. With `requireSignedVersion`, the app refuses a manifest that announces a version other than the signed one. A manifest edited to pair a new version number with an older genuine AppImage fails.
 
+## Choosing the version
+
+A release raises exactly one number of `MAJOR.MINOR.PATCH`, picked from the biggest change merged since the last `v*` tag (`git log $(git describe --tags --abbrev=0)..main --merges`):
+
+| Raise | When the release holds | Examples |
+|---|---|---|
+| **PATCH** (0.1.1 → 0.1.2) | Only fixes. Nothing new to find, nothing to relearn. | A crash or layout fix, a typo, a dependency update |
+| **MINOR** (0.1.2 → 0.2.0) | Something a user would notice as new or different. | A new screen or tool, a setting added, a screen moved |
+| **MAJOR** (0.2.0 → 1.0.0) | Something that breaks for someone already using the app. | Dropping support for a Hermes server version, local data or backups an older copy can't read, a setup that must be done again |
+
+Below 1.0 everything shifts down one: a breaking change raises MINOR, everything else PATCH. 1.0.0 comes when the standalone AppImage updater ships with the production key, since from then on installed copies update themselves. A published version is never reused, and versions bump once per release, not per pull request.
+
+To release:
+
+1. On a branch from `main`, run `npm run bump -- patch` (or `minor`, `major`, or an exact version such as `1.0.0-beta.1`). It writes the new version into `src-tauri/tauri.conf.json`, `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and nothing else (`scripts/release/version.mjs`).
+2. Commit as `Bump version to <version>`, with the merged pull requests it ships in the message, and open the pull request. CI fails when the five files disagree.
+3. After it merges, tag that merge commit `v<version>` and push the tag. The `windows-installer` workflow stops before building when the tag doesn't match all five files.
+
 ## Version and channel rules
 
-- Every release bumps `version` in `src-tauri/tauri.conf.json`, in semver. The tag is `v<version>`.
+- Every release bumps `version` in `src-tauri/tauri.conf.json`, in semver, and the four other version files with it ("Choosing the version"). The tag is `v<version>`.
 - The app offers a release only when its version is strictly greater than the running one. An older or equal version is never offered, so there are no downgrades through the updater. A prerelease (`1.0.0-beta.1`) sorts below its release.
 - There is one channel, stable, at one endpoint. GitHub's `releases/latest` skips prereleases and drafts, so a prerelease published there is never offered. A beta channel would need its own endpoint built into beta builds, and isn't defined.
 - One AppImage per architecture, named in `platforms` as `linux-<arch>`. Only `linux-x86_64` is built today. On an architecture the manifest doesn't name, the check fails with an error naming the missing target.

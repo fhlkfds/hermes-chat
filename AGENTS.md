@@ -53,6 +53,8 @@ Run the build and test suite after every code change, before committing. A faili
 
 A release is a `v<version>` tag on `main` plus its GitHub release (`docs/releases.md`). Attach every installer and package built for that version (`.exe`, `.deb`, `.rpm`, `.AppImage`, …) to that one release, each with a `.sha256` beside it. Today `windows.yml` builds and attaches only the Windows `.exe`, on the tag. A change that adds a bundle format also adds the step that attaches it to the tagged release.
 
+When asked to release or bump the version, follow `docs/releases.md` "Choosing the version": pick patch, minor or major from what merged since the last tag, run `npm run bump -- <level>`, and open a `Bump version to <version>` PR naming the level and why. Ordinary PRs leave the version alone.
+
 ### Merge authority
 
 Agents open and update PRs but never merge to `main`. Merging is human-only.
