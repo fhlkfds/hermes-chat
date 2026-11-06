@@ -39,8 +39,12 @@ _Avoid_: closed, hidden, read
 The owner's actions, from a chat's row or its right-click menu, that move a read, quiet Active chat from the Inbox to Unsettled, and back. A chat can be cleared only when it isn't Unread, no reply is running in it and Hermes isn't waiting on the owner. It is back in the Inbox on its own as soon as anything newer happens in it: a message from any platform, a reply that ends, a snooze that wakes. Nothing is deleted or sent to Hermes: a clear is kept on this computer only, for each connection and profile. Settling, unsettling, archiving or deleting the chat forgets it (ADR 0063).
 _Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), done
 
+**Pinned** / **Pin** / **Unpin**:
+The owner's actions, from a chat's right-click menu or its header's More menu (P in either), that keep a chat in the Pinned section at the top of the chat list, and put it back in its place. Pinned lists the chats in the order they were pinned, whatever happens in them; only Archived takes a chat out of it. Pins are kept on this computer only, for each connection and profile, since Hermes's own pin flag holds Active (ADR 0002, ADR 0085).
+_Avoid_: favourite, star (starred models are the model picker's), sticky
+
 **Chat list section**:
-One of the chat list's groups, in this order: Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
+One of the chat list's groups, in this order: Pinned, Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
 _Avoid_: group, folder, tab
 
 **Snooze** / **Unsnooze**:

@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -87,7 +87,8 @@ describe("reading", () => {
       statusBar: ["model", "tokens"],
       previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue",
       idleCompact: { enabled: false, percent: 70, idleMinutes: 30 },
-      chatSectionsShown: ["inbox", "settled"],
+      // A version 1 list gains Pinned, new in version 2.
+      chatSectionsShown: ["pinned", "inbox", "settled"],
       chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"],
       agentOffice: "desks",
     });
@@ -232,9 +233,9 @@ describe("writing", () => {
   });
 
   it("keeps fields a newer version of the app wrote", () => {
-    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, theme: "dark", density: "compact" }));
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: UI_PREFS_VERSION, theme: "dark", density: "compact" }));
     setUIPrefs({ reasoningBlocks: false });
-    expect(stored()).toMatchObject({ v: 1, theme: "dark", density: "compact", reasoningBlocks: false });
+    expect(stored()).toMatchObject({ v: UI_PREFS_VERSION, theme: "dark", density: "compact", reasoningBlocks: false });
   });
 
   it("holds a change until the app closes when storage won't take it", () => {
@@ -253,7 +254,7 @@ describe("migration", () => {
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ theme: "light", reopenLastChat: false }));
     expect(getUIPrefs()).toMatchObject({ theme: "light", reopenLastChat: false });
     setUIPrefs({ reasoningBlocks: false });
-    expect(stored()).toEqual({ ...DEFAULT_UI_PREFS, theme: "light", reopenLastChat: false, reasoningBlocks: false, v: 1 });
+    expect(stored()).toEqual({ ...DEFAULT_UI_PREFS, theme: "light", reopenLastChat: false, reasoningBlocks: false, v: UI_PREFS_VERSION });
   });
 
   it("runs each step from the stored version up to the current one, in order", () => {
@@ -271,6 +272,14 @@ describe("migration", () => {
     expect(migrateUIPrefs({ v: 1, theme: "dark" }, {}, 2)).toEqual({ v: 2 });
     expect(migrateUIPrefs({ v: "1", theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
     expect(migrateUIPrefs({ v: 1.5, theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
+  });
+
+  it("shows Pinned, new in version 2, above the sections a version 1 document picked", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, chatSectionsShown: ["settled", "inbox"], chatSectionsCollapsed: ["inbox"] }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "settled"]);
+    expect(getUIPrefs().chatSectionsCollapsed).toEqual(["inbox"]);
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, theme: "dark" }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(DEFAULT_UI_PREFS.chatSectionsShown);
   });
 
   it("reads a newer version's document as it is, taking the fields this version knows", () => {

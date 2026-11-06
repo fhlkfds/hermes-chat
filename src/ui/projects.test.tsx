@@ -179,6 +179,8 @@ describe("a chat's menu", () => {
       "Copy chat link",
       "Open in a new tab",
       "Open in a second pane",
+      // Pin (ADR 0085), with its key
+      "PinP",
       // Snooze (ADR 0036)
       "1 hour",
       "3 hours",
