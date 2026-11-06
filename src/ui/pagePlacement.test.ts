@@ -51,6 +51,18 @@ describe("Where the page goes", () => {
     expect(placementOf(box, ".toast, .menu")).toEqual({ rect: PAGE, holes: [{ x: 800, y: 760, width: 100, height: 40 }] });
   });
 
+  it("moves its side in for a layer across that side, such as the pane's resize handle, and goes nowhere under a backdrop", () => {
+    add(`<div class="separator" role="separator"></div><div id="box"></div><div class="backdrop"></div>`);
+    const box = at(document.getElementById("box")!, PAGE);
+    const edge = at(document.querySelector(".separator")!, { x: 796, y: 0, width: 8, height: 820 });
+    topmost(box, edge);
+    expect(placementOf(box, "[role=separator], .backdrop")).toEqual({ rect: { x: 804, y: 120, width: 476, height: 700 }, holes: [] });
+
+    const backdrop = at(document.querySelector(".backdrop")!, { x: 0, y: 0, width: 1280, height: 820 });
+    topmost(box, edge, backdrop);
+    expect(placementOf(box, "[role=separator], .backdrop")).toBeNull();
+  });
+
   it("makes no hole for a layer under it, nor for one it is inside", () => {
     add(`<div class="inbox"></div><aside class="overlay-panel"><div id="box"></div></aside>`);
     const box = at(document.getElementById("box")!, PAGE);

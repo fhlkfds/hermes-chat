@@ -51,23 +51,37 @@ const intersect = (a: Rect, b: Rect): Rect | undefined => {
 };
 
 /**
- * Where the page goes: `box`'s rectangle in the window, with a hole for each layer drawn over it. A layer under the
- * box, such as one beneath the Preview when it covers the chat, makes no hole. `null`: the box has no size.
+ * Where the page goes: `box`'s rectangle in the window, less the layers drawn over it. A layer across a whole side of
+ * the box (the pane's resize handle, a dialog's backdrop) moves that side in. Any other makes a hole, which only X11
+ * can cut, so it is best kept for small layers such as a menu or a toast. A layer under the box, such as one beneath
+ * the Preview when it covers the chat, counts for nothing. `null`: the box has no size, or layers cover it.
  */
 export function placementOf(box: Element, layers: string): Placement | null {
   const r = box.getBoundingClientRect();
-  if (r.width < 1 || r.height < 1) return null;
-  const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
-  const holes: Rect[] = [];
+  let rect: Rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+  const over: Rect[] = [];
   const doc = box.ownerDocument;
   if (layers)
     for (const layer of Array.from(doc.querySelectorAll(layers))) {
       if (layer.contains(box)) continue;
       const hole = intersect(rect, layer.getBoundingClientRect());
       const top = hole && doc.elementFromPoint(hole.x + hole.width / 2, hole.y + hole.height / 2);
-      if (hole && top && layer.contains(top)) holes.push(hole);
+      if (hole && top && layer.contains(top)) over.push(hole);
     }
-  return { rect, holes };
+  const holes: Rect[] = [];
+  for (const h of over) {
+    const [left, right] = [rect.x, rect.x + rect.width];
+    const [top, bottom] = [rect.y, rect.y + rect.height];
+    const tall = h.y <= top && h.y + h.height >= bottom;
+    const wide = h.x <= left && h.x + h.width >= right;
+    if (tall && h.x <= left) rect = { ...rect, x: h.x + h.width, width: right - (h.x + h.width) };
+    else if (tall && h.x + h.width >= right) rect = { ...rect, width: h.x - left };
+    else if (wide && h.y <= top) rect = { ...rect, y: h.y + h.height, height: bottom - (h.y + h.height) };
+    else if (wide && h.y + h.height >= bottom) rect = { ...rect, height: h.y - top };
+    else holes.push(h);
+  }
+  if (rect.width < 1 || rect.height < 1) return null;
+  return { rect, holes: holes.flatMap((h) => intersect(rect, h) ?? []) };
 }
 
 /** Keeps `page` placed over `box` while both are there, and hides it when either goes. */

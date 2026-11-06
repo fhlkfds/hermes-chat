@@ -144,7 +144,7 @@ mod imp {
         let holes = holes_in_page(&placement);
         // The overlay's window for the view, which it moves and sizes. On X11 it can be a native window, whose shape
         // the X server clips the page to and passes the pointer through. Elsewhere (Wayland's GTK has no native child
-        // windows) the page hides while any layer is over it.
+        // windows) the page hides while it has a hole.
         let x11 = view.parent_window().filter(|w| w.display().is::<gdkx11::X11Display>() && w.ensure_native());
         match x11 {
             Some(window) => {
