@@ -8,7 +8,7 @@ import { STEER, type ServerCommandList } from "./hermes/commands";
 import type { SkillCall, SkillCommands } from "./hermes/skillCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
 import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
-import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
+import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, keptRouteHealth, prefScope } from "./hermes/connections";
 import { forgetConnectionData } from "./hermes/forgetConnection";
 import { serial as makeSerial } from "./hermes/serial";
 import { localChatCache } from "./hermes/chatCache";
@@ -32,7 +32,7 @@ import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
 import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
 import { readMethods } from "./hermes/signInMethods";
-import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
+import { PreferredRoutes, type RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";
 import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
@@ -174,9 +174,9 @@ let connectionStore: Connections | undefined;
 /** The saved connections, read (and the old single sign-in migrated) the first time they're needed. */
 const savedConnections = () => (connectionStore ??= new Connections(localStorage));
 
-/** How each connection's routes did lately, for this run of the app (routes.ts `RouteHealth`). */
+/** How each connection's routes did lately, kept with the connection across restarts (routes.ts `RouteHealth`). */
 const routeHealth = new Map<string, RouteHealth>();
-const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, new RouteHealth()).get(id)!;
+const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, keptRouteHealth(savedConnections(), id)).get(id)!;
 /** A connection's pipe: its routes in order, and the server id the first route that names one reports kept (ADR 0056). */
 const pipeFor = (c: SavedConnection, d: SignInDetails) => tauriPipe(d, { onServer: (server) => savedConnections().setServer(c.id, server), health: healthOf(c.id) });
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CONNECTIONS_KEY, Connections, type SavedConnection, keptRouteHealth } from "./connections";
 import { FakeHermes, row } from "./fakeHermes";
 import type { Route } from "./pipe";
 import {
@@ -6,6 +7,7 @@ import {
   PreferredRoutes,
   RouteHealth,
   RoutesFailedError,
+  savedRoute,
   kindOfUrl,
   normalizeTarget,
   routeFromAddress,
@@ -203,6 +205,54 @@ describe("Connecting over routes", () => {
     r.server.drop();
     await hermes.reconnect();
     expect(r.opened.map((o) => o.at).slice(3)).toEqual([LAN.target, SSH.target]);
+  });
+});
+
+describe("Route health across a restart (#269)", () => {
+  const ROUTED: SavedConnection = {
+    id: "0b6f3c1e-2d4a-4f8b-9c7e-5a1d2e3f4a5b",
+    name: "Home server",
+    addedAt: 0,
+    mode: "url",
+    sshTarget: "",
+    url: LAN.target,
+    username: "liam",
+    routes: [LAN, TAILNET, SSH].map(savedRoute),
+  };
+  function disk() {
+    const kept = new Map<string, string>();
+    return { kept, storage: { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) } };
+  }
+
+  it("tries a route that failed on the last launch last on the next, and keeps nothing secret", async () => {
+    let now = 1_000_000;
+    const { kept, storage } = disk();
+    const before = new Connections(storage, () => now);
+    before.save(ROUTED);
+    const r = routes();
+    r.down.set(LAN.target, "Can't reach the Hermes dashboard: the sign-in didn't answer within 10s.");
+    await connect(routedPipe(signIn([LAN, TAILNET, SSH], { password: "hunter2" }), r.open, { health: keptRouteHealth(before, ROUTED.id, () => now) }));
+
+    // The app closes; a minute later it launches again.
+    now += 60_000;
+    const after = new Connections(storage, () => now);
+    const health = keptRouteHealth(after, ROUTED.id, () => now);
+    expect(health.order([LAN, TAILNET, SSH]).map((x) => x.id)).toEqual(["ts", "ssh", "lan"]);
+    expect(after.get(ROUTED.id)?.routeFailedAt).toEqual({ lan: 1_000_000 });
+    expect(kept.get(CONNECTIONS_KEY)).not.toContain("hunter2");
+
+    // Past the cool-down it is first again; once it works, what was kept about it goes.
+    now += 120_000;
+    expect(health.order([LAN, TAILNET, SSH]).map((x) => x.id)).toEqual(["lan", "ts", "ssh"]);
+    health.ok("lan");
+    expect(new Connections(storage, () => now).get(ROUTED.id)?.routeFailedAt).toBeUndefined();
+  });
+
+  it("forgets a failure kept for a route the connection no longer has", () => {
+    const { storage } = disk();
+    const c = new Connections(storage, () => 0);
+    c.save({ ...ROUTED, routeFailedAt: { lan: 5, gone: 7, ssh: Number.NaN } as Record<string, number> });
+    expect(new Connections(storage, () => 0).get(ROUTED.id)?.routeFailedAt).toEqual({ lan: 5 });
   });
 });
 
