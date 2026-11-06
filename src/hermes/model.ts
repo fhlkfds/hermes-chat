@@ -184,7 +184,19 @@ export type Chat = {
    */
   usage?: ChatUsage;
   usageError?: string;
+  /** Its side questions on screen, oldest first: never part of its transcript, and never saved (ADR 0070). */
+  sideQuestions?: SideQuestion[];
 };
+
+/**
+ * A question asked with `/btw` (GLOSSARY "Side question (/btw)", ADR 0070), which Hermes answers from a snapshot of the
+ * chat without adding to it. `taskId`: Hermes's id for it once Hermes took it, which its answer (`btw.complete`) names.
+ */
+export type SideQuestion = { id: string; question: string; taskId?: string } & (
+  | { state: "asking" }
+  | { state: "answered"; answer: string }
+  | { state: "failed"; error: string }
+);
 
 /**
  * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar"); its model is

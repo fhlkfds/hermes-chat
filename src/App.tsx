@@ -3468,6 +3468,11 @@ function ChatView({
           if (here()) done();
           return undefined;
         }
+        // Its card above the composer says how it went, Hermes's refusal included, so a refusal keeps the words typed.
+        if (def.name === "btw") {
+          if ((await hermes.askSideQuestion(chat.id, arg)) && here()) done();
+          return undefined;
+        }
         const res = await hermes.runCommand(chat.id, def, arg);
         if (!here()) return undefined;
         done();
@@ -3585,6 +3590,7 @@ function ChatView({
       // typed stays in the composer, and a failure is a Failed message (ADR 0041).
       voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
+      onDismissSideQuestion={(id) => hermes.dismissSideQuestion(chat.id, id)}
       followUp={followUp}
       headActions={
         <>

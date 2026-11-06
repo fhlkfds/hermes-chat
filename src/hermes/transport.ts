@@ -27,13 +27,13 @@
 // its turn; each chat's totals and cost are Hermes's stored ones, read with the chat list and after each turn.
 import { McpApi } from "./mcp";
 import { PersonaApi } from "./persona";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
-import { STEER, listServerCommands, runServerCommand, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
+import { STEER, askSideQuestion, listServerCommands, runServerCommand, sideAnswer, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { callText, offeredSkills, runSkill, skillInvocationText, type SkillCall, type SkillCommands } from "./skillCommands";
 import { CronApi } from "./cronJobs";
 import { AutomationsApi } from "./automations";
@@ -118,6 +118,19 @@ const SEARCH_LIMIT = 50;
 export const SEARCH_MAX = 100;
 /** How long the skills the composer offers are used before they are read again (`skillCommands`). */
 export const SKILL_COMMANDS_FRESH_MS = 60_000;
+/** The most side questions a chat shows; a newer one takes the oldest one's place (ADR 0070). */
+export const SIDE_QUESTIONS_KEPT = 3;
+
+/** A side question with Hermes's answer to it, or why there is none (`commands.sideAnswer`). */
+const answered = (q: SideQuestion, text: unknown): SideQuestion => {
+  const res = sideAnswer(text);
+  const { id, question, taskId } = q;
+  return "answer" in res ? { id, question, taskId, state: "answered", answer: res.answer } : { id, question, taskId, state: "failed", error: res.error };
+};
+
+/** Hermes sends a side question's answer on the connection it was asked on, so a dropped one never brings it. */
+const lostSide = (q: SideQuestion): SideQuestion =>
+  q.state === "asking" ? { id: q.id, question: q.question, taskId: q.taskId, state: "failed", error: "The connection to Hermes dropped before it answered." } : q;
 
 const MiB = 1024 * 1024;
 /** The most legacy `image.attach_bytes` and `file.attach` take (research doc §7). PDFs go as files: `pdf.attach`
@@ -602,6 +615,15 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
+  /** Side questions asked on this connection, so each card has its own id (ADR 0070). */
+  private sideAsked = 0;
+  /**
+   * Side question answers that came before `prompt.btw` said which question they answer, by runtime session and task
+   * id. Hermes answers on another thread, so with a quick model the event can beat the reply.
+   */
+  private earlySideAnswers = new Map<string, unknown>();
+  /** How many `prompt.btw` calls on each runtime session wait for their task id. Answers are held only meanwhile. */
+  private sideAwaiting = new Map<string, number>();
   /** The newest stored row each chat is known to have, from its history and the turns sent from here. A message that
    * may have reached Hermes is looked for only past the row its chat had when it went out. */
   private knownRow = new Map<string, number>();
@@ -1159,6 +1181,60 @@ export class Hermes {
     if (this.profile === profile)
       this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, { kind: "user", id: freeId(c.items, `s-${c.items.length}`), text, steer: true }] }));
     return "steered";
+  }
+
+  /**
+   * Asks Hermes a side question about the chat (`/btw`, ADR 0070). Its card shows at once, waiting, and gets the answer
+   * or why there is none; the chat's transcript and any reply running are left alone. Resolves whether Hermes took it.
+   */
+  async askSideQuestion(chatId: string, question: string): Promise<boolean> {
+    const id = `btw-${++this.sideAsked}`;
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    this.patchSide(chatId, (qs) => [...qs, { id, question, state: "asking" as const }].slice(-SIDE_QUESTIONS_KEPT));
+    if (!runtimeId) {
+      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id ? { id, question, state: "failed", error: "This chat isn't open on Hermes." } : q)));
+      return false;
+    }
+    const generation = this.generation;
+    this.sideAwaiting.set(runtimeId, (this.sideAwaiting.get(runtimeId) ?? 0) + 1);
+    try {
+      const taskId = await askSideQuestion((method, params) => this.request(method, params), runtimeId, question);
+      const early = this.earlySideAnswers.get(`${runtimeId} ${taskId}`);
+      this.patchSide(chatId, (qs) => qs.map((q) => (q.id !== id ? q : early === undefined || q.state !== "asking" ? { ...q, taskId } : answered({ ...q, taskId }, early))));
+      return true;
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id && q.state === "asking" ? { id, question, state: "failed", error } : q)));
+      return false;
+    } finally {
+      // Once no question on the session waits for its task id, no answer held for one can be claimed. `detach` has
+      // already cleared both for a connection that dropped meanwhile.
+      const left = (this.sideAwaiting.get(runtimeId) ?? 0) - 1;
+      if (generation === this.generation && left > 0) this.sideAwaiting.set(runtimeId, left);
+      else if (generation === this.generation) {
+        this.sideAwaiting.delete(runtimeId);
+        for (const key of this.earlySideAnswers.keys()) if (key.startsWith(`${runtimeId} `)) this.earlySideAnswers.delete(key);
+      }
+    }
+  }
+
+  /** Takes a side question's card away. An answer still to come for it is dropped. */
+  dismissSideQuestion(chatId: string, id: string) {
+    this.patchSide(chatId, (qs) => qs.filter((q) => q.id !== id));
+  }
+
+  private patchSide(chatId: string, fn: (qs: SideQuestion[]) => SideQuestion[]) {
+    this.patchChat(chatId, (c) => {
+      const sideQuestions = fn(c.sideQuestions ?? []);
+      return { ...c, sideQuestions: sideQuestions.length ? sideQuestions : undefined };
+    });
+  }
+
+  /** A `btw.complete`: the answer to the chat's side question with that task id, or one whose id is still on the way. */
+  private sideAnswered(chat: Chat, taskId: string, text: unknown) {
+    const qs = chat.sideQuestions ?? [];
+    if (qs.some((q) => q.taskId === taskId)) this.patchSide(chat.id, (all) => all.map((q) => (q.taskId === taskId && q.state === "asking" ? answered(q, text) : q)));
+    else if (this.sideAwaiting.has(chat.runtimeId!)) this.earlySideAnswers.set(`${chat.runtimeId} ${taskId}`, text);
   }
 
   /** Has Hermes transcribe a Dictation recording with the shown profile's speech-to-text provider. */
@@ -3095,6 +3171,8 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
+    // A side question's answer is no part of the chat or of a turn running in it.
+    if (type === "btw.complete") return this.sideAnswered(chat, String(payload.task_id ?? ""), payload.text);
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
       this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
@@ -3327,6 +3405,8 @@ export class Hermes {
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
     this.turnStart.clear();
+    this.earlySideAnswers.clear();
+    this.sideAwaiting.clear();
     for (const c of this.snapshot.chats) {
       if (c.runtimeId) this.staleItems.set(c.id, c.items.length);
       if (c.running || c.items.some(isWaiting)) this.resumeOnReconnect.add(c.id);
@@ -3340,7 +3420,9 @@ export class Hermes {
       live,
       status: "reconnecting",
       closedReason: reason,
-      chats: this.snapshot.chats.map((c) => (c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false } : c)),
+      chats: this.snapshot.chats.map((c) =>
+        c.runtimeId || c.running ? { ...c, runtimeId: undefined, live: undefined, running: false, stopping: false, sideQuestions: c.sideQuestions?.map(lostSide) } : c,
+      ),
     });
   }
 

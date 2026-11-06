@@ -593,6 +593,30 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .queue-actions .btn { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
 .queue-foot { padding: 6px 12px 8px; color: var(--faint); font-size: calc(11.5rem / 14); border-top: 1px solid var(--line); }
 
+/* Side questions (SideQuestions.tsx, ADR 0070): cards above the composer, as wide as it, apart from the transcript. Like the
+   queue they take at most 40% of the window, and each answer scrolls inside its card too. */
+.side-questions {
+  width: calc(100% - 56px); max-width: var(--chat-width); margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px;
+  max-height: 40vh; overflow-y: auto;
+}
+.side-q {
+  flex: none; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line-2)); border-radius: 12px; background: var(--raised);
+  font-size: calc(12.5rem / 14); padding: 6px 6px 8px 12px;
+}
+.side-q-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.side-q-tag { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; }
+.side-q-question { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-q-head .icon-btn { flex: none; width: 26px; height: 26px; }
+.side-q-body { margin-top: 4px; padding-right: 6px; color: var(--text-2); max-height: min(220px, 24vh); overflow-y: auto; overflow-wrap: anywhere; }
+.side-q-body.pending { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.side-q.failed .side-q-body { color: var(--bad); }
+.side-q-body > :first-child { margin-top: 0; }
+.side-q-body > :last-child { margin-bottom: 0; }
+.side-q-body p { margin: 0 0 0.6em; }
+.side-q-body ul, .side-q-body ol { padding-left: 1.4em; margin: 0 0 0.6em; }
+.side-q-body :not(pre) > code { background: var(--raised-2); padding: 1.5px 5px; border-radius: 5px; font-size: 0.86em; color: var(--code-inline); }
+.side-q-actions { display: flex; margin-top: 4px; margin-left: -5px; }
+
 /* Dictation (Voice.tsx): its own row so the controls fit beside the preview pane, and the note above the composer. */
 .dictation {
   min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 8px;

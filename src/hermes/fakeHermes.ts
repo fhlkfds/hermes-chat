@@ -346,7 +346,14 @@ export class FakeHermes {
    */
   display?: { status: Record<string, unknown>; lease: { holder: "agent" | "human"; viewer_hash: string | null; since: number; epoch: number }; minted: Set<string> };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
-  commandCatalog: string[] | undefined = ["steer", "context", "compress", "help"];
+  commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help"];
+  /** False: a Hermes with no `prompt.btw`, which answers "method not found". */
+  sideQuestions = true;
+  /**
+   * How a side question is answered, once `prompt.btw` has replied with its task id: this text as its `btw.complete`.
+   * Undefined: not until a test sends the event itself.
+   */
+  sideAnswer?: (question: string) => string;
   /** The profile's quick commands (`quick_commands` in config.yaml), by name, with their description. */
   quickCommands: Record<string, string> = {};
   /** False: `commands.catalog` answers with no `skills` field, as a Hermes that can't run skills as commands. */
@@ -824,6 +831,19 @@ export class FakeHermes {
       if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
       if (!this.steerable) return this.respond(r.id, { type: "send", message: arg, notice: `No agent running; sent as next turn: ${arg}` });
       this.respond(r.id, { type: "exec", output: `⏩ Steer queued — arrives after the next tool call: ${arg}` });
+    },
+    // `prompt.btw` (tui_gateway/methods_prompt.py at the deployed `f0d94882`): replies with a task id at once, and the
+    // answer comes later as `btw.complete` on the asking session, `error: <why>` as its text when it failed.
+    "prompt.btw": (r) => {
+      if (!this.sideQuestions) return this.fail(r.id, -32601, "unknown method: prompt.btw");
+      const sid = String(r.params.session_id ?? "");
+      if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
+      const question = String(r.params.text ?? "");
+      if (!question) return this.fail(r.id, 4012, "text required");
+      const task_id = `btw_${String(this.requests.filter((q) => q.method === "prompt.btw").length).padStart(6, "0")}`;
+      this.respond(r.id, { task_id });
+      const answer = this.sideAnswer;
+      if (answer) setTimeout(() => this.event(sid, "btw.complete", { task_id, question, text: answer(question) }), 0);
     },
     // `slash.exec` for `/context`, answered from the live session.
     "slash.exec": (r) => {

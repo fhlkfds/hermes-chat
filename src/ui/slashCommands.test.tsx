@@ -59,7 +59,7 @@ describe("The slash command menu", () => {
     const { server, user } = await launch();
     await user.click(composer());
     await user.keyboard("/");
-    expect(options().map((o) => o.querySelector(".cmd-name")!.textContent)).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/context"]);
+    expect(options().map((o) => o.querySelector(".cmd-name")!.textContent)).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/btw", "/context"]);
     // Each says what it does, its argument, and whether the app or Hermes runs it.
     const steer = options()[4];
     expect(steer.textContent).toMatch(/<message>.*Hermes.*Tell the running reply something/);

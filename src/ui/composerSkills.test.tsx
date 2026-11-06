@@ -74,9 +74,9 @@ describe("The / menu", () => {
     await user.keyboard("/");
     await waitFor(() => expect(names("Commands")).toContain("/debugging"));
     // Off for the profile, off for this app's chats, and a skill a command's name takes: not here.
-    expect(names("Commands")).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/context", "/debugging", "/writing"]);
+    expect(names("Commands")).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/btw", "/context", "/debugging", "/writing"]);
     expect(within(menu("Commands")).getByText("Skills", { selector: ".cmd-group" })).toBeTruthy();
-    const debugging = within(menu("Commands")).getAllByRole("option")[6];
+    const debugging = within(menu("Commands")).getAllByRole("option")[7];
     expect(debugging.textContent).toMatch(/\/debugging.*Skill.*Find the cause of a failure/);
 
     // Filtered with the command menu's matching: a word of a description counts.
@@ -210,7 +210,7 @@ describe("A Hermes that can't run skills from the composer", () => {
     const { server, user } = await launch((s) => (s.catalogSkills = false));
     await user.click(composer());
     await user.keyboard("/");
-    expect(names("Commands")).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/context"]);
+    expect(names("Commands")).toEqual(["/help", "/new", "/rename", "/delete", "/steer", "/btw", "/context"]);
     expect(screen.queryByText("Skills")).toBeNull();
     await user.keyboard("{Escape}{Backspace}fix it with $deb");
     expect(screen.queryByRole("listbox")).toBeNull();
