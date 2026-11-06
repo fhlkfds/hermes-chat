@@ -1,0 +1,9 @@
+session 1 before: load average: 21.58, 26.68, 28.85 /home/liam/.cache/hermes-verify/runs/1106-100614-829873
+session 1 after: load average: 21.96, 26.39, 28.69 /home/liam/.cache/hermes-verify/runs/1106-100650-836097
+session 2 before: load average: 17.24, 25.04, 28.19 /home/liam/.cache/hermes-verify/runs/1106-100706-837736
+session 2 after: load average: 15.07, 24.18, 27.86 /home/liam/.cache/hermes-verify/runs/1106-100723-839398
+session 3 before: load average: 14.02, 23.51, 27.58 /home/liam/.cache/hermes-verify/runs/1106-100740-841197
+session 3 after: load average: 13.01, 22.69, 27.23 /home/liam/.cache/hermes-verify/runs/1106-100759-843698
+session 4 before: load average: 11.78, 21.94, 26.91 /home/liam/.cache/hermes-verify/runs/1106-100815-845496
+session 4 after: load average: 18.65, 22.47, 26.90 /home/liam/.cache/hermes-verify/runs/1106-100846-848032
+exit=0

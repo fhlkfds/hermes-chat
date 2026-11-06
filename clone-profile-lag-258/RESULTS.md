@@ -4,16 +4,19 @@ Verdict: opening is faster at real network latency. Typing and toggling were alr
 
 ## Primary number
 
-Time from the click on **Clone a profile…** to the frame after the table shows with nothing still reading. The stand-in held each `/api/` answer for 150 ms (`HV_DELAY_MS=150`), which stands in for a distant server's round trip.
+This is the time from the click on **Clone a profile…** to the frame after the table shows with nothing still reading. The stand-in held each `/api/` answer for 150 ms (`HV_DELAY_MS=150`), which stands in for a distant server's round trip.
 
-| | before (main 3a7a1cfc) | after (974f0e9d) |
+| | before (main 3a7a1cfc) | after (974f0e9d frontend) |
 |---|---|---|
-| open, median of 12 runs | **572.5 ms** (554–753) | **280.5 ms** (244–349) |
+| open, median of 12 runs (`bench/rerun-delay-150`, log fix applied) | **581.0 ms** (532–1957) | **267.5 ms** (220–466) |
+| open, median of 12 runs (first run, `bench/delay-150`) | 572.5 ms (554–753) | 280.5 ms (244–349) |
 | dialog reads at open | profiles → soul + skills → config (3 round trips) | profiles + soul + skills (1 round trip) |
 
-Why not faster: the after side is one 150 ms round trip plus about 130 ms of app work. That work is the dialog's render and the menu closing, on a box at load 10–28. The 292 ms saved matches the two round trips removed (2 × 150 ms).
+Why not faster: the after side is one 150 ms round trip plus about 120 ms of app work. That work is the dialog's render and the menu closing, on a box at load 10–28. The 290–310 ms saved matches the two round trips removed (2 × 150 ms). The 1957 ms before-side outlier happened during a load spike, and the median doesn't depend on it.
 
-At 0 ms latency the open is 253.5 ms (130–586) before and 202.0 ms (94–296) after. The ranges overlap, so there's no measurable difference at that latency, and I don't claim one.
+The rerun (`bench/rerun-delay-150`) used the stand-in after Codex round 1's fix, which logs each request on arrival instead of after the delay. The open time is timed in the page and doesn't depend on that log. The first run's per-step request counts could shift by up to 150 ms, but the per-session totals below don't depend on timing.
+
+At 0 ms latency (first run only) the open is 253.5 ms (130–586) before and 202.0 ms (94–296) after. The ranges overlap, so there's no measurable difference at that latency, and I don't claim one.
 
 ## Typing and toggling (unchanged, both fast)
 
