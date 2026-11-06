@@ -120,7 +120,7 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
     for (const f of p.failures ?? []) add(failureEntry({ ...f, profile: name, stale }));
     for (const s of p.sends ?? []) {
       const title = p.chats?.find((c) => c.id === s.chatId)?.title ?? s.title ?? "Untitled chat";
-      add(sendEntry({ profile: name, chatId: s.chatId, title, itemId: s.itemId, state: s.state, at: 0, stale: false }));
+      add(sendEntry({ profile: name, chatId: s.chatId, title, itemId: s.itemId, state: s.state, at: 0, stale }));
     }
   }
 
