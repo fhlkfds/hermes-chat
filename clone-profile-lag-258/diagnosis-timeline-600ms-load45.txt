@@ -1,0 +1,71 @@
+-2227 COMMIT total=8 n=41 walk=2 Main:4.0 ChatPane:1.0 ProfileSwitcher:1.0 Rail:1.0 LinksProvider:0.0 Split:0.0
+-2192 COMMIT total=6 n=41 walk=1 Main:1.0 ChatView:1.0 Composer:1.0 ChatUsageButton:1.0 LinksProvider:0.0 Split:0.0
+-2161 COMMIT total=5 n=41 walk=2 Main:1.0 LinksProvider:1.0 ProfileSwitcher:1.0 Split:0.0 PaneDrop:0.0 ChatView:0.0
+-2150 COMMIT total=0 n=0 walk=6 
+-1588 REQ PATCH /api/sessions/long
+-1538 gap 43ms
+-1244 gap 65ms
+-1228 CLICK menu
+-1200 COMMIT total=4 n=2 walk=2 ProfileSwitcher:1.0 ProfileMenu:1.0
+-1179 gap 35ms
+-1146 COMMIT total=0 n=0 walk=2 
+-1144 gap 44ms
+-1066 gap 47ms
+-894 gap 839ms
+-583 REQ GET /api/profiles
+-52 COMMIT total=2 n=3 walk=2 OtherBadge:1.0 ProfileSwitcher:0.0 ProfileMenu:0.0
+0 CLICK clone
+4 gap 69ms
+9 COMMIT total=8 n=3 walk=2 CloneProfileDialog:3.0 ProfileSwitcher:0.0 Spinner:0.0
+73 gap 45ms
+118 gap 138ms
+256 gap 52ms
+505 gap 52ms
+627 REQ GET /api/profiles
+638 gap 35ms
+650 COMMIT total=10 n=2 walk=2 CloneProfileDialog:0.0 Spinner:0.0
+734 COMMIT total=1 n=2 walk=6 CloneProfileDialog:0.0 Spinner:0.0
+1300 REQ GET /api/profiles/default/soul
+1301 REQ GET /api/skills
+1905 gap 61ms
+1915 REQ GET /api/config
+1919 COMMIT total=8 n=1 walk=7 CloneProfileDialog:6.0
+1966 gap 65ms
+2031 gap 52ms
+2083 gap 53ms
+2135 READY
+2689 gap 54ms
+3155 gap 42ms
+3169 first key
+3190 COMMIT total=0 n=1 walk=5 CloneProfileDialog:0.0
+3224 COMMIT total=2 n=1 walk=8 CloneProfileDialog:1.0
+3254 COMMIT total=1 n=1 walk=1 CloneProfileDialog:1.0
+3265 COMMIT total=1 n=1 walk=2 CloneProfileDialog:1.0
+3283 COMMIT total=1 n=1 walk=2 CloneProfileDialog:0.0
+3296 COMMIT total=1 n=1 walk=2 CloneProfileDialog:0.0
+3309 COMMIT total=0 n=1 walk=1 CloneProfileDialog:0.0
+3332 COMMIT total=1 n=1 walk=1 CloneProfileDialog:0.0
+3363 COMMIT total=0 n=1 walk=14 CloneProfileDialog:0.0
+3390 COMMIT total=0 n=1 walk=1 CloneProfileDialog:0.0
+3398 COMMIT total=1 n=1 walk=1 CloneProfileDialog:1.0
+3439 COMMIT total=0 n=1 walk=2 CloneProfileDialog:0.0
+3451 COMMIT total=0 n=1 walk=1 CloneProfileDialog:0.0
+3461 COMMIT total=6 n=1 walk=1 CloneProfileDialog:5.0
+3479 COMMIT total=1 n=1 walk=2 CloneProfileDialog:1.0
+3497 COMMIT total=0 n=1 walk=1 CloneProfileDialog:0.0
+3514 COMMIT total=1 n=1 walk=8 CloneProfileDialog:0.0
+3533 COMMIT total=1 n=1 walk=2 CloneProfileDialog:0.0
+3554 COMMIT total=1 n=1 walk=13 CloneProfileDialog:0.0
+3595 COMMIT total=0 n=1 walk=2 CloneProfileDialog:0.0
+3614 last key frame
+3878 gap 217ms
+4204 toggle 28ms
+4220 COMMIT total=1 n=1 walk=1 CloneProfileDialog:1.0
+4567 toggle 30ms
+4571 COMMIT total=5 n=1 walk=2 CloneProfileDialog:4.0
+4848 gap 52ms
+4892 toggle 22ms
+4904 COMMIT total=1 n=1 walk=2 CloneProfileDialog:0.0
+5290 toggle 21ms
+5295 COMMIT total=2 n=1 walk=2 CloneProfileDialog:1.0
+6733 COMMIT total=0 n=1 walk=4 ProfileSwitcher:0.0
