@@ -354,6 +354,10 @@ _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the of
 A web page on the Hermes server's own loopback (`localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`), such as a dev server Hermes started there. The Preview opens a loopback address as a Server page unless the owner switches it to **This computer**. It loads through an SSH tunnel to the sign-in's SSH target, opened while the page shows and closed when it goes. A URL sign-in has no SSH target, so its Server pages don't open (ADR 0052).
 _Avoid_: remote page, tunnelled page, port forward (the mechanism)
 
+**Link menu**:
+The menu a right click, the Menu key or Shift+F10 opens on a link in a reply, a Side question, a Markdown file in the Preview or the Artifact editor, or on a tool call's web page chip: Open in the Preview, Open in your browser and Copy link. A Server page's Open in your browser does nothing and says why: it reaches the browser only through the Preview. A link the Preview won't load, such as `mailto:`, can only be copied. A same-page link has none (ADR 0079).
+_Avoid_: context menu (fine in conversation), integrated browser (that is the Preview), system browser (say your browser)
+
 **Server file**:
 A file on the Hermes server, by its full path there. Hermes reads it, and Hermes may refuse, for example a file with credentials. Paths in tool calls are Server files, since that is where Hermes runs its tools.
 _Avoid_: remote file
