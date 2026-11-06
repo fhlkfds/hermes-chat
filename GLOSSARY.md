@@ -39,8 +39,12 @@ _Avoid_: closed, hidden, read
 The owner's actions, from a chat's row or its right-click menu, that move a read, quiet Active chat from the Inbox to Unsettled, and back. A chat can be cleared only when it isn't Unread, no reply is running in it and Hermes isn't waiting on the owner. It is back in the Inbox on its own as soon as anything newer happens in it: a message from any platform, a reply that ends, a snooze that wakes. Nothing is deleted or sent to Hermes: a clear is kept on this computer only, for each connection and profile. Settling, unsettling, archiving or deleting the chat forgets it (ADR 0063).
 _Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), done
 
+**Pinned** / **Pin** / **Unpin**:
+The owner's actions, from a chat's right-click menu or its header's More menu (P in either), that keep a chat in the Pinned section at the top of the chat list, and put it back in its place. Pinned lists the chats in the order they were pinned, whatever happens in them; only Archived takes a chat out of it. Pins are kept on this computer only, for each connection and profile, since Hermes's own pin flag holds Active (ADR 0002, ADR 0085).
+_Avoid_: favourite, star (starred models are the model picker's), sticky
+
 **Chat list section**:
-One of the chat list's groups, in this order: Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
+One of the chat list's groups, in this order: Pinned, Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
 _Avoid_: group, folder, tab
 
 **Snooze** / **Unsnooze**:
@@ -188,7 +192,7 @@ A message the owner sent into a running reply instead of queueing it, through He
 _Avoid_: interrupt, redirect (Hermes's words for cutting the running reply short), injected message
 
 **Side question (/btw)**:
-A question the owner asks about a chat with `/btw <question>`, while a reply runs or with the chat idle, without interrupting the reply or adding to the chat. Hermes answers it from a snapshot of the conversation, with no tools, and stores nothing. The question and its answer show on a card above the composer, marked "Side question", never in the transcript; it can be copied and dismissed. A chat shows up to three; a fourth takes the oldest one's place. Cards stay while switching chats and go on a profile switch or a reload; they are never saved, exported or put in the Saved copy. A question Hermes couldn't answer says why on its card, never as a Failed message (ADR 0070).
+A question the owner asks about a chat with `/btw <question>`, while a reply runs or with the chat idle, without interrupting the reply or adding to the chat. Hermes answers it from a snapshot of the conversation, with no tools, and stores nothing. The question and its answer show in the transcript where it was asked, as the owner's message and Hermes's reply, each marked "Side question · not part of the conversation"; they are never among the chat's messages. The answer can be copied, and the pair dismissed. A chat shows up to three; a fourth takes the oldest one's place. They stay while switching chats and go on a profile switch or a reload; they are never saved, exported, branched or put in the Saved copy. A question Hermes couldn't answer says why in its answer, never as a Failed message (ADR 0070, ADR 0086).
 _Avoid_: aside, background question, `/background` (Hermes's command for a separate background session), btw message
 
 **Slash command**:
@@ -347,7 +351,7 @@ The resizable panel beside the chat, with four tabs: Preview, Terminal, Files an
 _Avoid_: drawer, sidebar (that is the chat list), inspector
 
 **Preview**:
-The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
+The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). On Linux a web page is the top level of a view of its own, so a site that refuses to be shown inside other apps still shows (ADR 0081). On Windows such a site gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word)
 
 **Server page**:

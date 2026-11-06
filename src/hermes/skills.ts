@@ -314,8 +314,8 @@ export class SkillsApi {
     private now = () => Date.now(),
   ) {}
 
-  /** `profile`'s skills, Local ones first and Built in last, with which ones a per-platform list keeps off in this app's chats. */
-  async list(profile: string): Promise<SkillsView> {
+  /** `profile`'s skills as `list` orders them, without reading which ones a per-platform list keeps off. */
+  async rows(profile: string): Promise<SkillRow[]> {
     let res: unknown;
     try {
       res = await deadline(this.rest("GET", `api/skills?${new URLSearchParams({ profile })}`), this.timeouts.readMs, "listing skills");
@@ -343,6 +343,12 @@ export class SkillsApi {
       return i < 0 ? 4 : i;
     };
     skills.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    return skills;
+  }
+
+  /** `profile`'s skills, Local ones first and Built in last, with which ones a per-platform list keeps off in this app's chats. */
+  async list(profile: string): Promise<SkillsView> {
+    const skills = await this.rows(profile);
     // No prototype: a skill may be named "constructor" or "__proto__".
     const offFor: Record<string, string[]> = Object.create(null);
     let platformsRead = true;

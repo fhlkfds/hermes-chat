@@ -36,6 +36,8 @@ function suggestName(source: string, profiles: readonly ProfileRow[]): string {
   }
 }
 
+const listProblem = (e: unknown) => `Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`;
+
 const STATE_ICON: Record<Result["state"], ReactElement> = {
   copied: <Check size={13} aria-label="Copied" className="clone-ok" />,
   failed: <CircleAlert size={13} aria-label="Didn't copy" className="clone-bad" />,
@@ -88,28 +90,29 @@ export function CloneProfileDialog({
     return () => void (live.current = false);
   }, []);
 
-  const loadProfiles = () => {
-    setListError(undefined);
-    api.profiles().then(
-      (rows) => live.current && setProfiles(rows),
-      (e: unknown) => live.current && setListError(`Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`),
-    );
-  };
-  useEffect(loadProfiles, [api]);
-
-  // The source is read again whenever it's picked; an answer for a source picked before is dropped.
+  // The list and the source are read together, and again when another source is picked or the list is asked for
+  // again (`readAgain`); an answer for a read since replaced is dropped.
+  const [reads, setReads] = useState(0);
+  const readAgain = () => setReads((n) => n + 1);
   useEffect(() => {
-    if (!profiles) return;
     let current = true;
+    setListError(undefined);
     setSource(undefined);
     setSourceError(undefined);
-    api.source(sourceName, profiles).then(
-      (s) => current && live.current && setSource(s),
-      (e: unknown) => current && live.current && setSourceError(`Couldn't read ${sourceName}: ${e instanceof Error ? e.message : String(e)}`),
+    const list = api.profiles();
+    list.then(
+      (rows) => current && setProfiles(rows),
+      (e: unknown) => current && setListError(listProblem(e)),
     );
-    if (!named) setName(suggestName(sourceName, profiles));
+    api.source(sourceName, list).then(
+      (s) => current && setSource(s),
+      (e: unknown) => current && setSourceError(`Couldn't read ${sourceName}: ${e instanceof Error ? e.message : String(e)}`),
+    );
     return () => void (current = false);
-  }, [api, profiles, sourceName]);
+  }, [api, sourceName, reads]);
+  useEffect(() => {
+    if (profiles && !named) setName(suggestName(sourceName, profiles));
+  }, [profiles, sourceName]);
 
   const onStage = (stage: Stage, state: StageState, note?: string) => live.current && setStages((s) => ({ ...s, [stage]: { state, note } }));
   const run = async (work: () => Promise<Outcome>) => {
@@ -125,8 +128,12 @@ export function CloneProfileDialog({
     if (!live.current) return;
     setRunning(false);
     setOutcome(out);
-    // A name taken meanwhile shows against the list as it is now.
-    if (out.kind === "refused") loadProfiles();
+    // A name taken meanwhile shows against the list as it is now. The source read at open still stands.
+    if (out.kind === "refused")
+      api.profiles().then(
+        (rows) => live.current && setProfiles(rows),
+        (e: unknown) => live.current && setListError(listProblem(e)),
+      );
   };
   const start = () => {
     if (running || !source || problem) return;
@@ -222,12 +229,12 @@ export function CloneProfileDialog({
             {listError && (
               <p className="clone-problem" role="alert">
                 {listError}{" "}
-                <button className="link-btn" onClick={loadProfiles}>
+                <button className="link-btn" onClick={readAgain}>
                   Try again
                 </button>
               </p>
             )}
-            {sourceError && (
+            {sourceError && !listError && (
               <p className="clone-problem" role="alert">
                 {sourceError}
               </p>

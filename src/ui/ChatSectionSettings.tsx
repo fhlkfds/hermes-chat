@@ -7,6 +7,7 @@ import { getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
 import { SettingRow, SettingsSection } from "./SettingRows";
 
 const HINT: Readonly<Record<SectionKey, string>> = {
+  pinned: "Chats you pinned, in the order you pinned them, whatever happens in them.",
   inbox: "Chats that need you or have finished: an Approval waiting, a failure, a reply done, something new.",
   working: "Chats with a reply running.",
   snoozed: "Chats you snoozed, until they wake.",

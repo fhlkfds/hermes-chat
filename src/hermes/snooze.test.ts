@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, Item } from "./model";
-import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, canClear, chatSections, customUntil, lastActive, nextWake, staleClears, snoozePresets, wakeLabel } from "./snooze";
+import { AttentionClock, CLEARED_KEY, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, canClear, chatSections, customUntil, lastActive, nextWake, staleClears, snoozePresets, wakeLabel } from "./snooze";
 
 /** A Storage stand-in, its document under `key` readable as `raw`. */
 function memory(start?: string, key = SNOOZE_KEY) {
@@ -149,6 +149,19 @@ describe("chatSections", () => {
     expect(s.unsettled).toEqual([]);
   });
 
+  it("puts a pinned chat in Pinned, in the order pinned, whatever happens in it, unless it is Archived", () => {
+    const pins = { settled: WED - 3 * HOUR, done: WED - 2 * HOUR, working: WED - HOUR, archived: WED - 4 * HOUR };
+    const s = chatSections(chats, snoozes, WED, {}, {}, pins);
+    expect(s.pinned.map((c) => c.id)).toEqual(["settled", "done", "working"]);
+    expect(s.archived.map((c) => c.id)).toEqual(["archived"]);
+    expect(s.inbox.map((c) => c.id)).toEqual(["woke", "asking"]);
+    expect(s.working).toEqual([]);
+    // A new message in a pinned chat leaves the order; one in an unpinned chat leaves it out of Pinned.
+    const newer = chatSections(chats.map((c) => (c.id === "working" || c.id === "woke" ? { ...c, updatedAt: WED + HOUR } : c)), snoozes, WED, {}, {}, pins);
+    expect(newer.pinned.map((c) => c.id)).toEqual(["settled", "done", "working"]);
+    expect(newer.inbox.map((c) => c.id)).toEqual(["woke", "asking"]);
+  });
+
   it("brings a chat back to the top once its snooze wakes, as new as when it woke", () => {
     const s = chatSections(chats, snoozes, WED + 2 * HOUR);
     expect(s.inbox.map((c) => c.id)).toEqual(["snoozed", "woke", "done", "asking"]);
@@ -285,6 +298,67 @@ describe("chatSections", () => {
     expect(nextWake(snoozes, WED)).toBe(WED + HOUR);
     expect(nextWake(snoozes, WED + 2 * HOUR)).toBe(WED + 5 * HOUR);
     expect(nextWake(snoozes, WED + 6 * HOUR)).toBeUndefined();
+  });
+});
+
+describe("PinStore", () => {
+  it("keeps each connection and profile's pins apart, under its own key, and survives a restart", () => {
+    const storage = memory(undefined, PINS_KEY);
+    let now = WED;
+    const a = new PinStore(storage, "A", () => now);
+    const b = new PinStore(storage, "B", () => now);
+    a.pin("x");
+    now += 1;
+    b.pin("y");
+    expect(storage.keys).toEqual([PINS_KEY]);
+    expect(storage.raw).toEqual({ v: 1, scopes: { A: { x: WED }, B: { y: WED + 1 } } });
+    expect(new PinStore(storage, "A").getSnapshot()).toEqual({ x: WED });
+    a.unpin("x");
+    expect(storage.raw).toEqual({ v: 1, scopes: { B: { y: WED + 1 } } });
+  });
+
+  it("pins after every earlier pin when the clock stands still or goes back", () => {
+    let now = WED;
+    const pins = new PinStore(memory(undefined, PINS_KEY), "A", () => now);
+    pins.pin("a");
+    pins.pin("b");
+    now = WED - HOUR;
+    pins.pin("c");
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, pins.getSnapshot()).pinned.map((c) => c.id);
+    const list = [chat("c", WED), chat("a", WED - 2 * HOUR), chat("b", WED - HOUR)];
+    expect(order(list)).toEqual(["a", "b", "c"]);
+    expect(order([...list].reverse())).toEqual(["a", "b", "c"]);
+  });
+
+  it("pins after a pin another window made, though this window hasn't heard of it yet", () => {
+    const storage = memory(undefined, PINS_KEY);
+    const first = new PinStore(storage, "A", () => WED);
+    const second = new PinStore(storage, "A", () => WED);
+    first.pin("z");
+    second.pin("a");
+    const pins = new PinStore(storage, "A").getSnapshot();
+    expect(chatSections([chat("a", WED), chat("z", WED)], {}, WED, {}, {}, pins).pinned.map((c) => c.id)).toEqual(["z", "a"]);
+    first.unpin("a");
+    expect(new PinStore(storage, "A").getSnapshot()).toEqual({ z: WED });
+  });
+
+  it("orders pins stored with the same time the same way whatever order the list comes in", () => {
+    const same = { x: WED, y: WED };
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, same).pinned.map((c) => c.id);
+    expect(order([chat("y", WED), chat("x", WED)])).toEqual(order([chat("x", WED), chat("y", WED)]));
+  });
+
+  it("keeps a chat pinned again in its place, and puts back the place a pin had", () => {
+    const storage = memory(undefined, PINS_KEY);
+    let now = WED;
+    const pins = new PinStore(storage, "A", () => now);
+    pins.pin("x");
+    now += HOUR;
+    pins.pin("x");
+    expect(pins.getSnapshot()).toEqual({ x: WED });
+    pins.unpin("x");
+    pins.pin("x", WED);
+    expect(pins.getSnapshot()).toEqual({ x: WED });
   });
 });
 
