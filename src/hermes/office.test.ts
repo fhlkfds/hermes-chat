@@ -56,6 +56,11 @@ describe("The office's rooms", () => {
     const seen = { ...listed, failures: [{ chatId: "w1", title: "Deploy", itemId: "e-1", mark: "x" }] };
     for (const others of [{ byName: { work: seen }, error: "502" }, { byName: { work: { ...seen, error: "502" } } }])
       expect(rooms([], { others })[0].desks[0]).toMatchObject({ state: "failed", stale: "As last seen: Hermes couldn't be checked." });
+    const sent = { ...listed, sends: [{ chatId: "w1", title: "Deploy", itemId: "u-1", state: "unknown" as const }] };
+    expect(rooms([], { others: { byName: { work: sent } } })[0].desks[0]).toMatchObject({ state: "uncertain" });
+    expect(rooms([], { others: { byName: { work: sent } } })[0].desks[0].stale).toBeUndefined();
+    for (const others of [{ byName: { work: sent }, error: "502" }, { byName: { work: { ...sent, error: "502" } } }])
+      expect(rooms([], { others })[0].desks[0]).toMatchObject({ state: "uncertain", stale: "As last seen: Hermes couldn't be checked." });
   });
 
   it("says why every desk is as last seen while disconnected, and never calls a reply it can't see idle", () => {
