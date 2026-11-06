@@ -2465,12 +2465,13 @@ export class Hermes {
     if (q?.items.some((i) => i.id === id)) this.setQueue(chatId, { ...q, items: q.items.filter((i) => i.id !== id) });
   }
 
-  /** Moves a queued message `by` places, earlier when negative. */
-  moveQueued(chatId: string, id: string, by: number) {
+  /** Moves a queued message to place `index` in the queue, 0 first; past either end, to that end. One that has gone
+   * stays gone. */
+  moveQueued(chatId: string, id: string, index: number) {
     const q = this.snapshot.queues[chatId];
     const from = q?.items.findIndex((i) => i.id === id) ?? -1;
     if (!q || from < 0) return;
-    const to = Math.max(0, Math.min(q.items.length - 1, from + by));
+    const to = Math.max(0, Math.min(q.items.length - 1, index));
     if (to === from) return;
     const items = [...q.items];
     items.splice(to, 0, ...items.splice(from, 1));

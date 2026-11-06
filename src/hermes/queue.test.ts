@@ -140,8 +140,10 @@ describe("Queueing while a reply streams", () => {
     for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
     const [one, two, three] = q.queue()!.items;
     expect(q.hermes().editQueued("c1", two.id, "two, edited")).toBe(true);
-    q.hermes().moveQueued("c1", three.id, -2);
+    q.hermes().moveQueued("c1", three.id, 0);
     q.hermes().moveQueued("c1", three.id, -1); // already first
+    q.hermes().moveQueued("c1", one.id, 7);
+    expect(q.texts()).toEqual(["three", "two, edited", "one"]);
     q.hermes().removeQueued("c1", one.id);
     expect(q.texts()).toEqual(["three", "two, edited"]);
     expect(q.queue()!.items.map((i) => i.id)).toEqual([three.id, two.id]);

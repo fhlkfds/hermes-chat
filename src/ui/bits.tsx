@@ -117,6 +117,19 @@ export function useReturnFocus() {
   );
 }
 
+/** Before which of `items`, laid out along `axis`, a drop at `at` (the pointer's clientX or clientY) lands: the first
+ * whose middle is past it, or `items.length` past them all. Undefined while they aren't laid out (as in tests). Tab
+ * strips and the queue reorder by it, so a drag lands the same way in both. */
+export const slotAt = (items: Element[], at: number, axis: "x" | "y") => {
+  const spans = items.map((el) => {
+    const r = el.getBoundingClientRect();
+    return axis === "x" ? { start: r.left, size: r.width } : { start: r.top, size: r.height };
+  });
+  if (!spans.some((s) => s.size)) return undefined;
+  const i = spans.findIndex((s) => at < s.start + s.size / 2);
+  return i < 0 ? spans.length : i;
+};
+
 export function Spinner() {
   return <span className="spinner" aria-label="working" />;
 }
