@@ -266,8 +266,12 @@ describe("The Settled drawer", () => {
     for (const id of ["read", "old"]) {
       fireEvent.contextMenu(rowOf(id));
       expect(screen.queryByRole("menuitem", { name: /Clear from the Inbox|Back to the Inbox/ })).toBeNull();
-      await user.keyboard("{Escape}");
+      await user.click(screen.getByRole("menuitem", { name: id === "read" ? "Settle" : "Unsettle" }));
     }
+    expect(settles.slice(2)).toEqual([
+      ["read", true],
+      ["old", false],
+    ]);
   });
 });
 

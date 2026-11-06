@@ -547,6 +547,7 @@ function ChatRow({
           split={split}
           snooze={snooze}
           pin={pin}
+          onSettle={chat.archived ? undefined : onSettle}
           onOpenIn={onOpenIn}
           onOpenTab={onOpenTab}
           onRename={() => setRenaming(true)}

@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items, and an item's letter (`aria-keyshortcuts`) picks it.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Pin, PinOff, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, Archive, ArchiveRestore, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Pin, PinOff, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { snoozePresets, wakeFull } from "../hermes/snooze";
@@ -53,8 +53,8 @@ export function PinItem({ pin, onClose }: { pin: ChatPin; onClose: () => void })
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
- * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). `onDelete` asks before deleting the
- * chat; it's left out while a reply runs. The arrow keys move between its items.
+ * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). `onSettle` settles the chat, the way it
+ * leaves the Inbox, or unsettles it (ADR 0090). `onDelete` asks before deleting the chat; it's left out while a reply runs. The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
@@ -70,6 +70,7 @@ export function ChatMenu({
   tags,
   snooze,
   pin,
+  onSettle,
   onDelete,
   onClose,
 }: {
@@ -87,6 +88,7 @@ export function ChatMenu({
   tags?: ChatTags;
   snooze?: ChatSnooze;
   pin?: ChatPin;
+  onSettle?: (settled: boolean) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -173,6 +175,19 @@ export function ChatMenu({
           </button>
         ))}
       {pin && <PinItem pin={pin} onClose={onClose} />}
+      {onSettle && (
+        <button
+          role="menuitem"
+          className="menu-item"
+          onClick={() => {
+            onClose();
+            onSettle(!chat.settled);
+          }}
+        >
+          <span className="menu-icon">{chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />}</span>
+          <span className="menu-label">{chat.settled ? "Unsettle" : "Settle"}</span>
+        </button>
+      )}
       {snooze && (
         <div role="group" aria-label="Snooze" className="menu-group">
           <div className="menu-heading" aria-hidden>
