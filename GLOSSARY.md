@@ -276,15 +276,15 @@ A feature of this app that needs something from the Hermes server, such as a rou
 _Avoid_: feature flag (Hermes's own advertised switches, which diagnostics lists separately), permission, support (alone)
 
 **Connection diagnostics**:
-The Settings tab that shows what the connected Hermes says it is (version, protocol, sign-in, feature flags) and each Capability, with how and when it was learnt. Check again checks everything; Copy report copies it with secrets taken out. A screen whose Capability is Not supported shows a note linking here and to the compatibility guide, in its place.
-_Avoid_: health check, status page, Logs (the app's and Hermes's log lines)
+The Settings tab whose Server group shows what the connected Hermes says it is (version, protocol, sign-in, feature flags) and each Capability, with how and when it was learnt. Check again checks everything; Copy report copies it with secrets taken out. A screen whose Capability is Not supported shows a note linking here and to the compatibility guide, in its place. Its other group is Logs (ADR 0087).
+_Avoid_: health check, status page, Logs (the app's and Hermes's log lines, the tab's other group)
 
 **Logs**:
-The screen, opened from the rail, that shows one source at a time: this app's own diagnostics (connection changes, failures it showed, uncaught errors), or one of the profile's Hermes logs (agent, errors, gateway, MCP servers). Following reads a Hermes log's last 500 lines every 2 seconds while it is on screen. Notes in the list mark where reading stopped and started again, and where lines may be missing. Pausing keeps the view still while reading carries on. Every line is redacted before the app keeps it. Nothing is kept after Logs closes, except this app's diagnostics, which last until the app quits (ADR 0033).
+The group of Settings → Diagnostics, beside Server, that shows one source at a time: this app's own diagnostics (connection changes, failures it showed, uncaught errors), or one of the profile's Hermes logs (agent, errors, gateway, MCP servers). Following reads a Hermes log's last 500 lines every 2 seconds while it is on screen. Notes in the list mark where reading stopped and started again, and where lines may be missing. Pausing keeps the view still while reading carries on. Every line is redacted before the app keeps it. Nothing is kept after Logs closes, by showing another group, tab or profile or leaving Settings, except this app's diagnostics, which last until the app quits (ADR 0033, ADR 0087).
 _Avoid_: console, debug log, activity
 
 **Support bundle**:
-One text file, saved where the owner picks, with every line kept of the sources they tick on the Logs screen. Before saving it shows what goes in, how many of each kind of secret were redacted, and that redaction can miss a secret written another way. It is never uploaded (ADR 0033).
+One text file, saved where the owner picks, with every line kept of the sources they tick in Logs. Before saving it shows what goes in, how many of each kind of secret were redacted, and that redaction can miss a secret written another way. It is never uploaded (ADR 0033).
 _Avoid_: debug report, debug share (Hermes's own, which uploads to a paste service)
 
 **Saved copy**:

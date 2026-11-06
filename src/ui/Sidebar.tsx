@@ -3,7 +3,7 @@
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Copy, FileOutput, Inbox as InboxIcon, LockOpen, Pin, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Copy, FileOutput, Inbox as InboxIcon, LockOpen, Pin, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -49,8 +49,6 @@ export function Rail({
   automationsOpen = false,
   onUsage,
   usageOpen = false,
-  onLogs,
-  logsOpen = false,
   onRepo,
   repoOpen = false,
   updateWaiting = false,
@@ -92,9 +90,6 @@ export function Rail({
   /** Opens Usage analytics: tokens and recorded cost across chats, models, projects and profiles (UsageAnalytics.tsx). */
   onUsage?: () => void;
   usageOpen?: boolean;
-  /** Opens Logs: this app's diagnostics and the profile's Hermes logs (Logs.tsx). */
-  onLogs?: () => void;
-  logsOpen?: boolean;
   /** Opens or closes the Repository screen: a Git checkout on the server, through the owner's ssh (Repository.tsx). */
   onRepo?: () => void;
   repoOpen?: boolean;
@@ -136,11 +131,6 @@ export function Rail({
     onAutomations && (
       <button key="automations" className={`icon-btn ${automationsOpen ? "on" : ""}`} aria-label="Automations" aria-pressed={automationsOpen} onClick={onAutomations} {...bind("automations", { label: "Automations", note: "Tasks started by GitHub events" })}>
         <Webhook size={18} />
-      </button>
-    ),
-    onLogs && (
-      <button key="logs" className={`icon-btn ${logsOpen ? "on" : ""}`} aria-label="Logs" aria-pressed={logsOpen} onClick={onLogs} {...bind("logs", { label: "Logs", note: "Diagnostics and Hermes's logs" })}>
-        <ScrollText size={18} />
       </button>
     ),
     onUsage && (

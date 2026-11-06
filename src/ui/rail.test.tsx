@@ -24,7 +24,6 @@ function rail(over: Partial<Parameters<typeof Rail>[0]> = {}) {
     onJobs: noop,
     onAutomations: noop,
     onUsage: noop,
-    onLogs: noop,
     onRepo: noop,
     ...over,
   };
@@ -39,7 +38,7 @@ describe("the rail", () => {
     const { container } = rail();
     const top = container.querySelector(".rail-top") as HTMLElement;
     expect(names(top)).toEqual(["Hide or show chats", "New chat (Ctrl+N)", "Search all chats (Ctrl+K)", "Inbox"]);
-    expect(names(screen.getByRole("group", { name: "Server" }))).toEqual(["Outputs", "Repository", "Scheduled jobs", "Automations", "Logs", "Usage"]);
+    expect(names(screen.getByRole("group", { name: "Server" }))).toEqual(["Outputs", "Repository", "Scheduled jobs", "Automations", "Usage"]);
     // Server files and the Terminal are the side panel's tabs, not rail buttons.
     expect(screen.queryByRole("group", { name: "Work" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Server files" })).toBeNull();
@@ -51,7 +50,7 @@ describe("the rail", () => {
   });
 
   it("leaves out a group with none of its tools", () => {
-    rail({ onOutputs: undefined, onRepo: undefined, onJobs: undefined, onAutomations: undefined, onUsage: undefined, onLogs: undefined });
+    rail({ onOutputs: undefined, onRepo: undefined, onJobs: undefined, onAutomations: undefined, onUsage: undefined });
     expect(screen.queryByRole("group", { name: "Server" })).toBeNull();
   });
 
@@ -77,13 +76,13 @@ describe("the rail", () => {
   it("keeps the tip while the pointer moves onto it, and hides it once the pointer leaves both", async () => {
     // user-event leaves `relatedTarget` unset, so the moves are dispatched as a browser does, with where the pointer went.
     const { user } = rail();
-    const btn = screen.getByRole("button", { name: "Logs" });
+    const btn = screen.getByRole("button", { name: "Usage" });
     await user.hover(btn);
     const shownTip = tip() as HTMLElement;
     fireEvent.mouseOut(btn, { relatedTarget: shownTip });
-    expect(tip()?.textContent).toContain("Logs");
+    expect(tip()?.textContent).toContain("Usage");
     fireEvent.mouseOut(shownTip, { relatedTarget: btn });
-    expect(tip()?.textContent).toContain("Logs");
+    expect(tip()?.textContent).toContain("Usage");
     fireEvent.mouseOut(btn, { relatedTarget: shownTip });
     fireEvent.mouseOut(shownTip, { relatedTarget: document.body });
     expect(tip()).toBeNull();
@@ -91,7 +90,7 @@ describe("the rail", () => {
 
   it("hides the tip when the pointer leaves the button for anywhere else", async () => {
     const { user } = rail();
-    const btn = screen.getByRole("button", { name: "Logs" });
+    const btn = screen.getByRole("button", { name: "Usage" });
     await user.hover(btn);
     fireEvent.mouseOut(btn, { relatedTarget: document.body });
     expect(tip()).toBeNull();
@@ -121,7 +120,7 @@ describe("the rail", () => {
 
   it("puts the tip just past its button's edge, whatever the button's size", async () => {
     const { user } = rail();
-    const btn = screen.getByRole("button", { name: "Logs" });
+    const btn = screen.getByRole("button", { name: "Usage" });
     btn.getBoundingClientRect = () => ({ top: 400, bottom: 428, left: 14, right: 42, height: 28, width: 28, x: 14, y: 400, toJSON() {} });
     await user.hover(btn);
     expect((tip() as HTMLElement).style.left).toBe("52px");
