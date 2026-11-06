@@ -101,7 +101,9 @@ mod imp {
     use gtk::prelude::*;
     use std::cell::{Cell, RefCell};
     use tauri::Manager;
-    use webkit2gtk::{LoadEvent, NetworkError, PermissionRequestExt, PolicyError, URIRequestExt, WebContextExt, WebViewExt};
+    use webkit2gtk::{
+        FileChooserRequestExt, LoadEvent, NetworkError, PermissionRequestExt, PolicyError, ScriptDialogType, SettingsExt, URIRequestExt, WebContextExt, WebViewExt,
+    };
 
     thread_local! {
         /// The overlay that holds Tauri's webview and the page's, and the page's view. Made on first use. The commands
@@ -111,6 +113,8 @@ mod imp {
         static PAGE: RefCell<Option<(String, Channel<PageEvent>)>> = const { RefCell::new(None) };
         /// Where the overlay puts the view, in whole pixels.
         static AT: Cell<(i32, i32, i32, i32)> = const { Cell::new((0, 0, 1, 1)) };
+        /// Whether the page shown has had its first response.
+        static ANSWERED: Cell<bool> = const { Cell::new(false) };
     }
 
     fn is_shown(key: &str) -> bool {
@@ -123,12 +127,23 @@ mod imp {
         }
     }
 
+    /// Hides the page. A hidden view gets no keys, so if it had the keyboard, the app takes it back.
+    fn hide(overlay: &gtk::Overlay, view: &webkit2gtk::WebView) {
+        if view.is_focus() {
+            if let Some(app) = overlay.child() {
+                app.grab_focus();
+            }
+        }
+        view.hide();
+    }
+
     pub fn open(app: &tauri::AppHandle, key: String, url: String, on_event: Channel<PageEvent>) -> Result<(), String> {
-        let view = view(app).ok_or("Hermes Chat's window has no place for the page.")?;
+        let (overlay, view) = view(app).ok_or("Hermes Chat's window has no place for the page.")?;
         // The page before, if any, is replaced; its channel ends here.
         let before = PAGE.with(|p| p.replace(Some((key, on_event))));
         drop(before);
-        view.hide();
+        ANSWERED.with(|a| a.set(false));
+        hide(&overlay, &view);
         view.load_uri(&url);
         Ok(())
     }
@@ -139,7 +154,7 @@ mod imp {
             return;
         }
         let Some(placement) = placement else {
-            view.hide();
+            hide(&overlay, &view);
             return;
         };
         AT.with(|at| at.set(pixels(&placement.rect)));
@@ -161,7 +176,7 @@ mod imp {
                 view.show();
             }
             None if holes.is_empty() => view.show(),
-            None => view.hide(),
+            None => hide(&overlay, &view),
         }
     }
 
@@ -170,22 +185,22 @@ mod imp {
             return;
         }
         let page = PAGE.with(|p| p.take());
-        if let Some((_, view)) = VIEW.with(|v| v.borrow().clone()) {
-            view.hide();
+        if let Some((overlay, view)) = VIEW.with(|v| v.borrow().clone()) {
+            hide(&overlay, &view);
             view.load_uri("about:blank");
         }
         drop(page);
     }
 
-    /// The page's view, made the first time from Tauri's webview. `with_webview` runs at once on the main thread,
-    /// holding a lock that any Tauri call on that webview takes again (a channel's send or drop does), so nothing in it
-    /// touches a channel.
-    fn view(app: &tauri::AppHandle) -> Option<webkit2gtk::WebView> {
+    /// The overlay and the page's view, made the first time from Tauri's webview. `with_webview` runs at once on the
+    /// main thread, holding a lock that any Tauri call on that webview takes again (a channel's send or drop does), so
+    /// nothing in it touches a channel.
+    fn view(app: &tauri::AppHandle) -> Option<(gtk::Overlay, webkit2gtk::WebView)> {
         if VIEW.with(|v| v.borrow().is_none()) {
             let window = app.get_webview_window("main")?;
             window.with_webview(|w| make_view(&w.inner())).ok()?;
         }
-        VIEW.with(|v| v.borrow().as_ref().map(|(_, view)| view.clone()))
+        VIEW.with(|v| v.borrow().clone())
     }
 
     /// Moves Tauri's webview into an overlay and puts the page's view over it.
@@ -219,35 +234,76 @@ mod imp {
             main.grab_focus();
         }
 
-        let context = webkit2gtk::WebContext::new_ephemeral();
-        // Nothing is saved from the Preview: a download stops as soon as it starts.
-        context.connect_download_started(|_, download| {
-            use webkit2gtk::DownloadExt;
-            download.cancel();
-        });
-        let view = webkit2gtk::WebView::with_context(&context);
+        let view = page_webview();
         view.set_no_show_all(true);
         view.connect_load_changed(|view, event| {
             if event == LoadEvent::Committed && view.uri().is_some_and(|u| u != "about:blank") {
+                ANSWERED.with(|a| a.set(true));
                 emit(PageEvent::Shown);
             }
         });
         view.connect_load_failed(|_, _, uri, error| {
-            // Cancelled: another load replaced it. Interrupted: a response became a download, which stops.
-            let replaced = error.matches(NetworkError::Cancelled) || error.matches(PolicyError::FrameLoadInterruptedByPolicyChange);
-            if !replaced && uri != "about:blank" {
-                emit(PageEvent::Failed { message: error.message().to_owned() });
+            // Cancelled: another load replaced it.
+            if uri == "about:blank" || error.matches(NetworkError::Cancelled) {
+                return true;
             }
+            // Interrupted: the response was a download, which stops. A page already shown stays, as in a browser.
+            if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
+                if !ANSWERED.with(Cell::get) {
+                    emit(PageEvent::Failed { message: "It's a file to download, and the Preview doesn't save files.".into() });
+                }
+                return true;
+            }
+            emit(PageEvent::Failed { message: error.message().to_owned() });
             true
         });
         view.connect_web_process_terminated(|_, _| {
             emit(PageEvent::Failed { message: "The page stopped: WebKit's process for it ended.".into() });
         });
+        overlay.add_overlay(&view);
+        VIEW.with(|v| *v.borrow_mut() = Some((overlay, view)));
+    }
+
+    /// A view that lets the page do no more than ADR 0007's frame did (`sandbox="allow-scripts allow-forms
+    /// allow-same-origin"`, and every feature in its `allow` list `'none'`). ADR 0081 lists each.
+    pub(super) fn page_webview() -> webkit2gtk::WebView {
+        let context = webkit2gtk::WebContext::new_ephemeral();
+        // No `allow-downloads`: a download stops as soon as it starts.
+        context.connect_download_started(|_, download| {
+            use webkit2gtk::DownloadExt;
+            download.cancel();
+        });
+        let view = webkit2gtk::WebView::with_context(&context);
+        // No fullscreen API, no window opened without a click, no script reads of the clipboard, no Web Inspector.
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_fullscreen(false);
+            settings.set_javascript_can_open_windows_automatically(false);
+            settings.set_javascript_can_access_clipboard(false);
+            settings.set_enable_developer_extras(false);
+        }
+        // No `allow-modals`: alert returns at once, confirm says no, prompt gives null, leaving a page asks nothing, and
+        // print() does nothing. WebKit's own dialogs held the page's process, and every page after it, until the owner
+        // answered; its print dialog held the whole window.
+        view.connect_script_dialog(|_, dialog| {
+            if dialog.dialog_type() == ScriptDialogType::BeforeUnloadConfirm {
+                dialog.confirm_set_confirmed(true);
+            }
+            true
+        });
+        view.connect_print(|_, _| true);
+        // Nothing else that asks for fullscreen gets the app's window either.
+        view.connect_enter_fullscreen(|_| true);
+        // No file picker: a file input opened none in the frame.
+        view.connect_run_file_chooser(|_, request| {
+            request.cancel();
+            true
+        });
+        // Camera, microphone, display capture, location, notifications, pointer lock, clipboard reads, storage access.
         view.connect_permission_request(|_, request| {
             request.deny();
             true
         });
-        // A link the owner opens in a new window (target=_blank, or the page's menu) opens here instead.
+        // No `allow-popups`: a link the owner opens in a new window (target=_blank, or the page's menu) opens here.
         view.connect_create(|view, action| {
             if let Some(uri) = action.clone().request().and_then(|r| r.uri()) {
                 if crate::web_page::web_url(&uri).is_ok() {
@@ -256,8 +312,7 @@ mod imp {
             }
             None
         });
-        overlay.add_overlay(&view);
-        VIEW.with(|v| *v.borrow_mut() = Some((overlay, view)));
+        view
     }
 }
 
@@ -300,5 +355,73 @@ mod tests {
         assert_eq!(p, Placement { rect: rect(1.0, 2.0, 3.0, 4.0), holes: vec![] });
         assert_eq!(serde_json::to_value(PageEvent::Failed { message: "m".into() }).unwrap(), serde_json::json!({ "kind": "failed", "message": "m" }));
         assert_eq!(serde_json::to_value(PageEvent::Escaped).unwrap(), serde_json::json!({ "kind": "escaped" }));
+    }
+
+    /// What a page that tries everything on load, with no click, gets in the view: what the frame gave it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "WebKitGTK needs a display: DISPLAY=:N cargo test --lib page_view -- --ignored"]
+    fn a_page_in_the_view_gets_no_more_than_the_frame() {
+        use gtk::prelude::*;
+        use std::time::{Duration, Instant};
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        const PROBE: &str = r#"<script>
+            (async () => {
+              const r = {};
+              const t = Date.now();
+              r.alert = String(alert("a"));
+              r.confirm = confirm("c");
+              r.prompt = prompt("p", "x");
+              window.print();
+              r.answeredAtOnce = Date.now() - t < 2000;
+              r.fullscreen = document.fullscreenEnabled === true || typeof document.documentElement.requestFullscreen === "function";
+              r.popup = window.open("https://policy.test/other") !== null;
+              r.notification = await Notification.requestPermission();
+              r.location = await new Promise((done) => navigator.geolocation.getCurrentPosition(() => done("granted"), (e) => done(e.code)));
+              r.camera = await navigator.mediaDevices.getUserMedia({ video: true }).then(() => "granted", (e) => e.name);
+              document.title = JSON.stringify(r);
+            })();
+        </script>"#;
+        gtk::init().expect("a display");
+        // WebKit's print dialog runs a loop of its own, which the deadline below can't break.
+        let (_running, finished) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if finished.recv_timeout(Duration::from_secs(90)) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                eprintln!("the probe page never finished: a dialog is open");
+                std::process::abort();
+            }
+        });
+        let view = imp::page_webview();
+        // WebKit's stand-in camera, as the box may have none.
+        WebViewExt::settings(&view).unwrap().set_enable_mock_capture_devices(true);
+        // A window on screen: WebKit holds a camera request until its page is visible.
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.add(&view);
+        window.show_all();
+        view.load_html(PROBE, Some("https://policy.test/"));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let title = loop {
+            if let Some(title) = view.title().filter(|t| t.starts_with('{')) {
+                break title;
+            }
+            assert!(Instant::now() < deadline, "the probe page never finished");
+            gtk::main_iteration_do(false);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let got: serde_json::Value = serde_json::from_str(&title).unwrap();
+        assert_eq!(
+            got,
+            serde_json::json!({
+                "alert": "undefined",
+                "confirm": false,
+                "prompt": null,
+                "answeredAtOnce": true,
+                "fullscreen": false,
+                "popup": false,
+                "notification": "denied",
+                "location": 1,
+                "camera": "NotAllowedError",
+            })
+        );
     }
 }
