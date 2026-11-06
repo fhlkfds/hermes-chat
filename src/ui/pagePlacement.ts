@@ -4,12 +4,13 @@
 import { useEffect, type RefObject } from "react";
 import type { NativePage, Placement, Rect } from "./tauriPreview";
 
-/** How often the layers are looked at again: a toast or a menu can come with nothing here moving. */
-const LAYER_CHECK_MS = 200;
+/** The most often the page's place is worked out again, while the app keeps changing (a reply streaming, say). */
+const CHECK_MS = 200;
 
 /**
- * A selector for the app's floating layers: every `position: fixed` rule in its stylesheets. They float over
- * everything, the Preview included, and a new one is covered with no list to keep.
+ * A selector for the app's floating layers: every `position: fixed` rule in its stylesheets, which float over
+ * everything, the Preview included, so a new one is covered with no list to keep; and its separators, which sit on a
+ * pane's edge, over the edge of the Preview's box.
  */
 export function floatingLayers(sheets: Iterable<CSSStyleSheet> = document.styleSheets): string {
   const found = new Set<string>();
@@ -28,7 +29,7 @@ export function floatingLayers(sheets: Iterable<CSSStyleSheet> = document.styleS
     }
   }
   const probe = document.createDocumentFragment();
-  return [...found]
+  return ["[role=separator]", ...found]
     .filter((selector) => {
       try {
         probe.querySelector(selector);
@@ -76,30 +77,35 @@ export function usePlacement(box: RefObject<HTMLElement | null>, page: NativePag
     if (!page || !el) return;
     const layers = floatingLayers();
     let last = "";
-    let frame = 0;
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    let checked = 0;
     const measure = () => {
-      frame = 0;
+      pending = undefined;
+      checked = performance.now();
       const placement = placementOf(el, layers);
       const key = JSON.stringify(placement);
       if (key === last) return;
       last = key;
       page.place(placement);
     };
-    // After the event, once React has drawn what it opened.
+    // Anything that can move the box or open a layer over it: the box resizing, the window resizing, the app's DOM
+    // changing (a menu, a dialog, a toast), the owner's input, and a layer's opening animation ending. A timer rather
+    // than an animation frame, which would have the webview draw every time though nothing changed.
     const soon = () => {
-      frame ||= requestAnimationFrame(measure);
+      pending ??= setTimeout(measure, Math.max(0, checked + CHECK_MS - performance.now()));
     };
     const resized = new ResizeObserver(soon);
     resized.observe(el);
-    const timer = setInterval(soon, LAYER_CHECK_MS);
-    const events = ["resize", "pointerup", "keyup", "contextmenu"] as const;
+    const changed = new MutationObserver(soon);
+    changed.observe(el.ownerDocument.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "hidden", "style"] });
+    const events = ["resize", "pointerup", "keyup", "contextmenu", "animationend", "transitionend"] as const;
     for (const e of events) addEventListener(e, soon, true);
     measure();
     return () => {
       resized.disconnect();
-      clearInterval(timer);
+      changed.disconnect();
+      clearTimeout(pending);
       for (const e of events) removeEventListener(e, soon, true);
-      cancelAnimationFrame(frame);
       page.place(null);
     };
   }, [box, page]);

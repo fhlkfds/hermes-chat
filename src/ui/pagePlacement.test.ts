@@ -29,13 +29,13 @@ afterEach(() => {
 });
 
 describe("The app's floating layers", () => {
-  it("are its fixed-position rules, in media queries too, and nothing else", () => {
+  it("are its separators and its fixed-position rules, in media queries too, and nothing else", () => {
     document.head.innerHTML = `<style>
       .toast { position: fixed; left: 50%; }
       .side { position: absolute; }
       @media (max-width: 100000px) { .menu, .palette { position: fixed; } }
     </style>`;
-    expect(floatingLayers()).toBe(".toast, .menu, .palette");
+    expect(floatingLayers()).toBe("[role=separator], .toast, .menu, .palette");
   });
 });
 

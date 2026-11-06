@@ -140,18 +140,25 @@ mod imp {
             return;
         };
         AT.with(|at| at.set(pixels(&placement.rect)));
-        view.show();
         overlay.queue_resize();
-        let (_, _, width, height) = pixels(&placement.rect);
-        // The overlay's window for the view, which it moves and sizes; realized by the show. Its shape clips the page
-        // and passes the pointer through to the app's webview below.
-        if let Some(window) = view.parent_window() {
-            let shape = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, width, height));
-            for (x, y, w, h) in holes_in_page(&placement) {
-                let _ = shape.subtract_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h));
+        let holes = holes_in_page(&placement);
+        // The overlay's window for the view, which it moves and sizes. On X11 it can be a native window, whose shape
+        // the X server clips the page to and passes the pointer through. Elsewhere (Wayland's GTK has no native child
+        // windows) the page hides while any layer is over it.
+        let x11 = view.parent_window().filter(|w| w.display().is::<gdkx11::X11Display>() && w.ensure_native());
+        match x11 {
+            Some(window) => {
+                let (_, _, width, height) = pixels(&placement.rect);
+                let shape = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, width, height));
+                for (x, y, w, h) in holes {
+                    let _ = shape.subtract_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h));
+                }
+                window.shape_combine_region(Some(&shape), 0, 0);
+                window.input_shape_combine_region(&shape, 0, 0);
+                view.show();
             }
-            window.shape_combine_region(Some(&shape), 0, 0);
-            window.input_shape_combine_region(&shape, 0, 0);
+            None if holes.is_empty() => view.show(),
+            None => view.hide(),
         }
     }
 
