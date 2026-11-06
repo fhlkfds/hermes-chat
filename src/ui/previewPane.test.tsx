@@ -517,6 +517,18 @@ describe("Web pages in the Preview's own view, on Linux (issue #254)", () => {
     expect(view.closed).toEqual([1, 2]);
   });
 
+  it("takes the keyboard back when the owner presses Escape in the page, so the next Escape closes the Preview", async () => {
+    const { view, user } = await openWeb(GOOGLE);
+    await act(async () => view.say(1, { kind: "shown" }));
+    // The owner clicked into the page: the app's webview has no focus.
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(async () => view.say(1, { kind: "escaped" }));
+    expect(pane().contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(paneOpen()).toBe(false);
+    expect(view.closed).toEqual([1]);
+  });
+
   it("loads a page on the Hermes server through its SSH tunnel, and closes both with the Preview", async () => {
     stubLayout();
     const view = theView();

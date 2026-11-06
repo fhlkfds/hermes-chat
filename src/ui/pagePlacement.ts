@@ -51,22 +51,34 @@ const intersect = (a: Rect, b: Rect): Rect | undefined => {
 };
 
 /**
+ * Whether `layer` is the topmost element anywhere in `r`, at the middle or near a corner or an edge: another layer (a
+ * toast over a menu) may cover part of it.
+ */
+function drawnOver(layer: Element, r: Rect): boolean {
+  const at = [0.1, 0.5, 0.9];
+  return at.some((fx) =>
+    at.some((fy) => {
+      const top = layer.ownerDocument.elementFromPoint(r.x + r.width * fx, r.y + r.height * fy);
+      return !!top && layer.contains(top);
+    }),
+  );
+}
+
+/**
  * Where the page goes: `box`'s rectangle in the window, less the layers drawn over it. A layer across a whole side of
  * the box (the pane's resize handle, a dialog's backdrop) moves that side in. Any other makes a hole, which only X11
- * can cut, so it is best kept for small layers such as a menu or a toast. A layer under the box, such as one beneath
- * the Preview when it covers the chat, counts for nothing. `null`: the box has no size, or layers cover it.
+ * can cut, so it is best kept for small layers such as a menu or a toast. A layer counts where it is drawn over the
+ * box, so one beneath the Preview when it covers the chat counts for nothing. `null`: the box has no size, or layers cover it.
  */
 export function placementOf(box: Element, layers: string): Placement | null {
   const r = box.getBoundingClientRect();
   let rect: Rect = { x: r.x, y: r.y, width: r.width, height: r.height };
   const over: Rect[] = [];
-  const doc = box.ownerDocument;
   if (layers)
-    for (const layer of Array.from(doc.querySelectorAll(layers))) {
+    for (const layer of Array.from(box.ownerDocument.querySelectorAll(layers))) {
       if (layer.contains(box)) continue;
       const hole = intersect(rect, layer.getBoundingClientRect());
-      const top = hole && doc.elementFromPoint(hole.x + hole.width / 2, hole.y + hole.height / 2);
-      if (hole && top && layer.contains(top)) over.push(hole);
+      if (hole && drawnOver(layer, hole)) over.push(hole);
     }
   const holes: Rect[] = [];
   for (const h of over) {

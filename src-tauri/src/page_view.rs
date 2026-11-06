@@ -38,6 +38,9 @@ pub enum PageEvent {
     Shown,
     /// It couldn't load, or its web process ended. The view hides; the pane says why.
     Failed { message: String },
+    /// The owner pressed Escape in the page, and the page didn't use it. The keyboard is back with the app, so the
+    /// next Escape reaches the Preview as it would anywhere else in the app.
+    Escaped,
 }
 
 /// A rectangle in whole pixels, `(x, y, width, height)`. Edges are rounded rather than sizes, so a rectangle and the
@@ -193,6 +196,19 @@ mod imp {
             let (x, y, w, h) = AT.with(Cell::get);
             Some(gtk::gdk::Rectangle::new(x, y, w, h))
         });
+        // A key the page doesn't use comes back from WebKit up through the overlay. An Escape the page didn't use
+        // gives the keyboard back to the app.
+        let app_view = main.clone();
+        overlay.connect_key_press_event(move |_, key| {
+            let chord = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK | gtk::gdk::ModifierType::MOD1_MASK;
+            let from_page = VIEW.with(|v| v.borrow().as_ref().is_some_and(|(_, view)| view.has_focus()));
+            if !from_page || key.keyval() != gtk::gdk::keys::constants::Escape || key.state().intersects(chord) {
+                return gtk::glib::Propagation::Proceed;
+            }
+            app_view.grab_focus();
+            emit(PageEvent::Escaped);
+            gtk::glib::Propagation::Stop
+        });
         // Taking the webview out of its box drops the window's keyboard focus, which Escape and every shortcut need.
         let focused = main.has_focus();
         parent.remove(main);
@@ -283,5 +299,6 @@ mod tests {
         let p: Placement = serde_json::from_str(r#"{"rect":{"x":1,"y":2,"width":3,"height":4}}"#).unwrap();
         assert_eq!(p, Placement { rect: rect(1.0, 2.0, 3.0, 4.0), holes: vec![] });
         assert_eq!(serde_json::to_value(PageEvent::Failed { message: "m".into() }).unwrap(), serde_json::json!({ "kind": "failed", "message": "m" }));
+        assert_eq!(serde_json::to_value(PageEvent::Escaped).unwrap(), serde_json::json!({ "kind": "escaped" }));
     }
 }

@@ -446,14 +446,15 @@ function WebView({ native, ...props }: WebViewProps) {
 function NativeWebView({ url, src = url, pages, onOpenInBrowser }: Omit<WebViewProps, "native" | "check"> & { pages: NativePages }) {
   const box = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<NativePage>();
-  const [state, setState] = useState<PageEvent>();
+  const [state, setState] = useState<Exclude<PageEvent, { kind: "escaped" }>>();
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setSlow(true), SLOW_PAGE_MS);
     return () => clearTimeout(timer);
   }, []);
   useEffect(() => {
-    const opened = pages.open(src, setState);
+    // Escape in the page gave the keyboard back to the app: it lands here, inside the Preview, for the next key.
+    const opened = pages.open(src, (e) => (e.kind === "escaped" ? box.current?.focus() : setState(e)));
     setPage(opened);
     return () => opened.close();
   }, [pages, src]);
@@ -466,7 +467,7 @@ function NativeWebView({ url, src = url, pages, onOpenInBrowser }: Omit<WebViewP
           Open it in your browser
         </button>
       </div>
-      <div ref={box} className="preview-web-frame">
+      <div ref={box} className="preview-web-frame" tabIndex={-1}>
         {state?.kind === "failed" ? (
           <div className="preview-state preview-error preview-loading" role="alert">
             <AlertTriangle size={18} />

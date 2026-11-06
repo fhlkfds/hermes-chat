@@ -63,6 +63,21 @@ describe("Where the page goes", () => {
     expect(placementOf(box, "[role=separator], .backdrop")).toBeNull();
   });
 
+  it("makes a hole for a menu whose middle a toast covers, as well as for the toast", () => {
+    add(`<div id="box"></div><div class="menu"></div><div class="toast"></div>`);
+    const box = at(document.getElementById("box")!, PAGE);
+    const menu = at(document.querySelector(".menu")!, { x: 700, y: 300, width: 200, height: 120 });
+    const toast = at(document.querySelector(".toast")!, { x: 820, y: 340, width: 60, height: 40 });
+    topmost(box, menu, toast);
+    expect(placementOf(box, ".menu, .toast")).toEqual({
+      rect: PAGE,
+      holes: [
+        { x: 800, y: 300, width: 100, height: 120 },
+        { x: 820, y: 340, width: 60, height: 40 },
+      ],
+    });
+  });
+
   it("makes no hole for a layer under it, nor for one it is inside", () => {
     add(`<div class="inbox"></div><aside class="overlay-panel"><div id="box"></div></aside>`);
     const box = at(document.getElementById("box")!, PAGE);

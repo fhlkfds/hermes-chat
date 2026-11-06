@@ -1535,6 +1535,7 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .preview-refused-by { font-size: calc(12rem / 14); overflow-wrap: anywhere; }
 .preview-open-error { flex: none; padding: 6px 12px; color: var(--warn); border-bottom: 1px solid var(--line); }
 .preview-web-frame { flex: 1; min-height: 0; position: relative; display: flex; }
+.preview-web-frame:focus { outline: none; }
 .preview-loading { position: absolute; inset: 0; margin: 0; padding: 28px 22px; background: var(--sidebar); }
 .preview-image {
   flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 18px;
