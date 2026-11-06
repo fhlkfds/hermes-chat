@@ -2382,7 +2382,7 @@ label.memory-pick { cursor: pointer; }
 .seat[data-moving] .sc-hand + .sc-hand { animation-delay: -0.22s; }
 @keyframes seat-typing { to { transform: translateY(-1.6px); } }
 @media (prefers-reduced-motion: reduce) {
-  .seat .sc-hand { animation: none; }
+  .seat[data-moving] .sc-hand { animation: none; }
 }
 .office-list-room { list-style: none; }
 .office-list-room > ul { list-style: none; margin: 0; padding: 0; }
