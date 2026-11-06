@@ -15,6 +15,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Server requirements](#server-requirements)
 - [Features](#features)
 - [Install on Arch Linux](#install-on-arch-linux)
+- [Install on Windows](#install-on-windows)
 - [Updates](#updates)
 - [Development](#development)
 - [Project defaults](#project-defaults)
@@ -400,6 +401,12 @@ If another app has claimed the scheme, run `xdg-mime default hermes-chat.desktop
 Uninstalling the package (`pacman -R hermes-chat-git`) removes the launcher, and with it the registration; `desktop-file-utils`'s hook updates the handler list. A line you added with `xdg-mime default` stays in `~/.config/mimeapps.list`, pointing at a launcher that's gone, until you delete it; links then do nothing. The connection references the app made stay in its local storage (`hermes-chat.connection-refs`) until you delete `~/.local/share/net.l0cky12.hermes-chat/`.
 
 A development build (`npm run app`) or an AppImage registers nothing. To try a link with one, run the binary with the link as its argument, for example `src-tauri/target/debug/hermes-chat 'hermes-chat://chat?…'`.
+
+## Install on Windows
+
+Download `hermes-chat_<version>_x64-setup.exe` from the latest [release](https://github.com/l0cky12/hermes-chat/releases) and run it. It installs for your Windows user only, with no admin rights, and registers [chat links](#chat-links). The installer isn't code-signed, so Windows SmartScreen warns on first run: choose **More info**, then **Run anyway**. The `.sha256` file beside it holds its checksum (`Get-FileHash` in PowerShell).
+
+Signing in through SSH uses Windows OpenSSH, so `ssh` must work in PowerShell. Passwords and extra request headers are kept in Windows Credential Manager. To update, run a newer installer over the old one. The Windows build is compiled and unit-tested on GitHub's Windows runner (ADR 0069). Pushing a `v<version>` tag builds the installer and attaches it to that release (ADR 0080).
 
 ## Updates
 
