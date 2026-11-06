@@ -226,6 +226,13 @@ export type InboxAcks = {
    * chat is still waiting and not dismissed, since the alias stands for them all.
    */
   dismiss(e: InboxEntry, entries?: InboxEntry[]): void;
+  /** Dismisses each of `es` as `dismiss` would, in one write. */
+  dismissAll(es: InboxEntry[], entries?: InboxEntry[]): void;
+  /**
+   * Dismisses, as by hand, each finished (`completed`) entry in `entries` whose time is more than `olderThanMs` ago.
+   * Nothing else qualifies: running work, Approvals, failures and uncertain sends all wait for the owner.
+   */
+  expire(entries: InboxEntry[], olderThanMs: number): void;
   /**
    * Dismisses by their own keys the cards in `entries` that a dismissed waiting session covers, so they stay dismissed
    * once Hermes no longer reports the session, as while the connection is down.
@@ -270,19 +277,34 @@ export function inboxAcks(storage: AckStorage, scope: string, now = () => Date.n
   };
   const before = (s: Dismissed, key: string, at: number) => kept(s[key]) && s[key][0] >= at;
   const covered = (e: InboxEntry, s: Dismissed) => !!e.alias && e.aliasAt !== undefined && before(s, `resumed ${e.alias}`, e.aliasAt);
-  return {
-    isDismissed: (e, s = state) => before(s, e.key, e.at) || covered(e, s),
-    keepCovered: (entries) => {
-      const adopt = entries.filter((e) => !before(state, e.key, e.at) && covered(e, state));
-      if (adopt.length) save({ ...state, ...Object.fromEntries(adopt.map((e) => [e.key, [e.at, now()]])) });
-    },
-    dismiss: (e, entries = []) => {
-      const next: Dismissed = { ...state, [e.key]: [e.at, now()] };
+  const isDismissed = (e: InboxEntry, s = state) => before(s, e.key, e.at) || covered(e, s);
+  const dismissAll = (es: InboxEntry[], entries: InboxEntry[] = []) => {
+    if (!es.length) return;
+    const next: Dismissed = { ...state };
+    for (const e of es) {
+      next[e.key] = [e.at, now()];
       // A waiting session dismissed before its chat was resumed here: the cards resuming it shows are what it waited on.
       if (e.kind === "approval" && !e.itemId) next[`resumed ${e.key}`] = [e.at, now()];
       const others = entries.filter((o) => o.key !== e.key && o.alias === e.alias && !o.ended && !(kept(next[o.key]) && next[o.key][0] >= o.at));
       if (e.alias && !others.length) next[e.alias] = [now(), now()];
-      save(next);
+    }
+    save(next);
+  };
+  // Entries this run already dismissed on their own, by key and time. More than the most kept can be due at once, and
+  // the oldest of those aren't kept: without this they'd be dismissed again on every render.
+  const expired = new Set<string>();
+  return {
+    isDismissed,
+    keepCovered: (entries) => {
+      const adopt = entries.filter((e) => !before(state, e.key, e.at) && covered(e, state));
+      if (adopt.length) save({ ...state, ...Object.fromEntries(adopt.map((e) => [e.key, [e.at, now()]])) });
+    },
+    dismiss: (e, entries) => dismissAll([e], entries),
+    dismissAll,
+    expire: (entries, olderThanMs) => {
+      const due = entries.filter((e) => e.kind === "completed" && e.at > 0 && now() - e.at > olderThanMs && !expired.has(`${e.key} ${e.at}`) && !isDismissed(e));
+      for (const e of due) expired.add(`${e.key} ${e.at}`);
+      dismissAll(due, entries);
     },
     restore: (e) => {
       const { [e.key]: _gone, ...rest } = state;
