@@ -55,23 +55,23 @@ toast "Couldn't open it in your browser: Fake Browser stopped with exit code 1: 
 $S/wd.mjs shot 03-menu-failed-toast
 rm -f "$B/fail"
 
-echo "== 3. refused page in the Preview, browser opens"
+echo "== 3. web page in the Preview (native view on Linux, #254), browser opens"
 $S/wd.mjs fill 'textarea[data-composer]' -- "Search https://www.google.com/ now" > /dev/null
 $S/wd.mjs press Enter > /dev/null
 $S/wd.mjs wait .msg.assistant "Stand-in reply to: Search" 20000 > /dev/null
 $S/wd.mjs click '.msg.assistant a[href*="google.com"]' > /dev/null
-$S/wd.mjs wait '[role=alert]' "doesn't allow being shown inside other apps" 60000 > /dev/null
-$S/wd.mjs shot 04-refused-note > /dev/null
-$S/wd.mjs click '[role=alert] button' "Open in your browser" > /dev/null
+$S/wd.mjs wait '.preview-web-note button' "Open it in your browser" 60000 > /dev/null
+$S/wd.mjs shot 04-preview-page > /dev/null
+$S/wd.mjs click '.preview-web-note button' "Open it in your browser" > /dev/null
 $S/wd.mjs wait '.preview-opened' "Opened in Fake Browser." 30000
-$S/wd.mjs shot 05-refused-opened-note
+$S/wd.mjs shot 05-preview-opened-note
 assert_log "ARGV: [https://www.google.com/]"
 
-echo "== 4. refused page in the Preview, browser fails"
+echo "== 4. web page in the Preview, browser fails"
 touch "$B/fail"
-$S/wd.mjs click '[role=alert] button' "Open in your browser" > /dev/null
+$S/wd.mjs click '.preview-web-note button' "Open it in your browser" > /dev/null
 $S/wd.mjs wait '.preview-opened.failed' "Fake Browser stopped with exit code 1: cannot open display: wayland-1" 30000
-$S/wd.mjs shot 06-refused-failed-note
+$S/wd.mjs shot 06-preview-failed-note
 rm -f "$B/fail"
 
 echo "== 5. no default browser"
