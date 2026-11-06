@@ -135,6 +135,7 @@ function readFrames(sock: Socket, onText: (t: string) => void) {
 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url!, "http://x");
+  console.log(new Date().toISOString(), req.method, url.pathname);
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   const body = Buffer.concat(chunks).toString() || undefined;
@@ -143,7 +144,6 @@ const http = createServer(async (req, res) => {
     res.writeHead(status, { "content-type": "application/json", ...headers });
     res.end(typeof v === "string" ? v : JSON.stringify(v));
   };
-  console.log(new Date().toISOString(), req.method, url.pathname);
   if (url.pathname === "/__state") return json(200, dump());
   if (url.pathname === "/auth/password-login") {
     const b = JSON.parse(body ?? "{}");

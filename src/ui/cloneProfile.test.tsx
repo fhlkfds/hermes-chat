@@ -29,11 +29,15 @@ afterEach(async () => {
 let launches = 0;
 const HOME = "/home/liam/.hermes";
 
-/** Holds each dashboard answer while `on`, until `release`, and lists every REST path asked for meanwhile. */
+/**
+ * Holds each dashboard answer while `on`, until `release`, and lists every REST path asked for meanwhile. A GET of
+ * `refuse` fails as a server error would.
+ */
 function gate() {
   const waiting: (() => void)[] = [];
   const g = {
     on: false,
+    refuse: undefined as string | undefined,
     asked: [] as string[],
     release: () => waiting.splice(0).forEach((go) => go()),
     wrap:
@@ -43,6 +47,7 @@ function gate() {
         return {
           ...pipe,
           request: async (method, path, body) => {
+            if (method === "GET" && path.split("?")[0] === g.refuse) throw new Error(`The dashboard answered 500: {"detail":"Internal Server Error"}`);
             if (g.on) {
               g.asked.push(path.split("?")[0]);
               await new Promise<void>((go) => waiting.push(go));
@@ -182,6 +187,28 @@ describe("Clone a profile", () => {
     expect(held.asked.filter((p) => p === "api/config")).toEqual([]);
     held.on = false;
     held.release();
+  });
+
+  it("says once when the profile list can't be read, and reads the list and the source again on Try again", async () => {
+    const held = gate();
+    const { user } = await launch(held);
+    await user.click(document.querySelector<HTMLElement>(".profile-btn")!);
+    const item = await screen.findByRole("button", { name: "Clone a profile…" });
+    held.refuse = "api/profiles";
+    await user.click(item);
+    const dialog = await screen.findByRole("dialog", { name: "Clone a profile" });
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toMatch(/^Couldn't list profiles: .*500/);
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    expect(within(dialog).queryByRole("table")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Clone" })).toHaveProperty("disabled", true);
+
+    held.refuse = undefined;
+    await user.click(within(dialog).getByRole("button", { name: "Try again" }));
+    await within(dialog).findByRole("table", { name: "What the clone copies" });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(within(dialog).getByLabelText("New profile's name")).toHaveProperty("value", "default-copy");
   });
 
   it("says the clone isn't full when a part didn't copy, and deletes it when asked", async () => {
