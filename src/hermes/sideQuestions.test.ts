@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Side questions (`/btw`, ADR 0070): asked through `prompt.btw` on the chat's live session, answered by the
+// Side questions (`/btw`, ADR 0070, ADR 0086): asked through `prompt.btw` on the chat's live session, answered by the
 // `btw.complete` that names their task id, and never part of the chat, its Saved copy or a reply running alongside.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
@@ -31,6 +31,64 @@ async function opened(server = new FakeHermes()) {
 
 const task = (n = 0) => `btw_${String(n + 1).padStart(6, "0")}`;
 
+describe("A side question is never saved or sent back to Hermes", () => {
+  it("stays out of the Saved copy, the chat list kept here, an export, a branch and the next message", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("backup", 1, { title: "Nightly backup" })];
+    server.storeMessage("backup", { role: "user", text: "Why did the backup fail?" });
+    server.storeMessage("backup", { role: "assistant", text: "The restic repo was locked." });
+    const hermes = await connect(server.openPipe, undefined, localChatCache(nas));
+    running.push(hermes);
+    await hermes.sync();
+    await hermes.open("backup");
+    const chat = (id = "backup") => hermes.getSnapshot().chats.find((c) => c.id === id)!;
+    const runtime = server.runtimeIdOf("backup")!;
+    const leaks = (s: string) => /bucket|b2-offsite/i.test(s);
+
+    // Asked while a reply runs, and answered before the reply ends, so the turn's end saves the chat with it on screen.
+    await hermes.send("backup", "Unlock it and run the backup");
+    server.event(runtime, "message.start");
+    server.event(runtime, "message.delta", { text: "Unlocked" });
+    await hermes.idle();
+    expect(await hermes.askSideQuestion("backup", "Which bucket holds the snapshots?")).toBe(true);
+    server.event(runtime, "btw.complete", { task_id: task(), question: "Which bucket holds the snapshots?", text: "The **b2-offsite** bucket." });
+    server.event(runtime, "message.delta", { text: " and backed up." });
+    server.storeMessage("backup", { role: "assistant", text: "Unlocked and backed up." });
+    server.event(runtime, "message.complete", { status: "complete", text: "Unlocked and backed up." });
+    await hermes.idle();
+    expect(chat().sideQuestions?.[0]).toMatchObject({ state: "answered", answer: "The **b2-offsite** bucket." });
+
+    // The Saved copy and the chat list are all this computer keeps of the chat. Reading the list again saves it.
+    await hermes.sync();
+    expect(chat().sideQuestions).toHaveLength(1);
+    const saved = localChatCache(nas).loadTranscript("default", "backup");
+    expect(saved?.items.length).toBeGreaterThan(0);
+    expect(leaks(JSON.stringify(saved))).toBe(false);
+    expect(localChatCache(nas).load("default").map((c) => c.id)).toContain("backup");
+    expect(Object.keys(localStorage).filter((k) => leaks(localStorage.getItem(k) ?? ""))).toEqual([]);
+
+    const exported = chatMarkdown(chat(), new Date());
+    expect(exported).toMatch(/Unlocked and backed up/);
+    expect(leaks(exported)).toBe(false);
+
+    const point = chat().items.find((i) => i.kind === "assistant" && i.text === "Unlocked and backed up.")!.id;
+    const preview = await hermes.previewBranch("backup", point);
+    expect(leaks(JSON.stringify(preview))).toBe(false);
+    const { chatId } = await hermes.branch(preview);
+    await hermes.open(chatId);
+    expect(chat(chatId).items.length).toBeGreaterThan(0);
+    expect(chat(chatId).sideQuestions).toBeUndefined();
+    expect(leaks(JSON.stringify(chat(chatId).items)) || leaks(JSON.stringify(server.transcripts[chatId]))).toBe(false);
+
+    await hermes.send("backup", "Thanks, now prune old snapshots");
+    await hermes.idle();
+    expect(server.last("prompt.submit")?.params.text).toBe("Thanks, now prune old snapshots");
+    // Only the question itself went to Hermes, and nothing went back.
+    expect(server.requests.filter((r) => leaks(JSON.stringify(r.params))).map((r) => r.method)).toEqual(["prompt.btw"]);
+    expect(leaks(JSON.stringify(server.transcripts))).toBe(false);
+  });
+});
+
 describe("Whether /btw is offered", () => {
   it("follows Hermes's command catalog, as /steer does, and no quick or plugin command can take its place", async () => {
     const list = (res: Record<string, unknown>) => listServerCommands(async () => res, "default").then((l) => [...l.listed]);
@@ -47,7 +105,7 @@ describe("A side question", () => {
     const before = chat().items;
 
     const asking = hermes.askSideQuestion("backup", "Which repo was it?");
-    expect(chat().sideQuestions).toEqual([{ id: expect.any(String), question: "Which repo was it?", state: "asking" }]);
+    expect(chat().sideQuestions).toEqual([{ id: expect.any(String), question: "Which repo was it?", after: 2, state: "asking" }]);
     expect(await asking).toBe(true);
     expect(server.last("prompt.btw")?.params).toEqual({ session_id: runtime, text: "Which repo was it?" });
     expect(chat().sideQuestions?.[0]).toMatchObject({ state: "asking", taskId: task() });
@@ -60,14 +118,27 @@ describe("A side question", () => {
     server.event(runtime, "btw.complete", { task_id: task(), question: "Which repo was it?", text: "The `restic` repo on the NAS." });
     await hermes.idle();
     expect(chat().sideQuestions).toEqual([
-      { id: expect.any(String), question: "Which repo was it?", taskId: task(), state: "answered", answer: "The `restic` repo on the NAS." },
+      { id: expect.any(String), question: "Which repo was it?", after: 2, taskId: task(), state: "answered", answer: "The `restic` repo on the NAS." },
     ]);
     expect(chat().items).toBe(before);
     expect(server.requests.some((r) => r.method === "prompt.submit")).toBe(false);
-    expect(localChatCache(nas).loadTranscript("default", "backup")?.items.map((i) => i.kind === "user" || i.kind === "assistant" ? i.text : i.kind) ?? []).not.toContain(
-      "The `restic` repo on the NAS.",
-    );
-    expect(chatMarkdown(chat(), new Date())).not.toMatch(/Which repo|NAS/);
+  });
+
+  it("remembers how many items came before it, so it stays where it was asked as the reply goes on", async () => {
+    const { server, hermes, chat, runtime } = await opened();
+    await hermes.send("backup", "Unlock it and run the backup");
+    server.event(runtime, "message.start");
+    server.event(runtime, "message.delta", { text: "Unlocking" });
+    await hermes.idle();
+    const asked = chat().items.length;
+    expect(chat().items.at(-1)).toMatchObject({ kind: "assistant", text: "Unlocking" });
+
+    await hermes.askSideQuestion("backup", "How long will it take?");
+    server.event(runtime, "message.delta", { text: " the repo" });
+    server.event(runtime, "tool.start", { tool_id: "t1", name: "terminal", context: "restic unlock" });
+    await hermes.idle();
+    expect(chat().items.length).toBeGreaterThan(asked);
+    expect(chat().sideQuestions?.[0].after).toBe(asked);
   });
 
   it("leaves a reply running alongside alone, before and after its answer", async () => {

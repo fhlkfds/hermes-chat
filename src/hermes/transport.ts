@@ -128,13 +128,13 @@ export const SIDE_QUESTIONS_KEPT = 3;
 /** A side question with Hermes's answer to it, or why there is none (`commands.sideAnswer`). */
 const answered = (q: SideQuestion, text: unknown): SideQuestion => {
   const res = sideAnswer(text);
-  const { id, question, taskId } = q;
-  return "answer" in res ? { id, question, taskId, state: "answered", answer: res.answer } : { id, question, taskId, state: "failed", error: res.error };
+  const { id, question, after, taskId } = q;
+  return "answer" in res ? { id, question, after, taskId, state: "answered", answer: res.answer } : { id, question, after, taskId, state: "failed", error: res.error };
 };
 
 /** Hermes sends a side question's answer on the connection it was asked on, so a dropped one never brings it. */
 const lostSide = (q: SideQuestion): SideQuestion =>
-  q.state === "asking" ? { id: q.id, question: q.question, taskId: q.taskId, state: "failed", error: "The connection to Hermes dropped before it answered." } : q;
+  q.state === "asking" ? { id: q.id, question: q.question, after: q.after, taskId: q.taskId, state: "failed", error: "The connection to Hermes dropped before it answered." } : q;
 
 const MiB = 1024 * 1024;
 /** The most legacy `image.attach_bytes` and `file.attach` take (research doc §7). PDFs go as files: `pdf.attach`
@@ -1199,15 +1199,18 @@ export class Hermes {
   }
 
   /**
-   * Asks Hermes a side question about the chat (`/btw`, ADR 0070). Its card shows at once, waiting, and gets the answer
-   * or why there is none; the chat's transcript and any reply running are left alone. Resolves whether Hermes took it.
+   * Asks Hermes a side question about the chat (`/btw`, ADR 0070). It shows at once, waiting, after the chat's items so
+   * far, and gets the answer or why there is none; the chat's items and any reply running are left alone. Resolves
+   * whether Hermes took it.
    */
   async askSideQuestion(chatId: string, question: string): Promise<boolean> {
     const id = `btw-${++this.sideAsked}`;
-    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
-    this.patchSide(chatId, (qs) => [...qs, { id, question, state: "asking" as const }].slice(-SIDE_QUESTIONS_KEPT));
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const runtimeId = chat?.runtimeId;
+    const after = chat?.items.length ?? 0;
+    this.patchSide(chatId, (qs) => [...qs, { id, question, after, state: "asking" as const }].slice(-SIDE_QUESTIONS_KEPT));
     if (!runtimeId) {
-      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id ? { id, question, state: "failed", error: "This chat isn't open on Hermes." } : q)));
+      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id ? { id, question, after, state: "failed", error: "This chat isn't open on Hermes." } : q)));
       return false;
     }
     const generation = this.generation;
@@ -1219,7 +1222,7 @@ export class Hermes {
       return true;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id && q.state === "asking" ? { id, question, state: "failed", error } : q)));
+      this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id && q.state === "asking" ? { id, question, after, state: "failed", error } : q)));
       return false;
     } finally {
       // Once no question on the session waits for its task id, no answer held for one can be claimed. `detach` has
@@ -1233,7 +1236,7 @@ export class Hermes {
     }
   }
 
-  /** Takes a side question's card away. An answer still to come for it is dropped. */
+  /** Takes a side question out of view. An answer still to come for it is dropped. */
   dismissSideQuestion(chatId: string, id: string) {
     this.patchSide(chatId, (qs) => qs.filter((q) => q.id !== id));
   }

@@ -187,15 +187,19 @@ export type Chat = {
   usageError?: string;
   /** The Subagents its replies started that this connection has heard of (subagents.ts, ADR 0072). Kept until the app closes. */
   subagents?: SubagentTree;
-  /** Its side questions on screen, oldest first: never part of its transcript, and never saved (ADR 0070). */
+  /**
+   * Its side questions on screen, oldest first. They are never among its items, so nothing that saves, exports,
+   * branches or sends the chat sees them; the transcript shows each where it was asked (ADR 0070, ADR 0086).
+   */
   sideQuestions?: SideQuestion[];
 };
 
 /**
  * A question asked with `/btw` (GLOSSARY "Side question (/btw)", ADR 0070), which Hermes answers from a snapshot of the
  * chat without adding to it. `taskId`: Hermes's id for it once Hermes took it, which its answer (`btw.complete`) names.
+ * `after`: how many of the chat's items there were when it was asked; the transcript shows it after them (ADR 0086).
  */
-export type SideQuestion = { id: string; question: string; taskId?: string } & (
+export type SideQuestion = { id: string; question: string; after: number; taskId?: string } & (
   | { state: "asking" }
   | { state: "answered"; answer: string }
   | { state: "failed"; error: string }

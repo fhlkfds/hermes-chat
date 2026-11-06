@@ -5,7 +5,7 @@ import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRi
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, SideQuestion, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { SkillCall } from "../hermes/skillCommands";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
@@ -17,7 +17,7 @@ import { ExportChatDialog } from "./ExportChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { SubagentsPanel, type SubagentsApi } from "./Subagents";
 import type { SubagentId } from "../hermes/subagents";
-import { SideQuestions } from "./SideQuestions";
+import { SideQuestionPair } from "./SideQuestions";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
@@ -65,17 +65,24 @@ const toldWhy = new Set<string>();
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
 type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, ToolItem>;
+type SideBlock = { kind: "side"; id: string; question: SideQuestion };
 
-// Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript.
-function toBlocks(items: Item[]): Block[] {
-  const out: Block[] = [];
-  for (const it of items) {
+// Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript. Each side question
+// goes after the items there were when it was asked (ADR 0086), so one asked during a run of tool calls splits it.
+function toBlocks(items: Item[], side: SideQuestion[] = []): (Block | SideBlock)[] {
+  const out: (Block | SideBlock)[] = [];
+  const sideAfter = (n: number) => {
+    for (const q of side) if (Math.min(q.after, items.length) === n) out.push({ kind: "side", id: q.id, question: q });
+  };
+  sideAfter(0);
+  items.forEach((it, n) => {
     const last = out[out.length - 1];
     if (it.kind === "tool") {
       if (last?.kind === "tools") last.tools.push(it);
       else out.push({ kind: "tools", id: `g-${it.id}`, tools: [it] });
     } else out.push(it);
-  }
+    sideAfter(n + 1);
+  });
   return out;
 }
 
@@ -545,6 +552,14 @@ export function ChatPane({
     }
   });
 
+  // A new side question shows at the bottom, so asking one goes there as sending a message does.
+  const sideSeen = useRef(new Set(chat.sideQuestions?.map((q) => q.id)));
+  useLayoutEffect(() => {
+    const qs = chat.sideQuestions ?? [];
+    if (qs.some((q) => !sideSeen.current.has(q.id))) stickToBottom.current = true;
+    sideSeen.current = new Set(qs.map((q) => q.id));
+  }, [chat.sideQuestions]);
+
   // Follow the stream while the user is at the bottom.
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -578,7 +593,7 @@ export function ChatPane({
   };
 
   // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
-  const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
+  const blocks = useMemo(() => toBlocks(chat.items, chat.sideQuestions), [chat.items, chat.sideQuestions]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
   const movedAt = useMemo(() => performance.now(), [chat.items]);
   const last = chat.items[chat.items.length - 1];
@@ -702,12 +717,12 @@ export function ChatPane({
               </span>
             </div>
           )}
-          {chat.loading && blocks.length === 0 && (
+          {chat.loading && chat.items.length === 0 && (
             <div className="loading-chat">
               <Spinner /> Loading chat
             </div>
           )}
-          {notLoaded && blocks.every((b) => b.kind === "user" && b.outgoing) && (
+          {notLoaded && chat.items.every((i) => i.kind === "user" && i.outgoing) && (
             <div className="unloaded-chat">
               <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
             </div>
@@ -724,28 +739,32 @@ export function ChatPane({
               </ul>
             </div>
           )}
-          {blocks.map((b) => (
-            <BlockView
-              key={b.id}
-              block={b}
-              live={!!chat.running && b === last}
-              query={q}
-              offline={status !== "connected" || !!chat.loading}
-              movedAt={b.kind === "approval" ? movedAt : 0}
-              onAnswer={answer}
-              listen={b.kind === "assistant" ? listen : undefined}
-              canRetry={b.kind === "user" && !!b.outgoing && canRetry}
-              onOutgoing={onOutgoing}
-              onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
-              branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
-              onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
-              replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
-              versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
-              chatId={chat.id}
-              turn={turns.anchor.get(b.id)}
-              onPickVariant={onPickVariant}
-            />
-          ))}
+          {blocks.map((b) =>
+            b.kind === "side" ? (
+              <SideQuestionPair key={b.id} question={b.question} onDismiss={onDismissSideQuestion} />
+            ) : (
+              <BlockView
+                key={b.id}
+                block={b}
+                live={!!chat.running && b === last}
+                query={q}
+                offline={status !== "connected" || !!chat.loading}
+                movedAt={b.kind === "approval" ? movedAt : 0}
+                onAnswer={answer}
+                listen={b.kind === "assistant" ? listen : undefined}
+                canRetry={b.kind === "user" && !!b.outgoing && canRetry}
+                onOutgoing={onOutgoing}
+                onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
+                branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
+                onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
+                replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
+                versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
+                chatId={chat.id}
+                turn={turns.anchor.get(b.id)}
+                onPickVariant={onPickVariant}
+              />
+            ),
+          )}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
           {chat.running && last?.kind !== "assistant" && last?.kind !== "thinking" && !(last && isWaiting(last)) && (
             <div className="msg assistant thinking">
@@ -772,7 +791,6 @@ export function ChatPane({
         }}
       />
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
-      {chat.sideQuestions && onDismissSideQuestion && <SideQuestions questions={chat.sideQuestions} onDismiss={onDismissSideQuestion} />}
       {chat.source === "import" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
