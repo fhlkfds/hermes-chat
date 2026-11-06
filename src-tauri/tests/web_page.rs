@@ -78,6 +78,12 @@ async fn checks_only_web_addresses() {
 /// A browser's `.desktop` file in a fresh folder, running `script` with the address as `%u`.
 #[cfg(target_os = "linux")]
 fn browser(name: &str, script: &str) -> (std::path::PathBuf, gtk::gio::DesktopAppInfo) {
+    browser_with(name, script, "")
+}
+
+/// `browser`, with more lines in its `[Desktop Entry]`.
+#[cfg(target_os = "linux")]
+fn browser_with(name: &str, script: &str, more: &str) -> (std::path::PathBuf, gtk::gio::DesktopAppInfo) {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("hermes-browser-{}-{}", std::process::id(), name.replace(' ', "-")));
     std::fs::create_dir_all(&dir).unwrap();
@@ -85,7 +91,7 @@ fn browser(name: &str, script: &str) -> (std::path::PathBuf, gtk::gio::DesktopAp
     std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let desktop = dir.join(format!("{name}.desktop"));
-    let entry = format!("[Desktop Entry]\nType=Application\nName={name}\nExec={} %u\n", program.display());
+    let entry = format!("[Desktop Entry]\nType=Application\nName={name}\nExec={} %u\n{more}", program.display());
     std::fs::write(&desktop, entry).unwrap();
     let app = gtk::gio::DesktopAppInfo::from_filename(&desktop).unwrap();
     (dir, app)
@@ -134,5 +140,43 @@ async fn a_browser_still_running_has_the_page() {
     assert_eq!(open(&app, "https://example.com/").await.unwrap(), "Starting");
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(dir.join("logged").exists(), "the browser was left blocked on its error output");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_browser_started_over_d_bus_is_started_from_its_exec_line_instead() {
+    // GIO would send a DBusActivatable app the page over D-Bus without waiting for an answer.
+    let (dir, app) = browser_with("Web", r#"printf '%s\n' "$@" > "$(dirname "$0")/args""#, "DBusActivatable=true\n");
+    assert!(app.boolean("DBusActivatable"));
+    assert_eq!(open(&app, "https://example.com/a").await.unwrap(), "Web");
+    assert_eq!(std::fs::read_to_string(dir.join("args")).unwrap(), "https://example.com/a\n");
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let (dir, app) = browser_with("Web", "echo 'no such service' >&2; exit 2", "DBusActivatable=true\n");
+    assert_eq!(open(&app, "https://example.com/").await.unwrap_err(), "Web stopped with exit code 2: no such service");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_launch_nobody_waits_for_still_reaps_the_browser() {
+    let (dir, app) = browser("Dropped", r#"echo $$ > "$(dirname "$0")/pid""#);
+    drop(hermes_chat::browser::launch(&app, "https://example.com/", None).unwrap());
+    let started = std::time::Instant::now();
+    let pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(dir.join("pid")) {
+            if !pid.is_empty() {
+                break pid.trim().to_owned();
+            }
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the browser never ran");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    // A zombie keeps its /proc entry until it is reaped.
+    while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "browser {pid} was left a zombie");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }

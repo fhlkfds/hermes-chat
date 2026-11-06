@@ -15,10 +15,13 @@ const OPEN_WAIT: Duration = Duration::from_secs(3);
 const SAID_WAIT: Duration = Duration::from_millis(500);
 const MAX_SAID: usize = 4096;
 
-/// A browser asked to open a page: its name, and its process if it was started as one (not through D-Bus).
+/// A browser started on a page. Its process is reaped and its error output read from the start, so dropping this
+/// leaves nothing behind.
 pub struct Launched {
     name: String,
-    process: Option<(libc::pid_t, std::io::PipeReader)>,
+    exit: tokio::sync::oneshot::Receiver<std::io::Result<libc::c_int>>,
+    said: Arc<Mutex<Vec<u8>>>,
+    said_end: tokio::sync::oneshot::Receiver<()>,
 }
 
 /// The browser the desktop opens `url` with, as `x-scheme-handler/http(s)` in `mimeapps.list` names it.
@@ -37,6 +40,7 @@ pub fn launch(browser: &gio::DesktopAppInfo, url: &str, context: Option<&gio::Ap
     let url = crate::web_page::web_url(url)?;
     let name = browser.display_name().to_string();
     let couldnt = |e: &dyn std::fmt::Display| format!("Couldn't start {name}: {e}");
+    let browser = by_exec(browser).ok_or_else(|| couldnt(&"its .desktop file has no Exec line"))?;
     let (said, mut stderr) = std::io::pipe().map_err(|e| couldnt(&e))?;
     let mut stdin = std::fs::File::open("/dev/null").map_err(|e| couldnt(&e))?;
     let mut stdout = std::fs::OpenOptions::new().write(true).open("/dev/null").map_err(|e| couldnt(&e))?;
@@ -53,28 +57,40 @@ pub fn launch(browser: &gio::DesktopAppInfo, url: &str, context: Option<&gio::Ap
             &mut stderr,
         )
         .map_err(|e| couldnt(&e.message()))?;
-    Ok(Launched { process: pid.map(|pid| (pid, said)), name })
+    let pid = pid.ok_or_else(|| couldnt(&"GIO gave no process"))?;
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let (said_all, said_end) = tokio::sync::oneshot::channel();
+    let keep = kept.clone();
+    // Read to the end even past MAX_SAID, so a browser that keeps running never blocks on a full pipe.
+    std::thread::spawn(move || {
+        keep_tail(said, &keep);
+        let _ = said_all.send(());
+    });
+    let (exited, exit) = tokio::sync::oneshot::channel();
+    // Waits for as long as the browser runs, so it never stays a zombie.
+    std::thread::spawn(move || {
+        let _ = exited.send(wait(pid));
+    });
+    Ok(Launched { name, exit, said: kept, said_end })
+}
+
+/// `browser` as one GIO starts from its `Exec` line. A `DBusActivatable` app would otherwise be sent the page over
+/// D-Bus without waiting for an answer, so a failure there would be silent.
+fn by_exec(browser: &gio::DesktopAppInfo) -> Option<gio::DesktopAppInfo> {
+    if !browser.boolean("DBusActivatable") {
+        return Some(browser.clone());
+    }
+    let file = gio::glib::KeyFile::new();
+    file.load_from_file(browser.filename()?, gio::glib::KeyFileFlags::NONE).ok()?;
+    file.remove_key("Desktop Entry", "DBusActivatable").ok()?;
+    gio::DesktopAppInfo::from_keyfile(&file)
 }
 
 impl Launched {
     /// Waits until the browser fails or outlasts `OPEN_WAIT`, and gives its name. A failure says why, in the
     /// browser's own words when it gave any.
     pub async fn settle(self) -> Result<String, String> {
-        let Launched { name, process } = self;
-        let Some((pid, said)) = process else { return Ok(name) };
-        let kept = Arc::new(Mutex::new(Vec::new()));
-        let (said_all, said_end) = tokio::sync::oneshot::channel();
-        let keep = kept.clone();
-        // Read to the end even past MAX_SAID, so a browser that keeps running never blocks on a full pipe.
-        std::thread::spawn(move || {
-            keep_tail(said, &keep);
-            let _ = said_all.send(());
-        });
-        let (exited, exit) = tokio::sync::oneshot::channel();
-        // Waits for as long as the browser runs, so it never stays a zombie.
-        std::thread::spawn(move || {
-            let _ = exited.send(wait(pid));
-        });
+        let Launched { name, exit, said: kept, said_end } = self;
         let status = match tokio::time::timeout(OPEN_WAIT, exit).await {
             Err(_) => return Ok(name),
             Ok(status) => status.map_err(|e| e.to_string())?.map_err(|e| format!("Couldn't tell whether {name} started: {e}"))?,
