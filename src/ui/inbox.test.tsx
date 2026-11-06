@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { memoryCache } from "../hermes/memoryCache";
 import { connect, type Hermes } from "../hermes/transport";
+import { setUIPrefs } from "../hermes/uiPrefs";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -223,6 +224,41 @@ describe("The inbox", () => {
     // Still dismissed after a fresh look at the server.
     await act(async () => void (await hermes.sync()));
     expect(rowNames()).not.toContain("Completed, unread: Release notes");
+  });
+
+  it("clears every completed entry the filter shows at once, only from the inbox", async () => {
+    const { server, hermes, user } = await launch();
+    await user.click(inboxButton());
+    const clearDone = () => screen.queryByRole("button", { name: "Clear done" });
+    await user.click(filter(/^Failed/));
+    expect(clearDone()).toBeNull();
+    await user.click(filter(/^Needs approval/));
+    expect(clearDone()).toBeNull();
+
+    await user.click(filter(/^All/));
+    await user.click(clearDone()!);
+    expect(rowNames()).toEqual(["Needs approval: Migrate db"]);
+    expect(document.activeElement).toBe(rows()[0]);
+    expect(clearDone()).toBeNull();
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "notes")).toMatchObject({ unread: true, settled: false });
+    expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
+    await act(async () => void (await hermes.sync()));
+    expect(rowNames()).toEqual(["Needs approval: Migrate db"]);
+  });
+
+  it("dismisses finished entries older than the time picked in Settings, from then on, and nothing else", async () => {
+    const { server, hermes, user } = await launch((server) => {
+      server.sessions.push(row("report", 3, { pinned: true, title: "Weekly report", last_read_at: 0 }));
+      server.otherProfiles.work.push(row("brief", 3, { pinned: true, title: "Morning brief", last_read_at: 0 }));
+      server.liveSessions.push({ id: "rt-old", session_key: "brief", status: "waiting", last_active: nowS() - 3 * 86_400 });
+    });
+    await user.click(inboxButton());
+    expect(rowNames()).toContain("Completed, unread: Weekly report");
+
+    act(() => void setUIPrefs({ inboxAutoDismissDays: 1 }));
+    expect(rowNames()).toEqual(["Needs approval: Migrate db", "Needs approval: Morning brief", "Completed, unread: Release notes", "Completed, unread: Deploy plan"]);
+    expect(hermes.getSnapshot().chats.find((c) => c.id === "report")).toMatchObject({ unread: true });
+    expect(server.restRequests.filter((r) => r.method === "PATCH")).toEqual([]);
   });
 
   it("drops a completed entry once its chat is open in another pane, without the inbox closing", async () => {

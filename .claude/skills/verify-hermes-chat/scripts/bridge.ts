@@ -5,10 +5,12 @@
 // Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history, except:
 //   a prompt with "delegate" in it starts two subagents, as Hermes's delegate tool reports them, and its reply runs on.
 //   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
+//   a prompt that starts with "fail" ends its reply with an error, as a provider failure does.
 //   with HV_LONG_REPLY=<n>, a prompt that starts with `long` gets n paragraphs of markdown (code, a list, a table),
 //   three words every 40 ms, so a reply keeps streaming for minutes.
 //   `subagent.interrupt` (Stop in the Subagents panel) ends that subagent as `interrupted`, as Hermes reports it.
 //   `POST /__subagent?id=<subagent id>&status=completed|failed` ends one as Hermes reports it (a test's control).
+// HV_INBOX=1 gives the `work` profile two Unread chats for the Rail inbox: one last active 3 days ago, one an hour ago.
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
@@ -44,6 +46,11 @@ server.storeMessage("trip", { role: "assistant", text: "Day 1: Alfama and the ca
 
 // Settings → MCP servers (ADR 0068): a second profile, servers of each kind, one from a plugin, Test results and a catalog.
 server.otherProfiles = { work: [] };
+if (process.env.HV_INBOX === "1")
+  server.otherProfiles.work = [
+    row("brief", 3, { title: "Morning brief, Monday", last_read_at: 0 }),
+    row("convert", 1 / 24, { title: "Convert 12 GB to MB", last_read_at: 0 }),
+  ];
 server.mcp.servers.default = {
   filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/notes"] },
   github: { url: "https://mcp.example.com/github", headers: { Authorization: "Bearer ${MCP_GITHUB_API_KEY}" } },
@@ -122,6 +129,11 @@ function delegate(sid: string) {
 function askApproval(sid: string) {
   server.event(sid, "message.start");
   server.askApproval(sid);
+}
+
+function failReply(sid: string) {
+  server.event(sid, "message.start");
+  setTimeout(() => server.event(sid, "error", { message: "Stand-in provider error: the model is overloaded." }), 200);
 }
 
 function endSubagent(id: string, status: string) {
@@ -226,6 +238,7 @@ http.on("upgrade", async (req, sock: Socket) => {
           save();
           if (/delegate/i.test(prompt)) delegate(session_id);
           else if (/approval/i.test(prompt)) askApproval(session_id);
+          else if (/^fail/i.test(prompt)) failReply(session_id);
           else replyTo(session_id, prompt);
         }, 0);
       }

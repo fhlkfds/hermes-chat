@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
-import { inboxAcks, inboxEntries, needsOwner, type InboxEntry } from "./inbox";
+import { INBOX_PREFIX, inboxAcks, inboxEntries, needsOwner, type InboxEntry, type InboxKind } from "./inbox";
 import type { OutgoingItem } from "./model";
 import { connect, type Hermes } from "./transport";
 
@@ -514,5 +514,93 @@ describe("The inbox", () => {
     now += 31 * 86_400_000;
     expect(acks.isDismissed(e)).toBe(false);
     expect(inboxAcks(store, "server", () => now).isDismissed(e)).toBe(false);
+  });
+});
+
+describe("Auto-dismissing finished entries", () => {
+  const DAY = 86_400_000;
+  const T0 = 100 * DAY;
+  const entry = (id: string, at: number, kind: InboxKind = "completed"): InboxEntry => ({ key: `${kind} work ${id}`, kind, profile: "work", chatId: id, title: id, at, summary: "" });
+  /** A store that counts its writes. */
+  const counted = () => {
+    const s = storage();
+    let writes = 0;
+    return { ...s, setItem: (k: string, v: string) => (writes++, s.setItem(k, v)), writes: () => writes };
+  };
+  const record = (s: { items: Record<string, string> }) => JSON.parse(s.items[INBOX_PREFIX + "server"] ?? "{}");
+
+  it("dismisses a finished entry once it is older than the time picked, as a dismissal by hand would", () => {
+    const now = T0;
+    const store = storage();
+    const acks = inboxAcks(store, "server", () => now);
+    const atLimit = entry("a", now - 2 * DAY);
+    const past = entry("b", now - 2 * DAY - 1);
+    acks.expire([atLimit, past], 2 * DAY);
+    expect(acks.isDismissed(atLimit)).toBe(false);
+    expect(acks.isDismissed(past)).toBe(true);
+
+    const reloaded = inboxAcks(store, "server", () => now);
+    expect(reloaded.isDismissed(past)).toBe(true);
+    expect(record(store)).toEqual({ [past.key]: [past.at, now] });
+    const byHand = storage();
+    inboxAcks(byHand, "server", () => now).dismiss(past);
+    expect(record(store)).toEqual(record(byHand));
+  });
+
+  it("shows the chat again once it has something newer", () => {
+    let now = T0;
+    const acks = inboxAcks(storage(), "server", () => now);
+    acks.expire([entry("a", now - 3 * DAY)], 2 * DAY);
+    expect(acks.isDismissed(entry("a", now - 3 * DAY))).toBe(true);
+    now += DAY;
+    const newer = entry("a", now - 60_000);
+    acks.expire([newer], 2 * DAY);
+    expect(acks.isDismissed(newer)).toBe(false);
+  });
+
+  it("doesn't record again an entry already dismissed", () => {
+    let now = T0;
+    const store = counted();
+    const acks = inboxAcks(store, "server", () => now);
+    const e = entry("a", now - 60_000);
+    acks.dismiss(e);
+    const writes = store.writes();
+    now += 3 * DAY;
+    acks.expire([e], 2 * DAY);
+    expect(store.writes()).toBe(writes);
+    expect(record(store)[e.key]).toEqual([e.at, T0]);
+  });
+
+  it("never dismisses running work, Approvals, failures, uncertain sends, or an entry whose time isn't known", () => {
+    const now = T0;
+    const store = counted();
+    const acks = inboxAcks(store, "server", () => now);
+    const old = now - 30 * DAY;
+    const kept = [entry("r", old, "running"), entry("p", old, "approval"), entry("f", old, "failed"), entry("u", old, "uncertain"), entry("c", 0)];
+    acks.expire(kept, DAY);
+    for (const e of kept) expect(acks.isDismissed(e)).toBe(false);
+    expect(store.writes()).toBe(0);
+  });
+
+  it("settles when more are due than the most dismissals kept", () => {
+    const now = T0;
+    const store = counted();
+    const acks = inboxAcks(store, "server", () => now);
+    const due = Array.from({ length: 1001 }, (_, i) => entry(`c${i}`, now - 2 * DAY - i));
+    acks.expire(due, DAY);
+    expect(store.writes()).toBe(1);
+    expect(Object.keys(record(store))).toHaveLength(1000);
+    acks.expire(due, DAY);
+    expect(store.writes()).toBe(1);
+  });
+
+  it("dismisses every entry given at once, in one write", () => {
+    const now = T0;
+    const store = counted();
+    const acks = inboxAcks(store, "server", () => now);
+    const es = [entry("a", now - 60_000), entry("b", now - 120_000), entry("c", now - 180_000)];
+    acks.dismissAll(es, es);
+    for (const e of es) expect(acks.isDismissed(e)).toBe(true);
+    expect(store.writes()).toBe(1);
   });
 });

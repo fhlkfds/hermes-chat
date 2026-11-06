@@ -62,12 +62,17 @@ export type UIPrefs = {
   chatSectionsCollapsed: SectionKey[];
   /** How the agent office shows the agents at work: as desks, as a list, as characters in one room (ADR 0083), or not at all, with no rail button (ADR 0077). */
   agentOffice: OfficeView;
+  /** How many days a finished entry stays in the inbox before it is dismissed on its own, as if by hand; null: never. */
+  inboxAutoDismissDays: number | null;
 };
 
 export type OfficeView = "desks" | "list" | "scene" | "off";
 export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "scene", "off"];
 
 export type FollowUp = "queue" | "steer";
+
+/** The auto-dismiss choices Settings → Inbox offers, in days. */
+export const INBOX_AUTO_DISMISS_DAYS = [1, 2, 7, 14] as const;
 
 /**
  * Idle compaction (idleCompact.ts, ADR 0059). `enabled`: off until the owner turns it on, since a compaction is a model
@@ -105,6 +110,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
   chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
   agentOffice: "desks",
+  inboxAutoDismissDays: null,
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -243,6 +249,10 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     chatSectionsShown: toShown(doc.chatSectionsShown) ?? [...d.chatSectionsShown],
     chatSectionsCollapsed: toSections(doc.chatSectionsCollapsed) ?? [...d.chatSectionsCollapsed],
     agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : d.agentOffice,
+    inboxAutoDismissDays:
+      doc.inboxAutoDismissDays === null || (typeof doc.inboxAutoDismissDays === "number" && Number.isFinite(doc.inboxAutoDismissDays) && doc.inboxAutoDismissDays > 0)
+        ? doc.inboxAutoDismissDays
+        : d.inboxAutoDismissDays,
   };
 }
 

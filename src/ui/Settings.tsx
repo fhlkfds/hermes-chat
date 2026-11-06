@@ -38,6 +38,7 @@ import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
 import { ChatSectionSettings } from "./ChatSectionSettings";
+import { InboxSettings } from "./InboxSettings";
 import { OfficeSettings } from "./OfficeSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
@@ -609,6 +610,7 @@ export function SettingsScreen({
         <ChatSectionSettings />
         <FollowUpSettings />
         <OfficeSettings />
+        <InboxSettings />
       </>
     ),
     launch: (
