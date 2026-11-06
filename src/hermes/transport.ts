@@ -1207,7 +1207,7 @@ export class Hermes {
     const id = `btw-${++this.sideAsked}`;
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const runtimeId = chat?.runtimeId;
-    const after = chat?.items.length ?? 0;
+    const after = chat?.items.at(-1)?.id;
     this.patchSide(chatId, (qs) => [...qs, { id, question, after, state: "asking" as const }].slice(-SIDE_QUESTIONS_KEPT));
     if (!runtimeId) {
       this.patchSide(chatId, (qs) => qs.map((q) => (q.id === id ? { id, question, after, state: "failed", error: "This chat isn't open on Hermes." } : q)));
@@ -4366,6 +4366,7 @@ export class Hermes {
    * every other change made by then; any change heard of at once before that takes the waiting ones with it.
    */
   private update(patch: Partial<Snapshot>, nextFrame = false) {
+    if (patch.chats) patch = { ...patch, chats: keepSidePlaces(this.snapshot.chats, patch.chats) };
     this.snapshot = { ...this.snapshot, ...patch };
     if (nextFrame) this.notifySoon();
     else this.tellListeners();
@@ -4396,6 +4397,23 @@ export class Hermes {
     clearTimeout(this.notifyDue.timer);
     this.notifyDue = undefined;
   }
+}
+
+/**
+ * A side question whose item went, as when the chat's items are read again from Hermes with new ids or cut short, takes
+ * the item now at that item's place, or the last one, so what comes after still shows below it (ADR 0086).
+ */
+function keepSidePlaces(before: Chat[], chats: Chat[]): Chat[] {
+  return chats.map((c) => {
+    const qs = c.sideQuestions;
+    const was = qs && before.find((b) => b.id === c.id);
+    if (!qs || !was || was.items === c.items) return c;
+    const ids = new Set(c.items.map((i) => i.id));
+    const gone = (q: SideQuestion) => q.after !== undefined && !ids.has(q.after);
+    if (!qs.some(gone)) return c;
+    const at = (q: SideQuestion) => Math.min(was.items.findIndex((i) => i.id === q.after) + 1, c.items.length);
+    return { ...c, sideQuestions: qs.map((q) => (gone(q) ? { ...q, after: c.items[at(q) - 1]?.id } : q)) };
+  });
 }
 
 /** The longest a streamed delta waits to be heard of, when the window draws no frames (minimized, hidden). */

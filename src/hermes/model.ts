@@ -197,9 +197,10 @@ export type Chat = {
 /**
  * A question asked with `/btw` (GLOSSARY "Side question (/btw)", ADR 0070), which Hermes answers from a snapshot of the
  * chat without adding to it. `taskId`: Hermes's id for it once Hermes took it, which its answer (`btw.complete`) names.
- * `after`: how many of the chat's items there were when it was asked; the transcript shows it after them (ADR 0086).
+ * `after`: the id of the chat's last item when it was asked, which the transcript shows it after; none when the chat had
+ * none (ADR 0086).
  */
-export type SideQuestion = { id: string; question: string; after: number; taskId?: string } & (
+export type SideQuestion = { id: string; question: string; after?: string; taskId?: string } & (
   | { state: "asking" }
   | { state: "answered"; answer: string }
   | { state: "failed"; error: string }

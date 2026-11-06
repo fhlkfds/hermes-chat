@@ -126,7 +126,7 @@ describe("The transcript", () => {
     vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     const answered = vi.fn<Answer>();
     const items = [approval];
-    const side = { id: "btw-1", question: "Which build?", after: 0, taskId: "btw_1" };
+    const side = { id: "btw-1", question: "Which build?", taskId: "btw_1" };
     const { show } = pane(chatOf(items, { running: true, sideQuestions: [{ ...side, state: "asking" }] }), undefined, answered);
     vi.setSystemTime(Date.now() + 1000);
 

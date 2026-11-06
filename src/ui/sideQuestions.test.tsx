@@ -145,8 +145,9 @@ describe("A side question", () => {
     act(() => server.event(runtime, "message.complete", { status: "complete", text: "Ran it again" }));
     await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "backup")?.running).toBe(false));
     await user.type(composer(), "/btw which snapshot?{Enter}");
-    const pair = await screen.findByRole("article", { name: "Side question: which snapshot?" });
-    expect(before(reply(/Ran it again/), pair)).toBe(true);
+    const pair = () => screen.getByRole("article", { name: "Side question: which snapshot?" });
+    await waitFor(() => expect(pair()).toBeTruthy());
+    expect(before(reply(/Ran it again/), pair())).toBe(true);
 
     // Another Hermes client took the last turn back while this one was away: the chat is read again without it.
     server.transcripts.backup = server.transcripts.backup.slice(0, 2);
@@ -155,15 +156,15 @@ describe("A side question", () => {
     await waitFor(() => expect(hermes.getSnapshot().status).toBe("connected"));
     await act(async () => void (await hermes.open("backup")));
     await waitFor(() => expect(reply(/Ran it again/)).toBeUndefined());
-    expect(before(reply(/restic repo was locked/), pair)).toBe(true);
+    expect(before(reply(/restic repo was locked/), pair())).toBe(true);
 
     await user.type(composer(), "Try again{Enter}");
     const runtimeNow = server.runtimeIdOf("backup")!;
     act(() => server.event(runtimeNow, "message.delta", { text: "Trying again" }));
     await waitFor(() => expect(reply(/Trying again/)).toBeTruthy());
     const tryAgain = [...document.querySelectorAll(".msg.user:not(.side)")].find((m) => /Try again/.test(m.textContent ?? ""))!;
-    expect(before(pair, tryAgain)).toBe(true);
-    expect(before(pair, reply(/Trying again/))).toBe(true);
+    expect(before(pair(), tryAgain)).toBe(true);
+    expect(before(pair(), reply(/Trying again/))).toBe(true);
   });
 
   it("asked with the chat idle starts no turn, and stays with its chat across a switch", async () => {

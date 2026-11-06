@@ -68,21 +68,21 @@ type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, To
 type SideBlock = { kind: "side"; id: string; question: SideQuestion };
 
 // Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript. Each side question
-// goes after the items there were when it was asked (ADR 0086), so one asked during a run of tool calls splits it.
+// goes after the item it was asked after (ADR 0086), so one asked during a run of tool calls splits it.
 function toBlocks(items: Item[], side: SideQuestion[] = []): (Block | SideBlock)[] {
   const out: (Block | SideBlock)[] = [];
-  const sideAfter = (n: number) => {
-    for (const q of side) if (Math.min(q.after, items.length) === n) out.push({ kind: "side", id: q.id, question: q });
+  const sideAfter = (id?: string) => {
+    for (const q of side) if (q.after === id) out.push({ kind: "side", id: q.id, question: q });
   };
-  sideAfter(0);
-  items.forEach((it, n) => {
+  sideAfter(undefined);
+  for (const it of items) {
     const last = out[out.length - 1];
     if (it.kind === "tool") {
       if (last?.kind === "tools") last.tools.push(it);
       else out.push({ kind: "tools", id: `g-${it.id}`, tools: [it] });
     } else out.push(it);
-    sideAfter(n + 1);
-  });
+    sideAfter(it.id);
+  }
   return out;
 }
 

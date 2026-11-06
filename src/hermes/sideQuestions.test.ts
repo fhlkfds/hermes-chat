@@ -105,7 +105,7 @@ describe("A side question", () => {
     const before = chat().items;
 
     const asking = hermes.askSideQuestion("backup", "Which repo was it?");
-    expect(chat().sideQuestions).toEqual([{ id: expect.any(String), question: "Which repo was it?", after: 2, state: "asking" }]);
+    expect(chat().sideQuestions).toEqual([{ id: expect.any(String), question: "Which repo was it?", after: "h-1", state: "asking" }]);
     expect(await asking).toBe(true);
     expect(server.last("prompt.btw")?.params).toEqual({ session_id: runtime, text: "Which repo was it?" });
     expect(chat().sideQuestions?.[0]).toMatchObject({ state: "asking", taskId: task() });
@@ -118,27 +118,28 @@ describe("A side question", () => {
     server.event(runtime, "btw.complete", { task_id: task(), question: "Which repo was it?", text: "The `restic` repo on the NAS." });
     await hermes.idle();
     expect(chat().sideQuestions).toEqual([
-      { id: expect.any(String), question: "Which repo was it?", after: 2, taskId: task(), state: "answered", answer: "The `restic` repo on the NAS." },
+      { id: expect.any(String), question: "Which repo was it?", after: "h-1", taskId: task(), state: "answered", answer: "The `restic` repo on the NAS." },
     ]);
     expect(chat().items).toBe(before);
     expect(server.requests.some((r) => r.method === "prompt.submit")).toBe(false);
   });
 
-  it("remembers how many items came before it, so it stays where it was asked as the reply goes on", async () => {
+  it("remembers the item it was asked after, so it stays there as the reply goes on", async () => {
     const { server, hermes, chat, runtime } = await opened();
     await hermes.send("backup", "Unlock it and run the backup");
     server.event(runtime, "message.start");
     server.event(runtime, "message.delta", { text: "Unlocking" });
     await hermes.idle();
-    const asked = chat().items.length;
-    expect(chat().items.at(-1)).toMatchObject({ kind: "assistant", text: "Unlocking" });
+    const reply = chat().items.at(-1)!;
+    expect(reply).toMatchObject({ kind: "assistant", text: "Unlocking" });
 
     await hermes.askSideQuestion("backup", "How long will it take?");
     server.event(runtime, "message.delta", { text: " the repo" });
     server.event(runtime, "tool.start", { tool_id: "t1", name: "terminal", context: "restic unlock" });
+    server.event(runtime, "message.complete", { status: "complete", text: "Unlocking the repo", reasoning: "Unlock first." });
     await hermes.idle();
-    expect(chat().items.length).toBeGreaterThan(asked);
-    expect(chat().sideQuestions?.[0].after).toBe(asked);
+    expect(chat().items.map((i) => i.kind).slice(-3)).toEqual(["thinking", "assistant", "tool"]);
+    expect(chat().sideQuestions?.[0].after).toBe(reply.id);
   });
 
   it("leaves a reply running alongside alone, before and after its answer", async () => {
