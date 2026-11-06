@@ -2,10 +2,14 @@
 // tests' FakeHermes (src/hermes/fakeHermes.ts) with fixed synthetic chats. Loopback only. `hv up` bundles and starts it.
 //   node bridge.mjs <port> <state-file>
 // Sign-in: username `verify`, password `verify-pass`; anything else is 401 "Invalid credentials", as Hermes answers.
-// Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history.
+// Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history, except:
+//   a prompt with "delegate" in it starts two subagents, as Hermes's delegate tool reports them, and its reply runs on.
+//   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
+//   with HV_LONG_REPLY=<n>, a prompt that starts with `long` gets n paragraphs of markdown (code, a list, a table),
+//   three words every 40 ms, so a reply keeps streaming for minutes.
+//   `subagent.interrupt` (Stop in the Subagents panel) ends that subagent as `interrupted`, as Hermes reports it.
+//   `POST /__subagent?id=<subagent id>&status=completed|failed` ends one as Hermes reports it (a test's control).
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
-// HV_LONG_REPLY=<n> answers a prompt that starts with `long` with n paragraphs of markdown (code, a list, a table),
-// three words every 40 ms, so a reply keeps streaming for minutes.
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
 import { createHash } from "node:crypto";
@@ -95,6 +99,40 @@ function replyTo(sessionId: string, prompt: string) {
   setTimeout(step, 400);
 }
 
+// The subagents a "delegate" prompt started, as `subagent.start` / `subagent.complete` payloads carry them
+// (`tools/delegate_tool.py` at the deployed `f0d94882`). Each is also in Hermes's registry, for `subagent.list`.
+const TEAM = ["Read the auth code", "Read the tests"];
+const delegated = new Map<string, { sid: string; stored: string; payload: Record<string, unknown> }>();
+let started = 0;
+
+function delegate(sid: string) {
+  const stored = server.runtime.get(sid);
+  if (!stored) return;
+  server.event(sid, "message.start");
+  server.event(sid, "message.delta", { text: "Delegating to two subagents." });
+  TEAM.forEach((goal, task_index) => {
+    const subagent_id = `sa-${++started}`;
+    const payload = { subagent_id, goal, task_index, task_count: TEAM.length, depth: 0, delegation_id: `dlg-${sid}`, model: "stand-in-model" };
+    delegated.set(subagent_id, { sid, stored, payload });
+    (server.subagents[stored] ??= []).push({ ...payload, owner: sid, status: "running", accepting_steer: true, started_at: Date.now() / 1000 });
+    server.event(sid, "subagent.start", payload);
+  });
+}
+
+function askApproval(sid: string) {
+  server.event(sid, "message.start");
+  server.askApproval(sid);
+}
+
+function endSubagent(id: string, status: string) {
+  const d = delegated.get(id);
+  if (!d) return false;
+  delegated.delete(id);
+  server.subagents[d.stored] = (server.subagents[d.stored] ?? []).filter((r) => r.subagent_id !== id);
+  server.event(d.sid, "subagent.complete", { ...d.payload, status, summary: `Stand-in subagent ${status}.` });
+  return true;
+}
+
 let pipe: Pipe | undefined;
 let send: ((text: string) => void) | undefined;
 const open = async (profile: string) => {
@@ -154,6 +192,10 @@ const http = createServer(async (req, res) => {
     res.end(typeof v === "string" ? v : JSON.stringify(v));
   };
   if (url.pathname === "/__state") return json(200, dump());
+  if (url.pathname === "/__subagent" && req.method === "POST") {
+    const id = url.searchParams.get("id") ?? "";
+    return endSubagent(id, url.searchParams.get("status") ?? "completed") ? json(200, { ok: true }) : json(404, { detail: `No running stand-in subagent ${id}` });
+  }
   if (url.pathname === "/auth/password-login") {
     const b = JSON.parse(body ?? "{}");
     if (b.username !== USER || b.password !== PASSWORD) return json(401, { detail: "Invalid credentials" });
@@ -176,11 +218,19 @@ http.on("upgrade", async (req, sock: Socket) => {
   send = (t) => sock.writable && sock.write(frame(t));
   readFrames(sock, (t) => {
     try {
-      const msg = JSON.parse(t) as { method?: string; params?: { session_id?: string; text?: string } };
+      const msg = JSON.parse(t) as { method?: string; params?: { session_id?: string; text?: string; subagent_id?: string } };
       if (msg.method === "prompt.submit" && msg.params?.session_id) {
         const { session_id, text } = msg.params;
-        setTimeout(() => (save(), replyTo(session_id, String(text ?? ""))), 0);
+        const prompt = String(text ?? "");
+        setTimeout(() => {
+          save();
+          if (/delegate/i.test(prompt)) delegate(session_id);
+          else if (/approval/i.test(prompt)) askApproval(session_id);
+          else replyTo(session_id, prompt);
+        }, 0);
       }
+      const stop = msg.method === "subagent.interrupt" ? delegated.get(String(msg.params?.subagent_id)) : undefined;
+      if (stop && stop.sid === msg.params?.session_id) setTimeout(() => endSubagent(String(msg.params!.subagent_id), "interrupted"), 50);
     } catch {
       // Not JSON: FakeHermes answers it as it would.
     }

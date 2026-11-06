@@ -2669,7 +2669,7 @@ export function Main({
       {officeVisible && (
         <Office
           rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
-          view={agentOffice === "list" ? "list" : "desks"}
+          view={agentOffice}
           onView={(view) => setUIPrefs({ agentOffice: view })}
           server={where ?? "the server"}
           profile={profile}
