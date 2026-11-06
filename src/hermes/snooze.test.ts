@@ -330,6 +330,18 @@ describe("PinStore", () => {
     expect(order([...list].reverse())).toEqual(["a", "b", "c"]);
   });
 
+  it("pins after a pin another window made, though this window hasn't heard of it yet", () => {
+    const storage = memory(undefined, PINS_KEY);
+    const first = new PinStore(storage, "A", () => WED);
+    const second = new PinStore(storage, "A", () => WED);
+    first.pin("z");
+    second.pin("a");
+    const pins = new PinStore(storage, "A").getSnapshot();
+    expect(chatSections([chat("a", WED), chat("z", WED)], {}, WED, {}, {}, pins).pinned.map((c) => c.id)).toEqual(["z", "a"]);
+    first.unpin("a");
+    expect(new PinStore(storage, "A").getSnapshot()).toEqual({ z: WED });
+  });
+
   it("orders pins stored with the same time the same way whatever order the list comes in", () => {
     const same = { x: WED, y: WED };
     const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, same).pinned.map((c) => c.id);

@@ -211,11 +211,14 @@ export class PinStore extends ChatTimesStore {
    * the place an earlier pin had.
    */
   pin(chatId: string, at?: number) {
+    // Another window may have pinned a chat since this one last read the document.
+    this.reread();
     const pins = this.getSnapshot();
     if (!(chatId in pins)) this.set(chatId, at ?? Math.max(this.now(), ...Object.values(pins).map((t) => t + 1)));
   }
 
   unpin(chatId: string) {
+    this.reread();
     if (chatId in this.getSnapshot()) this.forget(chatId);
   }
 }
