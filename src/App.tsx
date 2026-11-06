@@ -30,8 +30,8 @@ import { onDesktopScreenshot, screenshotSupport, showWindow, syncScreenshotOutbo
 import { ConnectionManager, RailConnections, RemoveConnection, SwitchConnection } from "./ui/Connections";
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
-import { reachRoute, tauriAttemptStore, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
-import { AttemptLog } from "./hermes/attempts";
+import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
+import { AttemptLog, tauriAttemptStore } from "./hermes/attempts";
 import { readMethods } from "./hermes/signInMethods";
 import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";

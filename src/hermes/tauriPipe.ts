@@ -7,7 +7,7 @@ import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 import { routedPipe, type ReachRoute, type RouteDetails, type RoutedHooks } from "./routes";
 import type { SignInWay } from "./connections";
-import type { Attempt, AttemptStore, Step } from "./attempts";
+import type { Step } from "./attempts";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
@@ -102,12 +102,6 @@ export const reachRoute: ReachRoute = (d, expectServer) => tauriReach(d, expectS
 export function tauriPipe(d: SignInDetails, hooks?: RoutedHooks): OpenPipe {
   return routedPipe(d, (one, opts) => routePipe(one, opts), hooks);
 }
-
-/** The record of connection attempts, in Rust's file (src-tauri/src/connection_attempts.rs, #270). */
-export const tauriAttemptStore: AttemptStore = {
-  read: () => invoke<{ attempts: Attempt[]; unreadable: number }>("connection_attempts_read").catch(asError),
-  put: (attempt) => invoke<void>("connection_attempts_put", { attempt }).catch(asError),
-};
 
 /** One route's pipe. `expectServer`, `quick`, `sshRoute` and `onStep`: see routes.ts `OpenRoute`. */
 function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step) => void }): OpenPipe {

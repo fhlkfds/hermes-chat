@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use hermes_chat::connect_steps::{Step, Steps};
 use hermes_chat::display;
 use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
@@ -555,9 +556,13 @@ async fn open_stub_for(profile: &str) -> (transport::Pipe, mpsc::UnboundedReceiv
     let (tx, rx) = mpsc::unbounded_channel();
     let pipe = signed_in()
         .await
-        .open_pipe(profile, move |e| {
-            let _ = tx.send(e);
-        })
+        .open_pipe(
+            profile,
+            move |e| {
+                let _ = tx.send(e);
+            },
+            &Steps::default(),
+        )
         .await
         .expect("pipe open");
     (pipe, rx)
@@ -1282,8 +1287,15 @@ async fn a_direct_ws_url_is_signed_in_to_over_http() {
     assert_eq!(direct.base, base);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let dashboard = Dashboard::sign_in(&direct.base, &sign_in("hunter2")).await.expect("signed in");
-    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("pipe open");
+    // The ticket and the socket are each a step, said as each starts (the record of connection attempts, #270).
+    let steps = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let said = steps.clone();
+    let _pipe = dashboard
+        .open_pipe("default", move |e| drop(tx.send(e)), &Steps::reporting(move |s| said.lock().unwrap().push(s)))
+        .await
+        .expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
+    assert_eq!(*steps.lock().unwrap(), [Step::Ticket, Step::WebSocket]);
 
     let secure = transport::resolve_direct("wss://127.0.0.1/hermes/").await.expect("parsed");
     assert_eq!(secure.base.as_str(), "https://127.0.0.1/hermes/");
@@ -1723,7 +1735,7 @@ async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
     let (base, seen) = gated_stub(&elsewhere).await;
     let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in through the gate");
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("socket opened through the gate");
+    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e)), &Steps::default()).await.expect("socket opened through the gate");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
     assert_eq!(get_json(&dashboard, "api/sessions?order=recent").await["query"], "order=recent");
 
@@ -2524,9 +2536,13 @@ async fn a_token_signs_in_as_a_bearer_and_opens_the_socket_with_a_ticket_only() 
     assert_eq!(got["cookie"], "");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let _pipe = dashboard
-        .open_pipe("default", move |e| {
-            let _ = tx.send(e);
-        })
+        .open_pipe(
+            "default",
+            move |e| {
+                let _ = tx.send(e);
+            },
+            &Steps::default(),
+        )
         .await
         .expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");

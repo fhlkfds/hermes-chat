@@ -7,6 +7,7 @@
 // A line is written whole each time its attempt moves on, so an attempt the app was closed during is on disk at the
 // step it was on, and the next launch says so.
 
+import { invoke } from "@tauri-apps/api/core";
 import { clean, type Entry, type Level, type Snapshot, note } from "./logs";
 import { KIND_LABEL, type RouteDetails, type RouteKind, routesOf } from "./routes";
 import type { SignInDetails } from "./tauriPipe";
@@ -20,11 +21,17 @@ export type Outcome = "unfinished" | "connected" | "failed" | "stopped";
 /** One line of the file. `run`: the launch of the app that made it. `ms`: how long it took, once it ended. */
 export type Attempt = { v: 1; id: string; run: string; at: number; ms?: number; outcome: Outcome; routes: RouteTry[]; error?: string };
 
-/** Where attempts are kept: Rust's file in the app (tauriPipe.ts `tauriAttemptStore`), memory in tests. */
+/** Where attempts are kept: Rust's file in the app (`tauriAttemptStore`), memory in tests. */
 export type AttemptStore = {
   read(): Promise<{ attempts: Attempt[]; unreadable: number }>;
   /** Replaces the line with this id, or adds it, and keeps the newest 50. Rejects a line that isn't clean. */
   put(a: Attempt): Promise<void>;
+};
+
+/** Rust's file (src-tauri/src/connection_attempts.rs). A failed command rejects with the Rust error's text. */
+export const tauriAttemptStore: AttemptStore = {
+  read: () => invoke<{ attempts: Attempt[]; unreadable: number }>("connection_attempts_read").catch((e: unknown) => Promise.reject(new Error(String(e)))),
+  put: (attempt) => invoke<void>("connection_attempts_put", { attempt }).catch((e: unknown) => Promise.reject(new Error(String(e)))),
 };
 
 /** The most attempts kept (connection_attempts.rs `CAP`). */
