@@ -112,11 +112,12 @@ export function inboxEntries({ profile, chats, connected, others, live, seen }: 
 
   // The other profiles, as their latest check read them.
   for (const [name, p] of Object.entries(others.byName)) {
-    const stale = !!p.error || !connected;
+    // A check that couldn't list the profiles keeps each one's chats from the check before.
+    const stale = !!p.error || !!others.error || !connected;
     for (const c of p.chats ?? [])
       if (c.unread)
         add({ key: `completed ${name} ${c.id}`, kind: "completed", profile: name, chatId: c.id, title: c.title, source: c.source, at: c.at, stale, summary: "Something new since you last read it." });
-    for (const f of p.failures ?? []) add(failureEntry({ ...f, profile: name, stale: false }));
+    for (const f of p.failures ?? []) add(failureEntry({ ...f, profile: name, stale }));
     for (const s of p.sends ?? []) {
       const title = p.chats?.find((c) => c.id === s.chatId)?.title ?? s.title ?? "Untitled chat";
       add(sendEntry({ profile: name, chatId: s.chatId, title, itemId: s.itemId, state: s.state, at: 0, stale: false }));

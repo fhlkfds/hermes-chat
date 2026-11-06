@@ -15,6 +15,7 @@ import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { SubagentsPanel, type SubagentsApi } from "./Subagents";
+import type { SubagentId } from "../hermes/subagents";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
@@ -293,6 +294,7 @@ export function ChatPane({
   queue,
   queueApi,
   subagents,
+  showSubagent,
   commands,
   followUp,
   branch,
@@ -349,6 +351,8 @@ export function ChatPane({
   queueApi?: QueueApi;
   /** Steer, Stop and output for the chat's Subagents; without it the panel only shows them. */
   subagents?: SubagentsApi;
+  /** A subagent to open in the Subagents panel, from the agent office. */
+  showSubagent?: { id: SubagentId; at: number };
   commands?: CommandHost;
   /** What sending does while the reply runs: queue or steer (ADR 0057). Without it, it queues. */
   followUp?: FollowUpHost;
@@ -750,6 +754,7 @@ export function ChatPane({
         tree={chat.subagents}
         api={subagents}
         approvalWaiting={waiting}
+        show={showSubagent}
         onGoToApproval={() => {
           const id = chat.items.find(isWaiting)?.id;
           const card = id && rootRef.current?.querySelector<HTMLElement>(`.approval[data-item="${CSS.escape(id)}"]`);

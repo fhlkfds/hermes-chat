@@ -175,7 +175,9 @@ describe("Searching Settings", () => {
     await user.type(box(), "subagents");
     await waitFor(() => expect(showing("Subagents")).toBe(true));
     expect(showing("Main model")).toBe(false);
-    expect(screen.getByRole("group", { name: "General" }).hasAttribute("data-search-miss")).toBe(true);
+    // General's agent office setting is about subagents too (ADR 0077); its other sections aren't.
+    expect(showing("Agent office")).toBe(true);
+    expect(showing("Sending while Hermes replies")).toBe(false);
   });
 
   it("names the Memory tab rather than mounting it, and opening it ends the search", async () => {

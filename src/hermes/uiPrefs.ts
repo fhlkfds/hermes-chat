@@ -1,7 +1,7 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
 // had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
 // the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
-// reply runs, Idle compaction, and which of the chat list's sections show and which are collapsed. All preferences live in one versioned localStorage document.
+// reply runs, Idle compaction, which of the chat list's sections show and which are collapsed, and how the agent office shows. All preferences live in one versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
 
@@ -60,7 +60,12 @@ export type UIPrefs = {
   chatSectionsShown: SectionKey[];
   /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
   chatSectionsCollapsed: SectionKey[];
+  /** How the agent office shows the agents at work: as desks, as a list, or not at all, with no rail button (ADR 0077). */
+  agentOffice: OfficeView;
 };
+
+export type OfficeView = "desks" | "list" | "off";
+export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "off"];
 
 export type FollowUp = "queue" | "steer";
 
@@ -99,6 +104,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
   chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
   chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
+  agentOffice: "desks",
 });
 
 /** A stored document as read, before its fields are checked. */
@@ -234,6 +240,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
     chatSectionsShown: toShown(doc.chatSectionsShown) ?? [...d.chatSectionsShown],
     chatSectionsCollapsed: toSections(doc.chatSectionsCollapsed) ?? [...d.chatSectionsCollapsed],
+    agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : d.agentOffice,
   };
 }
 
