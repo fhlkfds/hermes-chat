@@ -2346,7 +2346,7 @@ label.memory-pick { cursor: pointer; }
 .seat {
   --seat-tint: var(--faint);
   --seat-body: var(--muted);
-  width: 118px; height: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 6px 6px;
+  width: 140px; height: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 6px 6px;
   border-radius: 10px; border: 1px solid transparent; background: none; text-align: left;
 }
 .seat:hover { background: var(--raised-2); border-color: var(--line-3); }

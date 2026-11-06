@@ -4,6 +4,7 @@
 // Sign-in: username `verify`, password `verify-pass`; anything else is 401 "Invalid credentials", as Hermes answers.
 // Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history, except:
 //   a prompt with "delegate" in it starts two subagents, as Hermes's delegate tool reports them, and its reply runs on.
+//   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
 //   `subagent.interrupt` (Stop in the Subagents panel) ends that subagent as `interrupted`, as Hermes reports it.
 //   `POST /__subagent?id=<subagent id>&status=completed|failed` ends one as Hermes reports it (a test's control).
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
@@ -99,6 +100,11 @@ function delegate(sid: string) {
     (server.subagents[stored] ??= []).push({ ...payload, owner: sid, status: "running", accepting_steer: true, started_at: Date.now() / 1000 });
     server.event(sid, "subagent.start", payload);
   });
+}
+
+function askApproval(sid: string) {
+  server.event(sid, "message.start");
+  server.askApproval(sid);
 }
 
 function endSubagent(id: string, status: string) {
@@ -198,7 +204,12 @@ http.on("upgrade", async (req, sock: Socket) => {
       if (msg.method === "prompt.submit" && msg.params?.session_id) {
         const { session_id, text } = msg.params;
         const prompt = String(text ?? "");
-        setTimeout(() => (save(), /delegate/i.test(prompt) ? delegate(session_id) : replyTo(session_id, prompt)), 0);
+        setTimeout(() => {
+          save();
+          if (/delegate/i.test(prompt)) delegate(session_id);
+          else if (/approval/i.test(prompt)) askApproval(session_id);
+          else replyTo(session_id, prompt);
+        }, 0);
       }
       const stop = msg.method === "subagent.interrupt" ? delegated.get(String(msg.params?.subagent_id)) : undefined;
       if (stop && stop.sid === msg.params?.session_id) setTimeout(() => endSubagent(String(msg.params!.subagent_id), "interrupted"), 50);
