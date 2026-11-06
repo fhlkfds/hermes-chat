@@ -1412,6 +1412,10 @@ mark.hl { background: rgba(245, 184, 74, 0.22); color: var(--warn); border-radiu
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: inherit; }
 .menu-label { flex: 1; white-space: nowrap; }
 .menu-item.danger, .menu-item.danger .menu-icon { color: var(--bad); }
+.menu-item[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.menu-item[aria-disabled="true"]:hover { background: none; color: var(--text-2); }
+/* Why the item above it does nothing, lined up with its label (link menu, previewContext.tsx). */
+.menu-note { padding: 0 8px 4px 33px; font-size: calc(11rem / 14); color: var(--faint); }
 
 /* Screenshot settings: the shortcut recorder and the desktop shortcut examples. */
 .shortcut-controls { display: flex; gap: 8px; flex-shrink: 0; }
