@@ -9,15 +9,15 @@ One Hermes conversation as this app shows it, with its full message history.
 _Avoid_: session (Hermes's word for the same thing; keep it for server-side talk), conversation, thread
 
 **Active**:
-The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows in the Inbox when it needs the owner or is done, in Working while Hermes replies in it, in Snoozed while it is snoozed, and in Unsettled once the owner clears it from the Inbox (ADR 0036, ADR 0063). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
+The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows in the Inbox when it needs the owner or is done, in Working while Hermes replies in it, and in Snoozed while it is snoozed (ADR 0036, ADR 0063, ADR 0090). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in the list's Settled section, collapsed until the owner opens it. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
-The owner's manual actions that move a chat from Active to Settled, and back. Both are the same icon-only button, named when hovered. Settling a snoozed chat forgets the snooze.
+The owner's manual actions that move a chat from Active to Settled, and back. Both are the same icon-only button, named when hovered. Settle is the one way to clear a chat from the Inbox, and Unsettle puts it back there (ADR 0090). Settling a snoozed chat forgets the snooze.
 
 **Working**:
 Where the list shows an Active chat while Hermes is writing a reply in it and isn't waiting on the owner. Nobody puts a chat there: it moves there when a reply starts, and back to the Inbox once Hermes asks the owner something (an Approval) or the reply ends. A Settled or snoozed chat stays where it is while Hermes works in it.
@@ -28,15 +28,15 @@ An Active chat the owner has put out of the way until a time they chose. It sits
 _Avoid_: hidden, deferred, reminder
 
 **Inbox**:
-The first section of the chat list: the Active chats in the profile shown that need the owner or have finished, newest first: an Approval waiting, a failure, a reply done, something new. A chat stays there until the owner opens it and clears it, settles it or snoozes it, or a reply starts in it (ADR 0063).
+The first section of the chat list: the Active chats in the profile shown that need the owner or have finished, newest first: an Approval waiting, a failure, a reply done, something new. A chat stays there until the owner settles it or snoozes it, or a reply starts in it (ADR 0063, ADR 0090).
 _Avoid_: top of the list (its name before ADR 0063), feed
 
 **Unsettled**:
-The section of the chat list holding the Active chats the owner cleared from the Inbox, newest first. It is a place in the list, not a state: an Unsettled chat is still Active, and settling it moves it to Settled (ADR 0063).
-_Avoid_: closed, hidden, read
+No longer a place in the list. ADR 0063's Unsettled section held the Active chats cleared from the Inbox; ADR 0090 removed it, and the chats in it were settled once when the app updated. The word is left for the toast after Unsettle. A chat out of the way is Settled.
+_Avoid_: as a section or a state
 
-**Clear** / **Back to the Inbox**:
-The owner's actions, from a chat's row or its right-click menu, that move a read, quiet Active chat from the Inbox to Unsettled, and back. A chat can be cleared only when it isn't Unread, no reply is running in it and Hermes isn't waiting on the owner. It is back in the Inbox on its own as soon as anything newer happens in it: a message from any platform, a reply that ends, a snooze that wakes. Nothing is deleted or sent to Hermes: a clear is kept on this computer only, for each connection and profile. Settling, unsettling, archiving or deleting the chat forgets it (ADR 0063).
+**Clear** (from the Inbox):
+What the owner does to a chat they are done with, by settling it. There is no separate Clear action, and no Back to the Inbox: Unsettle brings a Settled chat back. A clear is Settled on Hermes, so it syncs between machines and holds whatever happens in the chat (ADR 0090, replacing ADR 0063's local clears).
 _Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), done
 
 **Pinned** / **Pin** / **Unpin**:
@@ -44,7 +44,7 @@ The owner's actions, from a chat's right-click menu or its header's More menu (P
 _Avoid_: favourite, star (starred models are the model picker's), sticky
 
 **Chat list section**:
-One of the chat list's groups, in this order: Pinned, Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
+One of the chat list's groups: Pinned, Inbox, Working, Snoozed and Archived, in that order in the list's scroll, then Settled, a drawer at the list's foot with its own scroll, at most half the panel high. Each chat is in exactly one. Each has a header with its count that collapses or expands it (for Settled, closes or opens the drawer); which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063, ADR 0090).
 _Avoid_: group, folder, tab
 
 **Snooze** / **Unsnooze**:
@@ -496,7 +496,7 @@ _Avoid_: signing key (ambiguous with Git commit signing)
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
-- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, **Unsettled** if the owner cleared it and nothing newer has happened in it, otherwise the **Inbox**.
+- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, otherwise the **Inbox**.
 - Every **Chat** has exactly one **Source**.
 - Every **Chat** belongs to exactly one **Profile**; Active and Settled are kept per profile.
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
@@ -511,8 +511,8 @@ _Avoid_: signing key (ambiguous with Git commit signing)
 - **Screen** vs a web page in the **Preview**: both can show a site, but the Screen's browser runs on the server and is the agent's, with its sign-ins; the Preview loads the page on this computer, isolated from the app, and is the owner's alone.
 - **Artifact** vs **Edit** (of a Server file): both edit a text file's text with the same checked save, but an Artifact is an Output, edited beside the chat on the machine its tool wrote it on, with Hermes's proposed edits and kept versions. A Server file edit is made in the Files tab and only reaches the dashboard's machine.
 - **Output** vs a path in a reply: Outputs counts only what a tool's own result says it wrote. A reply that says "saved to /srv/x.pdf", or a `terminal` command that creates a file, makes no Output, though the owner can add that file by its path.
-- **Inbox** vs **Rail inbox**: the Inbox is the chat list's first section, one profile's Active chats; the Rail inbox, opened from the rail's Inbox button, lists what needs the owner across every profile on the server, chats in any state included. Clearing a chat from the Inbox doesn't dismiss its Rail inbox entry, and dismissing an entry doesn't clear the chat (ADR 0063).
-- **Unsettled** vs **Settled**: an Unsettled chat is Active, cleared from the Inbox until something newer happens in it, on this computer only. A Settled chat stays out of the way whatever happens in it, in every Hermes Chat on the server.
+- **Inbox** vs **Rail inbox**: the Inbox is the chat list's first section, one profile's Active chats; the Rail inbox, opened from the rail's Inbox button, lists what needs the owner across every profile on the server, chats in any state included. Settling a chat doesn't dismiss its Rail inbox entry, and dismissing an entry doesn't settle the chat (ADR 0063, ADR 0090).
+- **Unsettle** vs **Unsettled**: Unsettle is the action that brings a Settled chat back to the Inbox. Unsettled is no longer a section or a state (ADR 0090).
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
