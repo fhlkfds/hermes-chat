@@ -42,7 +42,7 @@ describe("The menu", () => {
     expect(matchCommands("").map((c) => c.name)).toEqual(COMMANDS.map((c) => c.name));
     expect(matchCommands("de").map((c) => c.name)).toEqual(["delete"]);
     expect(matchCommands("context").map((c) => c.name)).toEqual(["context"]);
-    expect(matchCommands("chat").map((c) => c.name)).toEqual(["new", "rename", "delete", "context"]);
+    expect(matchCommands("chat").map((c) => c.name)).toEqual(["new", "rename", "delete", "btw", "context"]);
     expect(matchCommands("zzz")).toEqual([]);
   });
 

@@ -60,8 +60,8 @@ The owner's action that removes a chat from Hermes for good, in every Hermes cli
 _Avoid_: remove, archive
 
 **Export**:
-Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The file holds only what Hermes Chat has loaded for the chat. It names attachments but never includes their contents. It also warns that the chat itself may contain sensitive information.
-_Avoid_: download, backup
+Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The Export dialog comes first: the owner picks the messages, whether tool calls and Approvals and the names of attached files go in (left out at first), and what is redacted, and sees the file exactly as it will be saved. Likely secrets are flagged and redacted unless the owner keeps them, and the owner can redact any text they select. The file holds only what Hermes Chat has loaded for the chat, as it was when the dialog opened, and never an attachment's contents. It warns that it may still contain sensitive information, since detection can miss a secret. Nothing is uploaded (ADR 0076).
+_Avoid_: download, backup, snapshot (#92's published copy, which waits for a hosting service), share
 
 **Backup**:
 A zip file of what Hermes Chat keeps on this computer, saved where the owner picks: settings and templates, and for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters, and branch origins. It never holds a password or other credential, the sign-in, or anything Hermes keeps on the server. **Restore a backup** checks all of it first, previews it, maps each of its connections and profiles to a profile here (only an identical one on its own), and writes each category by the owner's choice, Merge or Replace, after saving a recovery backup. Nothing restored is sent: queued messages come back paused (ADR 0038).
@@ -178,6 +178,10 @@ _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue 
 **Steered message**:
 A message the owner sent into a running reply instead of queueing it, through Hermes's `/steer`. Hermes adds it to the reply after the reply's next tool call, without stopping it, so it doesn't start a turn of its own. It shows in the chat marked "Steered into the reply", and Hermes stores it so (`display_kind: "steer"`). The Follow-up behavior setting picks whether Enter queues or steers while a reply runs; Ctrl+Enter does the other. A message with files, or one sent to a Hermes whose `/steer` can't run here, is queued instead (ADR 0057).
 _Avoid_: interrupt, redirect (Hermes's words for cutting the running reply short), injected message
+
+**Side question (/btw)**:
+A question the owner asks about a chat with `/btw <question>`, while a reply runs or with the chat idle, without interrupting the reply or adding to the chat. Hermes answers it from a snapshot of the conversation, with no tools, and stores nothing. The question and its answer show on a card above the composer, marked "Side question", never in the transcript; it can be copied and dismissed. A chat shows up to three; a fourth takes the oldest one's place. Cards stay while switching chats and go on a profile switch or a reload; they are never saved, exported or put in the Saved copy. A question Hermes couldn't answer says why on its card, never as a Failed message (ADR 0070).
+_Avoid_: aside, background question, `/background` (Hermes's command for a separate background session), btw message
 
 **Slash command**:
 A command the owner types at the start of the composer, after a "/", picked from the menu that opens there or typed in full. Each is either an action of this app or a command Hermes runs for the chat, and says which. Only the commands in the app's list run; any other text starting with "/" is sent as an ordinary message. Picking from the menu only fills the command in; Enter then runs it. A command that can't run says why and keeps the text. Deleting asks first, as it does in the chat list. The same menu lists the profile's skills after the commands (see Skill) (ADR 0015).

@@ -5,7 +5,6 @@
 //! no further than the limits below whatever their headers claim. Nothing in an archive is ever run or written out.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -58,14 +57,14 @@ fn check_entries(entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 
-/// A new private temporary file beside `path`, made with O_EXCL: it never opens a file or symlink already there, so
+/// A new private temporary file beside `path`, made with O_EXCL (CREATE_NEW on Windows): it never opens a file or symlink already there, so
 /// nothing planted in the folder can redirect the write or keep its own permissions.
 fn create_temp(path: &Path) -> io::Result<(PathBuf, fs::File)> {
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().map_or("backup".into(), |n| n.to_string_lossy());
     for n in 0..100 {
         let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
-        match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
+        match crate::defaults_file::owner_only(OpenOptions::new().write(true).create_new(true)).open(&tmp) {
             Ok(f) => return Ok((tmp, f)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -263,8 +262,11 @@ mod tests {
         let files = vec![entry("manifest.json", "{\"a\":1}"), entry("drafts.json", "{\"records\":[\"é\"]}")];
         write_zip(&p, &files).unwrap();
         assert_eq!(read_zip(&p).unwrap(), files);
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         assert!(fs::read_dir(&d).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
     }
 
@@ -320,9 +322,15 @@ mod tests {
         let victim = d.join("victim.txt");
         fs::write(&victim, "keep me").unwrap();
         let p = d.join("b.zip");
-        std::os::unix::fs::symlink(&victim, d.join(format!(".b.zip.{}.0.tmp", std::process::id()))).unwrap();
+        let planted = d.join(format!(".b.zip.{}.0.tmp", std::process::id()));
+        // A symlink needs a privilege on Windows; a plain file there is the same test of never opening what exists.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(&victim, &planted).unwrap();
         write_zip(&p, &[entry("manifest.json", "{}")]).unwrap();
         assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(&planted).unwrap(), "keep me");
         assert_eq!(read_zip(&p).unwrap(), vec![entry("manifest.json", "{}")]);
     }
 

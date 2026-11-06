@@ -553,13 +553,10 @@ pub struct LocalText {
 
 /// Opens only a regular file, without following a last-component symlink or blocking on a FIFO.
 fn open_local_text(path: &str) -> Result<std::fs::File, TransportError> {
-    use std::os::unix::fs::OpenOptionsExt;
     if !std::path::Path::new(path).is_absolute() {
         return Err(TransportError::File("it isn't a full path".into()));
     }
-    let file = std::fs::OpenOptions::new().read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
-        .map_err(|e| TransportError::File(e.to_string()))?;
+    let file = local_fs::open_no_follow(std::path::Path::new(path)).map_err(|e| TransportError::File(e.to_string()))?;
     let meta = file.metadata().map_err(|e| TransportError::File(e.to_string()))?;
     if !meta.is_file() {
         return Err(TransportError::File(if meta.is_dir() { "it's a folder" } else { "it isn't a regular file" }.into()));
@@ -568,12 +565,11 @@ fn open_local_text(path: &str) -> Result<std::fs::File, TransportError> {
 }
 
 fn read_file_prefix(file: &std::fs::File, max: u64) -> Result<Vec<u8>, TransportError> {
-    use std::os::unix::fs::FileExt;
     let mut bytes = vec![0; max as usize];
     let mut len = 0;
     // Positional reads keep concurrent reloads from sharing or advancing the retained handle's offset.
     while len < bytes.len() {
-        match file.read_at(&mut bytes[len..], len as u64) {
+        match local_fs::read_at(file, &mut bytes[len..], len as u64) {
             Ok(0) => break,
             Ok(n) => len += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -644,26 +640,96 @@ impl PickedFiles {
 /// one: a pasted screenshot has no file of its own. Each paste gets its own folder under `<temp>/hermes-chat`, so
 /// the same name pasted twice stays two files. `name` is cut down to a safe basename. Nothing removes these files.
 pub fn stage_clipboard_file(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TransportError> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::sync::atomic::{AtomicU64, Ordering};
     static PASTES: AtomicU64 = AtomicU64::new(0);
     let io = |e: std::io::Error| TransportError::File(format!("couldn't save the pasted file: {e}"));
 
     // Pastes can be private: only this user's folders, and not one someone else made (or linked) in a shared /tmp.
-    // Ownership matters, not just the mode: another user's folder could be opened up again after this check.
     let root = std::env::temp_dir().join("hermes-chat");
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&root).map_err(io)?;
+    local_fs::private_dir_builder().recursive(true).create(&root).map_err(io)?;
     let meta = std::fs::symlink_metadata(&root).map_err(io)?;
-    let me = std::fs::metadata("/proc/self").map_err(io)?.uid();
-    if !meta.is_dir() || meta.uid() != me || meta.permissions().mode() & 0o077 != 0 {
+    if !meta.is_dir() || !local_fs::only_mine(&meta).map_err(io)? {
         return Err(TransportError::File(format!("couldn't save the pasted file: {} isn't private", root.display())));
     }
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let dir = root.join(format!("{nanos}-{}-{}", std::process::id(), PASTES.fetch_add(1, Ordering::Relaxed)));
-    std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(io)?;
+    local_fs::private_dir_builder().create(&dir).map_err(io)?;
     let path = dir.join(safe_name(name));
     std::fs::write(&path, bytes).map_err(io)?;
     Ok(path)
+}
+
+/// How a local file is opened for the preview, and a private folder made, on this platform.
+#[cfg(unix)]
+mod local_fs {
+    use std::fs::{DirBuilder, File, Metadata};
+    use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
+
+    pub fn open_no_follow(path: &Path) -> std::io::Result<File> {
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+    }
+
+    pub fn read_at(file: &File, buf: &mut [u8], at: u64) -> std::io::Result<usize> {
+        file.read_at(buf, at)
+    }
+
+    pub fn private_dir_builder() -> DirBuilder {
+        let mut b = DirBuilder::new();
+        b.mode(0o700);
+        b
+    }
+
+    /// Ownership matters, not just the mode: another user's folder could be opened up again after this check.
+    pub fn only_mine(meta: &Metadata) -> std::io::Result<bool> {
+        let me = std::fs::metadata("/proc/self")?.uid();
+        Ok(meta.uid() == me && meta.permissions().mode() & 0o077 == 0)
+    }
+}
+
+/// Windows has no FIFOs in folders and no Unix modes. A link is opened as itself (so it isn't a regular file and is
+/// refused), and the temp folder is the user's own (`%LOCALAPPDATA%\Temp`), which only they (and administrators) can
+/// open, so a folder made in it is private already.
+#[cfg(windows)]
+mod local_fs {
+    use std::fs::{DirBuilder, File, Metadata};
+    use std::os::windows::fs::{FileExt, MetadataExt, OpenOptionsExt};
+    use std::path::{Component, Path, Prefix};
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    pub fn open_no_follow(path: &Path) -> std::io::Result<File> {
+        // `\\.\` names a device or a pipe, never a file in a folder.
+        if matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::DeviceNS(_))) {
+            return Err(std::io::Error::other("it isn't a regular file"));
+        }
+        let file = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+        let meta = file.metadata()?;
+        if meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            return Ok(file);
+        }
+        // A reparse point that isn't a link, such as a OneDrive file not yet on this computer, is opened again the
+        // usual way so Windows fetches its contents. The same creation time and size say it is still the same file.
+        let again = std::fs::OpenOptions::new().read(true).open(path)?;
+        let now = again.metadata()?;
+        if now.creation_time() != meta.creation_time() || now.file_size() != meta.file_size() {
+            return Err(std::io::Error::other("the file changed while it was opened"));
+        }
+        Ok(again)
+    }
+
+    pub fn read_at(file: &File, buf: &mut [u8], at: u64) -> std::io::Result<usize> {
+        file.seek_read(buf, at)
+    }
+
+    pub fn private_dir_builder() -> DirBuilder {
+        DirBuilder::new()
+    }
+
+    pub fn only_mine(meta: &Metadata) -> std::io::Result<bool> {
+        Ok(!meta.file_type().is_symlink())
+    }
 }
 
 /// `name` as a plain file name: no folders, control characters or leading dots, a sane length, and its extension

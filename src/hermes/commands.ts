@@ -24,6 +24,9 @@ export const COMMANDS: readonly CommandDef[] = [
   { name: "delete", description: "Delete this chat in every Hermes client, after asking", scope: "local", destructive: true },
   // `command.dispatch` `_cmd_steer` (tui_gateway/methods_tools.py): queued for after the running reply's next tool call.
   { name: "steer", args: "<message>", description: "Tell the running reply something after its next tool call, without stopping it", scope: "server" },
+  // `prompt.btw` (tui_gateway/methods_prompt.py at the deployed `f0d94882`), as Hermes's own clients send it, not
+  // `command.dispatch`: it answers later, as a `btw.complete` event (ADR 0070).
+  { name: "btw", args: "<question>", description: "Ask a side question about this chat without interrupting the reply or adding to the chat", scope: "server" },
   // `slash.exec` `/context`, answered from the live session (tui_gateway/methods_slash.py `_format_live_context_output`).
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },
 ];
@@ -90,7 +93,8 @@ export type ServerCommandList = { listed: Set<string>; replaced: Set<string>; un
 /**
  * Commands that go through `command.dispatch`, which runs a quick command (any shell command) or a plugin command before
  * Hermes's own of the same name (`_dispatch_quick`, `_dispatch_plugin`). `slash.exec /context` is answered from the live
- * session before any of those (`_live_slash_command_output`), so nothing can replace it.
+ * session before any of those (`_live_slash_command_output`), and `/btw` is a method of its own, so nothing can replace
+ * either.
  */
 const REPLACEABLE = new Set(["steer"]);
 
@@ -146,4 +150,26 @@ export async function runServerCommand(rpc: Rpc, sessionId: string, def: Command
     return { kind: "send", message: res.message, ...(typeof res.notice === "string" && { notice: res.notice }) };
   if ((res.type === undefined || res.type === "exec") && typeof res.output === "string") return { kind: "output", text: res.output };
   throw new Error(`Hermes answered /${def.name} in a way this app doesn't handle.`);
+}
+
+/**
+ * Asks Hermes a side question about the chat's live session `sessionId` (`prompt.btw`). Resolves with the task id its
+ * `btw.complete` answer will carry; rejects saying why Hermes didn't take it.
+ */
+export async function askSideQuestion(rpc: Rpc, sessionId: string, question: string): Promise<string> {
+  const res = await rpc("prompt.btw", { session_id: sessionId, text: question }).catch((e) => {
+    throw isObj(e) && e.code === NO_SUCH_METHOD ? new Error("This Hermes can't answer side questions here. Updating Hermes may add it.") : e;
+  });
+  if (!isObj(res) || typeof res.task_id !== "string" || !res.task_id) throw new Error("Hermes didn't say it took the question.");
+  return res.task_id;
+}
+
+/**
+ * What a `btw.complete` text says. Hermes sends a failure as the text `error: <why>` (`_spawn_side_agent`), with no
+ * field of its own, so an answer that starts that way reads as a failure; its words show either way.
+ */
+export function sideAnswer(text: unknown): { answer: string } | { error: string } {
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t) return { error: "Hermes had no answer to it." };
+  return t.startsWith("error: ") ? { error: t.slice("error: ".length) } : { answer: t };
 }

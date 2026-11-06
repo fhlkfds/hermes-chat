@@ -42,7 +42,7 @@ pub async fn open_within(target: &str, remote_port: u16, quick: Option<Duration>
     let local_port = free_port().await.map_err(|e| TunnelError::Spawn(e.to_string()))?;
     let ready_within = quick.map_or(READY_TIMEOUT, |q| q * 2);
     let connect_timeout = quick.map(|q| format!("ConnectTimeout={}", q.as_secs().max(1)));
-    let mut child = Command::new("ssh");
+    let mut child = background_ssh();
     if let Some(option) = &connect_timeout {
         child.args(["-o", option]);
     }
@@ -80,6 +80,27 @@ pub async fn open_within(target: &str, remote_port: u16, quick: Option<Duration>
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Options every `ssh` this app starts gets on this platform. Windows's OpenSSH can't share connections
+/// (ControlMaster needs a Unix socket), so an ~/.ssh/config written for Linux that turns sharing on would make every
+/// connection fail; there each ssh opens its own connection instead.
+#[cfg(windows)]
+pub const PLATFORM_SSH_OPTIONS: &[&str] = &["-o", "ControlMaster=no", "-o", "ControlPath=none"];
+#[cfg(not(windows))]
+pub const PLATFORM_SSH_OPTIONS: &[&str] = &[];
+
+/// `ssh` with `PLATFORM_SSH_OPTIONS`, run in the background: on Windows without a console window of its own, which
+/// the app (a windowed program) would otherwise open for it.
+pub fn background_ssh() -> Command {
+    let mut command = Command::new("ssh");
+    command.args(PLATFORM_SSH_OPTIONS);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 async fn free_port() -> std::io::Result<u16> {

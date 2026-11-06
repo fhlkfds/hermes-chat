@@ -27,6 +27,9 @@ export type Entry =
 // ---------- redaction ----------
 
 type Rule = { kind: string; re: RegExp; to: string };
+/** The shapes of the AI providers', GitHub's, Slack's and cloud API keys, as a RegExp source. Also flags them in an export (secrets.ts). */
+export const PROVIDER_KEY =
+  "(?:sk-(?:ant-|or-|proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|r8_[A-Za-z0-9]{20,}|pplx-[A-Za-z0-9]{20,}|nvapi-[A-Za-z0-9_-]{20,})";
 // Order matters: header-shaped rules go first, so `Authorization: Bearer x` is one redaction, not two. A value already
 // redacted isn't matched again (`(?!\[redacted)`).
 const RULES: Rule[] = [
@@ -39,7 +42,7 @@ const RULES: Rule[] = [
   { kind: "JSON web token", re: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, to: "[redacted token]" },
   {
     kind: "provider key",
-    re: /\b(?:sk-(?:ant-|or-|proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|r8_[A-Za-z0-9]{20,}|pplx-[A-Za-z0-9]{20,}|nvapi-[A-Za-z0-9_-]{20,})/g,
+    re: new RegExp(`\\b${PROVIDER_KEY}`, "g"),
     to: "[redacted key]",
   },
   { kind: "bot token", re: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g, to: "[redacted token]" },

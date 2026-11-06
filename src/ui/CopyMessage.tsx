@@ -60,8 +60,8 @@ export function replyMarkdown(text: string): string {
 
 const trimBlank = (text: string) => text.replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
 
-/** Under a message or a reply: copies what `words` gives, read on each click. */
-export function CopyButton({ words, what }: { words: () => string; what: "message" | "reply" }) {
+/** Under a message, a reply or a side question's answer: copies what `words` gives, read on each click. */
+export function CopyButton({ words, what }: { words: () => string; what: "message" | "reply" | "answer" }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);

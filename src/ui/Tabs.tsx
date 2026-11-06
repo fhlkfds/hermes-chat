@@ -4,7 +4,7 @@
 // decides where each drop lands, and every drop has a keyboard way through the tab's menu. `null` is the New chat tab.
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Plus, X } from "lucide-react";
-import { Spinner } from "./bits";
+import { Spinner, slotAt } from "./bits";
 import { Menu } from "./ChatMenu";
 import type { DropZone, MovedChat } from "./tabMoves";
 
@@ -62,13 +62,8 @@ export type DropChat = (moved: MovedChat, zone: DropZone, index?: number) => voi
 /** One item of a tab's menu, or a separator. */
 export type TabAction = { label: string; icon?: ReactNode; keys?: string; run: () => void } | "sep";
 
-/** Before which tab a drop at `x` lands: the first whose middle is right of it. Unmeasured (as in tests): the end. */
-const indexAt = (strip: HTMLElement, x: number) => {
-  const rects = [...strip.querySelectorAll(".tab")].map((t) => t.getBoundingClientRect());
-  if (!rects.some((r) => r.width)) return undefined;
-  const i = rects.findIndex((r) => x < r.left + r.width / 2);
-  return i < 0 ? rects.length : i;
-};
+/** Before which tab a drop at `x` lands. Unmeasured (as in tests): the end. */
+const indexAt = (strip: HTMLElement, x: number) => slotAt([...strip.querySelectorAll(".tab")], x, "x");
 
 /** One pane's tab strip. A chat dropped on it opens in a new tab before the tab under the pointer; a tab dragged along
  * it moves there, with a mark where it will land. `lastClosable`: closing the last tab closes the pane. `controls` sit

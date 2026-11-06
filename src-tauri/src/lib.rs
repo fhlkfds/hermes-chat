@@ -918,7 +918,7 @@ async fn import_pick_file(app: tauri::AppHandle, extensions: Vec<String>, max_by
 /// A transcript file's whole text: a regular file of at most `max_bytes`, in UTF-8, without a byte order mark.
 fn read_transcript(path: &std::path::Path, max_bytes: u64) -> Result<String, String> {
     use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|e| format!("Couldn't open it: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| if path.is_dir() { "It isn't a file.".to_string() } else { format!("Couldn't open it: {e}") })?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("It isn't a file.".into());
@@ -1175,7 +1175,9 @@ pub fn run(screenshot: bool, link: Option<String>) {
         .on_permission_request(|webview, kind| permission(&webview, kind))
         .setup(|app| {
             use tauri::Emitter;
-            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on.
+            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on. WebView2 has it, and asks
+            // `permission` for the microphone.
+            #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
                     use webkit2gtk::{SettingsExt, WebViewExt};
