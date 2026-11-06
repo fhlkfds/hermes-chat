@@ -3,6 +3,9 @@
 //   node bridge.mjs <port> <state-file>
 // Sign-in: username `verify`, password `verify-pass`; anything else is 401 "Invalid credentials", as Hermes answers.
 // Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history.
+// HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
+// HV_LONG_REPLY=<n> answers a prompt that starts with `long` with n paragraphs of markdown (code, a list, a table),
+// three words every 40 ms, so a reply keeps streaming for minutes.
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
 import { createHash } from "node:crypto";
@@ -17,6 +20,7 @@ const stateFile = process.argv[3];
 const USER = "verify";
 const PASSWORD = "verify-pass";
 const server = new FakeHermes();
+const delayMs = Number(process.env.HV_DELAY_MS ?? 0);
 
 // Synthetic seed data. Feature recipes in ../features/ name these titles; change both together.
 server.sessions = [
@@ -54,13 +58,25 @@ server.mcp.catalogEntries = [
   { name: "brave-search", description: "Web search through the Brave Search API", transport: "stdio", command: "npx", args: ["-y", "brave-search-mcp"], env: [{ name: "BRAVE_API_KEY", prompt: "Brave Search API key" }] },
 ];
 
+// Clone a profile (ADR 0074): `default` has a persona and own skills to copy.
+server.souls.default = "You are Hermes, the house's ops assistant. Answer briefly and name the command to run.\n";
+for (const name of ["restic-unlock", "nginx-rotate", "vpn-mtu", "trip-planner", "disk-usage", "cert-renew"])
+  server.skills.add("default", { dir: `/home/liam/.hermes/skills/ops/${name}`, source: "agent", category: "ops" }, `---\nname: ${name}\ndescription: Synthetic ${name} skill.\n---\n\n## When to Use\n\nWhen asked about ${name}.\n`);
+
 // MCP servers as each profile's config holds them; the `.env` (tokens) stays out.
 const dump = () => JSON.stringify({ sessions: server.sessions, transcripts: server.transcripts, mcp: server.mcp.servers }, null, 2);
 const save = () => stateFile && writeFileSync(stateFile, dump());
 save();
 
+const longParagraphs = Number(process.env.HV_LONG_REPLY ?? 0);
+const paragraph = (i: number) =>
+  `Step ${i}: check the **restic** lock, then the prune schedule. See [the docs](https://restic.readthedocs.io/en/stable/) and run:\n\n` +
+  `\`\`\`sh\nrestic -r sftp:backup@nas:/srv/restic unlock\nrestic -r sftp:backup@nas:/srv/restic check --read-data-subset=${i}/100\n\`\`\`\n\n` +
+  `- keep-daily 7\n- keep-weekly 4\n- keep-monthly ${i % 12}\n\n| host | size | when |\n|---|---|---|\n| nas | ${i * 3} GiB | 02:00 |\n| web | ${i} GiB | 03:00 |\n`;
+
 function replyTo(sessionId: string, prompt: string) {
-  const text = `Stand-in reply to: ${prompt.slice(0, 80)}`;
+  const long = longParagraphs > 0 && prompt.startsWith("long");
+  const text = long ? Array.from({ length: longParagraphs }, (_, i) => paragraph(i)).join("\n") : `Stand-in reply to: ${prompt.slice(0, 80)}`;
   server.event(sessionId, "message.start");
   const words = text.split(" ");
   let at = 0;
@@ -68,7 +84,7 @@ function replyTo(sessionId: string, prompt: string) {
     const from = at;
     at = Math.min(words.length, at + 3);
     server.event(sessionId, "message.delta", { text: words.slice(from, at).join(" ") + (at < words.length ? " " : "") });
-    if (at < words.length) return void setTimeout(step, 120);
+    if (at < words.length) return void setTimeout(step, long ? 40 : 120);
     const stored = server.runtime.get(sessionId);
     if (stored) server.storeMessage(stored, { role: "assistant", text });
     setTimeout(() => {
@@ -128,14 +144,15 @@ function readFrames(sock: Socket, onText: (t: string) => void) {
 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url!, "http://x");
+  console.log(new Date().toISOString(), req.method, url.pathname);
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   const body = Buffer.concat(chunks).toString() || undefined;
+  if (delayMs && url.pathname.startsWith("/api/")) await new Promise((r) => setTimeout(r, delayMs));
   const json = (status: number, v: unknown, headers: Record<string, string> = {}) => {
     res.writeHead(status, { "content-type": "application/json", ...headers });
     res.end(typeof v === "string" ? v : JSON.stringify(v));
   };
-  console.log(new Date().toISOString(), req.method, url.pathname);
   if (url.pathname === "/__state") return json(200, dump());
   if (url.pathname === "/auth/password-login") {
     const b = JSON.parse(body ?? "{}");
