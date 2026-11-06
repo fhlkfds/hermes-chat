@@ -80,10 +80,43 @@ fn by_exec(browser: &gio::DesktopAppInfo) -> Option<gio::DesktopAppInfo> {
     if !browser.boolean("DBusActivatable") {
         return Some(browser.clone());
     }
+    let path = browser.filename()?;
     let file = gio::glib::KeyFile::new();
-    file.load_from_file(browser.filename()?, gio::glib::KeyFileFlags::NONE).ok()?;
+    file.load_from_file(&path, gio::glib::KeyFileFlags::NONE).ok()?;
     file.remove_key("Desktop Entry", "DBusActivatable").ok()?;
+    // An entry made from a key file has no file name, so `%k` would expand to nothing.
+    let exec = file.string("Desktop Entry", "Exec").ok()?;
+    file.set_string("Desktop Entry", "Exec", &with_file_name(&exec, &path.to_string_lossy()));
     gio::DesktopAppInfo::from_keyfile(&file)
+}
+
+/// `exec` with each `%k` field code replaced by `path`, quoted as the Desktop Entry spec quotes an argument.
+fn with_file_name(exec: &str, path: &str) -> String {
+    let mut quoted = String::from('"');
+    for c in path.chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    let mut out = String::new();
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('k') => out.push_str(&quoted),
+            Some(code) => {
+                out.push('%');
+                out.push(code);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
 }
 
 impl Launched {
