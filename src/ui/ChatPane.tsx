@@ -595,7 +595,7 @@ export function ChatPane({
   // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
   const blocks = useMemo(() => toBlocks(chat.items, chat.sideQuestions), [chat.items, chat.sideQuestions]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
-  const movedAt = useMemo(() => performance.now(), [chat.items]);
+  const movedAt = useMemo(() => performance.now(), [chat.items, chat.sideQuestions]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
   // Enter queues while a reply runs, while Hermes isn't connected, and while messages are queued already, so a new one
