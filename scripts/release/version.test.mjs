@@ -92,6 +92,40 @@ describe("bumping the files", () => {
     expect(lock.packages[""].version).toBe(to);
   });
 
+  it("reads and bumps a CRLF checkout, keeping its line ends", () => {
+    const root = checkout();
+    for (const file of Object.values(FILES)) edit(root, file, (t) => t.replace(/\n/g, "\r\n"));
+    check(root);
+
+    const { to } = bump(root, "patch");
+
+    expect(check(root, `v${to}`)).toBe(to);
+    for (const file of Object.values(FILES)) {
+      const after = readFileSync(join(root, file), "utf8");
+      expect(after.match(/(?<!\r)\n/g), file).toBeNull();
+      const before = readFileSync(file, "utf8").split("\n");
+      const changed = after.split("\r\n").filter((line, i) => line !== before[i]);
+      expect(changed.length, file).toBe(file === FILES.npmLock ? 2 : 1);
+      for (const line of changed) expect(line, file).toContain(to);
+    }
+  });
+
+  it("refuses a version that isn't valid semver and writes nothing", () => {
+    const root = checkout();
+    const before = Object.fromEntries(Object.values(FILES).map((f) => [f, readFileSync(join(root, f), "utf8")]));
+
+    for (const bad of ["01.0.0", "1.01.0", "1.0.0-beta..1", "1.0.0-01", "1.0.0-", "1.0", "1.0.0+build"]) {
+      expect(() => bump(root, bad), bad).toThrow("isn't patch, minor, major or a semver version");
+    }
+    for (const file of Object.values(FILES)) expect(readFileSync(join(root, file), "utf8"), file).toBe(before[file]);
+    expect(() => check(root, "v01.0.0")).toThrow("isn't a v<semver> tag");
+
+    for (const file of Object.values(FILES)) {
+      edit(root, file, (t) => t.replace(/("version": "|version = ")\d+\.\d+\.\d+/g, (all, a) => (all.includes(check(".")) ? `${a}01.0.0` : all)));
+    }
+    expect(() => check(root)).toThrow("src-tauri/tauri.conf.json says 01.0.0, which isn't semver");
+  });
+
   it("writes nothing when the files already disagree", () => {
     const root = checkout();
     edit(root, FILES.cargo, (t) => t.replace(/^version = ".*"$/m, 'version = "9.9.9"'));

@@ -12,7 +12,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/;
+// semver.org's grammar: no leading zeros in numbers, no empty prerelease identifiers.
+const NUM = "(0|[1-9]\\d*)";
+const PRE_ID = "(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)";
+const SEMVER = new RegExp(`^${NUM}\\.${NUM}\\.${NUM}(-${PRE_ID}(?:\\.${PRE_ID})*)?$`);
 
 export const FILES = {
   tauri: "src-tauri/tauri.conf.json",
@@ -75,8 +78,9 @@ function cargoPackage(text) {
   return { start, end: next < 0 ? text.length : start + 1 + next };
 }
 
-const CARGO_VERSION = /^version = "([^"]*)"$/m;
-const LOCK_ENTRY = /(\[\[package\]\]\nname = "hermes-chat"\nversion = ")([^"]*)(")/g;
+// Line ends may be CRLF (a Windows checkout); the patterns keep whichever the file has.
+const CARGO_VERSION = /^(version = ")([^"]*)(")/m;
+const LOCK_ENTRY = /(\[\[package\]\]\r?\nname = "hermes-chat"\r?\nversion = ")([^"]*)(")/g;
 
 /** Every version the five files carry, by where it was found. */
 export function versions(root) {
@@ -92,7 +96,7 @@ export function versions(root) {
     [FILES.npm]: npm.version,
     [`${FILES.npmLock} (root)`]: lock.version,
     [`${FILES.npmLock} (packages[""])`]: lock.packages?.[""]?.version,
-    [`${FILES.cargo} ([package])`]: CARGO_VERSION.exec(cargo.slice(pkg.start, pkg.end))?.[1],
+    [`${FILES.cargo} ([package])`]: CARGO_VERSION.exec(cargo.slice(pkg.start, pkg.end))?.[2],
     [FILES.cargoLock]: lockEntries[0][2],
   };
 }
@@ -101,6 +105,7 @@ export function versions(root) {
 export function check(root, tag) {
   const found = versions(root);
   let want = found[FILES.tauri];
+  if (!SEMVER.test(want ?? "")) throw new Error(`${FILES.tauri} says ${want ?? "no version"}, which isn't semver`);
   if (tag !== undefined) {
     const m = /^v(.+)$/.exec(tag);
     if (!m || !SEMVER.test(m[1])) throw new Error(`${tag} isn't a v<semver> tag`);
@@ -117,7 +122,7 @@ export function check(root, tag) {
 
 // The top-level "version" (two-space indent), and the one inside package-lock.json's `packages[""]`.
 const JSON_ROOT = /^( {2}"version": ")[^"]*(")/m;
-const LOCK_SELF = /^( {4}"": \{\n(?: {6}.*\n)*? {6}"version": ")[^"]*(")/m;
+const LOCK_SELF = /^( {4}"": \{\r?\n(?: {6}[^\n]*\n)*? {6}"version": ")[^"]*(")/m;
 
 /** Sets each field the patterns find, then checks the file parses to exactly `expected`. */
 function setJson(text, patterns, to, expected, file) {
@@ -149,7 +154,7 @@ export function bump(root, target) {
   const cargo = read(root, FILES.cargo);
   const pkg = cargoPackage(cargo);
   edits[FILES.cargo] =
-    cargo.slice(0, pkg.start) + cargo.slice(pkg.start, pkg.end).replace(CARGO_VERSION, `version = "${next}"`) + cargo.slice(pkg.end);
+    cargo.slice(0, pkg.start) + cargo.slice(pkg.start, pkg.end).replace(CARGO_VERSION, `$1${next}$3`) + cargo.slice(pkg.end);
   edits[FILES.cargoLock] = read(root, FILES.cargoLock).replace(LOCK_ENTRY, `$1${next}$3`);
 
   for (const [file, text] of Object.entries(edits)) writeFileSync(join(root, file), text);
