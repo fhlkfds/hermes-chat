@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, Item } from "./model";
-import { AttentionClock, CLEARED_KEY, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, canClear, chatSections, customUntil, lastActive, nextWake, staleClears, snoozePresets, wakeLabel } from "./snooze";
+import { AttentionClock, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, WOKEN_KEPT_MS, chatSections, customUntil, lastActive, nextWake, snoozePresets, wakeLabel } from "./snooze";
 
 /** A Storage stand-in, its document under `key` readable as `raw`. */
 function memory(start?: string, key = SNOOZE_KEY) {
@@ -62,6 +62,15 @@ describe("SnoozeStore", () => {
     expect(store.getSnapshot()).toEqual({ old, recent: WED - HOUR });
     store.snooze("x", WED + HOUR);
     expect(storage.raw).toEqual({ v: 1, later: true, scopes: { A: { recent: WED - HOUR, x: WED + HOUR }, Z: { q: 5 } } });
+  });
+
+  it("drops the oldest chats past its limit, not the newest", () => {
+    const many = Object.fromEntries(Array.from({ length: 5_000 }, (_, i) => [`c${i}`, WED + HOUR + i]));
+    const store = new SnoozeStore(memory(JSON.stringify({ v: 1, scopes: { A: many } })), "A", () => WED);
+    store.snooze("newest", WED + 2 * HOUR);
+    expect(store.getSnapshot().newest).toBe(WED + 2 * HOUR);
+    expect(store.getSnapshot().c0).toBeUndefined();
+    expect(Object.keys(store.getSnapshot())).toHaveLength(5_000);
   });
 
   it("starts empty from an unreadable document", () => {
@@ -139,25 +148,24 @@ describe("chatSections", () => {
     chat("archived", WED, { archived: true }),
   ];
 
-  it("puts each chat in one place: Archived, Settled, Snoozed, Working, Unsettled, else the Inbox", () => {
+  it("puts each chat in one place: Archived, Settled, Snoozed, Working, else the Inbox", () => {
     const s = chatSections(chats, { ...snoozes, settledSnoozed: WED + HOUR }, WED);
     expect(s.inbox.map((c) => c.id)).toEqual(["woke", "done", "asking"]);
     expect(s.working.map((c) => c.id)).toEqual(["working"]);
     expect(s.snoozed.map((c) => c.id)).toEqual(["snoozed", "later"]);
     expect(s.settled.map((c) => c.id)).toEqual(["settled", "settledSnoozed"]);
     expect(s.archived.map((c) => c.id)).toEqual(["archived"]);
-    expect(s.unsettled).toEqual([]);
   });
 
   it("puts a pinned chat in Pinned, in the order pinned, whatever happens in it, unless it is Archived", () => {
     const pins = { settled: WED - 3 * HOUR, done: WED - 2 * HOUR, working: WED - HOUR, archived: WED - 4 * HOUR };
-    const s = chatSections(chats, snoozes, WED, {}, {}, pins);
+    const s = chatSections(chats, snoozes, WED, {}, pins);
     expect(s.pinned.map((c) => c.id)).toEqual(["settled", "done", "working"]);
     expect(s.archived.map((c) => c.id)).toEqual(["archived"]);
     expect(s.inbox.map((c) => c.id)).toEqual(["woke", "asking"]);
     expect(s.working).toEqual([]);
     // A new message in a pinned chat leaves the order; one in an unpinned chat leaves it out of Pinned.
-    const newer = chatSections(chats.map((c) => (c.id === "working" || c.id === "woke" ? { ...c, updatedAt: WED + HOUR } : c)), snoozes, WED, {}, {}, pins);
+    const newer = chatSections(chats.map((c) => (c.id === "working" || c.id === "woke" ? { ...c, updatedAt: WED + HOUR } : c)), snoozes, WED, {}, pins);
     expect(newer.pinned.map((c) => c.id)).toEqual(["settled", "done", "working"]);
     expect(newer.inbox.map((c) => c.id)).toEqual(["woke", "asking"]);
   });
@@ -195,103 +203,12 @@ describe("chatSections", () => {
     expect(s.inbox.map((c) => c.id)).toEqual(["b", "a"]);
   });
 
-  describe("clearing from the Inbox", () => {
-    const quiet = chat("quiet", WED - HOUR);
-    const other = chat("other", WED - 2 * HOUR);
+  const quiet = chat("quiet", WED - HOUR);
 
-    it("puts a cleared chat in Unsettled, newest first, and leaves the rest in the Inbox", () => {
-      const older = chat("older", WED - 3 * HOUR);
-      const s = chatSections([older, quiet, other], {}, WED, {}, { quiet: WED - HOUR, older: WED - 3 * HOUR });
-      expect(s.inbox.map((c) => c.id)).toEqual(["other"]);
-      expect(s.unsettled.map((c) => c.id)).toEqual(["quiet", "older"]);
-    });
-
-    it("brings a cleared chat back to the Inbox on anything newer: a message, a woken snooze, a reply that stopped", () => {
-      const cleared = { quiet: WED - HOUR };
-      expect(chatSections([chat("quiet", WED - HOUR + 1)], {}, WED, {}, cleared).inbox.map((c) => c.id)).toEqual(["quiet"]);
-      expect(chatSections([quiet], { quiet: WED - 60_000 }, WED, {}, cleared).inbox.map((c) => c.id)).toEqual(["quiet"]);
-      expect(chatSections([quiet], {}, WED, { quiet: WED - 60_000 }, cleared).inbox.map((c) => c.id)).toEqual(["quiet"]);
-      expect(chatSections([quiet], {}, WED, {}, cleared).unsettled.map((c) => c.id)).toEqual(["quiet"]);
-    });
-
-    it("never keeps an unread chat, or one waiting on the owner, out of the Inbox", () => {
-      const cleared = { quiet: WED };
-      expect(chatSections([chat("quiet", WED - HOUR, { unread: true })], {}, WED, {}, cleared).inbox.map((c) => c.id)).toEqual(["quiet"]);
-      expect(chatSections([chat("quiet", WED - HOUR, { items: [waiting] })], {}, WED, {}, cleared).inbox.map((c) => c.id)).toEqual(["quiet"]);
-    });
-
-    it("leaves a cleared chat where settling, snoozing, working or archiving puts it", () => {
-      const cleared = { s: WED, z: WED, w: WED, a: WED };
-      const s = chatSections(
-        [chat("s", WED - HOUR, { settled: true }), chat("z", WED - HOUR), chat("w", WED - HOUR, { running: true }), chat("a", WED - HOUR, { archived: true })],
-        { z: WED + HOUR },
-        WED,
-        {},
-        cleared,
-      );
-      expect([s.settled, s.snoozed, s.working, s.archived].map((l) => l.map((c) => c.id))).toEqual([["s"], ["z"], ["w"], ["a"]]);
-      expect(s.unsettled).toEqual([]);
-    });
-
-    it("keeps a chat with a fractional activity time cleared, the mark kept exactly", () => {
-      const storage = memory(undefined, CLEARED_KEY);
-      const store = new ClearedStore(storage, "A");
-      const at = WED - HOUR + 0.25;
-      const c = chat("frac", at);
-      store.clear("frac", lastActive(c, {}, WED));
-      expect(store.getSnapshot().frac).toBe(at);
-      expect(chatSections([c], {}, WED, {}, store.getSnapshot()).unsettled.map((x) => x.id)).toEqual(["frac"]);
-      // And after a restart, read back from storage.
-      expect(chatSections([c], {}, WED, {}, new ClearedStore(storage, "A").getSnapshot()).unsettled.map((x) => x.id)).toEqual(["frac"]);
-    });
-
-    it("finds the clears something newer has ended, so they can be forgotten for good", () => {
-      const cleared = { a: WED - HOUR, b: WED - HOUR, c: WED - HOUR, d: WED - HOUR, e: WED - HOUR };
-      const chats = [
-        chat("a", WED - HOUR),
-        chat("b", WED - HOUR + 1),
-        chat("c", WED - HOUR, { unread: true }),
-        chat("d", WED - HOUR, { items: [waiting] }),
-        chat("e", WED - HOUR, { running: true }),
-        chat("f", WED),
-      ];
-      expect(staleClears(chats, {}, WED, {}, cleared)).toEqual(["b", "c", "d"]);
-      // Settled or Archived, here or in another client, with no newer activity: ended too.
-      expect(staleClears([chat("a", WED - HOUR, { settled: true }), chat("b", WED - HOUR, { archived: true })], {}, WED, {}, cleared)).toEqual(["a", "b"]);
-      // A snooze that woke after the clear ends it too, while the wake still counts.
-      expect(staleClears([chat("a", WED - HOUR)], { a: WED - 60_000 }, WED, {}, cleared)).toEqual(["a"]);
-    });
-
-    it("leaves a chat in the Inbox after clear, snooze, wake and the wake ageing out, once the stale clear is forgotten", () => {
-      const storage = memory(undefined, CLEARED_KEY);
-      const store = new ClearedStore(storage, "A");
-      const c = chat("a", WED - 10 * 24 * HOUR);
-      store.clear("a", lastActive(c, {}, WED - 9 * 24 * HOUR));
-      const woke = { a: WED - 8 * 24 * HOUR };
-      // Woken a day after the clear: back in the Inbox, and the clear is stale.
-      const dayAfter = WED - 8 * 24 * HOUR + HOUR;
-      expect(chatSections([c], woke, dayAfter, {}, store.getSnapshot()).inbox.map((x) => x.id)).toEqual(["a"]);
-      for (const id of staleClears([c], woke, dayAfter, {}, store.getSnapshot())) store.restore(id);
-      // A week on, the wake no longer counts; with the clear forgotten, even after a restart, the chat stays put.
-      const later = new ClearedStore(storage, "A").getSnapshot();
-      expect(later).toEqual({});
-      expect(chatSections([c], woke, WED, {}, later).inbox.map((x) => x.id)).toEqual(["a"]);
-    });
-
-    it("offers Clear only for a read, quiet, Active chat", () => {
-      expect(canClear(quiet)).toBe(true);
-      expect(canClear(chat("x", WED, { unread: true }))).toBe(false);
-      expect(canClear(chat("x", WED, { running: true }))).toBe(false);
-      expect(canClear(chat("x", WED, { items: [waiting] }))).toBe(false);
-      expect(canClear(chat("x", WED, { settled: true }))).toBe(false);
-      expect(canClear(chat("x", WED, { archived: true }))).toBe(false);
-    });
-
-    it("counts a woken snooze and a stopped reply as activity, and a snooze still asleep as none", () => {
-      expect(lastActive(quiet, { quiet: WED - 60_000 }, WED)).toBe(WED - 60_000);
-      expect(lastActive(quiet, { quiet: WED + HOUR }, WED)).toBe(WED - HOUR);
-      expect(lastActive(quiet, {}, WED, { quiet: WED - 1 })).toBe(WED - 1);
-    });
+  it("counts a woken snooze and a stopped reply as activity, and a snooze still asleep as none", () => {
+    expect(lastActive(quiet, { quiet: WED - 60_000 }, WED)).toBe(WED - 60_000);
+    expect(lastActive(quiet, { quiet: WED + HOUR }, WED)).toBe(WED - HOUR);
+    expect(lastActive(quiet, {}, WED, { quiet: WED - 1 })).toBe(WED - 1);
   });
 
   it("finds the next wake", () => {
@@ -324,7 +241,7 @@ describe("PinStore", () => {
     pins.pin("b");
     now = WED - HOUR;
     pins.pin("c");
-    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, pins.getSnapshot()).pinned.map((c) => c.id);
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, pins.getSnapshot()).pinned.map((c) => c.id);
     const list = [chat("c", WED), chat("a", WED - 2 * HOUR), chat("b", WED - HOUR)];
     expect(order(list)).toEqual(["a", "b", "c"]);
     expect(order([...list].reverse())).toEqual(["a", "b", "c"]);
@@ -337,14 +254,14 @@ describe("PinStore", () => {
     first.pin("z");
     second.pin("a");
     const pins = new PinStore(storage, "A").getSnapshot();
-    expect(chatSections([chat("a", WED), chat("z", WED)], {}, WED, {}, {}, pins).pinned.map((c) => c.id)).toEqual(["z", "a"]);
+    expect(chatSections([chat("a", WED), chat("z", WED)], {}, WED, {}, pins).pinned.map((c) => c.id)).toEqual(["z", "a"]);
     first.unpin("a");
     expect(new PinStore(storage, "A").getSnapshot()).toEqual({ z: WED });
   });
 
   it("orders pins stored with the same time the same way whatever order the list comes in", () => {
     const same = { x: WED, y: WED };
-    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, same).pinned.map((c) => c.id);
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, same).pinned.map((c) => c.id);
     expect(order([chat("y", WED), chat("x", WED)])).toEqual(order([chat("x", WED), chat("y", WED)]));
   });
 
@@ -359,53 +276,6 @@ describe("PinStore", () => {
     pins.unpin("x");
     pins.pin("x", WED);
     expect(pins.getSnapshot()).toEqual({ x: WED });
-  });
-});
-
-describe("ClearedStore", () => {
-  it("keeps each connection and profile's cleared chats apart, under its own key, and survives a restart", () => {
-    const storage = memory(undefined, CLEARED_KEY);
-    const a = new ClearedStore(storage, "A", () => WED);
-    const b = new ClearedStore(storage, "B", () => WED);
-    a.clear("x", WED - HOUR);
-    b.clear("y", WED - 2 * HOUR);
-    expect(storage.keys).toEqual([CLEARED_KEY]);
-    expect(storage.raw).toEqual({ v: 1, scopes: { A: { x: WED - HOUR }, B: { y: WED - 2 * HOUR } } });
-    expect(new ClearedStore(storage, "A").getSnapshot()).toEqual({ x: WED - HOUR });
-    a.restore("x");
-    expect(storage.raw).toEqual({ v: 1, scopes: { B: { y: WED - 2 * HOUR } } });
-  });
-
-  it("keeps a clear of a chat that has no activity time yet, and ignores what isn't one", () => {
-    const storage = memory(JSON.stringify({ v: 1, scopes: { A: { good: 5, bad: "x", neg: -1 } } }), CLEARED_KEY);
-    const a = new ClearedStore(storage, "A");
-    expect(a.getSnapshot()).toEqual({ good: 5 });
-    a.clear("zero", 0);
-    expect(a.getSnapshot()).toEqual({ good: 5, zero: 1 });
-  });
-
-  it("drops the oldest clears past its limit, not the newest", () => {
-    const many = Object.fromEntries(Array.from({ length: 5_000 }, (_, i) => [`c${i}`, i + 1]));
-    const storage = memory(JSON.stringify({ v: 1, scopes: { A: many } }), CLEARED_KEY);
-    const a = new ClearedStore(storage, "A");
-    a.clear("newest", WED);
-    expect(a.getSnapshot().newest).toBe(WED);
-    expect(a.getSnapshot().c0).toBeUndefined();
-    expect(Object.keys(a.getSnapshot())).toHaveLength(5_000);
-  });
-
-  it("tells subscribers about its own changes and, on reread, another window's; restoring what isn't cleared changes nothing", () => {
-    const storage = memory(undefined, CLEARED_KEY);
-    const a = new ClearedStore(storage, "A");
-    const other = new ClearedStore(storage, "A");
-    let heard = 0;
-    a.subscribe(() => heard++);
-    a.restore("nothing");
-    expect(heard).toBe(0);
-    other.clear("x", WED);
-    a.reread();
-    expect(heard).toBe(1);
-    expect(a.getSnapshot()).toEqual({ x: WED });
   });
 });
 
