@@ -107,8 +107,8 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
-  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
-  chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
+  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"] as SectionKey[],
+  chatSectionsCollapsed: ["snoozed", "archived", "settled"] as SectionKey[],
   agentOffice: "desks",
   inboxAutoDismissDays: null,
 });
@@ -205,7 +205,10 @@ function toIdleCompact(v: unknown, d: IdleCompactPrefs): IdleCompactPrefs | unde
   };
 }
 
-/** Sections as stored, each once and in the list's order; undefined when it isn't a list. */
+/**
+ * Sections as stored, each once and in the list's order; undefined when it isn't a list. A key this version doesn't
+ * know is left out, as Unsettled is since ADR 0090.
+ */
 function toSections(v: unknown): SectionKey[] | undefined {
   if (!Array.isArray(v)) return undefined;
   return SECTION_KEYS.filter((k) => v.some((x) => isSectionKey(x) && x === k));

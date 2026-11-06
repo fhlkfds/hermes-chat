@@ -65,7 +65,7 @@ import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
-import { AttentionClock, CLEARED_KEY, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, staleClears, wakeFull } from "./hermes/snooze";
+import { AttentionClock, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, chatSections, heldClears, wakeFull } from "./hermes/snooze";
 import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
@@ -1167,19 +1167,6 @@ export function Main({
   );
   // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
   const attention = useMemo(() => new AttentionClock(), [scope]);
-  // The chats cleared from the Inbox: kept on this computer for each connection and profile, like snoozes (ADR 0063).
-  const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
-  const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
-  useEffect(() => {
-    const changed = (e: StorageEvent) => e.key === CLEARED_KEY && clearedStore.reread();
-    window.addEventListener("storage", changed);
-    return () => window.removeEventListener("storage", changed);
-  }, [clearedStore]);
-  // A clear that something newer has ended is forgotten, so the chat stays in the Inbox from then on, even once that
-  // activity stops counting (a woken snooze, after a week).
-  useEffect(() => {
-    for (const id of staleClears(chats, snoozes, Date.now(), attention.since, cleared)) clearedStore.restore(id);
-  }, [chats, snoozes, snoozeNow, cleared, clearedStore]);
   // Pinned chats: kept on this computer for each connection and profile, like snoozes (ADR 0085).
   const pinStore = useMemo(() => new PinStore(localStorage, scope), [scope]);
   const pins = useSyncExternalStore(pinStore.subscribe, pinStore.getSnapshot);
@@ -1276,6 +1263,16 @@ export function Main({
   // The profile's list, once read from Hermes, is every chat it has: the records of the others go, whether or not
   // Outputs is open. A chat deleted, or no longer listed, keeps no record (outputs.ts `keepOnly`).
   const listedFromHermes = hermes.hasListed();
+  // Clears from the Inbox were kept on this computer until clearing a chat settled it (ADR 0090). Once Hermes has
+  // listed the profile's chats, the clears that still hold, the chats the old Unsettled section showed, are settled
+  // once, as the Settle button would, and every clear of the connection and profile is dropped.
+  const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
+  const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
+  useEffect(() => {
+    if (!listedFromHermes || status !== "connected" || !Object.keys(cleared).length) return;
+    for (const id of heldClears(chats, snoozes, Date.now(), attention.since, cleared, pins)) void hermes.settle(id);
+    clearedStore.dropAll();
+  }, [listedFromHermes, status, cleared, clearedStore]);
   const allChatsKey = chats.map((c) => c.id).join("\n");
   useEffect(() => {
     if (listedFromHermes) outputsIndex.keepOnly(new Set(chats.map((c) => c.id)));
@@ -1800,8 +1797,6 @@ export function Main({
     const move = (s: boolean) => void (s ? hermes.settle(id) : hermes.unsettle(id));
     move(settled);
     if (settled) snoozeStore.wake(id);
-    // Unsettling is the owner asking for the chat back, so it comes back to the Inbox, not to a clear it had before.
-    clearedStore.restore(id);
     setToast({
       text: `${settled ? "Settled" : "Unsettled"}: ${title}`,
       undo: () => {
@@ -1817,8 +1812,6 @@ export function Main({
     const title = chats.find((c) => c.id === id)?.title ?? "";
     const before = snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
     const put = (to: number | undefined) => (to ? snoozeStore.snooze(id, to) : snoozeStore.wake(id));
-    // A snooze ends in the Inbox, so it replaces a clear the chat had.
-    if (until) clearedStore.restore(id);
     // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
     put(until ?? Date.now());
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
@@ -1831,16 +1824,6 @@ export function Main({
     const put = (to: boolean, at?: number) => (to ? pinStore.pin(id, at) : pinStore.unpin(id));
     put(on);
     setToast({ text: `${on ? "Pinned" : "Unpinned"}: ${title}`, undo: () => put(!on, before), at: Date.now() });
-  };
-
-  // Clearing a chat from the Inbox is kept on this computer only, with when the chat was last active, so anything newer
-  // brings it back (ADR 0063). Undo does the opposite.
-  const clearFromInbox = (id: string, on: boolean) => {
-    const chat = chats.find((c) => c.id === id);
-    if (!chat) return;
-    const put = (to: boolean) => (to ? clearedStore.clear(id, lastActive(chat, snoozes, Date.now(), attention.since)) : clearedStore.restore(id));
-    put(on);
-    setToast({ text: `${on ? "Cleared from the Inbox" : "Back in the Inbox"}: ${chat.title}`, undo: () => put(!on), at: Date.now() });
   };
 
   // Putting a chat in a project, or taking it out: Hermes's once it keeps membership, waiting here until it confirms,
@@ -1865,7 +1848,6 @@ export function Main({
         projects.forgetChat(id);
         tagChange(() => tagsStore.forgetChat(id));
         snoozeStore.wake(id);
-        clearedStore.restore(id);
         pinStore.unpin(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
@@ -1879,7 +1861,6 @@ export function Main({
   const setArchived = (id: string, archived: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (archived && !archivedListed) clearChat(id);
-    clearedStore.restore(id);
     const done = (ok: boolean) =>
       ok &&
       stillIn(profile) &&
@@ -2203,7 +2184,7 @@ export function Main({
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const { pinned, inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, cleared, pins);
+        const { pinned, inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, pins);
         const order = [...pinned, ...inbox, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
@@ -2600,8 +2581,6 @@ export function Main({
           onSettle={setSettled}
           snoozes={snoozes}
           attentionSince={attention.since}
-          cleared={cleared}
-          onClear={clearFromInbox}
           pins={pins}
           onPin={pinChat}
           onSnooze={(id, until) => snoozeChat(id, until)}
