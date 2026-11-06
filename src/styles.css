@@ -1045,9 +1045,10 @@ div.route-result { display: flex; flex-direction: column; gap: 6px; }
 
 /* search palette, ported from the prototype */
 .palette-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 40; display: flex; justify-content: center; padding-top: 12vh; }
+/* Square and without a shadow, as .leave-dialog is (ADR 0084). */
 .palette {
-  width: min(640px, 92vw); max-height: 64vh; background: var(--raised); border: 1px solid var(--line-2); border-radius: 14px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; overflow: hidden; align-self: flex-start;
+  width: min(640px, 92vw); max-height: 64vh; background: var(--raised); border: 1px solid var(--line-2);
+  display: flex; flex-direction: column; overflow: hidden; align-self: flex-start;
 }
 .palette-input { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
 .palette-input input { flex: 1; background: none; border: 0; outline: none; font-size: calc(15rem / 14); color: var(--text); }
@@ -1974,9 +1975,11 @@ label.memory-pick { cursor: pointer; }
 .settings p.persona-saved { color: var(--ok); margin: 10px 0 0; }
 .persona .field-label .badge { margin-left: 2px; }
 .leave-scrim { z-index: 60; align-items: flex-start; }
+/* Square and without a shadow (ADR 0084): WebKitGTK repaints a modal with every frame of a reply streaming behind it,
+   and a rounded or shadowed box made those frames slow enough that keys in the dialog waited half a second. */
 .leave-dialog {
-  width: min(460px, 92vw); padding: 18px 20px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 14px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; gap: 10px; font-size: calc(13rem / 14);
+  width: min(460px, 92vw); padding: 18px 20px; background: var(--raised); border: 1px solid var(--line-2);
+  display: flex; flex-direction: column; gap: 10px; font-size: calc(13rem / 14);
 }
 .leave-dialog p { margin: 0; line-height: 1.55; }
 .leave-title { font-weight: 600; }
