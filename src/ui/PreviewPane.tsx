@@ -1,6 +1,7 @@
 // The preview pane beside the chat: a web page, a Server file, a Local file or a tool call's output (GLOSSARY.md
-// "Preview pane"). Everything it shows is untrusted (ADR 0007): web pages load in a sandboxed frame that can't reach the
-// app, HTML files render with scripts and network off, and Markdown renders without raw HTML, as replies do.
+// "Preview pane"). Everything it shows is untrusted (ADR 0007): web pages load in a view of their own on Linux (ADR 0081)
+// or a sandboxed frame elsewhere, neither of which can reach the app, HTML files render with scripts and network off,
+// and Markdown renders without raw HTML, as replies do.
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AlertTriangle, Check, Copy, ExternalLink, FileQuestion, Globe, Laptop, Plus, RotateCw, Server, Wrench } from "lucide-react";
 import {
@@ -19,7 +20,8 @@ import {
 } from "../hermes/preview";
 import { Markdown } from "./Markdown";
 import { Spinner, fmtSize } from "./bits";
-import { ServerPageError, type LocalFiles, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
+import { ServerPageError, type LocalFiles, type NativePage, type NativePages, type PageEvent, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
+import { usePlacement } from "./pagePlacement";
 import type { ArtifactStore } from "../hermes/artifacts";
 import { ArtifactEditor } from "./ArtifactEditor";
 
@@ -85,7 +87,7 @@ export function PreviewPane({
   // Reload bumps this; each target starts again from 0 because the pane is keyed by it.
   const [reloads, setReloads] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [openError, setOpenError] = useState<string>();
+  const [opened, setOpened] = useState<{ text: string; failed: boolean }>();
   // A server page's tunnel address while it is open: the only way the owner's browser can reach that page.
   const [tunnel, setTunnel] = useState<string>();
   const titleId = useId();
@@ -94,8 +96,11 @@ export function PreviewPane({
   const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "artifact" ? target.ref.path : target.kind === "web" ? target.url : undefined;
 
   const openInBrowser = (url: string) => {
-    setOpenError(undefined);
-    web.openInBrowser(url).catch((e) => setOpenError(`Couldn't open it in your browser: ${messageOf(e)}`));
+    setOpened(undefined);
+    web.openInBrowser(url).then(
+      (browser) => setOpened({ text: `Opened in ${browser ?? "your browser"}.`, failed: false }),
+      (e) => setOpened({ text: `Couldn't open it in your browser: ${messageOf(e)}`, failed: true }),
+    );
   };
 
   return (
@@ -148,9 +153,9 @@ export function PreviewPane({
           )}
         </div>
       </header>
-      {openError && (
-        <div className="attach-note preview-open-error" role="alert">
-          {openError}
+      {opened && (
+        <div className={opened.failed ? "attach-note preview-opened failed" : "attach-note preview-opened"} role={opened.failed ? "alert" : "status"}>
+          {opened.text}
         </div>
       )}
       <div className="preview-body">
@@ -166,16 +171,17 @@ export function PreviewPane({
                 pages={serverPages}
                 serverLabel={serverLabel}
                 check={web.check}
+                native={web.native}
                 onTunnel={setTunnel}
                 onOpenInBrowser={openInBrowser}
                 onLocal={() => onOpen({ ...target, on: "local" })}
               />
             ) : (
-              <WebView key={reloads} url={target.url} check={web.check} onOpenInBrowser={() => openInBrowser(target.url)} />
+              <WebView key={reloads} url={target.url} check={web.check} native={web.native} onOpenInBrowser={() => openInBrowser(target.url)} />
             )}
           </div>
         ) : target.kind === "web" ? (
-          <WebView key={reloads} url={target.url} check={web.check} onOpenInBrowser={() => openInBrowser(target.url)} />
+          <WebView key={reloads} url={target.url} check={web.check} native={web.native} onOpenInBrowser={() => openInBrowser(target.url)} />
         ) : target.kind === "tool" ? (
           <pre className="preview-pre">{target.text || "(empty)"}</pre>
         ) : target.kind === "artifact" ? (
@@ -207,7 +213,7 @@ function Where({ target, serverLabel, on }: { target: PreviewTarget; serverLabel
     );
   if (target.kind === "web" && on === "local")
     return (
-      <span className="where where-local" title={`A page on this computer's own ${loopbackOf(target.url)?.at}, loaded in an isolated frame`}>
+      <span className="where where-local" title={`A page on this computer's own ${loopbackOf(target.url)?.at}, kept apart from Hermes Chat`}>
         <Laptop size={12} /> This computer
       </span>
     );
@@ -227,7 +233,7 @@ function Where({ target, serverLabel, on }: { target: PreviewTarget; serverLabel
       );
     case "web":
       return (
-        <span className="where where-web" title="A web page, loaded by this computer in an isolated frame">
+        <span className="where where-web" title="A web page, loaded by this computer and kept apart from Hermes Chat">
           <Globe size={12} /> Web
         </span>
       );
@@ -420,25 +426,79 @@ function TextView({ view, name }: { view: Extract<FileView, { kind: "text" }>; n
   );
 }
 
+type WebViewProps = {
+  /** The page's address, as the owner sees it. */
+  url: string;
+  /** Where it loads from, if not `url`: a server page's tunnel. */
+  src?: string;
+  check: (url: string) => Promise<Framing>;
+  /** The Preview's own page view, where there is one: it takes the frame's place. */
+  native?: NativePages;
+  onOpenInBrowser: () => void;
+};
+
+function WebView({ native, ...props }: WebViewProps) {
+  return native ? <NativeWebView {...props} pages={native} /> : <FramedWebView {...props} />;
+}
+
+/**
+ * A web page in the Preview's own WebKitGTK view, which Rust lays over this box (ADR 0081). The page is the top level of
+ * its view, so a site that refuses framing shows. The box says what the view can't: that the page is loading, or why
+ * it failed. The view shows once the page's first response comes, and hides again if a load fails.
+ */
+function NativeWebView({ url, src = url, pages, onOpenInBrowser }: Omit<WebViewProps, "native" | "check"> & { pages: NativePages }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState<NativePage>();
+  const [state, setState] = useState<Exclude<PageEvent, { kind: "escaped" }>>();
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), SLOW_PAGE_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    // Escape in the page gave the keyboard back to the app: it lands here, inside the Preview, for the next key.
+    const opened = pages.open(src, (e) => (e.kind === "escaped" ? box.current?.focus() : setState(e)));
+    setPage(opened);
+    return () => opened.close();
+  }, [pages, src]);
+  usePlacement(box, state?.kind === "shown" ? page : undefined);
+  return (
+    <div className="preview-web">
+      <div className="preview-web-note">
+        Runs on its own, with no access to Hermes Chat or your sign-in.{" "}
+        <button className="link-btn" onClick={onOpenInBrowser}>
+          Open it in your browser
+        </button>
+      </div>
+      <div ref={box} className="preview-web-frame" tabIndex={-1}>
+        {state?.kind === "failed" ? (
+          <div className="preview-state preview-error preview-loading" role="alert">
+            <AlertTriangle size={18} />
+            <div>
+              <div className="preview-state-title">Couldn't load {hostOf(url)}</div>
+              <div>{state.message}</div>
+              <div>Check the address, or Reload to try again.</div>
+            </div>
+          </div>
+        ) : (
+          state?.kind !== "shown" && (
+            <div className="preview-state preview-loading" role="status">
+              <Spinner /> {slow ? "Still loading the page…" : "Loading page…"}
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * A web page in a frame. WebKitGTK gives the frame no sign that a site refused to be framed: it fires `load` at once
  * and stays blank. So Rust asks the site the way the frame does (`check`, ADR 0011): a refusal replaces the frame with
  * a note and Open in your browser, and a site this computer can't reach says so instead of loading forever. Anything
  * else (a script that blanks the page, say) still can't be told apart, so a page slow to load says it may not show.
  */
-function WebView({
-  url,
-  src = url,
-  check,
-  onOpenInBrowser,
-}: {
-  /** The page's address, as the owner sees it. */
-  url: string;
-  /** Where the frame loads it from, if not `url`: a server page's tunnel. */
-  src?: string;
-  check: (url: string) => Promise<Framing>;
-  onOpenInBrowser: () => void;
-}) {
+function FramedWebView({ url, src = url, check, onOpenInBrowser }: Omit<WebViewProps, "native">) {
   const [loaded, setLoaded] = useState(false);
   const [slow, setSlow] = useState(false);
   const [closed, setClosed] = useState(false);
@@ -612,6 +672,7 @@ function ServerWebView({
   pages,
   serverLabel,
   check,
+  native,
   onTunnel,
   onOpenInBrowser,
   onLocal,
@@ -620,6 +681,7 @@ function ServerWebView({
   pages: ServerPages;
   serverLabel: string;
   check: (url: string) => Promise<Framing>;
+  native?: NativePages;
   onTunnel: (url: string | undefined) => void;
   onOpenInBrowser: (url: string) => void;
   onLocal: () => void;
@@ -716,7 +778,7 @@ function ServerWebView({
         </div>
       </div>
     );
-  return <WebView url={url} src={state.src} check={check} onOpenInBrowser={() => onOpenInBrowser(state.src)} />;
+  return <WebView url={url} src={state.src} check={check} native={native} onOpenInBrowser={() => onOpenInBrowser(state.src)} />;
 }
 
 /** The host a web address names, for messages about it. */

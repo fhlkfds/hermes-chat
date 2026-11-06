@@ -324,7 +324,7 @@ describe("the note in place of a screen", () => {
 });
 
 describe("in the app", () => {
-  async function launch(s: FakeHermes, opens = vi.fn(async (_url: string) => {})) {
+  async function launch(s: FakeHermes, opens = vi.fn(async (_url: string): Promise<string | null> => null)) {
     const hermes = await connect(s.openPipe);
     running.push(hermes);
     render(
