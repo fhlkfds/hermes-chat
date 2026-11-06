@@ -123,6 +123,49 @@ describe("A side question", () => {
     expect(document.activeElement).toBe(composer());
   });
 
+  it("stays below the reply it was asked during when Hermes sends the reply's reasoning only as the turn ends", async () => {
+    const { server, hermes, user, runtime } = await launch();
+    await user.type(composer(), "Think about the lock, then run the backup again{Enter}");
+    await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "backup")?.running).toBe(true));
+    act(() => server.event(runtime, "message.delta", { text: "Checking the lock" }));
+    await user.type(composer(), "/btw is the NAS online?{Enter}");
+    const pair = await screen.findByRole("article", { name: "Side question: is the NAS online?" });
+
+    act(() => server.event(runtime, "message.complete", { status: "complete", text: "Checking the lock", reasoning: "The lock may be stale." }));
+    await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "backup")?.running).toBe(false));
+    const thought = [...document.querySelectorAll(".thought-label")].find((t) => t.textContent === "Thought")!;
+    expect(before(thought, reply(/Checking the lock/))).toBe(true);
+    expect(before(reply(/Checking the lock/), pair)).toBe(true);
+  });
+
+  it("whose message went when the chat was read again stays where it was shown, above what comes after", async () => {
+    const { server, hermes, user, runtime } = await launch((s) => (s.sideAnswer = (q) => `Answer to ${q}`));
+    await user.type(composer(), "Run it again{Enter}");
+    act(() => server.event(runtime, "message.delta", { text: "Ran it again" }));
+    act(() => server.event(runtime, "message.complete", { status: "complete", text: "Ran it again" }));
+    await waitFor(() => expect(hermes.getSnapshot().chats.find((c) => c.id === "backup")?.running).toBe(false));
+    await user.type(composer(), "/btw which snapshot?{Enter}");
+    const pair = await screen.findByRole("article", { name: "Side question: which snapshot?" });
+    expect(before(reply(/Ran it again/), pair)).toBe(true);
+
+    // Another Hermes client took the last turn back while this one was away: the chat is read again without it.
+    server.transcripts.backup = server.transcripts.backup.slice(0, 2);
+    await act(async () => server.drop());
+    await act(async () => void (await hermes.reconnect()));
+    await waitFor(() => expect(hermes.getSnapshot().status).toBe("connected"));
+    await act(async () => void (await hermes.open("backup")));
+    await waitFor(() => expect(reply(/Ran it again/)).toBeUndefined());
+    expect(before(reply(/restic repo was locked/), pair)).toBe(true);
+
+    await user.type(composer(), "Try again{Enter}");
+    const runtimeNow = server.runtimeIdOf("backup")!;
+    act(() => server.event(runtimeNow, "message.delta", { text: "Trying again" }));
+    await waitFor(() => expect(reply(/Trying again/)).toBeTruthy());
+    const tryAgain = [...document.querySelectorAll(".msg.user:not(.side)")].find((m) => /Try again/.test(m.textContent ?? ""))!;
+    expect(before(pair, tryAgain)).toBe(true);
+    expect(before(pair, reply(/Trying again/))).toBe(true);
+  });
+
   it("asked with the chat idle starts no turn, and stays with its chat across a switch", async () => {
     const { server, user } = await launch((s) => (s.sideAnswer = (q) => `Answer to ${q}`));
     await user.click(composer());
