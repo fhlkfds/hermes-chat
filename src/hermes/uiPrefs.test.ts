@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks", inboxAutoDismissDays: null });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"], chatSectionsCollapsed: ["snoozed", "archived", "settled"], agentOffice: "desks", inboxAutoDismissDays: null });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -90,7 +90,7 @@ describe("reading", () => {
       idleCompact: { enabled: false, percent: 70, idleMinutes: 30 },
       // A version 1 list gains Pinned, new in version 2.
       chatSectionsShown: ["pinned", "inbox", "settled"],
-      chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"],
+      chatSectionsCollapsed: ["snoozed", "archived", "settled"],
       agentOffice: "desks",
       inboxAutoDismissDays: null,
     });
@@ -300,6 +300,29 @@ describe("migration", () => {
     expect(getUIPrefs().chatSectionsCollapsed).toEqual(["inbox"]);
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, theme: "dark" }));
     expect(getUIPrefs().chatSectionsShown).toEqual(DEFAULT_UI_PREFS.chatSectionsShown);
+  });
+
+  it("drops Unsettled, gone in version 3, from both section lists of an older document, keeping the rest", () => {
+    localStorage.setItem(
+      UI_PREFS_KEY,
+      JSON.stringify({
+        v: 2,
+        theme: "light",
+        chatSectionsShown: ["pinned", "inbox", "unsettled", "settled"],
+        chatSectionsCollapsed: ["unsettled", "settled", "archived"],
+      }),
+    );
+    expect(getUIPrefs()).toMatchObject({ theme: "light", chatSectionsShown: ["pinned", "inbox", "settled"], chatSectionsCollapsed: ["archived", "settled"] });
+    // Version 1 documents get there by way of Pinned.
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, chatSectionsShown: ["unsettled", "inbox"] }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox"]);
+    expect(migrateUIPrefs({ v: 2, theme: "dark" })).toEqual({ v: UI_PREFS_VERSION, theme: "dark" });
+  });
+
+  it("falls back to the default sections when Unsettled was the only one shown", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, chatSectionsShown: ["unsettled"], chatSectionsCollapsed: ["unsettled"] }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(DEFAULT_UI_PREFS.chatSectionsShown);
+    expect(getUIPrefs().chatSectionsCollapsed).toEqual([]);
   });
 
   it("reads a newer version's document as it is, taking the fields this version knows", () => {
