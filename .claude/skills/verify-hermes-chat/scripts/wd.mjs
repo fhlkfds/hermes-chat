@@ -141,12 +141,25 @@ try {
       let off = null;
       for (let i = 0; i < 20 && !off; i++) off = await exec("return window.__wdOffset ?? null").then((v) => v ?? new Promise((r) => setTimeout(() => r(null), 100)));
       if (!off) die("rightclick: the window saw no pointer move, so its screen position is unknown");
-      // The first line of an inline element that wraps, so the point is on it.
-      const [x, y] = await exec("const r = arguments[0].getClientRects()[0]; return [r.left + r.width / 2, r.top + r.height / 2]", [{ [ELEMENT]: id }]);
-      xdo("mousemove", String(Math.round(off[0] + x)), String(Math.round(off[1] + y)));
+      // Into view as WebDriver's own click does, then the middle of the first line box that hit-tests to the element, so
+      // a link that wraps or sits half under a scroll edge is still hit. The listener proves the press landed on it.
+      const at = await exec(`const el = arguments[0];
+        el.scrollIntoView({ block: "center", inline: "nearest" });
+        window.__wdHit = false;
+        addEventListener("contextmenu", (e) => { window.__wdHit = el.contains(e.target); }, { capture: true, once: true });
+        for (const r of el.getClientRects()) {
+          const x = r.left + r.width / 2, y = r.top + r.height / 2, hit = document.elementFromPoint(x, y);
+          if (hit && (el === hit || el.contains(hit))) return [x, y];
+        }
+        return null;`, [{ [ELEMENT]: id }]);
+      if (!at) die(`rightclick: no visible point of ${css}${text ? ` "${text}"` : ""} is on top`);
+      xdo("mousemove", String(Math.round(off[0] + at[0])), String(Math.round(off[1] + at[1])));
       xdo("mousedown", "3");
       await new Promise((r) => setTimeout(r, 120));
       xdo("mouseup", "3");
+      let hit = false;
+      for (let i = 0; i < 20 && !hit; i++) hit = await exec("return window.__wdHit").then((v) => v || new Promise((r) => setTimeout(() => r(false), 100)));
+      if (!hit) die("rightclick: the press landed on something else");
       console.log("right-clicked");
       break;
     }
