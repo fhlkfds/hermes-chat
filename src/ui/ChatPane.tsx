@@ -10,7 +10,7 @@ import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { SkillCall } from "../hermes/skillCommands";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
-import { Menu } from "./ChatMenu";
+import { Menu, PinItem, type ChatPin } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ExportChatDialog } from "./ExportChat";
@@ -147,6 +147,7 @@ function MoreMenu({
   chat,
   onExport,
   onCopyLink,
+  pin,
   onSettle,
   onArchive,
   onDelete,
@@ -154,6 +155,7 @@ function MoreMenu({
   chat: Chat;
   onExport?: (notice: string) => void;
   onCopyLink?: () => void;
+  pin?: ChatPin;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onDelete?: () => void;
@@ -185,7 +187,7 @@ function MoreMenu({
       <button
         ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title={isBotChat(chat) ? "More actions: export" : `More actions: export, copy link, settle, archive${onDelete ? ", delete" : ""}`}
+        title={isBotChat(chat) ? "More actions: export" : `More actions: export, copy link, ${pin ? "pin, " : ""}settle, archive${onDelete ? ", delete" : ""}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -207,6 +209,7 @@ function MoreMenu({
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
           {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
+          {pin && !isBotChat(chat) && !chat.archived && <PinItem pin={pin} onClose={close} />}
           {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
             !isBotChat(chat) &&
@@ -275,6 +278,7 @@ export function ChatPane({
   onSend,
   onStop,
   onAnswer,
+  pin,
   onSettle,
   onArchive,
   onExport,
@@ -326,6 +330,8 @@ export function ChatPane({
   onSend: (text: string, attachments: Attachment[], skill?: SkillCall) => void;
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+  /** Pinning the chat to the top of the list (ADR 0085); left out for a chat not started yet. */
+  pin?: ChatPin;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   /** Shows the notice for a chat exported with the Export dialog. */
@@ -627,7 +633,7 @@ export function ChatPane({
               <Search size={16} />
             </button>
             {(onExport || onCopyLink || (onSettle && !chat.archived) || (onArchive && !chat.running) || deleteHere) && (
-              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} onSettle={onSettle} onArchive={onArchive} onDelete={deleteHere} />
+              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} pin={pin} onSettle={onSettle} onArchive={onArchive} onDelete={deleteHere} />
             )}
           </div>
         </div>

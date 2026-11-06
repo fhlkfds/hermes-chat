@@ -3,15 +3,15 @@
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Copy, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Copy, FileOutput, Inbox as InboxIcon, LockOpen, Pin, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
 import type { Route } from "../hermes/pipe";
 import { RenameConflict, TitleModelUnavailable, type Snapshot } from "../hermes/transport";
-import { SECTION_LABEL, canClear, chatSections, wakeFull, wakeLabel, type Cleared, type SectionKey, type Snoozes } from "../hermes/snooze";
+import { SECTION_LABEL, canClear, chatSections, wakeFull, wakeLabel, type Cleared, type Pins, type SectionKey, type Snoozes } from "../hermes/snooze";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs } from "../hermes/uiPrefs";
-import { ChatMenu, type ChatClear, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
+import { ChatMenu, type ChatClear, type ChatPin, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { DeleteChatDialog } from "./DeleteChat";
 import { CloneProfileDialog } from "./CloneProfile";
@@ -401,6 +401,7 @@ function ChatRow({
   tags,
   snooze,
   clear,
+  pin,
   section,
   hidden,
 }: {
@@ -428,6 +429,7 @@ function ChatRow({
   snooze?: ChatSnooze;
   /** Clearing the chat from the Inbox, or putting it back, where either can be done. */
   clear?: ChatClear;
+  pin?: ChatPin;
   section?: string;
   /** In a collapsed section: kept, with its rename box or menu, but out of sight. */
   hidden?: boolean;
@@ -487,7 +489,7 @@ function ChatRow({
         draggable
         onDragStart={(e) => dragChat(e, chat.id)}
         onDragEnd={dragChatEnd}
-        title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${alsoShown ? " (in the other pane)" : ""}${sleepsUntil ? ` (snoozed until ${wakeFull(sleepsUntil)})` : ""}`}
+        title={`${retitling ? "Writing a new title…" : chat.source !== "app" ? `${chat.title} (from ${SOURCE_LABEL[chat.source]})` : chat.title}${pin?.pinned ? " (pinned)" : ""}${alsoShown ? " (in the other pane)" : ""}${sleepsUntil ? ` (snoozed until ${wakeFull(sleepsUntil)})` : ""}`}
         onClick={() => {
           setRetitleError(undefined);
           onOpen();
@@ -501,6 +503,11 @@ function ChatRow({
       >
         {chat.source !== "app" && <SourceIcon source={chat.source} />}
         <span className="row-title">{chat.title}</span>
+        {pin?.pinned && (
+          <span className="row-pin" role="img" aria-label="Pinned">
+            <Pin size={12} />
+          </span>
+        )}
         <span className="row-meta">
           {sleepsUntil && <span className="row-wake">{wakeLabel(sleepsUntil, now)}</span>}
           {chat.running || retitling ? (
@@ -556,6 +563,7 @@ function ChatRow({
           split={split}
           snooze={snooze}
           clear={clear}
+          pin={pin}
           onOpenIn={onOpenIn}
           onOpenTab={onOpenTab}
           onRename={() => setRenaming(true)}
@@ -909,7 +917,8 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 }
 
 /**
- * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): the Inbox, the chats that need the owner or are done;
+ * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): Pinned, the chats the owner pinned (ADR 0085); the
+ * Inbox, the chats that need the owner or are done;
  * Working, the chats Hermes is replying in; Snoozed; Unsettled, the Active chats cleared from the Inbox; Settled; and
  * Archived. Settings → General picks the sections shown (uiPrefs.ts `chatSectionsShown`), and each one's header
  * collapses it, remembered across restarts. The sections are one list of rows and headers, so a row that moves between
@@ -941,6 +950,8 @@ export function ChatList({
   attentionSince,
   cleared = {},
   onClear,
+  pins = {},
+  onPin,
   onSnooze,
   onWake,
   onArchive,
@@ -987,6 +998,10 @@ export function ChatList({
   cleared?: Cleared;
   /** Clears a chat from the Inbox, or puts it back. */
   onClear?: (id: string, cleared: boolean) => void;
+  /** The pinned chats, each with when it was pinned (snooze.ts `PinStore`). */
+  pins?: Pins;
+  /** Pins a chat to the top of the list, or unpins it. */
+  onPin?: (id: string, pinned: boolean) => void;
   onSnooze?: (id: string, until: number) => void;
   onWake?: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
@@ -1019,7 +1034,7 @@ export function ChatList({
   const deletingGone = !!deleting && !chats.some((c) => c.id === deleting.chat.id && !c.running);
   // Re-sorts the list when the next snooze wakes.
   const now = useSnoozeClock(snoozes);
-  const sections = chatSections(chats, snoozes, now, attentionSince, cleared);
+  const sections = chatSections(chats, snoozes, now, attentionSince, cleared, pins);
   // The dialog closes if its chat leaves the list, or is settled or archived meanwhile (in another window or client).
   const customGone = !!customFor && !chats.some((c) => c.id === customFor.id && !c.settled && !c.archived);
   useEffect(() => {
@@ -1065,12 +1080,13 @@ export function ChatList({
           ? { cleared: section === "unsettled", onClear: (on) => onClear(c.id, on) }
           : undefined
       }
+      pin={onPin && !c.archived ? { pinned: pins[c.id] !== undefined, onPin: (on) => onPin(c.id, on) } : undefined}
     />
   );
   // Settled and Archived can hold every chat the profile has ever had, so a collapsed one draws no rows.
   const keepsHidden = (k: SectionKey) => k !== "settled" && k !== "archived";
-  // Working and Snoozed come and go with what is happening; the others keep their header when empty.
-  const drawnEmpty = (k: SectionKey) => k !== "working" && k !== "snoozed";
+  // Pinned, Working and Snoozed come and go with what the owner and Hermes do; the others keep their header when empty.
+  const drawnEmpty = (k: SectionKey) => k !== "pinned" && k !== "working" && k !== "snoozed";
   const busy = sections.working.length + sections.snoozed.length > 0;
   return (
     <aside className="sidebar" onKeyDown={moveBetweenChats}>

@@ -7,9 +7,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import type { Chat } from "../hermes/model";
-import { CLEARED_KEY, type Cleared } from "../hermes/snooze";
+import { CLEARED_KEY, PINS_KEY, type Cleared, type Pins } from "../hermes/snooze";
 import { UI_PREFS_KEY, getUIPrefs, setUIPrefs } from "../hermes/uiPrefs";
 import { connect, type Hermes } from "../hermes/transport";
+import { projectScope } from "../hermes/projectLinks";
 import { Main } from "../App";
 import { ChatList } from "./Sidebar";
 import { ChatSectionSettings } from "./ChatSectionSettings";
@@ -32,9 +33,25 @@ afterEach(async () => {
 const NOW = Date.now();
 const chat = (id: string, extra: Partial<Chat> = {}): Chat => ({ id, title: id, source: "app", settled: false, updatedAt: NOW - 60_000, items: [], ...extra });
 
-function List({ chats, cleared = {}, onClear = () => {}, selectedId = null }: { chats: Chat[]; cleared?: Cleared; onClear?: (id: string, on: boolean) => void; selectedId?: string | null }) {
+function List({
+  chats,
+  cleared = {},
+  onClear = () => {},
+  pins,
+  onPin,
+  selectedId = null,
+}: {
+  chats: Chat[];
+  cleared?: Cleared;
+  onClear?: (id: string, on: boolean) => void;
+  pins?: Pins;
+  onPin?: (id: string, on: boolean) => void;
+  selectedId?: string | null;
+}) {
   return (
     <ChatList
+      pins={pins}
+      onPin={onPin}
       profile="default"
       status="connected"
       others={{ byName: {} }}
@@ -174,12 +191,50 @@ describe("Clearing from the Inbox, in the list", () => {
   });
 });
 
+describe("Pinned chats, in the list", () => {
+  it("lists pinned chats first, in the order pinned, each with a pin, and new messages don't reorder them", () => {
+    const pins = { old: NOW - 2_000, read: NOW - 1_000 };
+    const { rerender } = render(<List chats={mix} pins={pins} onPin={() => {}} />);
+    expect(heads()).toEqual(["Pinned2", "Inbox2", "Working1", "Unsettled0", "Settled0"]);
+    expect(titles("pinned")).toEqual(["old", "read"]);
+    expect(rowOf("old").querySelector('[aria-label="Pinned"]')).not.toBeNull();
+    expect(rowOf("new").querySelector('[aria-label="Pinned"]')).toBeNull();
+    const later = mix.map((c) => (c.id === "read" || c.id === "new" ? { ...c, updatedAt: NOW } : c));
+    rerender(<List chats={later} pins={pins} onPin={() => {}} />);
+    expect(heads()[0]).toBe("Pinned2");
+    expect(titles("pinned")).toEqual(["old", "read"]);
+    expect(titles("inbox")).toEqual(["new", "quiet"]);
+  });
+
+  it("draws no Pinned header while nothing is pinned", () => {
+    render(<List chats={mix} pins={{}} />);
+    expect(heads()[0]).toBe("Inbox3");
+  });
+
+  it("pins and unpins from the row's menu, by click or by its P key", async () => {
+    const user = userEvent.setup();
+    const calls: [string, boolean][] = [];
+    render(<List chats={mix} pins={{ read: NOW }} onPin={(id, on) => calls.push([id, on])} />);
+    fireEvent.contextMenu(rowOf("new"));
+    await user.click(screen.getByRole("menuitem", { name: /^Pin/ }));
+    fireEvent.contextMenu(rowOf("read"));
+    expect(screen.getByRole("menuitem", { name: /^Unpin/ }).getAttribute("aria-keyshortcuts")).toBe("P");
+    await user.keyboard("p");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(calls).toEqual([
+      ["new", true],
+      ["read", false],
+    ]);
+  });
+});
+
 describe("Settings → General: chat list sections", () => {
   it("turns each section on or off in any mix, but never the last one", async () => {
     const user = userEvent.setup();
     render(<ChatSectionSettings />);
     const sw = (name: string) => screen.getByRole("switch", { name });
-    expect(["Inbox", "Working", "Snoozed", "Unsettled", "Settled", "Archived"].map((n) => sw(n).getAttribute("aria-checked"))).toEqual([
+    expect(["Pinned", "Inbox", "Working", "Snoozed", "Unsettled", "Settled", "Archived"].map((n) => sw(n).getAttribute("aria-checked"))).toEqual([
+      "true",
       "true",
       "true",
       "true",
@@ -189,8 +244,8 @@ describe("Settings → General: chat list sections", () => {
     ]);
     await user.click(sw("Archived"));
     await user.click(sw("Working"));
-    expect(getUIPrefs().chatSectionsShown).toEqual(["inbox", "snoozed", "unsettled", "settled", "archived"]);
-    for (const n of ["Inbox", "Snoozed", "Unsettled", "Settled"]) await user.click(sw(n));
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "snoozed", "unsettled", "settled", "archived"]);
+    for (const n of ["Pinned", "Inbox", "Snoozed", "Unsettled", "Settled"]) await user.click(sw(n));
     expect(getUIPrefs().chatSectionsShown).toEqual(["archived"]);
     // The last one on can't be turned off, and says why.
     expect(sw("Archived").getAttribute("aria-disabled")).toBe("true");
@@ -205,10 +260,10 @@ describe("Settings → General: chat list sections", () => {
 
   it("won't keep a stored list with no sections, or ones it doesn't know", () => {
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, chatSectionsShown: [], chatSectionsCollapsed: ["nope", "inbox", "inbox"] }));
-    expect(getUIPrefs().chatSectionsShown).toEqual(["inbox", "working", "snoozed", "unsettled", "settled"]);
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "working", "snoozed", "unsettled", "settled"]);
     expect(getUIPrefs().chatSectionsCollapsed).toEqual(["inbox"]);
     setUIPrefs({ chatSectionsShown: [] });
-    expect(getUIPrefs().chatSectionsShown).toEqual(["inbox", "working", "snoozed", "unsettled", "settled"]);
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "working", "snoozed", "unsettled", "settled"]);
   });
 });
 
@@ -303,5 +358,95 @@ describe("Clearing from the Inbox, in the app", () => {
     await waitFor(() => expect(head("Archived").textContent).toBe("Archived1"));
     act(() => void setUIPrefs({ chatSectionsShown: ["inbox"] }));
     await waitFor(() => expect(hermes.getSnapshot().archivedListed).toBe(false));
+  });
+});
+
+describe("Pinning, in the app", () => {
+  const connection = { mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam" };
+  async function signedIn(server = new FakeHermes()) {
+    if (!server.sessions.length)
+      server.sessions = [
+        row("a", 1, { pinned: true, title: "Deploy notes" }),
+        row("b", 2, { pinned: true, title: "Groceries" }),
+        row("c", 3, { pinned: true, title: "Taxes" }),
+      ];
+    const hermes = await connect(server.openPipe);
+    running.push(hermes);
+    const user = userEvent.setup();
+    const view = render(<Main hermes={hermes} connection={connection} onSignOut={async () => {}} />);
+    await screen.findByRole("button", { name: /Deploy notes/ });
+    await act(async () => void (await hermes.idle()));
+    return { server, hermes, user, view };
+  }
+  const refresh = (hermes: Hermes) =>
+    act(async () => {
+      await hermes.sync();
+      await hermes.idle();
+    });
+  const storedPins = () => Object.values(JSON.parse(localStorage.getItem(PINS_KEY) ?? '{"scopes":{}}').scopes).map((s) => Object.keys(s as object));
+
+  it("pins from the row menu and the header's More menu, keeps them on this computer only, and keeps them across a restart", async () => {
+    const { server, hermes, user, view } = await signedIn();
+    const before = server.restRequests.length;
+    fireEvent.contextMenu(rowOf("b"));
+    await user.click(screen.getByRole("menuitem", { name: /^Pin/ }));
+    expect(screen.getByRole("status").textContent).toContain("Pinned: Groceries");
+    await user.click(rowOf("a"));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: /^Pin/ }));
+    expect(heads()[0]).toBe("Pinned2");
+    expect(titles("pinned")).toEqual(["Groceries", "Deploy notes"]);
+    expect(titles("inbox")).toEqual(["Taxes"]);
+    expect(storedPins()).toEqual([["b", "a"]]);
+    // Opening a chat marks it read on Hermes; nothing else is written there.
+    expect(server.restRequests.slice(before).filter((r) => r.method !== "GET").map((r) => r.body)).toEqual([expect.objectContaining({ unread: false })]);
+
+    // A new message in an unpinned chat leaves it below the pinned ones.
+    server.sessions.find((s) => s.id === "c")!.last_active = Date.now() / 1000;
+    await refresh(hermes);
+    expect(heads()[0]).toBe("Pinned2");
+    expect(titles("pinned")).toEqual(["Groceries", "Deploy notes"]);
+    expect(titles("inbox")).toEqual(["Taxes"]);
+
+    view.unmount();
+    const again = await connect(server.openPipe);
+    running.push(again);
+    render(<Main hermes={again} connection={connection} onSignOut={async () => {}} />);
+    await screen.findByRole("button", { name: /Deploy notes/ });
+    expect(titles("pinned")).toEqual(["Groceries", "Deploy notes"]);
+  }, 20_000);
+
+  it("unpins back to the chat's place in the list, and Undo puts the pin back in its old place", async () => {
+    const { user } = await signedIn();
+    for (const id of ["b", "c"]) {
+      fireEvent.contextMenu(rowOf(id));
+      await user.click(screen.getByRole("menuitem", { name: /^Pin/ }));
+    }
+    expect(titles("pinned")).toEqual(["Groceries", "Taxes"]);
+    fireEvent.contextMenu(rowOf("b"));
+    await user.keyboard("p");
+    expect(titles("pinned")).toEqual(["Taxes"]);
+    expect(titles("inbox")).toEqual(["Deploy notes", "Groceries"]);
+    await user.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" }));
+    expect(titles("pinned")).toEqual(["Groceries", "Taxes"]);
+  });
+
+  it("keeps a pinned chat the list no longer reaches, and forgets the pin of one Hermes no longer has", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1, { pinned: true, title: "Deploy notes" }), row("old", 60, { title: "Last year's taxes" })];
+    localStorage.setItem(PINS_KEY, JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { old: NOW - 2, gone: NOW - 1 } } }));
+    await signedIn(server);
+    await waitFor(() => expect(titles("pinned")).toEqual(["Last year's taxes"]));
+    await waitFor(() => expect(storedPins()).toEqual([["old"]]));
+  });
+
+  it("forgets a deleted chat's pin", async () => {
+    const { user } = await signedIn();
+    fireEvent.contextMenu(rowOf("b"));
+    await user.click(screen.getByRole("menuitem", { name: /^Pin/ }));
+    fireEvent.contextMenu(rowOf("b"));
+    await user.click(screen.getByRole("menuitem", { name: "Delete chat…" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Delete/ }));
+    await waitFor(() => expect(storedPins()).toEqual([]));
   });
 });
