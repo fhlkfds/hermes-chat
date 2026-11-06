@@ -12,7 +12,7 @@ import type { TerminalKind } from "./terminal";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
-export const UI_PREFS_VERSION = 1;
+export const UI_PREFS_VERSION = 2;
 
 export type Theme = "light" | "dark" | "system";
 export const THEMES: readonly Theme[] = ["light", "dark", "system"];
@@ -60,12 +60,12 @@ export type UIPrefs = {
   chatSectionsShown: SectionKey[];
   /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
   chatSectionsCollapsed: SectionKey[];
-  /** How the agent office shows the agents at work: as desks, as a list, or not at all, with no rail button (ADR 0077). */
+  /** How the agent office shows the agents at work: as desks, as a list, as characters in one room (ADR 0083), or not at all, with no rail button (ADR 0077). */
   agentOffice: OfficeView;
 };
 
-export type OfficeView = "desks" | "list" | "off";
-export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "off"];
+export type OfficeView = "desks" | "list" | "scene" | "off";
+export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "scene", "off"];
 
 export type FollowUp = "queue" | "steer";
 
@@ -102,7 +102,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
-  chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
+  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
   chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
   agentOffice: "desks",
 });
@@ -115,6 +115,8 @@ export type UIPrefsMigrations = Readonly<Record<number, (doc: UIPrefsDoc) => UIP
 export const UI_PREFS_MIGRATIONS: UIPrefsMigrations = {
   // Version 0 is a document written without `v`; its fields already have version 1's shape.
   0: (doc) => doc,
+  // Pinned is new in version 2 (ADR 0085): a list of shown sections from before it shows Pinned too.
+  1: (doc) => (toShown(doc.chatSectionsShown) ? { ...doc, chatSectionsShown: ["pinned", ...(doc.chatSectionsShown as unknown[])] } : doc),
 };
 
 const isDoc = (v: unknown): v is UIPrefsDoc => typeof v === "object" && v !== null && !Array.isArray(v);

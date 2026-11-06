@@ -9,7 +9,7 @@ import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { getUIPrefs } from "../hermes/uiPrefs";
 import type { FileView, Framing } from "../hermes/preview";
-import { ServerPageError, type LocalFiles, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
+import { ServerPageError, type LocalFiles, type NativePages, type PageEvent, type Placement, type ServerPage, type ServerPages, type WebPages } from "./tauriPreview";
 import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -67,9 +67,31 @@ function theWeb(answers: Record<string, Framing | Error | Promise<Framing>> = {}
     openInBrowser: async (url) => {
       if (openFails) throw new Error(openFails);
       web.opened.push(url);
+      return "Helium Browser";
     },
   };
   return web;
+}
+
+/**
+ * The Preview's own page view as Rust runs it on Linux (src-tauri/src/page_view.rs). `opened` lists each page's
+ * address, `placed` where each was last put (`null`: hidden) and `closed` which closed, by number from 1. `say(n, e)`
+ * is page n's view reporting an event.
+ */
+function theView() {
+  const view: NativePages & { opened: string[]; placed: Map<number, Placement | null>; closed: number[]; say(n: number, e: PageEvent): void } = {
+    opened: [],
+    placed: new Map(),
+    closed: [],
+    say: () => {},
+    open: (url, onEvent) => {
+      const n = view.opened.push(url);
+      const said = view.say;
+      view.say = (m, e) => (m === n ? onEvent(e) : said(m, e));
+      return { place: (p) => view.placed.set(n, p), close: () => view.closed.push(n) };
+    },
+  };
+  return view;
 }
 
 /**
@@ -371,12 +393,13 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
 
     await user.click(within(note).getByRole("button", { name: "Open in your browser" }));
     expect(web.opened).toEqual([GOOGLE]);
+    expect((await within(pane()).findByText("Opened in Helium Browser.")).getAttribute("role")).toBe("status");
 
     // The owner may still try, in the same sandboxed frame.
     await user.click(within(note).getByRole("button", { name: "Try showing it here anyway" }));
     const again = within(pane()).getByTitle(`Web page: ${GOOGLE}`);
     expect(again.getAttribute("sandbox")!.split(" ").sort()).toEqual(["allow-forms", "allow-same-origin", "allow-scripts"]);
-    expect(within(pane()).getByRole("status").textContent).toContain("Loading page");
+    expect(within(pane()).getAllByRole("status").some((e) => e.textContent?.includes("Loading page"))).toBe(true);
   });
 
   it("keeps showing a page that allows framing, with a way to open it in the browser", async () => {
@@ -414,7 +437,7 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
   });
 
   it("leaves the frame alone when the check itself fails, and says why the browser didn't open", async () => {
-    const web = theWeb({ [GOOGLE]: new Error("not running in Tauri") }, "Couldn't find xdg-open, which opens pages in your browser.");
+    const web = theWeb({ [GOOGLE]: new Error("not running in Tauri") }, "No default browser is set.");
     const { user } = await openWeb(GOOGLE, web);
     await act(async () => {});
     expect(within(pane()).getByTitle(`Web page: ${GOOGLE}`)).toBeTruthy();
@@ -422,8 +445,104 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
 
     await user.click(within(pane()).getByRole("button", { name: "Open in your browser" }));
     expect((await within(pane()).findByRole("alert")).textContent).toBe(
-      "Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.",
+      "Couldn't open it in your browser: No default browser is set.",
     );
+  });
+});
+
+describe("Web pages in the Preview's own view, on Linux (issue #254)", () => {
+  const GOOGLE = "https://www.google.com/";
+  const BOX = { x: 800, y: 137, width: 480, height: 683 };
+  afterEach(() => vi.restoreAllMocks());
+  const stubLayout = () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const rect = Element.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("preview-web-frame") ? ({ ...BOX, top: BOX.y, left: BOX.x, right: 1280, bottom: 820 } as DOMRect) : rect.call(this);
+    });
+  };
+  async function openWeb(url: string) {
+    stubLayout();
+    const view = theView();
+    const web = Object.assign(theWeb(), { native: view });
+    const s = await signedIn({ web });
+    await s.user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    await s.user.type(within(pane()).getByRole("textbox"), `${url}{Enter}`);
+    return { ...s, view, web };
+  }
+
+  it("shows a site that refuses framing, such as www.google.com, in its view and never in a frame", async () => {
+    const { view, web, user } = await openWeb(GOOGLE);
+    expect(view.opened).toEqual([GOOGLE]);
+    expect(document.querySelector("iframe")).toBeNull();
+    // Nothing asks whether the site refuses framing: the view is no frame.
+    expect(web.checked).toEqual([]);
+    // Hidden until its first response comes, while the pane says it is loading.
+    expect(view.placed.get(1)).toBeUndefined();
+    expect(within(pane()).getByRole("status").textContent).toContain("Loading page");
+
+    await act(async () => view.say(1, { kind: "shown" }));
+    expect(view.placed.get(1)).toEqual({ rect: BOX, holes: [] });
+    expect(within(pane()).queryByRole("status")).toBeNull();
+    expect(within(pane()).queryByRole("alert")).toBeNull();
+
+    await user.click(within(pane()).getByRole("button", { name: "Open it in your browser" }));
+    expect(web.opened).toEqual([GOOGLE]);
+  });
+
+  it("says why a page couldn't load, and hides it", async () => {
+    const { view } = await openWeb(GOOGLE);
+    await act(async () => view.say(1, { kind: "shown" }));
+    await act(async () => view.say(1, { kind: "failed", message: "Error resolving “www.google.com”: Name or service not known" }));
+    expect(view.placed.get(1)).toBeNull();
+    const alert = within(pane()).getByRole("alert");
+    expect(alert.textContent).toContain("Couldn't load www.google.com");
+    expect(alert.textContent).toContain("Name or service not known");
+  });
+
+  it("reloads by opening the page again, and closes it when the Preview goes out of sight", async () => {
+    const { view, user } = await openWeb(GOOGLE);
+    await act(async () => view.say(1, { kind: "shown" }));
+    await user.click(within(pane()).getByRole("button", { name: "Reload" }));
+    expect(view.closed).toEqual([1]);
+    expect(view.opened).toEqual([GOOGLE, GOOGLE]);
+
+    await act(async () => view.say(2, { kind: "shown" }));
+    await user.click(within(pane()).getByRole("tab", { name: /Files/ }));
+    expect(view.placed.get(2)).toBeNull();
+    expect(view.closed).toEqual([1, 2]);
+  });
+
+  it("takes the keyboard back when the owner presses Escape in the page, so the next Escape closes the Preview", async () => {
+    const { view, user } = await openWeb(GOOGLE);
+    await act(async () => view.say(1, { kind: "shown" }));
+    // The owner clicked into the page: the app's webview has no focus.
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(async () => view.say(1, { kind: "escaped" }));
+    expect(pane().contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(paneOpen()).toBe(false);
+    expect(view.closed).toEqual([1]);
+  });
+
+  it("loads a page on the Hermes server through its SSH tunnel, and closes both with the Preview", async () => {
+    stubLayout();
+    const view = theView();
+    const { user, pages } = await signedIn({ web: Object.assign(theWeb(), { native: view }) });
+    await user.click(screen.getByRole("link", { name: "the dev server" }));
+    await waitFor(() => expect(view.opened).toEqual(["http://127.0.0.1:41001/app?v=2"]));
+    expect(pages.opened).toEqual(["http://localhost:5173/app?v=2"]);
+    expect(within(pane()).getByText("http://localhost:5173/app?v=2")).toBeTruthy();
+
+    await user.click(within(pane()).getByRole("button", { name: "Close the side panel" }));
+    expect(view.closed).toEqual([1]);
+    expect(pages.closed).toEqual(["1"]);
   });
 });
 
@@ -815,6 +934,7 @@ describe("The link menu (issue #240)", () => {
     expect(web.opened).toEqual([DOCS]);
     expect(screen.queryByRole("menu")).toBeNull();
     expect(paneOpen()).toBe(false);
+    expect(await screen.findByText("Opened in Helium Browser.")).toBeTruthy();
 
     rightClick(link);
     await user.click(item("Open in the Preview"));
@@ -824,10 +944,11 @@ describe("The link menu (issue #240)", () => {
   });
 
   it("says why the browser didn't open", async () => {
-    const { user } = await signedIn({ web: theWeb({}, "Couldn't find xdg-open, which opens pages in your browser.") });
+    const { user } = await signedIn({ web: theWeb({}, "Helium Browser stopped with exit code 1: cannot open display: wayland-1") });
     rightClick(screen.getByRole("link", { name: "the docs" }));
     await user.click(item("Open in your browser"));
-    expect(await screen.findByText("Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.")).toBeTruthy();
+    expect(await screen.findByText("Couldn't open it in your browser: Helium Browser stopped with exit code 1: cannot open display: wayland-1")).toBeTruthy();
+    expect(screen.queryByText(/^Opened in/)).toBeNull();
   });
 
   it("copies the link and says so, or says why it couldn't", async () => {

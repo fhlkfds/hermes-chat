@@ -188,17 +188,21 @@ export class ProfileCloneApi {
     });
   }
 
-  /** What `name` has that a clone could carry over, read now. A skill list that fails leaves skills out and says why. */
-  async source(name: string, profiles: readonly ProfileRow[]): Promise<Source> {
-    const profile = profiles.find((p) => p.name === name);
-    if (!profile) throw new Error(`Hermes doesn't list a profile named ${name} now.`);
-    const [soul, skills] = await Promise.all([
+  /**
+   * What `name` has that a clone could carry over, read now, alongside `profiles`, the list still being read. A skill
+   * list that fails leaves skills out and says why.
+   */
+  async source(name: string, profiles: Promise<readonly ProfileRow[]>): Promise<Source> {
+    const [list, soul, skills] = await Promise.all([
+      profiles,
       this.persona.read(name),
-      this.skills.list(name).then(
-        (view) => ({ rows: view.skills, problem: undefined }),
+      this.skills.rows(name).then(
+        (rows) => ({ rows, problem: undefined }),
         (e: unknown) => ({ rows: [] as SkillRow[], problem: said(e) }),
       ),
     ]);
+    const profile = list.find((p) => p.name === name);
+    if (!profile) throw new Error(`Hermes doesn't list a profile named ${name} now.`);
     return { profile, soul, skills: skills.rows.filter((r) => r.source === "agent"), listed: skills.rows.map((r) => r.name), skillsProblem: skills.problem };
   }
 
@@ -371,7 +375,7 @@ export class ProfileCloneApi {
     else if (source.skillsProblem) put("skills", "unchecked", `Hermes copied every skill folder. Its skills couldn't be compared with the source's: ${source.skillsProblem}`);
     else
       try {
-        const there = new Set((await this.skills.list(plan.name)).skills.map((s) => s.name));
+        const there = new Set((await this.skills.rows(plan.name)).map((s) => s.name));
         const missing = source.skills.filter((s) => !there.has(s.name)).map((s) => s.name);
         if (missing.length) put("skills", "failed", `Not in the clone: ${missing.join(", ")}`);
         else put("skills", "copied", source.skills.length ? `All ${source.skills.length} of its own are listed, with Hermes's built-in ones` : "Every skill folder");

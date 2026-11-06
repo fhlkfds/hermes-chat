@@ -51,7 +51,7 @@ const creates = (server: FakeHermes) => server.restRequests.filter((r) => r.meth
 describe("cloning a profile", () => {
   it("makes a fresh profile with only the picked parts, each read back, and no API keys", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     expect(source.skills.map((s) => s.name)).toEqual(["release-notes", "triage"]);
     const { seen, onStage } = recorder();
 
@@ -78,7 +78,7 @@ describe("cloning a profile", () => {
 
   it("leaves out every part not picked, and says what the clone has instead", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     const out = made(await api.clone(fresh(["description"]), source, () => {}));
     expect(creates(server)).toEqual([{ name: "work-2", description: "Release engineering agent" }]);
     expect(stateOf(out, "description")).toMatchObject({ state: "copied", note: "Release engineering agent" });
@@ -89,7 +89,7 @@ describe("cloning a profile", () => {
 
   it("previews what each category does before anything is written, for the fresh clone and the full copy", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     const safe = preview({ kind: "fresh", parts: new Set<Part>(["persona", "skills"]) }, source);
     expect(safe.persona.copied).toBe(true);
     expect(safe.model.copied).toBe(false);
@@ -105,7 +105,7 @@ describe("cloning a profile", () => {
 
   it("copies the API keys, memory and skill folders only in the full copy, never bot tokens, chats or jobs", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     const { seen, onStage } = recorder();
     const out = made(await api.clone({ kind: "full", source: "work", name: "work-full" }, source, onStage));
     expect(creates(server)).toEqual([{ name: "work-full", clone_from: "work", description: "Release engineering agent" }]);
@@ -127,7 +127,7 @@ describe("cloning a profile", () => {
   it("doesn't call the full copy's skills read back when the source's skills couldn't be listed", async () => {
     const { server, api } = await signedIn();
     server.skills.routes = false;
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     expect(source.skillsProblem).toBeTruthy();
     expect(preview({ kind: "fresh", parts: new Set<Part>(["skills"]) }, source).skills).toMatchObject({ copied: false, available: false });
     const out = made(await api.clone({ kind: "full", source: "work", name: "work-full" }, source, () => {}));
@@ -138,7 +138,7 @@ describe("cloning a profile", () => {
   it("sends no SOUL.md when the source has none, so Hermes's default goes in, but copies one that is there and empty", async () => {
     const { server, api } = await signedIn();
     delete server.souls.work;
-    const none = await api.source("work", await api.profiles());
+    const none = await api.source("work", api.profiles());
     expect(preview({ kind: "fresh", parts: new Set<Part>(["persona"]) }, none).persona).toMatchObject({ copied: false, available: false });
     const out = made(await api.clone(fresh(["persona"]), none, () => {}));
     expect(creates(server)).toEqual([{ name: "work-2" }]);
@@ -146,7 +146,7 @@ describe("cloning a profile", () => {
     expect(stateOf(out, "persona")).toMatchObject({ state: "left", note: "The source has none, so Hermes's default went in" });
 
     server.souls.work = "";
-    const empty = await api.source("work", await api.profiles());
+    const empty = await api.source("work", api.profiles());
     const again = made(await api.clone(fresh(["persona"], "work-3"), empty, () => {}));
     expect(creates(server)[1]).toEqual({ name: "work-3", soul: "" });
     expect(server.souls["work-3"]).toBe("");
@@ -160,7 +160,7 @@ describe("cloning a profile", () => {
     expect(nameProblem("Work 2", profiles)).toMatch(/lowercase letters/);
     expect(nameProblem("test", profiles)).toMatch(/keeps the name test/);
     expect(nameProblem("default", profiles)).toMatch(/keeps the name default/);
-    const source = await api.source("work", profiles);
+    const source = await api.source("work", api.profiles());
     // Another client makes the name after the dialog read the list.
     server.otherProfiles["late"] = [];
     server.souls.late = "Someone else's.\n";
@@ -174,7 +174,7 @@ describe("cloning a profile", () => {
 
   it("shows Hermes's own refusal when the name is taken between the check and the create, and nothing changes", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.profileCreateError = `The dashboard answered 400: {"detail":"A profile named 'work-2' already exists."}`;
     const out = await api.clone(fresh(["persona"]), source, () => {});
     expect(out).toEqual({ kind: "refused", problem: "Hermes didn't create work-2. Hermes said: A profile named 'work-2' already exists." });
@@ -183,7 +183,7 @@ describe("cloning a profile", () => {
 
   it("settles a server failure by reading the list: nothing made is said as unsure, and Check again finds it later", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.profileCreateError = `The dashboard answered 502: Bad Gateway`;
     const plan = fresh(["persona"]);
     const out = await api.clone(plan, source, () => {});
@@ -201,7 +201,7 @@ describe("cloning a profile", () => {
 
   it("goes on after a lost answer when Hermes lists the profile, but doesn't count it as answered", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.profileCreateLost = "Can't reach the Hermes dashboard: connection reset";
     const { seen, onStage } = recorder();
     const out = made(await api.clone(fresh(["persona", "model"]), source, onStage));
@@ -212,7 +212,7 @@ describe("cloning a profile", () => {
 
   it("writes nothing more to a profile it found after a lost answer, as it may be another client's", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.beforeProfileCreate = () => {
       server.otherProfiles["work-2"] = [];
       server.skills.profiles.add("work-2");
@@ -233,7 +233,7 @@ describe("cloning a profile", () => {
 
   it("reports a model Hermes wouldn't set in Hermes's words, not as copied", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.profileModelError = "Model `anthropic/claude-sonnet-4.5` was not found in this provider's model listing.";
     const out = made(await api.clone(fresh(["persona", "model"]), source, () => {}));
     expect(stateOf(out, "model")).toEqual({
@@ -246,7 +246,7 @@ describe("cloning a profile", () => {
 
   it("lists a skill that didn't copy, and copies only that one when tried again", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     server.skills.createRoute = false;
     const plan = fresh(["skills"]);
     const out = made(await api.clone(plan, source, () => {}));
@@ -265,7 +265,7 @@ describe("cloning a profile", () => {
 
   it("deletes the clone it made, and confirms it's gone", async () => {
     const { server, api } = await signedIn();
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     made(await api.clone(fresh(["persona"]), source, () => {}));
     await api.remove("work-2");
     expect(server.otherProfiles["work-2"]).toBeUndefined();
@@ -276,7 +276,7 @@ describe("cloning a profile", () => {
   it("leaves the source unchanged when the clone is edited", async () => {
     const { server, api } = await signedIn();
     const hermes = running[0];
-    const source = await api.source("work", await api.profiles());
+    const source = await api.source("work", api.profiles());
     made(await api.clone(fresh(["persona", "skills"]), source, () => {}));
     const soul = await hermes.persona.read("work-2");
     await hermes.persona.save("work-2", soul, "You are the clone.\n");

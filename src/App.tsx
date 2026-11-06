@@ -48,6 +48,7 @@ import type { SubagentId } from "./hermes/subagents";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
+import type { ChatPin } from "./ui/ChatMenu";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
@@ -64,7 +65,7 @@ import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
-import { AttentionClock, CLEARED_KEY, ClearedStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, staleClears, wakeFull } from "./hermes/snooze";
+import { AttentionClock, CLEARED_KEY, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, staleClears, wakeFull } from "./hermes/snooze";
 import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
@@ -966,7 +967,7 @@ export function Main({
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
-  // Settings → Diagnostics → Logs reads the profile's Hermes logs (ADR 0033, 0080). What it read goes when it closes;
+  // Settings → Diagnostics → Logs reads the profile's Hermes logs (ADR 0033, 0087). What it read goes when it closes;
   // this app's own diagnostics stay.
   const logs = useMemo(
     () => ({
@@ -1179,6 +1180,28 @@ export function Main({
   useEffect(() => {
     for (const id of staleClears(chats, snoozes, Date.now(), attention.since, cleared)) clearedStore.restore(id);
   }, [chats, snoozes, snoozeNow, cleared, clearedStore]);
+  // Pinned chats: kept on this computer for each connection and profile, like snoozes (ADR 0085).
+  const pinStore = useMemo(() => new PinStore(localStorage, scope), [scope]);
+  const pins = useSyncExternalStore(pinStore.subscribe, pinStore.getSnapshot);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => e.key === PINS_KEY && pinStore.reread();
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [pinStore]);
+  // A pinned chat the list doesn't reach (quiet for over a month) is looked up once and kept in the list; one Hermes no
+  // longer has is unpinned.
+  const pinsLookedUp = useMemo(() => new Set<string>(), [scope]);
+  useEffect(() => {
+    if (status !== "connected" || switching || !hermes.hasListed()) return;
+    for (const id of Object.keys(pins)) {
+      if (pinsLookedUp.has(id) || chats.some((c) => c.id === id)) continue;
+      pinsLookedUp.add(id);
+      hermes.findChat(id, profile).then(
+        (found) => (found ? hermes.profile === profile && hermes.reveal(found) : pinStore.unpin(id)),
+        () => pinsLookedUp.delete(id),
+      );
+    }
+  }, [pins, chats, status, switching, pinStore]);
   attention.observe(chats, Date.now(), status === "connected");
   const tagChange = (fn: () => Promise<unknown>) =>
     fn().catch((e) => setToast({ text: (e as Error).message, at: Date.now() }));
@@ -1798,6 +1821,15 @@ export function Main({
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
   };
 
+  // Pinning is kept on this computer only; Undo puts the chat back where it was, a pin back in its old place.
+  const pinChat = (id: string, on: boolean) => {
+    const title = chats.find((c) => c.id === id)?.title ?? "";
+    const before = pins[id];
+    const put = (to: boolean, at?: number) => (to ? pinStore.pin(id, at) : pinStore.unpin(id));
+    put(on);
+    setToast({ text: `${on ? "Pinned" : "Unpinned"}: ${title}`, undo: () => put(!on, before), at: Date.now() });
+  };
+
   // Clearing a chat from the Inbox is kept on this computer only, with when the chat was last active, so anything newer
   // brings it back (ADR 0063). Undo does the opposite.
   const clearFromInbox = (id: string, on: boolean) => {
@@ -1831,6 +1863,7 @@ export function Main({
         tagChange(() => tagsStore.forgetChat(id));
         snoozeStore.wake(id);
         clearedStore.restore(id);
+        pinStore.unpin(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
       return deleted;
@@ -2161,14 +2194,14 @@ export function Main({
         if (!e.repeat) takeScreenshot();
         return;
       }
-      // Alt+Up/Down: the chat above or below the one showing, in the Inbox or in Working, as the list orders
+      // Alt+Up/Down: the chat above or below the one showing, in Pinned, the Inbox or Working, as the list orders
       // them. Only while the chat is on screen; a list that uses the same keys (the queue) takes them first, and a
       // select keeps Alt+Down to open.
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const { inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, cleared);
-        const order = [...inbox, ...working];
+        const { pinned, inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, cleared, pins);
+        const order = [...pinned, ...inbox, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
         if (next) {
@@ -2329,6 +2362,7 @@ export function Main({
                 }
               : undefined
           }
+          pin={{ pinned: pins[chat.id] !== undefined, onPin: (on) => pinChat(chat.id, on) }}
           onSettle={(s) => setSettled(chat.id, s)}
           onExport={(text) => setToast({ text, at: Date.now() })}
           onCopyLink={() => copyChatLink(chat)}
@@ -2565,6 +2599,8 @@ export function Main({
           attentionSince={attention.since}
           cleared={cleared}
           onClear={clearFromInbox}
+          pins={pins}
+          onPin={pinChat}
           onSnooze={(id, until) => snoozeChat(id, until)}
           onWake={(id) => snoozeChat(id, undefined)}
           onArchive={setArchived}
@@ -2611,7 +2647,7 @@ export function Main({
       {officeVisible && (
         <Office
           rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
-          view={agentOffice === "list" ? "list" : "desks"}
+          view={agentOffice}
           onView={(view) => setUIPrefs({ agentOffice: view })}
           server={where ?? "the server"}
           profile={profile}
@@ -2750,7 +2786,7 @@ export function Main({
             toolsets={hermes.toolsets}
             mcp={hermes.mcp}
             gateways={hermes.gateways}
-            openUrl={(url) => webPages.openInBrowser(url)}
+            openUrl={(url) => webPages.openInBrowser(url).then(() => undefined)}
             runningReplies={chats.filter((c) => c.running).length}
             openChat={(() => {
               const c = chats.find((x) => x.id === active.chatId);
@@ -3188,6 +3224,7 @@ function ChatView({
   onDraftError,
   onToast,
   onMemorySettings,
+  pin,
   onSettle,
   onExport,
   onCopyLink,
@@ -3246,6 +3283,7 @@ function ChatView({
   onToast: (text: string) => void;
   /** Opens Settings → Memory, when this Hermes can edit memory from here. */
   onMemorySettings?: () => void;
+  pin: ChatPin;
   onSettle: (settled: boolean) => void;
   onExport: (notice: string) => void;
   onCopyLink: () => void;
@@ -3495,7 +3533,7 @@ function ChatView({
           if (here()) done();
           return undefined;
         }
-        // Its card above the composer says how it went, Hermes's refusal included, so a refusal keeps the words typed.
+        // Its answer in the transcript says how it went, Hermes's refusal included, so a refusal keeps the words typed.
         if (def.name === "btw") {
           if ((await hermes.askSideQuestion(chat.id, arg)) && here()) done();
           return undefined;
@@ -3603,6 +3641,7 @@ function ChatView({
       onSend={send}
       onStop={() => void hermes.stop(chat.id)}
       onAnswer={(approvalId, choice, confirmed) => void hermes.answerApproval(chat.id, approvalId, choice, confirmed)}
+      pin={started ? pin : undefined}
       onSettle={started ? onSettle : undefined}
       onExport={started ? onExport : undefined}
       onCopyLink={started ? onCopyLink : undefined}

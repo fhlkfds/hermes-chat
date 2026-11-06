@@ -7,7 +7,7 @@ This folder is the maintained source for verifying what the owner sees and does 
 - Start from a fresh run: `hv up` (stand-in dashboard), then `wd.mjs open`. The app has empty `HOME` and `XDG_*` dirs, a private D-Bus with no keyring, and its own display.
 - `hv doctor` shows `ok` on every line, including `build … matches the source`.
 - Unless a recipe says otherwise, sign in first by following [sign-in.md](sign-in.md) to its signed-in end state.
-- The stand-in serves profile `default` with four seeded chats, all in the Settled section, and an empty second profile `work` (both with synthetic MCP servers, see [mcp-servers.md](mcp-servers.md)):
+- The stand-in serves profile `default` with four seeded chats, all in the Settled section, a SOUL.md and six own skills such as `restic-unlock` (for Clone a profile), and an empty second profile `work` (both with synthetic MCP servers, see [mcp-servers.md](mcp-servers.md)):
   - `backup`, "Nightly backup failing". The reply mentions `restic unlock`.
   - `nginx`, "Rotate nginx logs".
   - `vpn`, "Why is the VPN slow". The reply mentions `MTU = 1380`.

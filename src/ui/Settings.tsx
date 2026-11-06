@@ -6,7 +6,7 @@
 // Hermes offers the model in the profile (ToolsetSettings.tsx). Persona: the profile's SOUL.md on Hermes
 // (PersonaSettings.tsx). Memory: what Hermes remembers for the profile (MemorySettings.tsx). Skills: the profile's
 // skills, switched and edited on Hermes (SkillSettings.tsx). Diagnostics: what the connected Hermes is and what it
-// supports (Diagnostics.tsx), and Logs, this app's and the profile's Hermes logs (Logs.tsx, ADR 0080); a tab whose
+// supports (Diagnostics.tsx), and Logs, this app's and the profile's Hermes logs (Logs.tsx, ADR 0087); a tab whose
 // feature Hermes lacks says so in its place.
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
@@ -78,7 +78,7 @@ const GEN_GROUPS: SubNavItem[] = [
   { id: "screenshots", label: "Screenshots", icon: <Camera size={14} /> },
   { id: "storage", label: "Storage & data", icon: <HardDrive size={14} /> },
 ];
-/** Diagnostics' two groups (ADR 0080): what the connected Hermes supports, and the logs. */
+/** Diagnostics' two groups (ADR 0087): what the connected Hermes supports, and the logs. */
 type DiagGroup = "server" | "logs";
 /** What the Memory tab shows beside its list: one of the profile's two memory files, or one profile's external memory. */
 type MemSel = { kind: "file"; source: MemorySource } | { kind: "profile"; name: string };
@@ -297,7 +297,7 @@ export function SettingsScreen({
   showDiagnostics?: { id?: CapabilityId };
   /** The profile's Bot Desktop, for Diagnostics' browser check. */
   screen?: Pick<ScreenApi, "status">;
-  /** Diagnostics → Logs (ADR 0033, 0080); without it Diagnostics has no Logs. */
+  /** Diagnostics → Logs (ADR 0033, 0087); without it Diagnostics has no Logs. */
   logs?: LogsWiring;
 }) {
   const [bytes, setBytes] = useState(cacheBytes);
@@ -861,7 +861,7 @@ export function SettingsScreen({
           )
         );
       case "diagnostics": {
-        // Server and Logs, one at a time beside a sub-nav, as General's groups are (ADR 0051, 0080). Logs reads Hermes
+        // Server and Logs, one at a time beside a sub-nav, as General's groups are (ADR 0051, 0087). Logs reads Hermes
         // only while it's shown; what it read goes when another group, tab or profile is shown.
         const group: DiagGroup = !capabilities || (diagGroup === "logs" && logs) ? "logs" : "server";
         const body =

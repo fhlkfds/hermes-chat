@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Logs (Logs.tsx, ADR 0033, 0080): following and pausing a Hermes log, filters, an unreadable source, the support
+// Logs (Logs.tsx, ADR 0033, 0087): following and pausing a Hermes log, filters, an unreadable source, the support
 // bundle, and opening it in Settings → Diagnostics against a fake Hermes whose `GET /api/logs` answers as `bf0203a` does.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

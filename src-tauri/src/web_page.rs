@@ -14,8 +14,6 @@ use url::Url;
 
 /// How long a site has to answer before the check gives up and says nothing.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long `xdg-open` (or a stand-in) may take to fail before the page counts as handed to the browser.
-const OPEN_WAIT: Duration = Duration::from_secs(3);
 const MAX_USER_AGENT: usize = 512;
 
 /// What a site said when asked for a page the way the preview's frame asks for it. Sent to the webview as `{ kind, … }`.
@@ -136,18 +134,29 @@ fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
     cause.to_string()
 }
 
-/// Opens `url` in the owner's browser with `xdg-open`.
-#[cfg(unix)]
-pub async fn open_in_browser(url: &str) -> Result<(), String> {
-    open_with("xdg-open", url).await
+/// Opens `url` in the owner's default browser (browser.rs, ADR 0082) and gives its name. GIO and GTK are used from
+/// the main thread only.
+#[cfg(target_os = "linux")]
+pub async fn open_in_browser<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) -> Result<Option<String>, String> {
+    use gtk::prelude::Cast;
+    let url = url.to_owned();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let context = gtk::gdk::Display::default().and_then(|d| d.app_launch_context());
+        let context = context.as_ref().map(|c| c.upcast_ref());
+        let _ = tx.send(crate::browser::default_browser(&url).and_then(|b| crate::browser::launch(&b, &url, context)));
+    })
+    .map_err(|e| e.to_string())?;
+    let launched = rx.await.map_err(|e| e.to_string())??;
+    launched.settle().await.map(Some)
 }
 
 /// Opens `url` in the owner's browser: the shell's `open` on the address, which goes to the default browser. Only an
-/// http(s) address gets this far, so the shell can't be asked to run anything.
+/// http(s) address gets this far, so the shell can't be asked to run anything. Windows doesn't say which browser.
 #[cfg(windows)]
-pub async fn open_in_browser(url: &str) -> Result<(), String> {
+pub async fn open_in_browser<R: tauri::Runtime>(_app: &tauri::AppHandle<R>, url: &str) -> Result<Option<String>, String> {
     let url = web_url(url)?;
-    tokio::task::spawn_blocking(move || shell_open(url.as_str())).await.map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || shell_open(url.as_str())).await.map_err(|e| e.to_string())?.map(|()| None)
 }
 
 #[cfg(windows)]
@@ -163,39 +172,6 @@ fn shell_open(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("Windows couldn't open it in a browser (error {code}). Check which app opens web links in Settings > Apps > Default apps."))
-    }
-}
-
-/// Opens `url` with `program` (`xdg-open`, or a stand-in in tests). The address is checked as the pane checks it and
-/// passed as one argument, never through a shell. A program still running after a moment counts as having opened it,
-/// since some browsers keep `xdg-open` waiting while they run; it is reaped in the background.
-pub async fn open_with(program: &str, url: &str) -> Result<(), String> {
-    let url = web_url(url)?;
-    let mut child = tokio::process::Command::new(program)
-        .arg(url.as_str())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                format!("Couldn't find {program}, which opens pages in your browser. It comes with the xdg-utils package.")
-            }
-            _ => format!("Couldn't start {program}: {e}"),
-        })?;
-    match tokio::time::timeout(OPEN_WAIT, child.wait()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => Err(format!(
-            "Your desktop couldn't open it in a browser ({program} exited with {}).",
-            status.code().map_or_else(|| "a signal".to_owned(), |c| c.to_string())
-        )),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => {
-            tokio::spawn(async move {
-                let _ = child.wait().await;
-            });
-            Ok(())
-        }
     }
 }
 

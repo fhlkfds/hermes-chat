@@ -1,4 +1,4 @@
-// Logs, in Settings → Diagnostics (ADR 0033, 0080): one source at a time, this app's own diagnostics or one of the
+// Logs, in Settings → Diagnostics (ADR 0033, 0087): one source at a time, this app's own diagnostics or one of the
 // profile's Hermes logs, followed as lines arrive or paused to read. Filters, copy and export act on what's shown; the
 // support bundle gathers the sources read here into one file, after showing what goes in it and what was redacted.
 import { useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";

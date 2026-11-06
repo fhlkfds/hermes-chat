@@ -1,5 +1,7 @@
 # A side question is a card above the composer, and is never saved
 
+> **Partly superseded by [ADR 0086](0086-a-side-question-shows-in-the-transcript-where-it-was-asked-and-is-never-an-item.md)** (#260). A side question now shows in the transcript where it was asked, as a pair of messages, not on a card above the composer. The decision "A card per question above the composer" no longer holds. The rest of this ADR stands.
+
 Issue #216. `/btw <question>` asks Hermes something about the chat without interrupting the reply that's running and without adding anything to the chat. Hermes answers from a snapshot of the conversation, with tools denied, and leaves the chat's history and prompt cache alone (`agent/side_question.py` at the deployed `f0d94882`).
 
 ## Decisions

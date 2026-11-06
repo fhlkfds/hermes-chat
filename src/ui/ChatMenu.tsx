@@ -1,8 +1,8 @@
 // Right-click menus: the one a chat row opens on right-click, the Menu key or Shift+F10, and the shell the status bar's
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
-// between a menu's items.
+// between a menu's items, and an item's letter (`aria-keyshortcuts`) picks it.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, CheckCheck, Columns2, Inbox as InboxIcon, Link2, PanelLeft, PanelRight, Pencil, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, CheckCheck, Columns2, Inbox as InboxIcon, Link2, PanelLeft, PanelRight, Pencil, Pin, PinOff, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { snoozePresets, wakeFull } from "../hermes/snooze";
@@ -33,6 +33,29 @@ export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; on
  */
 export type ChatClear = { cleared: boolean; onClear: (cleared: boolean) => void };
 
+/** Pinning the chat to the top of the list, or unpinning it (snooze.ts `PinStore`, ADR 0085). */
+export type ChatPin = { pinned: boolean; onPin: (pinned: boolean) => void };
+
+/** The Pin or Unpin item of a chat's menus, which P picks while the menu is open. */
+export function PinItem({ pin, onClose }: { pin: ChatPin; onClose: () => void }) {
+  return (
+    <button
+      role="menuitem"
+      className="menu-item"
+      aria-keyshortcuts="P"
+      title={pin.pinned ? "Put this chat back in its place in the list" : "Keep this chat at the top of the list"}
+      onClick={() => {
+        onClose();
+        pin.onPin(!pin.pinned);
+      }}
+    >
+      <span className="menu-icon">{pin.pinned ? <PinOff size={15} /> : <Pin size={15} />}</span>
+      <span className="menu-label">{pin.pinned ? "Unpin" : "Pin"}</span>
+      <kbd aria-hidden>P</kbd>
+    </button>
+  );
+}
+
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
@@ -53,6 +76,7 @@ export function ChatMenu({
   tags,
   snooze,
   clear,
+  pin,
   onDelete,
   onClose,
 }: {
@@ -70,6 +94,7 @@ export function ChatMenu({
   tags?: ChatTags;
   snooze?: ChatSnooze;
   clear?: ChatClear;
+  pin?: ChatPin;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -155,6 +180,7 @@ export function ChatMenu({
             <span className="menu-label">{o.label}</span>
           </button>
         ))}
+      {pin && <PinItem pin={pin} onClose={onClose} />}
       {clear && (
         <button
           role="menuitem"
@@ -358,6 +384,12 @@ export function Menu({ label, x, y, onClose, children }: { label: string; x: num
           const items = [...menu.current!.querySelectorAll<HTMLElement>("[role^=menuitem]")];
           const at = items.indexOf(document.activeElement as HTMLElement);
           items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          const item = menu.current!.querySelector<HTMLElement>(`[role^=menuitem][aria-keyshortcuts="${CSS.escape(e.key.toUpperCase())}"]`);
+          if (item) {
+            e.preventDefault();
+            item.click();
+          }
         }
       }}
     >

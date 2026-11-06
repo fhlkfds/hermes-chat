@@ -5,19 +5,19 @@ import { Archive, ArchiveRestore, ArrowUp, Brain, Camera, ChevronDown, ChevronRi
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, Source } from "../hermes/model";
+import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, SideQuestion, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import type { SkillCall } from "../hermes/skillCommands";
 import type { DeskState, ScreenshotDesk } from "../hermes/screenshots";
 import { ApprovalCard } from "./ApprovalCard";
-import { Menu } from "./ChatMenu";
+import { Menu, PinItem, type ChatPin } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ExportChatDialog } from "./ExportChat";
 import { QueuePanel, type QueueApi } from "./Queue";
 import { SubagentsPanel, type SubagentsApi } from "./Subagents";
 import type { SubagentId } from "../hermes/subagents";
-import { SideQuestions } from "./SideQuestions";
+import { SideQuestionPair } from "./SideQuestions";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
 import { wakeFull } from "../hermes/snooze";
@@ -65,16 +65,23 @@ const toldWhy = new Set<string>();
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ThinkingItem = Extract<Item, { kind: "thinking" }>;
 type Block = { kind: "tools"; id: string; tools: ToolItem[] } | Exclude<Item, ToolItem>;
+type SideBlock = { kind: "side"; id: string; question: SideQuestion };
 
-// Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript.
-function toBlocks(items: Item[]): Block[] {
-  const out: Block[] = [];
+// Consecutive tool calls collapse into one group so a long run doesn't dominate the transcript. Each side question
+// goes after the item it was asked after (ADR 0086), so one asked during a run of tool calls splits it.
+function toBlocks(items: Item[], side: SideQuestion[] = []): (Block | SideBlock)[] {
+  const out: (Block | SideBlock)[] = [];
+  const sideAfter = (id?: string) => {
+    for (const q of side) if (q.after === id) out.push({ kind: "side", id: q.id, question: q });
+  };
+  sideAfter(undefined);
   for (const it of items) {
     const last = out[out.length - 1];
     if (it.kind === "tool") {
       if (last?.kind === "tools") last.tools.push(it);
       else out.push({ kind: "tools", id: `g-${it.id}`, tools: [it] });
     } else out.push(it);
+    sideAfter(it.id);
   }
   return out;
 }
@@ -147,6 +154,7 @@ function MoreMenu({
   chat,
   onExport,
   onCopyLink,
+  pin,
   onSettle,
   onArchive,
   onDelete,
@@ -154,6 +162,7 @@ function MoreMenu({
   chat: Chat;
   onExport?: (notice: string) => void;
   onCopyLink?: () => void;
+  pin?: ChatPin;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   onDelete?: () => void;
@@ -185,7 +194,7 @@ function MoreMenu({
       <button
         ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title={isBotChat(chat) ? "More actions: export" : `More actions: export, copy link, settle, archive${onDelete ? ", delete" : ""}`}
+        title={isBotChat(chat) ? "More actions: export" : `More actions: export, copy link, ${pin ? "pin, " : ""}settle, archive${onDelete ? ", delete" : ""}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -207,6 +216,7 @@ function MoreMenu({
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
           {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
+          {pin && !isBotChat(chat) && !chat.archived && <PinItem pin={pin} onClose={close} />}
           {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
             !isBotChat(chat) &&
@@ -275,6 +285,7 @@ export function ChatPane({
   onSend,
   onStop,
   onAnswer,
+  pin,
   onSettle,
   onArchive,
   onExport,
@@ -326,6 +337,8 @@ export function ChatPane({
   onSend: (text: string, attachments: Attachment[], skill?: SkillCall) => void;
   onStop: () => void;
   onAnswer: (approvalId: string, choice: ApprovalChoice, confirmed?: boolean) => void;
+  /** Pinning the chat to the top of the list (ADR 0085); left out for a chat not started yet. */
+  pin?: ChatPin;
   onSettle?: (settled: boolean) => void;
   onArchive?: (archived: boolean) => void;
   /** Shows the notice for a chat exported with the Export dialog. */
@@ -545,6 +558,14 @@ export function ChatPane({
     }
   });
 
+  // A new side question shows at the bottom, so asking one goes there as sending a message does.
+  const sideSeen = useRef(new Set(chat.sideQuestions?.map((q) => q.id)));
+  useLayoutEffect(() => {
+    const qs = chat.sideQuestions ?? [];
+    if (qs.some((q) => !sideSeen.current.has(q.id))) stickToBottom.current = true;
+    sideSeen.current = new Set(qs.map((q) => q.id));
+  }, [chat.sideQuestions]);
+
   // Follow the stream while the user is at the bottom.
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -578,9 +599,9 @@ export function ChatPane({
   };
 
   // Rebuilt only when the chat changes, so a reply streaming in the other pane costs this one little.
-  const blocks = useMemo(() => toBlocks(chat.items), [chat.items]);
+  const blocks = useMemo(() => toBlocks(chat.items, chat.sideQuestions), [chat.items, chat.sideQuestions]);
   // Cards ignore clicks for a moment after the transcript changes, since it may have moved them under the pointer.
-  const movedAt = useMemo(() => performance.now(), [chat.items]);
+  const movedAt = useMemo(() => performance.now(), [chat.items, chat.sideQuestions]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.some(isWaiting);
   // Enter queues while a reply runs, while Hermes isn't connected, and while messages are queued already, so a new one
@@ -627,7 +648,7 @@ export function ChatPane({
               <Search size={16} />
             </button>
             {(onExport || onCopyLink || (onSettle && !chat.archived) || (onArchive && !chat.running) || deleteHere) && (
-              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} onSettle={onSettle} onArchive={onArchive} onDelete={deleteHere} />
+              <MoreMenu chat={chat} onExport={onExport} onCopyLink={onCopyLink} pin={pin} onSettle={onSettle} onArchive={onArchive} onDelete={deleteHere} />
             )}
           </div>
         </div>
@@ -702,12 +723,12 @@ export function ChatPane({
               </span>
             </div>
           )}
-          {chat.loading && blocks.length === 0 && (
+          {chat.loading && chat.items.length === 0 && (
             <div className="loading-chat">
               <Spinner /> Loading chat
             </div>
           )}
-          {notLoaded && blocks.every((b) => b.kind === "user" && b.outgoing) && (
+          {notLoaded && chat.items.every((i) => i.kind === "user" && i.outgoing) && (
             <div className="unloaded-chat">
               <CloudOff size={14} /> This chat isn't saved on this computer. It loads once Hermes is connected.
             </div>
@@ -724,28 +745,32 @@ export function ChatPane({
               </ul>
             </div>
           )}
-          {blocks.map((b) => (
-            <BlockView
-              key={b.id}
-              block={b}
-              live={!!chat.running && b === last}
-              query={q}
-              offline={status !== "connected" || !!chat.loading}
-              movedAt={b.kind === "approval" ? movedAt : 0}
-              onAnswer={answer}
-              listen={b.kind === "assistant" ? listen : undefined}
-              canRetry={b.kind === "user" && !!b.outgoing && canRetry}
-              onOutgoing={onOutgoing}
-              onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
-              branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
-              onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
-              replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
-              versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
-              chatId={chat.id}
-              turn={turns.anchor.get(b.id)}
-              onPickVariant={onPickVariant}
-            />
-          ))}
+          {blocks.map((b) =>
+            b.kind === "side" ? (
+              <SideQuestionPair key={b.id} question={b.question} onDismiss={onDismissSideQuestion} />
+            ) : (
+              <BlockView
+                key={b.id}
+                block={b}
+                live={!!chat.running && b === last}
+                query={q}
+                offline={status !== "connected" || !!chat.loading}
+                movedAt={b.kind === "approval" ? movedAt : 0}
+                onAnswer={answer}
+                listen={b.kind === "assistant" ? listen : undefined}
+                canRetry={b.kind === "user" && !!b.outgoing && canRetry}
+                onOutgoing={onOutgoing}
+                onBranch={branch && (b.kind === "user" || b.kind === "assistant") ? onBranch : undefined}
+                branchBlocked={branch && (b.kind === "user" || b.kind === "assistant") ? branch.blocked : undefined}
+                onReplay={replay && ((b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id))) ? onReplay : undefined}
+                replayBlocked={replay && (b.kind === "user" || b.kind === "assistant") ? replay.blocked : undefined}
+                versions={turns.anchor.has(b.id) ? variants?.byTurn.get(turns.anchor.get(b.id)!) : undefined}
+                chatId={chat.id}
+                turn={turns.anchor.get(b.id)}
+                onPickVariant={onPickVariant}
+              />
+            ),
+          )}
           {/* A reply waiting on the owner isn't thinking, and streamed thinking shows its own row. */}
           {chat.running && last?.kind !== "assistant" && last?.kind !== "thinking" && !(last && isWaiting(last)) && (
             <div className="msg assistant thinking">
@@ -772,7 +797,6 @@ export function ChatPane({
         }}
       />
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
-      {chat.sideQuestions && onDismissSideQuestion && <SideQuestions questions={chat.sideQuestions} onDismiss={onDismissSideQuestion} />}
       {chat.source === "import" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
