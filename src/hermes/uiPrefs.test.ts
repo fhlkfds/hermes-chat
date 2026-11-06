@@ -313,7 +313,6 @@ describe("migration", () => {
       }),
     );
     expect(getUIPrefs()).toMatchObject({ theme: "light", chatSectionsShown: ["pinned", "inbox", "settled"], chatSectionsCollapsed: ["archived", "settled"] });
-    // Version 1 documents get there by way of Pinned.
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, chatSectionsShown: ["unsettled", "inbox"] }));
     expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox"]);
     expect(migrateUIPrefs({ v: 2, theme: "dark" })).toEqual({ v: UI_PREFS_VERSION, theme: "dark" });

@@ -11,8 +11,7 @@ type ClearStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /**
  * Takes `scope`'s clears out of `storage` (removing the key once no scope is left) and answers the ids of the chats whose
- * clear still held, the ones the list showed in Unsettled. The rest are dropped: nothing newer than the mark happened,
- * the chat was read and quiet, and it was in the Inbox. A scope with no clears changes nothing, so a second call is a no-op.
+ * clear still held, the ones the list showed in Unsettled. A scope with no clears changes nothing, so a second call is a no-op.
  */
 export function takeHeldClears(
   storage: ClearStorage,

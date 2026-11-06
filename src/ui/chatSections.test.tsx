@@ -91,7 +91,6 @@ describe("The side panel's sections", () => {
     expect(heads()).toEqual(["Inbox3", "Working1", "Settled1"]);
     expect(titles("inbox")).toEqual(["new", "read", "quiet"]);
     expect(titles("working")).toEqual(["busy"]);
-    // Settled starts closed.
     expect(head("Settled").getAttribute("aria-expanded")).toBe("false");
     expect(titles("settled")).toEqual([]);
   });
@@ -384,25 +383,23 @@ describe("Settled chats and the old clears, in the app", () => {
     return { hermes, user };
   }
   const sessions = () => [
-    row("a", 1, { pinned: true, title: "Deploy notes" }),
-    row("b", 2, { pinned: true, title: "Groceries" }),
-    row("c", 3, { pinned: true, title: "Taxes" }),
+    row("held", 1, { pinned: true, title: "Deploy notes" }),
+    row("stale", 2, { pinned: true, title: "Groceries" }),
+    row("uncleared", 3, { pinned: true, title: "Taxes" }),
   ];
 
   it("settles the chats whose clear still held, once, and drops the old store", async () => {
     const server = new FakeHermes();
     server.sessions = sessions();
-    // a: cleared and quiet since. b: cleared long ago, but has had activity since. c: never cleared.
-    localStorage.setItem(CLEARED_KEY, JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { a: Date.now(), b: 1 } } }));
+    localStorage.setItem(CLEARED_KEY, JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { held: Date.now(), stale: 1 } } }));
     const { hermes } = await signedIn(server);
-    await waitFor(() => expect(server.sessions.find((s) => s.id === "a")!.pinned).toBe(false));
+    await waitFor(() => expect(server.sessions.find((s) => s.id === "held")!.pinned).toBe(false));
     await act(async () => void (await hermes.idle()));
-    expect(server.sessions.find((s) => s.id === "b")!.pinned).toBe(true);
-    expect(server.sessions.find((s) => s.id === "c")!.pinned).toBe(true);
+    expect(server.sessions.find((s) => s.id === "stale")!.pinned).toBe(true);
+    expect(server.sessions.find((s) => s.id === "uncleared")!.pinned).toBe(true);
     expect(titles("inbox")).toEqual(["Groceries", "Taxes"]);
     expect(head("Settled").textContent).toBe("Settled1");
     expect(localStorage.getItem(CLEARED_KEY)).toBeNull();
-    // One write to Hermes, as pressing Settle makes.
     expect(server.restRequests.filter((r) => r.method === "PATCH" && r.body && "pinned" in r.body)).toHaveLength(1);
   });
 
@@ -411,10 +408,10 @@ describe("Settled chats and the old clears, in the app", () => {
     server.sessions = sessions();
     localStorage.setItem(
       CLEARED_KEY,
-      JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { a: Date.now() }, "elsewhere\u0000default": { x: Date.now() } } }),
+      JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { held: Date.now() }, "elsewhere\u0000default": { x: Date.now() } } }),
     );
     await signedIn(server);
-    await waitFor(() => expect(server.sessions.find((s) => s.id === "a")!.pinned).toBe(false));
+    await waitFor(() => expect(server.sessions.find((s) => s.id === "held")!.pinned).toBe(false));
     expect(Object.keys(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes)).toEqual(["elsewhere\u0000default"]);
   });
 
