@@ -51,24 +51,21 @@ const intersect = (a: Rect, b: Rect): Rect | undefined => {
 };
 
 /**
- * Whether `layer` is the topmost element anywhere in `r`, at the middle or near a corner or an edge: another layer (a
- * toast over a menu) may cover part of it.
+ * Whether `layer` is drawn over `box` in `r`, where both are: it comes before the box among the elements painted at
+ * the middle of `r`, whatever else (a toast over a menu) is painted there too.
  */
-function drawnOver(layer: Element, r: Rect): boolean {
-  const at = [0.1, 0.5, 0.9];
-  return at.some((fx) =>
-    at.some((fy) => {
-      const top = layer.ownerDocument.elementFromPoint(r.x + r.width * fx, r.y + r.height * fy);
-      return !!top && layer.contains(top);
-    }),
-  );
+function drawnOver(layer: Element, box: Element, r: Rect): boolean {
+  const painted = box.ownerDocument.elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  const over = painted.findIndex((e) => layer.contains(e));
+  const under = painted.findIndex((e) => box.contains(e));
+  return over >= 0 && (under < 0 || over < under);
 }
 
 /**
  * Where the page goes: `box`'s rectangle in the window, less the layers drawn over it. A layer across a whole side of
  * the box (the pane's resize handle, a dialog's backdrop) moves that side in. Any other makes a hole, which only X11
- * can cut, so it is best kept for small layers such as a menu or a toast. A layer counts where it is drawn over the
- * box, so one beneath the Preview when it covers the chat counts for nothing. `null`: the box has no size, or layers cover it.
+ * can cut, so it is best kept for small layers such as a menu or a toast. A layer counts only where it is drawn over
+ * the box, so one beneath the Preview when it covers the chat counts for nothing. `null`: the box has no size, or layers cover it.
  */
 export function placementOf(box: Element, layers: string): Placement | null {
   const r = box.getBoundingClientRect();
@@ -78,7 +75,7 @@ export function placementOf(box: Element, layers: string): Placement | null {
     for (const layer of Array.from(box.ownerDocument.querySelectorAll(layers))) {
       if (layer.contains(box)) continue;
       const hole = intersect(rect, layer.getBoundingClientRect());
-      if (hole && drawnOver(layer, hole)) over.push(hole);
+      if (hole && drawnOver(layer, box, hole)) over.push(hole);
     }
   const holes: Rect[] = [];
   for (const h of over) {

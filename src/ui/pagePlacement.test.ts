@@ -14,13 +14,13 @@ const add = (html: string) => {
   host.innerHTML = html;
   document.body.append(...host.children);
 };
-/** What is drawn on top at a point: the last of `order` whose rectangle holds it. */
-const topmost = (...order: Element[]) => {
-  document.elementFromPoint = (x, y) =>
-    [...order].reverse().find((el) => {
+/** What is painted at a point, topmost first: those of `order` whose rectangle holds it, the last of `order` on top. */
+const paintOrder = (...order: Element[]) => {
+  document.elementsFromPoint = (x, y) =>
+    [...order].reverse().filter((el) => {
       const r = el.getBoundingClientRect();
       return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
-    }) ?? null;
+    });
 };
 
 afterEach(() => {
@@ -47,7 +47,7 @@ describe("Where the page goes", () => {
     const box = at(document.getElementById("box")!, PAGE);
     const toast = at(document.querySelector(".toast")!, { x: 500, y: 760, width: 400, height: 40 });
     at(document.querySelector(".menu")!, { x: 600, y: 120, width: 180, height: 200 });
-    topmost(box, toast);
+    paintOrder(box, toast);
     expect(placementOf(box, ".toast, .menu")).toEqual({ rect: PAGE, holes: [{ x: 800, y: 760, width: 100, height: 40 }] });
   });
 
@@ -55,11 +55,11 @@ describe("Where the page goes", () => {
     add(`<div class="separator" role="separator"></div><div id="box"></div><div class="backdrop"></div>`);
     const box = at(document.getElementById("box")!, PAGE);
     const edge = at(document.querySelector(".separator")!, { x: 796, y: 0, width: 8, height: 820 });
-    topmost(box, edge);
+    paintOrder(box, edge);
     expect(placementOf(box, "[role=separator], .backdrop")).toEqual({ rect: { x: 804, y: 120, width: 476, height: 700 }, holes: [] });
 
     const backdrop = at(document.querySelector(".backdrop")!, { x: 0, y: 0, width: 1280, height: 820 });
-    topmost(box, edge, backdrop);
+    paintOrder(box, edge, backdrop);
     expect(placementOf(box, "[role=separator], .backdrop")).toBeNull();
   });
 
@@ -68,7 +68,7 @@ describe("Where the page goes", () => {
     const box = at(document.getElementById("box")!, PAGE);
     const menu = at(document.querySelector(".menu")!, { x: 700, y: 300, width: 200, height: 120 });
     const toast = at(document.querySelector(".toast")!, { x: 820, y: 340, width: 60, height: 40 });
-    topmost(box, menu, toast);
+    paintOrder(box, menu, toast);
     expect(placementOf(box, ".menu, .toast")).toEqual({
       rect: PAGE,
       holes: [
@@ -78,13 +78,28 @@ describe("Where the page goes", () => {
     });
   });
 
+  it("makes a hole for a menu that a toast covers at every point but its edges", () => {
+    add(`<div id="box"></div><div class="menu"></div><div class="toast"></div>`);
+    const box = at(document.getElementById("box")!, PAGE);
+    const menu = at(document.querySelector(".menu")!, { x: 700, y: 300, width: 200, height: 120 });
+    const toast = at(document.querySelector(".toast")!, { x: 800, y: 310, width: 100, height: 100 });
+    paintOrder(box, menu, toast);
+    expect(placementOf(box, ".menu, .toast")).toEqual({
+      rect: PAGE,
+      holes: [
+        { x: 800, y: 300, width: 100, height: 120 },
+        { x: 800, y: 310, width: 100, height: 100 },
+      ],
+    });
+  });
+
   it("makes no hole for a layer under it, nor for one it is inside", () => {
     add(`<div class="inbox"></div><aside class="overlay-panel"><div id="box"></div></aside>`);
     const box = at(document.getElementById("box")!, PAGE);
     const inbox = at(document.querySelector(".inbox")!, { x: 60, y: 0, width: 900, height: 820 });
     const panel = at(document.querySelector(".overlay-panel")!, { x: 0, y: 0, width: 1280, height: 820 });
-    // The panel covers the window, the inbox under it.
-    topmost(inbox, panel);
+    // The panel, with the box in it, covers the window, and the inbox is under it.
+    paintOrder(inbox, panel, box);
     expect(placementOf(box, ".inbox, .overlay-panel")).toEqual({ rect: PAGE, holes: [] });
   });
 
