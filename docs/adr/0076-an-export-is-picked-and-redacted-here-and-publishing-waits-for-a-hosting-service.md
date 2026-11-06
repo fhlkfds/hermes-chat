@@ -1,0 +1,32 @@
+# An export is picked and redacted here, and publishing waits for a hosting service
+
+**Status: accepted for the private stage (#92, first part). Public snapshots wait on the owner's choice of hosting service.**
+
+Issue #92 asks for snapshots of a chat that other people can open: chosen messages, likely secrets flagged and redacted, an explicit Publish, then a list of published copies with expiry and Revoke. Its delivery note says to start with a private export and redaction preview when no publication service exists.
+
+## What Hermes offers
+
+Read in the deployed Hermes source (`f0d94882`, `~/.cache/hermes-src-168`) on 2026-11-05. The dashboard has no route that publishes, hosts, expires or revokes a transcript. Its only upload is `POST /api/ops/debug-share` (`hermes_cli/web_routers/status.py`), which sends a redacted debug report and logs to a paste service. That is for support, and it can't be revoked from here. `POST /api/profiles/{name}/export` exports a whole profile. A chat's web link (`0062-a-chats-web-link-is-a-hermes-dashboard-page-behind-its-own-sign-in.md`) is a live view for someone who can sign in to the dashboard. It isn't a copy for other people.
+
+## Decision
+
+**Export as Markdown… opens the Export dialog.** Everything happens on this computer, and the file goes where the owner picks in the native Save dialog, through the existing `chat_export` command. Nothing is uploaded.
+
+- **Messages are picked one by one.** The owner's messages, Hermes's replies and its thinking each have a tick box, all ticked at first.
+- **Tool calls and attachment names are left out at first.** Tool calls (with their arguments and output) and Approvals (with their commands) go in all or none, from one tick box. So do the names of attached files. Their contents were never in an export. The file's notes say what was left out.
+- **Likely secrets are flagged and redacted at first** (`src/hermes/secrets.ts`): API keys (the provider-key shapes Logs already redacts, shared from `logs.ts`), bearer tokens, sign-in tokens (JWTs), private keys, passwords in links, bot tokens, and values named like a password or key that also look like one. Quotes escaped in JSON, as in a tool call's arguments, count as quotes. Chat is prose and code, so a named value must have a letter and a digit or symbol, or be 16 characters long, and a bearer token outside an `Authorization` header must have a digit. Placeholders (`YOUR_API_KEY`, `${DB_PASSWORD}`, `****`) and unquoted code (`os.environ`) aren't flagged. The owner can keep any flagged text. The dialog and the file both say that detection is incomplete.
+- **The owner redacts by hand** in Text to redact: selecting text in the preview fills it, and it can be typed or pasted from the keyboard. Redact replaces the text with `[redacted]` everywhere it appears in the title and the messages. The suggested file name is made from the title line as the file has it, so a redaction there is one in the name too. Keep undoes one.
+- **Redactions are places in the chat's own text, not edits in a row.** Every place a flagged or picked text appears is found in the unredacted title and messages, and overlapping or touching places become one `[redacted]`. So no order of redactions, and no redaction taken back, leaves part of another behind. A picked text can't contain `[redacted]` for the same reason; the dialog says to pick the text on either side.
+- **The preview is the file.** It shows the exact text Save writes, and `[redacted]` stands in the text itself. A redacted text is gone from the bytes, not hidden by styling. Tests read the saved text back.
+- **The dialog works on the chat as it was when it opened.** A reply that arrives while the owner reads doesn't change the file.
+
+The file stays a Hermes Chat Markdown export, so Import transcripts still reads it.
+
+## Left for the owner: where public snapshots live
+
+Publishing, expiry, revoking and the list of published snapshots need a hosting service that serves a copy to people who can't sign in to the dashboard. Hermes has none, and this app runs no server. The owner picks one:
+
+1. **A publication route in Hermes** (upstream `NousResearch/hermes-agent`): `POST` an immutable snapshot (the redacted Markdown, plus any attachments chosen) and get back an id, an unguessable URL and an expiry; `GET` the owner's list; `DELETE` to revoke. A public read route serves the page as escaped HTML, outside the dashboard's sign-in. Deleting or expiring a snapshot removes its attachment URLs too. This keeps the data on the owner's server, but it opens a public route on it.
+2. **A static host the owner already uses** (for example a GitHub Gist, an S3 bucket or Cloudflare R2 with signed URLs): the app uploads the file with a credential kept in the keyring, and revoking deletes the object. The destination must be shown before upload. Expiry depends on the host.
+
+Until the owner picks one, there is no Publish button. The export is the shareable copy, and anything already sent or copied can't be recalled.

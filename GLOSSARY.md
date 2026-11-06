@@ -60,8 +60,8 @@ The owner's action that removes a chat from Hermes for good, in every Hermes cli
 _Avoid_: remove, archive
 
 **Export**:
-Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The file holds only what Hermes Chat has loaded for the chat. It names attachments but never includes their contents. It also warns that the chat itself may contain sensitive information.
-_Avoid_: download, backup
+Saving one chat as a Markdown file, in a place the owner picks in the Save dialog. The Export dialog comes first: the owner picks the messages, whether tool calls and Approvals and the names of attached files go in (left out at first), and what is redacted, and sees the file exactly as it will be saved. Likely secrets are flagged and redacted unless the owner keeps them, and the owner can redact any text they select. The file holds only what Hermes Chat has loaded for the chat, as it was when the dialog opened, and never an attachment's contents. It warns that it may still contain sensitive information, since detection can miss a secret. Nothing is uploaded (ADR 0076).
+_Avoid_: download, backup, snapshot (#92's published copy, which waits for a hosting service), share
 
 **Backup**:
 A zip file of what Hermes Chat keeps on this computer, saved where the owner picks: settings and templates, and for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters, and branch origins. It never holds a password or other credential, the sign-in, or anything Hermes keeps on the server. **Restore a backup** checks all of it first, previews it, maps each of its connections and profiles to a profile here (only an identical one on its own), and writes each category by the owner's choice, Merge or Replace, after saving a recovery backup. Nothing restored is sent: queued messages come back paused (ADR 0038).
