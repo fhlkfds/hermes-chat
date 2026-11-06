@@ -1145,7 +1145,8 @@ impl Dashboard {
     /// One dashboard REST call for the webview: `GET`, `PATCH` or `DELETE` on a path under `api/`, with a
     /// JSON body. `POST` and `PUT` reach only Settings → Model's two writes (`POST api/model/set`,
     /// `PUT api/config`), the scheduled-job writes (`cron_write`), Settings → Persona's
-    /// `PUT api/profiles/{name}/soul`, and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
+    /// `PUT api/profiles/{name}/soul`, the Clone profile dialog's `POST api/profiles` (`profile_create_allowed`, ADR 0074),
+    /// and Settings → Toolsets' switch, `PUT api/tools/toolsets/<name>` with exactly
     /// `{"enabled": true|false}` (`toolset_toggle_allowed`), Settings → Skills' two writes, `PUT api/skills/toggle` and
     /// `PUT api/skills/content` with exactly their fields (`skill_write_allowed`), Settings → Skills' copy to another
     /// profile, `POST api/skills` (`skill_create_allowed`), Settings → Memory's entry edit for any profile, `PUT
@@ -1176,6 +1177,7 @@ impl Dashboard {
             ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
             ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
+            ("POST", "api/profiles") if profile_create_allowed(body.as_deref()) => Method::POST,
             ("POST", "api/sessions/import") if import_body_allowed(body.as_deref()) => Method::POST,
             ("POST", _) if crate::mcp::relayed("POST", path, body.as_deref()) => Method::POST,
             ("PUT", _) if crate::mcp::relayed("PUT", path, body.as_deref()) => Method::PUT,
@@ -2074,16 +2076,45 @@ fn endpoint(base: &Url, path: &str) -> Url {
     url
 }
 
-/// `api/profiles/{name}/soul` for a Hermes profile id (`hermes_constants.PROFILE_ID_RE`: a lowercase letter or digit,
-/// then up to 63 more of those, `_` or `-`), the one write route Settings → Persona uses.
+/// `api/profiles/{name}/soul` for a Hermes profile id, the one write route Settings → Persona uses.
 fn is_profile_soul(path: &str) -> bool {
-    let Some(name) = path.strip_prefix("api/profiles/").and_then(|p| p.strip_suffix("/soul")) else {
-        return false;
-    };
+    path.strip_prefix("api/profiles/").and_then(|p| p.strip_suffix("/soul")).is_some_and(profile_id)
+}
+
+/// A Hermes profile id (`hermes_constants.PROFILE_ID_RE`): a lowercase letter or digit, then up to 63 more of those, `_`
+/// or `-`.
+fn profile_id(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && name.len() <= 64
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Whether a `POST api/profiles` body is the Clone profile dialog's (ADR 0074): `{"name"}` with only `"soul"`,
+/// `"description"`, `"provider"` and `"model"` beside it, or `{"name", "clone_from"}` with only `"description"` beside
+/// them, the full copy the owner opted in to; each a string. The name is a profile id other than `default`, and the
+/// source a profile id or `default`. Every other field Hermes takes is refused: `clone_all` copies the source's whole
+/// home, `clone_channels` its bot tokens, `clone_from_default` the default profile's keys, `mcp_servers` writes secrets
+/// and `hub_skills` starts installs.
+pub fn profile_create_allowed(body: Option<&str>) -> bool {
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()) else {
+        return false;
+    };
+    let Some(fields) = fields.as_object() else {
+        return false;
+    };
+    let name_ok = fields.get("name").and_then(|n| n.as_str()).is_some_and(|n| n != "default" && profile_id(n));
+    let source_ok = fields.get("clone_from").is_none_or(|s| s.as_str().is_some_and(|s| s == "default" || profile_id(s)));
+    let full = fields.contains_key("clone_from");
+    let known = fields.iter().all(|(k, v)| {
+        v.is_string()
+            && match k.as_str() {
+                "name" | "clone_from" | "description" => true,
+                "soul" | "provider" | "model" => !full,
+                _ => false,
+            }
+    });
+    name_ok && source_ok && known
 }
 
 /// Said in place of an error body that can't be shown.
@@ -2510,7 +2541,10 @@ fn agent_text_body(path: &str, text: &str, session: Option<&str>) -> Result<serd
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_text_body, memory_entry_edit_allowed, memory_provider_write, provider_key_name, skill_create_allowed, webhook_write, TransportError};
+    use super::{
+        agent_text_body, memory_entry_edit_allowed, memory_provider_write, profile_create_allowed, provider_key_name, skill_create_allowed, webhook_write,
+        TransportError,
+    };
 
     #[test]
     fn an_artifact_save_names_the_chat_whose_sandbox_the_file_is_in() {
@@ -2553,6 +2587,46 @@ mod tests {
         }
         assert!(!skill_create_allowed(Some(&format!(r#"{{"name":"{}","content":""}}"#, "a".repeat(65)))));
         assert!(!skill_create_allowed(None));
+    }
+
+    #[test]
+    fn a_new_profile_carries_no_secrets_unless_the_full_copy_is_asked_for() {
+        for body in [
+            r#"{"name":"work-2"}"#,
+            r#"{"name":"work-2","soul":"You are terse.","description":"Release","provider":"openrouter","model":"x/y"}"#,
+            r#"{"name":"work-2","clone_from":"work"}"#,
+            r#"{"name":"work_2","clone_from":"default"}"#,
+            r#"{"name":"work-2","clone_from":"work","description":"Release"}"#,
+            &format!(r#"{{"name":"{}"}}"#, "a".repeat(64)),
+        ] {
+            assert!(profile_create_allowed(Some(body)), "{body}");
+        }
+        for body in [
+            r#"{"name":"work-2","clone_from":"work","clone_all":true}"#,
+            r#"{"name":"work-2","clone_from":"work","soul":"x"}"#,
+            r#"{"name":"work-2","clone_from":"work","provider":"x","model":"y"}"#,
+            r#"{"name":"work-2","clone_all":true}"#,
+            r#"{"name":"work-2","clone_channels":true}"#,
+            r#"{"name":"work-2","clone_from_default":true}"#,
+            r#"{"name":"work-2","mcp_servers":[{"name":"m","url":"http://x","bearer_token":"t"}]}"#,
+            r#"{"name":"work-2","hub_skills":["x"]}"#,
+            r#"{"name":"work-2","keep_skills":["x"]}"#,
+            r#"{"name":"work-2","no_skills":true}"#,
+            r#"{"name":"work-2","clone_from":"../work"}"#,
+            r#"{"name":"work-2","clone_from":null}"#,
+            r#"{"name":"work-2","soul":null}"#,
+            r#"{"name":"default"}"#,
+            r#"{"name":"Work"}"#,
+            r#"{"name":"../x"}"#,
+            r#"{"name":""}"#,
+            r#"{"soul":"x"}"#,
+            "[]",
+            "not json",
+        ] {
+            assert!(!profile_create_allowed(Some(body)), "{body}");
+        }
+        assert!(!profile_create_allowed(Some(&format!(r#"{{"name":"{}"}}"#, "a".repeat(65)))));
+        assert!(!profile_create_allowed(None));
     }
 
     #[test]

@@ -99,6 +99,10 @@ A separate Hermes agent setup on the server, with its own chats. The app shows o
 Switching profile happens in place, with the same sign-in: the list shows what this computer saved for the profile, says it is connecting and loading, and is remembered for the next launch only once its chats load. If they can't, it says why and offers to try again or go back. Each profile keeps its own drafts, Saved copies and Model pick, and nothing that arrives for the profile left shows in the new one. If a reply is running or an Approval waiting, the switcher asks first. Hermes keeps the reply going, and the Approval waits until Hermes stops waiting; switching back brings both back.
 _Avoid_: account, workspace, agent (as a name for a profile), connection (the server signed in to, which covers every profile)
 
+**Clone profile**:
+Making a new profile on the server from another one, from the profile switcher's menu. By default the clone is fresh, with only the parts the owner picks: the source's persona, model, description and own skills. It has no API keys. The full copy, which the owner turns on after a warning, also copies the source's API keys, memory and every setting. Chats, scheduled jobs and messaging channels are never copied. The new profile is read back before it can be opened, and the dialog says which parts didn't copy (ADR 0074).
+_Avoid_: duplicate, fork, copy (as a name for the feature; a copy is what Hermes's full copy does)
+
 **Bot Mode**:
 Hermes's way of treating each profile as a bot with a lasting identity, each with one Bot Chat. The Bots view shows it, opened from the rail. A Hermes without Bot Mode has no Bots button, and Connection diagnostics says why (ADR 0066).
 _Avoid_: agents mode, roster (Hermes's desktop calls its list that, but here it is the Bots view)

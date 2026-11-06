@@ -28,6 +28,7 @@
 import { McpApi } from "./mcp";
 import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
+import { ProfileCloneApi } from "./profileClone";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -962,6 +963,8 @@ export class Hermes {
     if (method !== "GET") this.skillsRead = undefined;
     return this.rest(method, pathAndQuery, body);
   });
+  /** The Clone profile dialog's profile list, create and delete (profileClone.ts, ADR 0074). Each call names its profiles. */
+  readonly profileClone = new ProfileCloneApi((method, pathAndQuery, body) => this.rest(method, pathAndQuery, body), this.persona, this.skills);
 
   /**
    * What this Hermes server can do, for Connection diagnostics and the screens that depend on it (capabilities.ts,

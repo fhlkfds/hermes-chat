@@ -3,7 +3,7 @@
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Copy, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -14,6 +14,8 @@ import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs } from "../hermes
 import { ChatMenu, type ChatClear, type ChatProjects, type ChatSnooze, type ChatTags } from "./ChatMenu";
 import { SnoozeDialog, useSnoozeClock } from "./Snooze";
 import { DeleteChatDialog } from "./DeleteChat";
+import { CloneProfileDialog } from "./CloneProfile";
+import type { ProfileCloneApi } from "../hermes/profileClone";
 import { ArchiveButton, STATUS_LABEL, SettleButton, SourceIcon, Spinner, composing, relTime, routeLabel, useReturnFocus } from "./bits";
 import { viaLabel } from "../hermes/routes";
 import { dragChat, dragChatEnd } from "./Tabs";
@@ -644,7 +646,8 @@ export function leavingNote(profile: string, chats: Chat[]): string | undefined 
  * The current profile's name with a ▾, which opens the server's profiles with a filter box (ADR 0001). Enter picks
  * the first match; Escape or a click outside closes it. A dot on it, and a count on each profile in the menu, show
  * Unread chats in the other profiles, as the latest poll found them. Opening the menu asks for a fresh check.
- * `leaving`: what switching away now leaves behind, which the owner is asked about first.
+ * `leaving`: what switching away now leaves behind, which the owner is asked about first. `clone`: the menu's Clone a
+ * profile, whose dialog opens the profile it made through the same question.
  */
 function ProfileSwitcher({
   profile,
@@ -653,6 +656,7 @@ function ProfileSwitcher({
   onListProfiles,
   onCheckOthers,
   onSwitch,
+  clone,
 }: {
   profile: string;
   others: OtherProfiles;
@@ -660,7 +664,9 @@ function ProfileSwitcher({
   onListProfiles: () => Promise<string[]>;
   onCheckOthers: () => void;
   onSwitch: (name: string) => void;
+  clone?: ProfileCloneApi;
 }) {
+  const [cloning, setCloning] = useState(false);
   const [open, setOpen] = useState(false);
   // The profile the owner picked while something was left behind here, and what, until they say whether to go. Kept
   // as asked, so the question stays if the reply finishes meanwhile.
@@ -716,7 +722,37 @@ function ProfileSwitcher({
         <ChevronDown size={14} className="profile-chev" />
       </button>
       {open && asking && <LeaveProfile note={asking.note} to={asking.to} onGo={() => answer(true)} onStay={() => answer(false)} />}
-      {open && !asking && <ProfileMenu profile={profile} profiles={profiles} error={error} others={others} onPick={pick} onClose={close} />}
+      {open && !asking && (
+        <ProfileMenu
+          profile={profile}
+          profiles={profiles}
+          error={error}
+          others={others}
+          onPick={pick}
+          onClose={close}
+          onClone={
+            clone &&
+            (() => {
+              close();
+              setCloning(true);
+            })
+          }
+        />
+      )}
+      {cloning && clone && (
+        <CloneProfileDialog
+          api={clone}
+          current={profile}
+          returnTo={button}
+          onClose={() => setCloning(false)}
+          onOpen={(name) => {
+            setCloning(false);
+            // The same question as picking it from the menu, when something would be left behind here.
+            setOpen(true);
+            pick(name);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -798,6 +834,7 @@ function ProfileMenu({
   others,
   onPick,
   onClose,
+  onClone,
 }: {
   profile: string;
   profiles?: string[];
@@ -805,6 +842,7 @@ function ProfileMenu({
   others: OtherProfiles;
   onPick: (name: string) => void;
   onClose: () => void;
+  onClone?: () => void;
 }) {
   const [filter, setFilter] = useState("");
   useReturnFocus();
@@ -850,6 +888,12 @@ function ProfileMenu({
         <div className="profile-hint">
           Unread checked every {CHECK_EVERY_MS / 60_000} min{others.checkedAt ? `, last ${ago(others.checkedAt)}` : ""}
         </div>
+      )}
+      {onClone && (
+        <button className="profile-option profile-clone" onClick={onClone}>
+          <Copy size={13} aria-hidden />
+          <span className="row-title">Clone a profile…</span>
+        </button>
       )}
     </div>
   );
@@ -909,6 +953,7 @@ export function ChatList({
   onCheckOthers,
   onSwitchProfile,
   onRetrySwitch,
+  profileClone,
   onNew,
   onSearch,
 }: {
@@ -956,6 +1001,8 @@ export function ChatList({
   onCheckOthers: () => void;
   onSwitchProfile: (name: string) => void;
   onRetrySwitch: () => void;
+  /** Clone profile's calls (ADR 0074); without it the switcher offers no clone. */
+  profileClone?: ProfileCloneApi;
   /** The list's own New chat and Search buttons, labeled with their keys; the rail keeps icons for both. */
   onNew?: () => void;
   onSearch?: () => void;
@@ -1035,6 +1082,7 @@ export function ChatList({
           onListProfiles={onListProfiles}
           onCheckOthers={onCheckOthers}
           onSwitch={onSwitchProfile}
+          clone={profileClone}
         />
       </div>
       {(onNew || onSearch) && (

@@ -77,6 +77,10 @@ The switches also need `PUT /api/tools/toolsets/{name}`. Diagnostics doesn't sen
 
 Needs `GET` and `PUT /api/profiles/{name}/soul`. Checked with the `GET`. Without them, Settings → Persona shows a note instead of the editor.
 
+## Clone profile
+
+Needs `POST /api/profiles`, which isn't checked ahead: the Clone dialog sends it only when the owner clones. A fresh clone needs its `soul`, `description` and `provider`/`model` fields (Hermes `f0d94882`). An older Hermes that ignores one of them makes the profile without it, and the dialog's read-back shows that category as not copied. Without the route Hermes answers 405, and the dialog says the server can't create profiles. Deleting a clone needs `DELETE /api/profiles/{name}`.
+
 ## Skills
 
 Needs `GET /api/skills`, and `PUT /api/skills/toggle` and `/api/skills/content` to change skills. Checked with the `GET`. Without it, Settings → Skills shows a note instead of the list.
