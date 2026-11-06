@@ -3567,7 +3567,7 @@ function ChatView({
           if (here()) done();
           return undefined;
         }
-        // Its card above the composer says how it went, Hermes's refusal included, so a refusal keeps the words typed.
+        // Its answer in the transcript says how it went, Hermes's refusal included, so a refusal keeps the words typed.
         if (def.name === "btw") {
           if ((await hermes.askSideQuestion(chat.id, arg)) && here()) done();
           return undefined;

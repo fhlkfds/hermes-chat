@@ -121,6 +121,23 @@ describe("The transcript", () => {
     expect(answered).toHaveBeenCalledWith("ap-1", "once", undefined);
   });
 
+  it("ignores a click on an Approval card just after a side question's answer above it moves it", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const answered = vi.fn<Answer>();
+    const items = [approval];
+    const side = { id: "btw-1", question: "Which build?", taskId: "btw_1" };
+    const { show } = pane(chatOf(items, { running: true, sideQuestions: [{ ...side, state: "asking" }] }), undefined, answered);
+    vi.setSystemTime(Date.now() + 1000);
+
+    show(chatOf(items, { running: true, sideQuestions: [{ ...side, state: "answered", answer: "The **nightly** one." }] }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve once" }));
+    expect(answered).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + 1000);
+    fireEvent.click(screen.getByRole("button", { name: "Approve once" }));
+    expect(answered).toHaveBeenCalledWith("ap-1", "once", undefined);
+  });
+
   describe("Copy", () => {
     const writeText = vi.fn<(text: string) => Promise<void>>();
     beforeEach(() => {
