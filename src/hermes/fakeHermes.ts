@@ -4,6 +4,7 @@ import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, Toolset
 import type { SavedKey } from "./setup";
 import { FakeMemoryProviders } from "./fakeMemoryProviders";
 import { FakeMcp } from "./fakeMcp";
+import { FakeGateways } from "./fakeGateways";
 import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
@@ -438,6 +439,8 @@ export class FakeHermes {
   /** The profiles' external memory providers, as Settings → Memory → External memory reads and writes them. */
   /** The profile's MCP servers (fakeMcp.ts, ADR 0068). */
   readonly mcp = new FakeMcp((p) => p === "default" || p in this.otherProfiles);
+  /** The profile's Telegram and Discord gateways (fakeGateways.ts, ADR 0073). */
+  readonly gateways = new FakeGateways((p) => p === "default" || p in this.otherProfiles);
   readonly memoryProviders = new FakeMemoryProviders((p) => p === "default" || p in this.otherProfiles || p in this.memory);
   /** The profiles' speech providers, for Settings → Voice (fakeVoiceProviders.ts). */
   readonly voiceProviders = new FakeVoiceProviders(
@@ -1594,6 +1597,7 @@ export class FakeHermes {
       this.learningRoute(req) ??
       this.memoryProviders.route(req) ??
       this.mcp.route(req) ??
+      this.gateways.route(req) ??
       this.voiceProviders.route(req);
     const toolset = /^\/api\/tools\/toolsets(?:\/([^/]+)(\/config)?)?$/.exec(req.path);
     if (!handler && toolset) return JSON.stringify(await this.toolsetRoute(req, toolset[1], !!toolset[2]));

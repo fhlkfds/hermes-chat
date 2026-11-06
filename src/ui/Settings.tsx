@@ -10,7 +10,7 @@
 // Profiles are switched in the list's header, not here (ADR 0001). The search box (Ctrl+F) shows the sections of every
 // tab whose text holds what was typed (settingsSearch.ts).
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, Search, Server, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
+import { ArrowLeft, AudioLines, Brain, Camera, Cpu, Database, Download, HardDrive, KeyRound, Lock, LogOut, MessagesSquare, NotebookPen, Palette, PlugZap, Power, Puzzle, RadioTower, Search, Server, Settings2, ShieldCheck, Sparkles, Stethoscope, Trash2, User, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
 import { SubNav, type SubNavItem } from "./SubNav";
 import { SettingRow, SettingsSearching, SettingsSection } from "./SettingRows";
@@ -60,8 +60,10 @@ import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./setti
 import { ProfilePicker } from "./ProfilePicker";
 import type { McpApi } from "../hermes/mcp";
 import { McpSettings } from "./McpSettings";
+import type { GatewaysApi } from "../hermes/gateways";
+import { GatewaySettings } from "./GatewaySettings";
 
-type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "mcp" | "persona" | "memory" | "skills" | "diagnostics";
+type Tab = "general" | "appearance" | "model" | "voice" | "toolsets" | "mcp" | "gateways" | "persona" | "memory" | "skills" | "diagnostics";
 /**
  * General's five groups, shown one at a time beside a sub-nav (ADR 0051); a search shows every group's sections at once.
  * Voice moved to its own tab with the speech providers (ADR 0055), so the third group holds screenshots.
@@ -85,6 +87,7 @@ const TABS = [
   { id: "voice", label: "Voice", Icon: AudioLines },
   { id: "toolsets", label: "Toolsets", Icon: Wrench },
   { id: "mcp", label: "MCP servers", Icon: Server },
+  { id: "gateways", label: "Gateways", Icon: RadioTower },
   { id: "persona", label: "Persona", Icon: Sparkles },
   { id: "memory", label: "Memory", Icon: Brain },
   { id: "skills", label: "Skills", Icon: Puzzle },
@@ -99,6 +102,7 @@ const SEARCHED: readonly Tab[] = ["general", "appearance", "model", "voice", "to
  */
 const ABOUT: Partial<Record<Tab, string>> = {
   mcp: "Tools from other programs and services Hermes connects to (MCP servers): add, edit, remove, switch, test and sign in, for each profile.",
+  gateways: "Reach Hermes from Telegram or Discord: each profile's bot tokens, on/off switch, allowed users and connection status, kept on the server.",
   persona: "Who Hermes is and how it speaks in this profile's chats: the profile's SOUL.md, edited on the server.",
   memory: "What Hermes remembers about you and your work between chats, changed or removed entry by entry.",
   skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
@@ -152,6 +156,7 @@ export function SettingsScreen({
   modelSettings,
   toolsets,
   mcp,
+  gateways,
   openUrl = () => {},
   runningReplies = 0,
   openChat,
@@ -216,6 +221,8 @@ export function SettingsScreen({
   toolsets?: ToolsetsApi;
   /** Each profile's MCP servers on Hermes (ADR 0068); without it there is no MCP servers tab. */
   mcp?: McpApi;
+  /** Each profile's Telegram and Discord gateways on Hermes (ADR 0073); without it there is no Gateways tab. */
+  gateways?: GatewaysApi;
   /** Opens a page in the browser: an MCP server's OAuth sign-in. */
   openUrl?: (url: string) => Promise<void> | void;
   /** Chats of the shown profile with a reply running now. */
@@ -318,9 +325,9 @@ export function SettingsScreen({
   // again when the app switches profile. Picking one leaves an unsaved edit, so it asks first. Persona picks its own
   // (PersonaPage, ADR 0056).
   const [profiles, setProfiles] = useState<string[]>();
-  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, mcp: profile, of: profile });
-  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, mcp: profile, of: profile };
-  useEffect(() => setShownIn({ skills: profile, memory: profile, mcp: profile, of: profile }), [profile]);
+  const [shownIn, setShownIn] = useState({ skills: profile, memory: profile, mcp: profile, gateways: profile, of: profile });
+  const tabProfile = shownIn.of === profile ? shownIn : { skills: profile, memory: profile, mcp: profile, gateways: profile, of: profile };
+  useEffect(() => setShownIn({ skills: profile, memory: profile, mcp: profile, gateways: profile, of: profile }), [profile]);
   const connected = status === "connected";
   useEffect(() => {
     if (!listProfiles || !connected) return;
@@ -333,14 +340,15 @@ export function SettingsScreen({
       live = false;
     };
   }, [listProfiles, connected]);
-  const pickProfile = (which: "skills" | "memory" | "mcp", p: string) =>
+  const pickProfile = (which: "skills" | "memory" | "mcp" | "gateways", p: string) =>
     p !== tabProfile[which] && guard(() => setShownIn((cur) => ({ ...(cur.of === profile ? cur : tabProfile), [which]: p })));
-  const picker = (which: "skills" | "memory" | "mcp", label: string) =>
+  const picker = (which: "skills" | "memory" | "mcp" | "gateways", label: string) =>
     listProfiles && <ProfilePicker value={tabProfile[which]} shown={profile} profiles={profiles} label={label} onPick={(p) => pickProfile(which, p)} />;
   const tabs = TABS.filter(
     (t) =>
       (t.id !== "toolsets" || toolsets) &&
       (t.id !== "mcp" || mcp) &&
+      (t.id !== "gateways" || gateways) &&
       (t.id !== "voice" || voiceSetup || voiceSettings || localStt) &&
       (t.id !== "persona" || persona) &&
       (t.id !== "memory" || memory) &&
@@ -816,6 +824,20 @@ export function SettingsScreen({
               profile={tabProfile.mcp}
               connected={status === "connected"}
               picker={picker("mcp", "Profile whose MCP servers are shown")}
+              openUrl={openUrl}
+            />
+          )
+        );
+      case "gateways":
+        // Read for one profile; picking another reads it afresh, and anything typed goes with it.
+        return (
+          gateways && (
+            <GatewaySettings
+              key={tabProfile.gateways}
+              api={gateways}
+              profile={tabProfile.gateways}
+              connected={status === "connected"}
+              picker={picker("gateways", "Profile whose gateways are shown")}
               openUrl={openUrl}
             />
           )

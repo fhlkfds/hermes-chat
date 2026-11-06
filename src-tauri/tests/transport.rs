@@ -445,6 +445,8 @@ fn stub_routes() -> Router {
         .route("/api/tools/toolsets/{name}/env", put(echo_write))
         .route("/api/tools/toolsets/{name}/provider", put(echo_write))
         .route("/api/tools/toolsets/{name}/post-setup", post(echo_write))
+        .route("/api/messaging/platforms/{id}", put(echo_write).post(echo_write))
+        .route("/api/messaging/platforms/{id}/test", post(echo_write).put(echo_write))
         .route("/api/profiles/{name}/soul", put(echo_write).post(echo_write))
         .route("/api/skills", post(echo_write))
         .route("/api/skills/toggle", put(echo_write))
@@ -881,6 +883,65 @@ async fn relays_no_other_voice_provider_write() {
     assert!(matches!(dashboard.request("PUT", "api/tools/toolsets/stt/env", Some(long)).await, Err(TransportError::NotRelayed(_))));
     let long = json!({"env": {"A".repeat(129): "k"}}).to_string();
     assert!(matches!(dashboard.request("PUT", "api/tools/toolsets/stt/env", Some(long)).await, Err(TransportError::NotRelayed(_))));
+}
+
+#[tokio::test]
+async fn relays_the_gateway_save_and_status_check() {
+    let dashboard = signed_in().await;
+    for (path, body) in [
+        ("api/messaging/platforms/telegram?profile=work", json!({"enabled": true, "env": {"TELEGRAM_BOT_TOKEN": "123456789:AAAAdummydummydummydummydummydummy00"}})),
+        ("api/messaging/platforms/telegram?profile=work", json!({"enabled": false, "clear_env": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"]})),
+        ("api/messaging/platforms/discord?profile=bot", json!({"enabled": true, "env": {"DISCORD_ALLOWED_USERS": "1, 2"}, "clear_env": ["DISCORD_BOT_TOKEN"]})),
+        ("api/messaging/platforms/discord", json!({"enabled": false})),
+    ] {
+        let got: Value = serde_json::from_str(&dashboard.request("PUT", path, Some(body.to_string())).await.unwrap()).unwrap();
+        assert_eq!(got, json!({"uri": format!("/{path}"), "content_type": "application/json", "body": body}));
+    }
+    for path in ["api/messaging/platforms/telegram/test?profile=work", "api/messaging/platforms/discord/test"] {
+        let got: Value = serde_json::from_str(&dashboard.request("POST", path, None).await.unwrap()).unwrap();
+        assert_eq!(got["uri"], json!(format!("/{path}")));
+    }
+}
+
+#[tokio::test]
+async fn relays_no_other_gateway_write() {
+    let dashboard = signed_in().await;
+    for (method, path, body) in [
+        // Other platforms, other messaging routes, and the wrong method.
+        ("PUT", "api/messaging/platforms/slack", Some(r#"{"enabled":true}"#)),
+        ("PUT", "api/messaging/platforms/whatsapp", Some(r#"{"env":{"WHATSAPP_MODE":"bot"}}"#)),
+        ("PUT", "api/messaging/platforms/Telegram", Some(r#"{"enabled":true}"#)),
+        ("PUT", "api/messaging/platforms/telegram/x", Some(r#"{"enabled":true}"#)),
+        ("POST", "api/messaging/platforms/telegram", Some(r#"{"enabled":true}"#)),
+        ("PUT", "api/messaging/platforms/telegram/test", None),
+        ("POST", "api/messaging/platforms/telegram/test", Some("{}")),
+        ("POST", "api/messaging/platforms/slack/test", None),
+        ("POST", "api/messaging/telegram/onboarding/start", Some("{}")),
+        // Bodies with anything else, a profile in the body, or nothing to do.
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"enabled":true,"profile":"other"}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"enabled":"yes"}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some("{}")),
+        ("PUT", "api/messaging/platforms/telegram", Some("not json")),
+        ("PUT", "api/messaging/platforms/telegram", None),
+        // Another platform's or another program's env vars, and values that aren't one non-blank line.
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"DISCORD_BOT_TOKEN":"x"}}"#)),
+        ("PUT", "api/messaging/platforms/discord", Some(r#"{"env":{"OPENAI_API_KEY":"x"}}"#)),
+        ("PUT", "api/messaging/platforms/discord", Some(r#"{"clear_env":["LD_PRELOAD"]}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"TELEGRAM_":"x"}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"telegram_bot_token":"x"}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"TELEGRAM_BOT_TOKEN":""}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"TELEGRAM_BOT_TOKEN":"  "}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"TELEGRAM_BOT_TOKEN":"1:a\nLD_PRELOAD=x"}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{"TELEGRAM_BOT_TOKEN":7}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"env":{}}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"clear_env":[]}"#)),
+        ("PUT", "api/messaging/platforms/telegram", Some(r#"{"clear_env":"TELEGRAM_BOT_TOKEN"}"#)),
+    ] {
+        let err = dashboard.request(method, path, body.map(Into::into)).await.err().unwrap();
+        assert!(matches!(err, TransportError::NotRelayed(_)), "{method} {path} {body:?}: {err:?}");
+    }
+    let long = json!({"env": {"TELEGRAM_BOT_TOKEN": "k".repeat(4097)}}).to_string();
+    assert!(matches!(dashboard.request("PUT", "api/messaging/platforms/telegram", Some(long)).await, Err(TransportError::NotRelayed(_))));
 }
 
 #[tokio::test]
