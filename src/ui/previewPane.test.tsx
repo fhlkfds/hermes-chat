@@ -881,9 +881,9 @@ describe("The link menu (issue #240)", () => {
     expect(writes).toEqual(["mailto:x@example.com"]);
   });
 
-  it("leaves a same-page link's own menu alone, and gives a web link in a previewed Markdown file the link menu", async () => {
+  it("leaves a same-page link's own menu alone, blocks it on an emptied file: link, and gives a web link in a previewed Markdown file the link menu", async () => {
     const { server, user } = await signedIn();
-    server.serverFiles["/home/liam/app/GUIDE.md"] = "# Guide\n\nSee [Usage](#usage) and [the site](https://guide.example.com/).\n\n## Usage\n\nRun it.\n";
+    server.serverFiles["/home/liam/app/GUIDE.md"] = "# Guide\n\nSee [Usage](#usage), [the site](https://guide.example.com/) and [the hosts file](file:///etc/hosts).\n\n## Usage\n\nRun it.\n";
     await user.click(screen.getByRole("button", { name: "Open the side panel" }));
     await user.click(within(pane()).getByRole("textbox"));
     await user.paste("/home/liam/app/GUIDE.md");
@@ -891,6 +891,12 @@ describe("The link menu (issue #240)", () => {
     await within(pane()).findByRole("heading", { name: "Guide" });
 
     expect(rightClick(within(pane()).getByRole("link", { name: "Usage" }))).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    // react-markdown empties a file: address, so there is nothing to copy, and WebKit's Open Link would load this page.
+    const hosts = within(pane()).getByText("the hosts file");
+    expect(hosts.getAttribute("href")).toBe("");
+    expect(rightClick(hosts)).toBe(false);
     expect(screen.queryByRole("menu")).toBeNull();
 
     expect(rightClick(within(pane()).getByRole("link", { name: "the site" }))).toBe(false);
