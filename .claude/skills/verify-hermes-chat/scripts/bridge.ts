@@ -87,6 +87,7 @@ function replyTo(sessionId: string, prompt: string) {
 // (`tools/delegate_tool.py` at the deployed `f0d94882`). Each is also in Hermes's registry, for `subagent.list`.
 const TEAM = ["Read the auth code", "Read the tests"];
 const delegated = new Map<string, { sid: string; stored: string; payload: Record<string, unknown> }>();
+let started = 0;
 
 function delegate(sid: string) {
   const stored = server.runtime.get(sid);
@@ -94,7 +95,7 @@ function delegate(sid: string) {
   server.event(sid, "message.start");
   server.event(sid, "message.delta", { text: "Delegating to two subagents." });
   TEAM.forEach((goal, task_index) => {
-    const subagent_id = `sa-${delegated.size + 1}`;
+    const subagent_id = `sa-${++started}`;
     const payload = { subagent_id, goal, task_index, task_count: TEAM.length, depth: 0, delegation_id: `dlg-${sid}`, model: "stand-in-model" };
     delegated.set(subagent_id, { sid, stored, payload });
     (server.subagents[stored] ??= []).push({ ...payload, owner: sid, status: "running", accepting_steer: true, started_at: Date.now() / 1000 });
