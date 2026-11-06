@@ -67,6 +67,7 @@ function theWeb(answers: Record<string, Framing | Error | Promise<Framing>> = {}
     openInBrowser: async (url) => {
       if (openFails) throw new Error(openFails);
       web.opened.push(url);
+      return "Helium Browser";
     },
   };
   return web;
@@ -392,12 +393,13 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
 
     await user.click(within(note).getByRole("button", { name: "Open in your browser" }));
     expect(web.opened).toEqual([GOOGLE]);
+    expect((await within(pane()).findByText("Opened in Helium Browser.")).getAttribute("role")).toBe("status");
 
     // The owner may still try, in the same sandboxed frame.
     await user.click(within(note).getByRole("button", { name: "Try showing it here anyway" }));
     const again = within(pane()).getByTitle(`Web page: ${GOOGLE}`);
     expect(again.getAttribute("sandbox")!.split(" ").sort()).toEqual(["allow-forms", "allow-same-origin", "allow-scripts"]);
-    expect(within(pane()).getByRole("status").textContent).toContain("Loading page");
+    expect(within(pane()).getAllByRole("status").some((e) => e.textContent?.includes("Loading page"))).toBe(true);
   });
 
   it("keeps showing a page that allows framing, with a way to open it in the browser", async () => {
@@ -435,7 +437,7 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
   });
 
   it("leaves the frame alone when the check itself fails, and says why the browser didn't open", async () => {
-    const web = theWeb({ [GOOGLE]: new Error("not running in Tauri") }, "Couldn't find xdg-open, which opens pages in your browser.");
+    const web = theWeb({ [GOOGLE]: new Error("not running in Tauri") }, "No default browser is set.");
     const { user } = await openWeb(GOOGLE, web);
     await act(async () => {});
     expect(within(pane()).getByTitle(`Web page: ${GOOGLE}`)).toBeTruthy();
@@ -443,7 +445,7 @@ describe("Web pages a site won't let the pane show (issue #55)", () => {
 
     await user.click(within(pane()).getByRole("button", { name: "Open in your browser" }));
     expect((await within(pane()).findByRole("alert")).textContent).toBe(
-      "Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.",
+      "Couldn't open it in your browser: No default browser is set.",
     );
   });
 });
@@ -932,6 +934,7 @@ describe("The link menu (issue #240)", () => {
     expect(web.opened).toEqual([DOCS]);
     expect(screen.queryByRole("menu")).toBeNull();
     expect(paneOpen()).toBe(false);
+    expect(await screen.findByText("Opened in Helium Browser.")).toBeTruthy();
 
     rightClick(link);
     await user.click(item("Open in the Preview"));
@@ -941,10 +944,11 @@ describe("The link menu (issue #240)", () => {
   });
 
   it("says why the browser didn't open", async () => {
-    const { user } = await signedIn({ web: theWeb({}, "Couldn't find xdg-open, which opens pages in your browser.") });
+    const { user } = await signedIn({ web: theWeb({}, "Helium Browser stopped with exit code 1: cannot open display: wayland-1") });
     rightClick(screen.getByRole("link", { name: "the docs" }));
     await user.click(item("Open in your browser"));
-    expect(await screen.findByText("Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.")).toBeTruthy();
+    expect(await screen.findByText("Couldn't open it in your browser: Helium Browser stopped with exit code 1: cannot open display: wayland-1")).toBeTruthy();
+    expect(screen.queryByText(/^Opened in/)).toBeNull();
   });
 
   it("copies the link and says so, or says why it couldn't", async () => {
