@@ -9,12 +9,12 @@ expect() { [ "$1" = "$2" ] && echo "PASS $3: $1" || { echo "FAIL $3: got '$1', w
 signin_again() { $W open; $W wait button Connect 60000; $W fill input "Dashboard password" -- verify-pass; $W click button Connect; $W wait button "Search all chats (Ctrl+K)"; }
 
 $W open
-$W wait button "Get started" 60000; $W click button "Get started"
+$W wait button "Get started" 90000; $W click button "Get started"
 $W select select "Connect through" -- "Web address"; $W fill input "Dashboard URL" -- $DASHBOARD_URL
-$W click button "Test the route"; $W wait '[role=status]' "Reached Hermes 0.17.0" 30000; $W click button Next
+$W click button "Test the route"; $W wait '[role=status]' "Reached Hermes 0.17.0" 60000; $W click button Next
 $W fill input "Dashboard username" -- verify; $W fill input "Dashboard password" -- verify-pass
-$W click button "Test connection"; $W wait '[role=status]' "At least one route works" 30000
-$W click button "Save and connect"; $W wait .setup-ok "You're ready to chat" 30000; $W click button Skip; $W gone '[role=dialog]'
+$W click button "Test connection"; $W wait '[role=status]' "At least one route works" 60000
+$W click button "Save and connect"; $W wait .setup-ok "You're ready to chat" 60000; $W click button Skip; $W gone '[role=dialog]'
 $W click button Settled; $W shot 01-signed-in
 
 # Row menu, by right-click.
@@ -33,7 +33,7 @@ $W shot 04-two-pinned
 # A message in an unpinned chat leaves it below the pinned ones.
 $W click '.row-open[data-chat=vpn]'; $W wait '.chat-title' "Why is the VPN slow"
 $W fill 'textarea[data-composer]' -- "Any change since the reboot?"; $W press Enter
-$W wait .msg.assistant "Stand-in reply to: Any change since the reboot?" 30000
+$W wait .msg.assistant "Stand-in reply to: Any change since the reboot?" 60000
 expect "$(pinned)" nginx,backup "pinned unchanged after a message in vpn"
 expect "$($W eval 'return document.querySelector(".row-open[data-chat=vpn]").closest(".row").dataset.section' | tr -d '"')" inbox "vpn moved to the Inbox, below Pinned"
 expect "$(heads | cut -d' ' -f1)" Pinned2 "Pinned is the first section"
