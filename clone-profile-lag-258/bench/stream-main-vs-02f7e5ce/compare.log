@@ -1,0 +1,5 @@
+session 1 before: load average: 1.05, 1.30, 2.27 /home/liam/.cache/hermes-verify/runs/1106-121937-1245322
+session 1 after: load average: 1.40, 1.36, 2.24 /home/liam/.cache/hermes-verify/runs/1106-122026-1247855
+session 2 before: load average: 1.50, 1.39, 2.21 /home/liam/.cache/hermes-verify/runs/1106-122107-1250171
+session 2 after: load average: 1.72, 1.47, 2.19 /home/liam/.cache/hermes-verify/runs/1106-122155-1252711
+exit 0

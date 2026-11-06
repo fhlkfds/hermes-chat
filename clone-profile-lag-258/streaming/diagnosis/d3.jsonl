@@ -1,0 +1,12 @@
+{"label":"head-d3-long","round":1,"variant":"closed","load":"0.84","frames":"{\"n\":152,\"med\":17,\"p90\":18,\"max\":28,\"len\":2559}","cpu":"HeapHelper:15,JITWorker:14,WebKitWebProces:167"}
+{"label":"head-d3-long","round":1,"variant":"open","load":"0.84","frames":"{\"n\":59,\"med\":43,\"p90\":74,\"max\":76,\"len\":4391}","cpu":"JITWorker:10,WebKitWebProces:263"}
+{"label":"head-d3-long","round":1,"variant":"noshadow","load":"0.93","frames":"{\"n\":107,\"med\":22,\"p90\":39,\"max\":49,\"len\":5800}","cpu":"HeapHelper:12,JITWorker:17,WebKitWebProces:251"}
+{"label":"head-d3-long","round":1,"variant":"hidden","load":"1.01","frames":"{\"n\":152,\"med\":17,\"p90\":18,\"max\":29,\"len\":7048}","cpu":"HeapHelper:19,JITWorker:11,WebKitWebProces:178"}
+{"label":"head-d3-long","round":2,"variant":"closed","load":"1.34","frames":"{\"n\":48,\"med\":60,\"p90\":85,\"max\":92,\"len\":22667}","cpu":"WebKitWebProces:267"}
+{"label":"head-d3-long","round":2,"variant":"open","load":"1.25","frames":"{\"n\":49,\"med\":48,\"p90\":87,\"max\":91,\"len\":43945}","cpu":"WebKitWebProces:273"}
+{"label":"head-d3-long","round":2,"variant":"noshadow","load":"1.23","frames":"{\"n\":82,\"med\":28,\"p90\":57,\"max\":62,\"len\":45371}","cpu":"HeapHelper:9,JITWorker:7,WebKitWebProces:262"}
+{"label":"head-d3-long","round":2,"variant":"hidden","load":"1.23","frames":"{\"n\":151,\"med\":16,\"p90\":22,\"max\":29,\"len\":46701}","cpu":"HeapHelper:23,JITWorker:7,WebKitWebProces:205"}
+{"label":"head-d3-long","round":3,"variant":"closed","load":"1.30","frames":"{\"n\":41,\"med\":69,\"p90\":89,\"max\":93,\"len\":62445}","cpu":"WebKitWebProces:269"}
+{"label":"head-d3-long","round":3,"variant":"open","load":"1.24","frames":"{\"n\":44,\"med\":67,\"p90\":91,\"max\":94,\"len\":83870}","cpu":"WebKitWebProces:270"}
+{"label":"head-d3-long","round":3,"variant":"noshadow","load":"1.38","frames":"{\"n\":72,\"med\":33,\"p90\":62,\"max\":72,\"len\":85196}","cpu":"HeapHelper:7,JITWorker:6,WebKitWebProces:269"}
+{"label":"head-d3-long","round":3,"variant":"hidden","load":"1.38","frames":"{\"n\":147,\"med\":16,\"p90\":26,\"max\":39,\"len\":86621}","cpu":"HeapHelper:21,WebKitWebProces:223"}

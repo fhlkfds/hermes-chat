@@ -1,0 +1,12 @@
+{"label":"head-p1","round":1,"variant":"closed","load":"0.93","frames":"{\"n\":152,\"med\":17,\"p90\":18,\"max\":30,\"len\":2591}","cpu":"JITWorker/1230552:22,JITWorker/1230553:10,WebKitWebProces/1230478:177","keys":null}
+{"label":"head-p1","round":1,"variant":"open","load":"1.09","frames":"{\"n\":151,\"med\":16,\"p90\":21,\"max\":31,\"len\":4030}","cpu":"JITWorker/1230552:10,WebKitWebProces/1230478:195","keys":null}
+{"label":"head-p1","round":1,"variant":"palette-flat","load":"1.09","frames":"{\"n\":151,\"med\":17,\"p90\":18,\"max\":23,\"len\":5267}","cpu":"JITWorker/1230552:18,WebKitWebProces/1230478:142","keys":null}
+{"label":"head-p1","round":2,"variant":"closed","load":"1.09","frames":"{\"n\":151,\"med\":17,\"p90\":18,\"max\":20,\"len\":6747}","cpu":"JITWorker/1230552:10,WebKitWebProces/1230478:140","keys":null}
+{"label":"head-p1","round":2,"variant":"open","load":"1.00","frames":"{\"n\":149,\"med\":16,\"p90\":23,\"max\":36,\"len\":8189}","cpu":"JITWorker/1230552:6,WebKitWebProces/1230478:194","keys":null}
+{"label":"head-p1","round":2,"variant":"palette-flat","load":"1.00","frames":"{\"n\":151,\"med\":17,\"p90\":17,\"max\":25,\"len\":9435}","cpu":"JITWorker/1230552:8,WebKitWebProces/1230478:150","keys":null}
+{"label":"head-p1","round":3,"variant":"closed","load":"1.08","frames":"{\"n\":151,\"med\":17,\"p90\":18,\"max\":28,\"len\":10946}","cpu":"JITWorker/1230552:10,WebKitWebProces/1230478:152","keys":null}
+{"label":"head-p1","round":3,"variant":"open","load":"1.23","frames":"{\"n\":130,\"med\":16,\"p90\":30,\"max\":48,\"len\":12359}","cpu":"WebKitWebProces/1230478:219","keys":null}
+{"label":"head-p1","round":3,"variant":"palette-flat","load":"1.23","frames":"{\"n\":150,\"med\":17,\"p90\":18,\"max\":27,\"len\":13698}","cpu":"WebKitWebProces/1230478:159","keys":null}
+{"label":"head-p1","round":4,"variant":"closed","load":"1.21","frames":"{\"n\":151,\"med\":17,\"p90\":18,\"max\":22,\"len\":15214}","cpu":"JITWorker/1230552:10,WebKitWebProces/1230478:146","keys":null}
+{"label":"head-p1","round":4,"variant":"open","load":"1.21","frames":"{\"n\":145,\"med\":16,\"p90\":25,\"max\":31,\"len\":16556}","cpu":"WebKitWebProces/1230478:209","keys":null}
+{"label":"head-p1","round":4,"variant":"palette-flat","load":"1.20","frames":"{\"n\":152,\"med\":17,\"p90\":18,\"max\":24,\"len\":17956}","cpu":"JITWorker/1230552:7,WebKitWebProces/1230478:165","keys":null}

@@ -1,0 +1,48 @@
+# /home/liam/.cache/hermes-258/stream-bench/before.jsonl
+{"keyMed":132.92529296875,"keyMax":194.3857421875,"typing":1326.389404296875,"toggleMed":144,"closed":17,"open":44,"keys":"20/20","toggles":4,"reply":[3539,4947],"load":"1.61 1.41 3.02"}
+{"keyMed":283.780029296875,"keyMax":678.211669921875,"typing":1818.28759765625,"toggleMed":140,"closed":17,"open":33,"keys":"20/20","toggles":4,"reply":[8150,9751],"load":"1.69 1.44 3.00"}
+{"keyMed":794.5306396484375,"keyMax":1221.47314453125,"typing":2366.623046875,"toggleMed":202,"closed":17,"open":39,"keys":"20/20","toggles":4,"reply":[13002,15005],"load":"1.66 1.44 2.98"}
+{"keyMed":438.0989990234375,"keyMax":807.24072265625,"typing":1887.31494140625,"toggleMed":238.5,"closed":17,"open":43,"keys":"20/20","toggles":4,"reply":[18225,20110],"load":"1.56 1.43 2.96"}
+{"keyMed":295.0277099609375,"keyMax":586.492919921875,"typing":1726.653076171875,"toggleMed":153.5,"closed":17,"open":43,"keys":"20/20","toggles":4,"reply":[3604,5324],"load":"1.82 1.54 2.91"}
+{"keyMed":544.1492919921875,"keyMax":1016.2119140625,"typing":2156.236083984375,"toggleMed":234,"closed":16,"open":54,"keys":"20/20","toggles":4,"reply":[8565,10570],"load":"1.78 1.54 2.89"}
+{"keyMed":451.775634765625,"keyMax":788.334228515625,"typing":1901.41552734375,"toggleMed":183,"closed":16,"open":35,"keys":"20/20","toggles":4,"reply":[13802,15591],"load":"1.66 1.52 2.87"}
+{"keyMed":403.8319091796875,"keyMax":926.844970703125,"typing":2066.110107421875,"toggleMed":325,"closed":17,"open":38,"keys":"20/20","toggles":4,"reply":[18805,20922],"load":"1.86 1.57 2.87"}
+{"keyMed":413.4810791015625,"keyMax":703.537841796875,"typing":1843.489013671875,"toggleMed":193.5,"closed":16,"open":54,"keys":"20/20","toggles":4,"reply":[3573,5292],"load":"2.06 1.68 2.83"}
+{"keyMed":426.998779296875,"keyMax":890.4638671875,"typing":1913.705322265625,"toggleMed":152,"closed":17,"open":49,"keys":"20/20","toggles":4,"reply":[8489,10260],"load":"1.89 1.66 2.81"}
+{"keyMed":322.5423583984375,"keyMax":619.012939453125,"typing":1758.778076171875,"toggleMed":139.5,"closed":17,"open":37,"keys":"20/20","toggles":4,"reply":[13354,15082],"load":"1.91 1.67 2.80"}
+{"keyMed":667.8692626953125,"keyMax":874.28662109375,"typing":1855.5751953125,"toggleMed":129,"closed":17,"open":57,"keys":"20/20","toggles":4,"reply":[18367,20130],"load":"1.85 1.66 2.78"}
+{"keyMed":332.26953125,"keyMax":572.88037109375,"typing":1712.83642578125,"toggleMed":146,"closed":17,"open":43,"keys":"20/20","toggles":4,"reply":[3604,5309],"load":"1.76 1.68 2.72"}
+{"keyMed":394.92626953125,"keyMax":603.361083984375,"typing":1702.3935546875,"toggleMed":270,"closed":17,"open":33,"keys":"20/20","toggles":4,"reply":[8598,10469],"load":"1.73 1.67 2.70"}
+{"keyMed":482.78955078125,"keyMax":842.333984375,"typing":1982.379638671875,"toggleMed":160,"closed":17,"open":36,"keys":"20/20","toggles":4,"reply":[13757,15591],"load":"1.77 1.68 2.69"}
+{"keyMed":389.890625,"keyMax":793.927490234375,"typing":1909.0771484375,"toggleMed":135.5,"closed":16,"open":34,"keys":"20/20","toggles":4,"reply":[18805,20631],"load":"1.80 1.69 2.69"}
+frame with the dialog closed, ms, median per run: median 17.0, range 16.0 to 17.0 (n=16)
+frame with the dialog open, ms, median per run: median 41.0, range 33.0 to 57.0 (n=16)
+key (X server) to frame, ms, median per run: median 408.7, range 132.9 to 794.5 (n=16)
+key (X server) to frame, ms, worst per run: median 791.1, range 194.4 to 1221.5 (n=16)
+20 keys 60 ms apart, first sent to last drawn, ms: median 1871.4, range 1326.4 to 2366.6 (n=16)
+toggle to frame, ms, median per run: median 156.8, range 129.0 to 325.0 (n=16)
+load (1 min) per run: 1.61 1.69 1.66 1.56 1.82 1.78 1.66 1.86 2.06 1.89 1.91 1.85 1.76 1.73 1.77 1.80
+# /home/liam/.cache/hermes-258/stream-bench/after.jsonl
+{"keyMed":20.5565185546875,"keyMax":36.4814453125,"typing":1160.623779296875,"toggleMed":16.5,"closed":16,"open":16,"keys":"20/20","toggles":4,"reply":[3465,4407],"load":"1.78 1.49 2.96"}
+{"keyMed":17.855712890625,"keyMax":75.40576171875,"typing":1171.557861328125,"toggleMed":34.5,"closed":16,"open":16,"keys":"20/20","toggles":4,"reply":[7349,8433],"load":"1.90 1.52 2.95"}
+{"keyMed":22.1900634765625,"keyMax":51.6123046875,"typing":1163.6123046875,"toggleMed":16,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[11259,12346],"load":"1.75 1.50 2.94"}
+{"keyMed":24.5537109375,"keyMax":62.588134765625,"typing":1164.669921875,"toggleMed":29.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[15301,16364],"load":"1.78 1.51 2.93"}
+{"keyMed":19.2974853515625,"keyMax":48.2451171875,"typing":1149.29638671875,"toggleMed":36,"closed":16,"open":16,"keys":"20/20","toggles":4,"reply":[3484,4489],"load":"1.67 1.54 2.84"}
+{"keyMed":19.88623046875,"keyMax":43.45751953125,"typing":1177.932861328125,"toggleMed":23.5,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[7444,8506],"load":"1.96 1.61 2.85"}
+{"keyMed":17.345703125,"keyMax":62.83642578125,"typing":1153.932861328125,"toggleMed":37.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[11471,12612],"load":"1.89 1.60 2.83"}
+{"keyMed":21.4088134765625,"keyMax":44.252197265625,"typing":1157.284423828125,"toggleMed":28,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[15591,16541],"load":"2.46 1.73 2.87"}
+{"keyMed":18.639892578125,"keyMax":52.18896484375,"typing":1153.282958984375,"toggleMed":28,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[3474,4407],"load":"1.78 1.66 2.76"}
+{"keyMed":20.0302734375,"keyMax":53.614013671875,"typing":1155.752197265625,"toggleMed":25.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[7338,8433],"load":"1.81 1.67 2.76"}
+{"keyMed":23.4873046875,"keyMax":46.62548828125,"typing":1169.62548828125,"toggleMed":26,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[11259,12359],"load":"1.84 1.68 2.75"}
+{"keyMed":18.6490478515625,"keyMax":51.63427734375,"typing":1168.253173828125,"toggleMed":22,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[15350,16423],"load":"1.85 1.69 2.74"}
+{"keyMed":17.929931640625,"keyMax":44.202392578125,"typing":1152.220947265625,"toggleMed":26,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[3478,4458],"load":"1.70 1.68 2.66"}
+{"keyMed":25.815673828125,"keyMax":68.72705078125,"typing":1154.979248046875,"toggleMed":25,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[7381,8497],"load":"1.82 1.70 2.66"}
+{"keyMed":21.1676025390625,"keyMax":44.177978515625,"typing":1170.365234375,"toggleMed":21,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[11447,12435],"load":"2.00 1.75 2.67"}
+{"keyMed":19.077880859375,"keyMax":59.944580078125,"typing":1163.09033203125,"toggleMed":12,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[15388,16479],"load":"2.16 1.79 2.67"}
+frame with the dialog closed, ms, median per run: median 17.0, range 16.0 to 17.0 (n=16)
+frame with the dialog open, ms, median per run: median 17.0, range 16.0 to 17.0 (n=16)
+key (X server) to frame, ms, median per run: median 20.0, range 17.3 to 25.8 (n=16)
+key (X server) to frame, ms, worst per run: median 51.6, range 36.5 to 75.4 (n=16)
+20 keys 60 ms apart, first sent to last drawn, ms: median 1161.9, range 1149.3 to 1177.9 (n=16)
+toggle to frame, ms, median per run: median 25.8, range 12.0 to 37.5 (n=16)
+load (1 min) per run: 1.78 1.90 1.75 1.78 1.67 1.96 1.89 2.46 1.78 1.81 1.84 1.85 1.70 1.82 2.00 2.16

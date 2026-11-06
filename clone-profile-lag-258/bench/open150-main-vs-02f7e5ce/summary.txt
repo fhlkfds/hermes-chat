@@ -1,0 +1,48 @@
+# /home/liam/.cache/hermes-258/open-final/before.jsonl
+{"open":504,"keyMed":9.5,"keyMax":17,"keyCount":20,"typing":36,"toggleMed":4,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":1,"toggles":1,"after":7},"load":"0.81 1.33 2.35"}
+{"open":499,"keyMed":10.5,"keyMax":19,"keyCount":20,"typing":33,"toggleMed":9,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"1.22 1.41 2.37"}
+{"open":507,"keyMed":6.5,"keyMax":16,"keyCount":20,"typing":26,"toggleMed":8.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"1.22 1.41 2.37"}
+{"open":497,"keyMed":8.5,"keyMax":17,"keyCount":20,"typing":28,"toggleMed":9,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"1.22 1.41 2.37"}
+{"open":506,"keyMed":8.5,"keyMax":16,"keyCount":20,"typing":32,"toggleMed":10,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":1,"toggles":1,"after":7},"load":"1.03 1.35 2.33"}
+{"open":500,"keyMed":9,"keyMax":17,"keyCount":20,"typing":32,"toggleMed":9.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"0.95 1.33 2.32"}
+{"open":495,"keyMed":7.5,"keyMax":18,"keyCount":20,"typing":48,"toggleMed":5.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"0.95 1.33 2.32"}
+{"open":502,"keyMed":9.5,"keyMax":17,"keyCount":20,"typing":31,"toggleMed":11.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"0.87 1.31 2.31"}
+{"open":516,"keyMed":10,"keyMax":17,"keyCount":20,"typing":50,"toggleMed":5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":1,"toggles":1,"after":7},"load":"0.99 1.31 2.29"}
+{"open":515,"keyMed":9.5,"keyMax":17,"keyCount":20,"typing":39,"toggleMed":8.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"1.07 1.32 2.29"}
+{"open":500,"keyMed":8.5,"keyMax":17,"keyCount":20,"typing":29,"toggleMed":11,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"1.07 1.32 2.29"}
+{"open":497,"keyMed":7,"keyMax":18,"keyCount":20,"typing":39,"toggleMed":12.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":4,"typing":0,"toggles":0,"after":0},"load":"0.98 1.30 2.28"}
+open (click to ready), ms: median 501.0, range 495.0 to 516.0 (n=12)
+key to frame, ms, median per run: median 8.8, range 6.5 to 10.5 (n=12)
+key to frame, ms, worst per run: median 17.0, range 16.0 to 19.0 (n=12)
+20 keys, first key to last frame, ms: median 32.5, range 26.0 to 50.0 (n=12)
+toggle to frame, ms, median per run: median 9.0, range 4.0 to 12.5 (n=12)
+longest frame while typing, ms: median 0.0, range 0.0 to 0.0 (n=12)
+requests during open: 4 4 4 4 4 4 4 4 4 4 4 4
+requests during typing: 1 0 0 0 1 0 0 0 1 0 0 0
+requests during toggles: 1 0 0 0 1 0 0 0 1 0 0 0
+requests during after: 7 0 0 0 7 0 0 0 7 0 0 0
+keys seen per run: 20 20 20 20 20 20 20 20 20 20 20 20; events without a frame: 0 0 0 0 0 0 0 0 0 0 0 0
+# /home/liam/.cache/hermes-258/open-final/after.jsonl
+{"open":185,"keyMed":8,"keyMax":16,"keyCount":20,"typing":36,"toggleMed":8.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":1,"toggles":1,"after":1},"load":"1.04 1.36 2.35"}
+{"open":184,"keyMed":8.5,"keyMax":18,"keyCount":20,"typing":36,"toggleMed":11.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.04 1.36 2.35"}
+{"open":184,"keyMed":8.5,"keyMax":17,"keyCount":20,"typing":32,"toggleMed":8.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.03 1.36 2.34"}
+{"open":193,"keyMed":9,"keyMax":19,"keyCount":20,"typing":37,"toggleMed":9,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.03 1.36 2.34"}
+{"open":186,"keyMed":9,"keyMax":18,"keyCount":20,"typing":46,"toggleMed":9,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":1,"toggles":1,"after":1},"load":"0.80 1.28 2.30"}
+{"open":181,"keyMed":7,"keyMax":17,"keyCount":20,"typing":28,"toggleMed":12,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"0.80 1.28 2.30"}
+{"open":190,"keyMed":9.5,"keyMax":17,"keyCount":20,"typing":35,"toggleMed":7,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"0.90 1.30 2.29"}
+{"open":182,"keyMed":8.5,"keyMax":19,"keyCount":20,"typing":38,"toggleMed":12.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"0.90 1.30 2.29"}
+{"open":189,"keyMed":9,"keyMax":17,"keyCount":20,"typing":47,"toggleMed":9,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":1,"toggles":1,"after":7},"load":"1.14 1.33 2.28"}
+{"open":183,"keyMed":9.5,"keyMax":18,"keyCount":20,"typing":55,"toggleMed":6.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.14 1.33 2.28"}
+{"open":192,"keyMed":7,"keyMax":17,"keyCount":20,"typing":32,"toggleMed":10.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.05 1.30 2.27"}
+{"open":190,"keyMed":9.5,"keyMax":17,"keyCount":20,"typing":39,"toggleMed":9.5,"toggleCount":4,"gapMax":0,"missing":0,"reqs":{"open":3,"typing":0,"toggles":0,"after":0},"load":"1.05 1.30 2.27"}
+open (click to ready), ms: median 185.5, range 181.0 to 193.0 (n=12)
+key to frame, ms, median per run: median 8.8, range 7.0 to 9.5 (n=12)
+key to frame, ms, worst per run: median 17.0, range 16.0 to 19.0 (n=12)
+20 keys, first key to last frame, ms: median 36.5, range 28.0 to 55.0 (n=12)
+toggle to frame, ms, median per run: median 9.0, range 6.5 to 12.5 (n=12)
+longest frame while typing, ms: median 0.0, range 0.0 to 0.0 (n=12)
+requests during open: 3 3 3 3 3 3 3 3 3 3 3 3
+requests during typing: 1 0 0 0 1 0 0 0 1 0 0 0
+requests during toggles: 1 0 0 0 1 0 0 0 1 0 0 0
+requests during after: 1 0 0 0 1 0 0 0 7 0 0 0
+keys seen per run: 20 20 20 20 20 20 20 20 20 20 20 20; events without a frame: 0 0 0 0 0 0 0 0 0 0 0 0

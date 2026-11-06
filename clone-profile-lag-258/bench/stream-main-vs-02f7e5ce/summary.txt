@@ -1,0 +1,32 @@
+# /home/liam/.cache/hermes-258/stream-final/before.jsonl
+{"keyMed":281.7247314453125,"keyMax":528.262939453125,"typing":1668.23388671875,"toggleMed":232,"closed":16,"open":60,"keys":"20/20","toggles":4,"reply":[3604,5292],"load":"1.04 1.29 2.25"}
+{"keyMed":267.38330078125,"keyMax":831.33447265625,"typing":1917.611572265625,"toggleMed":223.5,"closed":17,"open":48,"keys":"20/20","toggles":4,"reply":[8477,10284],"load":"1.46 1.37 2.26"}
+{"keyMed":585.8470458984375,"keyMax":1015.40625,"typing":2155.529296875,"toggleMed":131.5,"closed":17,"open":52,"keys":"20/20","toggles":4,"reply":[13558,15431],"load":"1.47 1.38 2.25"}
+{"keyMed":396.3275146484375,"keyMax":756.333251953125,"typing":1896.47802734375,"toggleMed":187,"closed":17,"open":38,"keys":"20/20","toggles":4,"reply":[18686,20462],"load":"1.40 1.36 2.24"}
+{"keyMed":173.9632568359375,"keyMax":315.3037109375,"typing":1426.522705078125,"toggleMed":240,"closed":17,"open":50,"keys":"20/20","toggles":4,"reply":[3604,5267],"load":"1.79 1.46 2.22"}
+{"keyMed":256.236572265625,"keyMax":695.405029296875,"typing":1835.37158203125,"toggleMed":163,"closed":16,"open":41,"keys":"20/20","toggles":4,"reply":[8457,10069],"load":"1.59 1.43 2.20"}
+{"keyMed":368.73193359375,"keyMax":608.15185546875,"typing":1716.32421875,"toggleMed":231.5,"closed":17,"open":56,"keys":"20/20","toggles":4,"reply":[13289,15034],"load":"1.57 1.43 2.19"}
+{"keyMed":593.9122314453125,"keyMax":894.34326171875,"typing":2011.573974609375,"toggleMed":166,"closed":17,"open":55,"keys":"20/20","toggles":4,"reply":[18257,20033],"load":"1.72 1.47 2.19"}
+frame with the dialog closed, ms, median per run: median 17.0, range 16.0 to 17.0 (n=8)
+frame with the dialog open, ms, median per run: median 51.0, range 38.0 to 60.0 (n=8)
+key (X server) to frame, ms, median per run: median 325.2, range 174.0 to 593.9 (n=8)
+key (X server) to frame, ms, worst per run: median 725.9, range 315.3 to 1015.4 (n=8)
+20 keys 60 ms apart, first sent to last drawn, ms: median 1865.9, range 1426.5 to 2155.5 (n=8)
+toggle to frame, ms, median per run: median 205.3, range 131.5 to 240.0 (n=8)
+load (1 min) per run: 1.04 1.46 1.47 1.40 1.79 1.59 1.57 1.72
+# /home/liam/.cache/hermes-258/stream-final/after.jsonl
+{"keyMed":24.5635986328125,"keyMax":47.86376953125,"typing":1181.9931640625,"toggleMed":18,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[3441,4407],"load":"1.46 1.38 2.23"}
+{"keyMed":29.4005126953125,"keyMax":70.32568359375,"typing":1158.548095703125,"toggleMed":28.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[7338,8374],"load":"1.54 1.40 2.23"}
+{"keyMed":20.4560546875,"keyMax":159.421142578125,"typing":1299.5341796875,"toggleMed":29.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[11259,12351],"load":"1.58 1.41 2.22"}
+{"keyMed":22.4810791015625,"keyMax":42.15869140625,"typing":1148.17041015625,"toggleMed":36.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[15308,16319],"load":"1.50 1.39 2.21"}
+{"keyMed":19.8212890625,"keyMax":35.379638671875,"typing":1159.4453125,"toggleMed":15,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[3441,4382],"load":"1.76 1.50 2.19"}
+{"keyMed":34.8240966796875,"keyMax":72.132080078125,"typing":1190.00244140625,"toggleMed":45.5,"closed":17,"open":17,"keys":"20/20","toggles":4,"reply":[7349,8533],"load":"1.62 1.47 2.18"}
+{"keyMed":22.2806396484375,"keyMax":38.4384765625,"typing":1153.32373046875,"toggleMed":17.5,"closed":16,"open":16,"keys":"20/20","toggles":4,"reply":[11724,12684],"load":"2.08 1.57 2.20"}
+{"keyMed":18.3299560546875,"keyMax":45.522216796875,"typing":1152.662353515625,"toggleMed":20.5,"closed":17,"open":16,"keys":"20/20","toggles":4,"reply":[15668,16768],"load":"1.76 1.52 2.18"}
+frame with the dialog closed, ms, median per run: median 17.0, range 16.0 to 17.0 (n=8)
+frame with the dialog open, ms, median per run: median 17.0, range 16.0 to 17.0 (n=8)
+key (X server) to frame, ms, median per run: median 22.4, range 18.3 to 34.8 (n=8)
+key (X server) to frame, ms, worst per run: median 46.7, range 35.4 to 159.4 (n=8)
+20 keys 60 ms apart, first sent to last drawn, ms: median 1159.0, range 1148.2 to 1299.5 (n=8)
+toggle to frame, ms, median per run: median 24.5, range 15.0 to 45.5 (n=8)
+load (1 min) per run: 1.46 1.54 1.58 1.50 1.76 1.62 2.08 1.76
