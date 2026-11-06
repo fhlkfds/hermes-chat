@@ -4,6 +4,8 @@
 // Sign-in: username `verify`, password `verify-pass`; anything else is 401 "Invalid credentials", as Hermes answers.
 // Every prompt gets a short streamed reply that starts `Stand-in reply to:` and is stored in the chat's history.
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
+// HV_LONG_REPLY=<n> answers a prompt that starts with `long` with n paragraphs of markdown (code, a list, a table),
+// three words every 40 ms, so a reply keeps streaming for minutes.
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
 import { createHash } from "node:crypto";
@@ -66,8 +68,15 @@ const dump = () => JSON.stringify({ sessions: server.sessions, transcripts: serv
 const save = () => stateFile && writeFileSync(stateFile, dump());
 save();
 
+const longParagraphs = Number(process.env.HV_LONG_REPLY ?? 0);
+const paragraph = (i: number) =>
+  `Step ${i}: check the **restic** lock, then the prune schedule. See [the docs](https://restic.readthedocs.io/en/stable/) and run:\n\n` +
+  `\`\`\`sh\nrestic -r sftp:backup@nas:/srv/restic unlock\nrestic -r sftp:backup@nas:/srv/restic check --read-data-subset=${i}/100\n\`\`\`\n\n` +
+  `- keep-daily 7\n- keep-weekly 4\n- keep-monthly ${i % 12}\n\n| host | size | when |\n|---|---|---|\n| nas | ${i * 3} GiB | 02:00 |\n| web | ${i} GiB | 03:00 |\n`;
+
 function replyTo(sessionId: string, prompt: string) {
-  const text = `Stand-in reply to: ${prompt.slice(0, 80)}`;
+  const long = longParagraphs > 0 && prompt.startsWith("long");
+  const text = long ? Array.from({ length: longParagraphs }, (_, i) => paragraph(i)).join("\n") : `Stand-in reply to: ${prompt.slice(0, 80)}`;
   server.event(sessionId, "message.start");
   const words = text.split(" ");
   let at = 0;
@@ -75,7 +84,7 @@ function replyTo(sessionId: string, prompt: string) {
     const from = at;
     at = Math.min(words.length, at + 3);
     server.event(sessionId, "message.delta", { text: words.slice(from, at).join(" ") + (at < words.length ? " " : "") });
-    if (at < words.length) return void setTimeout(step, 120);
+    if (at < words.length) return void setTimeout(step, long ? 40 : 120);
     const stored = server.runtime.get(sessionId);
     if (stored) server.storeMessage(stored, { role: "assistant", text });
     setTimeout(() => {

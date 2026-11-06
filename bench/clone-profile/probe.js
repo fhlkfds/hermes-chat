@@ -2,10 +2,11 @@
 // Each key in the dialog and each part checkbox click is timed from the event's timestamp to the frame after it
 // (requestAnimationFrame, then a message posted from there runs once that frame is drawn). The open is timed from
 // the click on Clone a profile… to the frame after the table shows with nothing still reading. `gaps` lists frames
-// that took longer than 34 ms.
+// that took longer than 34 ms. `frames(ms)` samples every frame interval for that long. `origin` turns the page's
+// times into wall-clock ms, to time a key from when xtype.py sent it.
 (() => {
   if (window.__lag) return "already";
-  const L = (window.__lag = { events: [], gaps: [], muts: 0, open: undefined });
+  const L = (window.__lag = { events: [], gaps: [], muts: 0, open: undefined, origin: performance.timeOrigin });
   const afterPaint = (cb) =>
     requestAnimationFrame(() => {
       const raf = performance.now();
@@ -42,5 +43,19 @@
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
+  L.frames = (ms) =>
+    new Promise((done) => {
+      const xs = [];
+      let prev = performance.now();
+      const t0 = prev;
+      const step = (t) => {
+        xs.push(t - prev);
+        prev = t;
+        if (t - t0 < ms) return requestAnimationFrame(step);
+        xs.sort((a, b) => a - b);
+        done({ n: xs.length, median: xs[xs.length >> 1], p90: xs[Math.floor(xs.length * 0.9)], max: xs[xs.length - 1] });
+      };
+      requestAnimationFrame(step);
+    });
   return "ok";
 })()
