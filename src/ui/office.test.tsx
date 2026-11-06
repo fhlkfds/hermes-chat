@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The agent office (ADR 0077), from what a fake Hermes reports through the real transport: the desks and the list show
-// the same agents in the same states with the same actions, through a reply's run, Approval, failures, completion and a
+// The agent office (ADR 0077, ADR 0083), from what a fake Hermes reports through the real transport: the desks, the list
+// and the scene show the same agents in the same states with the same actions, through a reply's run, Approval, failures, completion and a
 // reconnect. Also its keyboard and list-only use, reduced motion, and that it draws and moves nothing while hidden.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -43,7 +43,7 @@ function roomsOf(hermes: Hermes): { rooms: Room[]; connected: boolean } {
 }
 
 /** Every desk's label, and where pressing each one goes, in one view. */
-function seen({ rooms, connected }: { rooms: Room[]; connected: boolean }, view: "desks" | "list") {
+function seen({ rooms, connected }: { rooms: Room[]; connected: boolean }, view: "desks" | "list" | "scene") {
   const onOpen = vi.fn();
   const { unmount } = render(<Office rooms={rooms} view={view} onView={() => {}} server="hermes" profile="default" connected={connected} onOpen={onOpen} onClose={() => {}} />);
   const desks = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-desk]"));
@@ -54,11 +54,12 @@ function seen({ rooms, connected }: { rooms: Room[]; connected: boolean }, view:
   return { labels, opened };
 }
 
-/** Both views agree, and each desk's state as its label says it, by name. */
+/** Every view agrees, and each desk's state as its label says it, by name. */
 function states(hermes: Hermes): string[] {
   const now = roomsOf(hermes);
   const desks = seen(now, "desks");
   expect(seen(now, "list")).toEqual(desks);
+  expect(seen(now, "scene")).toEqual(desks);
   return desks.labels.map((l) => l.split(", in “")[0].replace(/, started by “[^”]*”$/, ""));
 }
 
@@ -131,6 +132,7 @@ describe("Desks and the list", () => {
     expect(desks.labels).toHaveLength(10 * (SUBAGENTS_MAX + 1));
     expect(new Set(desks.opened).size).toBe(desks.opened.length);
     expect(seen({ rooms: officeRooms({ entries, shown: () => true, chats, profile: "default", connected: true }), connected: true }, "list")).toEqual(desks);
+    expect(seen({ rooms: officeRooms({ entries, shown: () => true, chats, profile: "default", connected: true }), connected: true }, "scene")).toEqual(desks);
   });
 
   it("keeps a desk only Hermes's own completion marks finished", async () => {
@@ -178,7 +180,7 @@ function sample(): Room[] {
   ];
 }
 
-function office(view: "desks" | "list", over: Partial<Parameters<typeof Office>[0]> = {}) {
+function office(view: "desks" | "list" | "scene", over: Partial<Parameters<typeof Office>[0]> = {}) {
   const onOpen = vi.fn();
   const onClose = vi.fn();
   const onView = vi.fn();
@@ -188,7 +190,7 @@ function office(view: "desks" | "list", over: Partial<Parameters<typeof Office>[
 }
 
 describe("The office from the keyboard", () => {
-  it.each(["desks", "list"] as const)("moves between every desk with the arrows, Home and End, and opens one with Enter (%s)", async (view) => {
+  it.each(["desks", "list", "scene"] as const)("moves between every desk with the arrows, Home and End, and opens one with Enter (%s)", async (view) => {
     const { onOpen, onClose, desks, user } = office(view);
     expect(document.activeElement).toBe(desks()[0]);
     await user.keyboard("{ArrowDown}");
@@ -228,9 +230,61 @@ describe("The office from the keyboard", () => {
     expect(labels[0]).toBe("The chat's reply, Waiting for your approval, in “Deploy plan”, profile work. A command is waiting for your approval.");
     await user.click(screen.getByRole("button", { name: "List" }));
     expect(onView).toHaveBeenCalledWith("list");
+    await user.click(screen.getByRole("button", { name: "Scene" }));
+    expect(onView).toHaveBeenCalledWith("scene");
+    for (const view of ["list", "scene"] as const) {
+      cleanup();
+      office(view);
+      expect(Array.from(document.querySelectorAll("[data-desk]")).map((d) => d.getAttribute("aria-label"))).toEqual(labels);
+    }
+  });
+});
+
+describe("The scene", () => {
+  /** Each character in reading order: its desk's name, pose, and whether it moves, from what the scene draws. */
+  const cast = () =>
+    Array.from(document.querySelectorAll<HTMLElement>(".office-scene [data-desk]")).map(
+      (d) => `${d.querySelector(".desk-name")!.textContent} ${d.dataset.pose}${d.hasAttribute("data-moving") ? " moving" : ""}${d.classList.contains("is-stale") ? " stale" : ""}`,
+    );
+
+  it("seats a chat's two subagents beside its reply, all typing, then poses each one as Hermes reports it", async () => {
+    vi.useFakeTimers();
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe);
+    running.push(hermes);
+    const id = await hermes.newChat();
+    await hermes.send(id, "Audit the repo");
+    const runtime = server.runtimeIdOf(id)!;
+    const show = () => render(<Office {...roomsOf(hermes)} view="scene" onView={() => {}} server="hermes" profile="default" onOpen={() => {}} onClose={() => {}} />);
+
+    server.event(runtime, "message.start");
+    server.event(runtime, "subagent.start", who("sa-auth", "Read the auth code", { delegation_id: "d1" }));
+    server.event(runtime, "subagent.start", who("sa-tests", "Read the tests", { delegation_id: "d1", task_index: 1, task_count: 2 }));
+    show();
+    expect(screen.getAllByRole("region")).toHaveLength(1);
+    expect(cast()).toEqual(["The chat's reply typing moving", "Read the auth code typing moving", "Read the tests typing moving"]);
     cleanup();
-    office("list");
-    expect(Array.from(document.querySelectorAll("[data-desk]")).map((d) => d.getAttribute("aria-label"))).toEqual(labels);
+
+    server.event(runtime, "subagent.complete", who("sa-tests", "Read the tests", { delegation_id: "d1", task_index: 1, task_count: 2, status: "interrupted" }));
+    show();
+    expect(cast()).toEqual(["The chat's reply typing moving", "Read the auth code typing moving", "Read the tests idle"]);
+    expect(screen.getByRole("button", { name: /^Read the tests, Stopped, in “/ })).toBeTruthy();
+    cleanup();
+
+    server.askApproval(runtime);
+    server.event(runtime, "subagent.start", who("sa-expiry", "Check token expiry", { parent_id: "sa-auth", depth: 1 }));
+    server.event(runtime, "subagent.complete", who("sa-expiry", "Check token expiry", { parent_id: "sa-auth", depth: 1, status: "completed" }));
+    server.event(runtime, "subagent.complete", who("sa-auth", "Read the auth code", { delegation_id: "d1", status: "failed" }));
+    await hermes.idle();
+    show();
+    expect(cast()).toEqual(["The chat's reply hand-up", "Read the auth code slumped", "Check token expiry done", "Read the tests idle"]);
+    expect(screen.getByRole("button", { name: /^Check token expiry, Finished, started by “Read the auth code”/ })).toBeTruthy();
+    cleanup();
+
+    server.drop();
+    await hermes.idle().catch(() => {});
+    show();
+    expect(cast()).toEqual(["The chat's reply hand-up stale", "Read the auth code slumped stale", "Check token expiry done stale", "Read the tests idle stale"]);
   });
 });
 
@@ -250,10 +304,24 @@ describe("Motion", () => {
     expect(motion()).toBe("still");
   });
 
+  it("moves only a running, current character in the scene, and none when the system asks for reduced motion", () => {
+    const rooms = sample();
+    rooms[1].desks.push({ key: "default audit c", agent: { kind: "subagent", id: "c" as never, depth: 0 }, name: "Old run", state: "running", stale: "Not connected to Hermes: as last seen." });
+    const moving = () => Array.from(document.querySelectorAll("[data-desk][data-moving]")).map((d) => d.getAttribute("data-desk"));
+    prefersReduced(false);
+    office("scene", { rooms });
+    expect(moving()).toEqual(["default audit reply", "default audit a"]);
+    cleanup();
+    prefersReduced(true);
+    office("scene", { rooms });
+    expect(document.querySelectorAll("[data-desk]")).toHaveLength(5);
+    expect(moving()).toEqual([]);
+  });
+
 });
 
 describe("A desk that goes while it has focus", () => {
-  it.each(["desks", "list"] as const)("leaves focus on the desk now in its place, where the keys still work (%s)", async (view) => {
+  it.each(["desks", "list", "scene"] as const)("leaves focus on the desk now in its place, where the keys still work (%s)", async (view) => {
     const onClose = vi.fn();
     const user = userEvent.setup();
     const props = { view, onView: () => {}, server: "hermes", profile: "default", connected: true, onOpen: () => {}, onClose };
@@ -269,7 +337,7 @@ describe("A desk that goes while it has focus", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it.each(["desks", "list"] as const)("follows the desk as the desks before it go, so the one after it takes its place (%s)", (view) => {
+  it.each(["desks", "list", "scene"] as const)("follows the desk as the desks before it go, so the one after it takes its place (%s)", (view) => {
     const desk = (id: string) => ({ key: `default audit ${id}`, agent: { kind: "subagent" as const, id: id as never, depth: 0 }, name: `Task ${id}`, state: "running" as const });
     const audit = (ids: string[]): Room => ({ key: "default audit", profile: "default", chatId: "audit", title: "Audit", desks: ids.map(desk) });
     const first = sample()[0];
@@ -392,6 +460,9 @@ describe("The office in the app", () => {
     await userEvent.setup().click(officeButton()!);
     expect(document.querySelector(".office-list")).toBeTruthy();
     expect(document.querySelector(".office-floor")).toBeNull();
+    act(() => void setUIPrefs({ agentOffice: "scene" }));
+    expect(document.querySelector(".office-scene [data-desk]")).toBeTruthy();
+    expect(document.querySelector(".office-list")).toBeNull();
     act(() => void setUIPrefs({ agentOffice: "off" }));
     expect(officeButton()).toBeNull();
     expect(document.querySelector(".office")).toBeNull();

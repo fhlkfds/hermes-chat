@@ -1,4 +1,4 @@
-// How the agent office shows (ADR 0077): as desks, as a list, or not at all. Kept in the display preferences
+// How the agent office shows (ADR 0077, ADR 0083): as desks, as a list, as a scene, or not at all. Kept in the display preferences
 // (uiPrefs.ts), on this computer only. Drawn as a card of rows (ADR 0059).
 import { useSyncExternalStore } from "react";
 import { getUIPrefs, setUIPrefs, subscribe, type OfficeView } from "../hermes/uiPrefs";
@@ -7,6 +7,7 @@ import { SettingRow, SettingsSection } from "./SettingRows";
 const CHOICES: { value: OfficeView; label: string }[] = [
   { value: "desks", label: "Desks" },
   { value: "list", label: "List" },
+  { value: "scene", label: "Scene" },
   { value: "off", label: "Off" },
 ];
 
@@ -21,7 +22,8 @@ export function OfficeSettings() {
         more={
           <p>
             <b>Desks</b> draws a room for each chat and a desk for each agent in it. <b>List</b> shows the same agents as rows,
-            with the same actions. The office only shows what the Inbox and each chat's Subagents panel already know, and it
+            with the same actions. <b>Scene</b> draws each agent as a character at a desk in one shared room, posed for
+            what it is doing, with each chat's subagents beside its reply. The office only shows what the Inbox and each chat's Subagents panel already know, and it
             never approves or starts anything. Nothing moves while it is closed, the window is hidden, or the system asks
             for reduced motion.
           </p>

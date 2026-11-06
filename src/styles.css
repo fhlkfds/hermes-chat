@@ -2330,6 +2330,60 @@ label.memory-pick { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .office-floor .desk-typing i { animation: none; }
 }
+/* The office as a scene (Office.tsx, ADR 0083): one shared room, each chat's team on its own rug, each agent a small
+   robot at a desk. Its pose says what it does, the state's tint lights its eyes, antenna and laptop, and the words under
+   it say the same. The robots keep their own colors in either theme; the room, rugs and desks follow the theme. A
+   character as last seen is greyed, its seat dashed, and it never moves. */
+.office-scene {
+  flex: 1; min-height: 0; overflow-y: auto; margin: 0 12px 12px; padding: 12px; border-radius: 10px;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 12px;
+  border: 1px solid var(--line-2);
+  background: repeating-linear-gradient(0deg, transparent 0 35px, var(--line) 35px 36px), var(--sidebar);
+}
+.scene-team { flex: none; max-width: 100%; padding: 8px 10px 10px; border-radius: 14px; background: var(--raised); box-shadow: 0 1px 0 var(--line-2); }
+.scene-team .office-room-name { margin-bottom: 4px; }
+.scene-seats { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.seat {
+  --seat-tint: var(--faint);
+  --seat-body: var(--muted);
+  width: 118px; height: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 6px 6px;
+  border-radius: 10px; border: 1px solid transparent; background: none; text-align: left;
+}
+.seat:hover { background: var(--raised-2); border-color: var(--line-3); }
+.seat.is-reply { --seat-body: var(--accent); }
+.seat.state-running, .seat.state-unread { --seat-tint: var(--accent); }
+.seat.state-approval, .seat.state-uncertain { --seat-tint: var(--warn); }
+.seat.state-failed { --seat-tint: var(--bad); }
+.seat.state-completed { --seat-tint: var(--ok); }
+.seat-stage { position: relative; display: block; }
+.seat-figure { display: block; width: 100%; height: auto; }
+.seat-badge {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--seat-tint); background: var(--bg); border: 1px solid var(--line-2);
+}
+.seat .desk-state { color: var(--seat-tint); }
+.seat.state-stopped .desk-state, .seat.state-ended .desk-state, .seat.state-idle .desk-state, .seat.state-unknown .desk-state, .seat.state-queued .desk-state { color: var(--muted); }
+.sc-chair { fill: var(--raised-3); }
+.sc-body { fill: var(--seat-body); }
+.sc-arm { fill: none; stroke: var(--seat-body); stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+.sc-head { fill: #cdd2db; stroke: #7d8492; stroke-width: 0.8; }
+.sc-visor { fill: #262a33; }
+.sc-antenna { stroke: #7d8492; stroke-width: 1.4; stroke-linecap: round; }
+.sc-mouth { fill: none; stroke: #4b515d; stroke-width: 1.2; stroke-linecap: round; }
+.sc-light { fill: var(--seat-tint); }
+.sc-cross { fill: none; stroke: var(--seat-tint); stroke-width: 1; stroke-linecap: round; }
+.sc-lid { fill: #4b515d; }
+.sc-desk { fill: color-mix(in srgb, var(--text) 30%, var(--raised)); }
+.sc-desk-front { fill: color-mix(in srgb, var(--text) 16%, var(--raised)); }
+.seat.is-stale { border-style: dashed; border-color: var(--line-3); --seat-tint: var(--faint); }
+.seat.is-stale .seat-figure { filter: grayscale(1); opacity: 0.5; }
+.seat.is-stale .desk-state { color: var(--muted); font-style: italic; }
+.seat[data-moving] .sc-hand { animation: seat-typing 0.45s ease-in-out infinite alternate; }
+.seat[data-moving] .sc-hand + .sc-hand { animation-delay: -0.22s; }
+@keyframes seat-typing { to { transform: translateY(-1.6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .seat .sc-hand { animation: none; }
+}
 .office-list-room { list-style: none; }
 .office-list-room > ul { list-style: none; margin: 0; padding: 0; }
 .office-list-room .office-room-name { margin: 0; padding: 10px 8px 2px; }

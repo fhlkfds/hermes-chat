@@ -1,10 +1,12 @@
-// The agent office (ADR 0077): every agent at work on this connection as a desk, in one room per chat, or the same desks
-// as a list. It opens from the rail beside the chat list, like the Inbox. A desk opens what it stands for: the chat's
-// reply opens the chat, at its Approval card or failure, and a subagent opens in the chat's Subagents panel. Nothing here
-// answers, approves, retries or starts anything. App draws it only while it is open and the window can be seen.
+// The agent office (ADR 0077): every agent at work on this connection as a desk, in one room per chat, the same desks
+// as a list, or each agent as a character at its desk in one shared room (ADR 0083). It opens from the rail beside the
+// chat list, like the Inbox. A desk opens what it stands for: the chat's reply opens the chat, at its Approval card or
+// failure, and a subagent opens in the chat's Subagents panel. Nothing here answers, approves, retries or starts
+// anything. App draws it only while it is open and the window can be seen.
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type FocusEvent, type KeyboardEvent } from "react";
-import { CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleHelp, CircleStop, Clock, Coffee, LayoutGrid, List, Loader, ShieldAlert, X } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleHelp, CircleStop, Clock, Coffee, LayoutGrid, List, Loader, ShieldAlert, Users, X } from "lucide-react";
 import { officeTally, type Desk, type DeskState, type Room } from "../hermes/office";
+import type { OfficeView } from "../hermes/uiPrefs";
 import { composing, relTime, useReturnFocus } from "./bits";
 
 export const STATE_LABEL: Record<DeskState, string> = {
@@ -75,8 +77,8 @@ export function Office({
   onClose,
 }: {
   rooms: Room[];
-  view: "desks" | "list";
-  onView: (view: "desks" | "list") => void;
+  view: Exclude<OfficeView, "off">;
+  onView: (view: Exclude<OfficeView, "off">) => void;
   server: string;
   profile: string;
   connected: boolean;
@@ -169,6 +171,9 @@ export function Office({
           <button type="button" aria-pressed={view === "list"} onClick={() => onView("list")}>
             <List size={13} aria-hidden /> List
           </button>
+          <button type="button" aria-pressed={view === "scene"} onClick={() => onView("scene")}>
+            <Users size={13} aria-hidden /> Scene
+          </button>
         </div>
         <button className="icon-btn office-close" title="Close the office (Escape)" aria-label="Close the office" onClick={onClose}>
           <X size={16} />
@@ -197,6 +202,12 @@ export function Office({
         <div className="office-floor" data-motion={motion}>
           {rooms.map((r) => (
             <RoomDesks key={r.key} room={r} profile={profile} onOpen={open} />
+          ))}
+        </div>
+      ) : view === "scene" ? (
+        <div className="office-scene" data-motion={motion}>
+          {rooms.map((r) => (
+            <RoomScene key={r.key} room={r} profile={profile} moves={motion === "on"} onOpen={open} />
           ))}
         </div>
       ) : (
@@ -291,5 +302,117 @@ function RoomList({ room, profile, onOpen }: { room: Room; profile: string; onOp
         })}
       </ul>
     </li>
+  );
+}
+
+/** How a character sits for its desk's state: at work, asking the owner, done, failed, or not at work. */
+type Pose = "typing" | "hand-up" | "done" | "slumped" | "idle";
+
+const POSE: Record<DeskState, Pose> = {
+  queued: "idle",
+  running: "typing",
+  approval: "hand-up",
+  uncertain: "hand-up",
+  failed: "slumped",
+  completed: "done",
+  unread: "idle",
+  stopped: "idle",
+  ended: "idle",
+  unknown: "idle",
+  idle: "idle",
+};
+
+/** Each pose as points in the character's 96 × 72 drawing: the two arms from the shoulders, the hands, the head. */
+const FIGURE: Record<Pose, { arms: [string, string]; hands: [number, number][]; head: "ahead" | "down" | "on-desk"; armsBehind?: true; smile?: true }> = {
+  typing: { arms: ["37,36 33,45 40,46", "59,36 63,45 56,46"], hands: [[40, 46], [56, 46]], head: "down" },
+  "hand-up": { arms: ["37,36 33,45 40,46", "59,36 67,26 67,13"], hands: [[40, 46], [67, 11]], head: "ahead" },
+  done: { arms: ["37,36 32,25 41,16", "59,36 64,25 55,16"], hands: [], head: "ahead", armsBehind: true, smile: true },
+  slumped: { arms: ["37,36 35,45 47,46", "59,36 61,45 49,46"], hands: [], head: "on-desk" },
+  idle: { arms: ["37,36 35,47", "59,36 61,47"], hands: [], head: "ahead" },
+};
+
+function Character({ pose }: { pose: Pose }) {
+  const f = FIGURE[pose];
+  const arms = f.arms.map((points) => <polyline key={points} className="sc-arm" points={points} />);
+  const visorY = f.head === "down" ? 18 : 16.5;
+  return (
+    <svg className="seat-figure" viewBox="0 0 96 72" aria-hidden focusable="false">
+      <rect className="sc-chair" x="32" y="22" width="32" height="30" rx="5" />
+      {f.armsBehind && arms}
+      <path className="sc-body" d="M35 48V38a10 10 0 0 1 10-8h6a10 10 0 0 1 10 8v10z" />
+      {f.head !== "on-desk" && (
+        <g>
+          <line className="sc-antenna" x1="48" y1="11.5" x2="48" y2="7" />
+          <circle className="sc-light" cx="48" cy="6" r="2" />
+          <rect className="sc-head" x="39.5" y="11.5" width="17" height="16" rx="5" />
+          <rect className="sc-visor" x="41.5" y={visorY} width="13" height="6" rx="3" />
+          <circle className="sc-light" cx="45.5" cy={visorY + 3} r="1.2" />
+          <circle className="sc-light" cx="50.5" cy={visorY + 3} r="1.2" />
+          {f.smile && <path className="sc-mouth" d="M45.5 24.5q2.5 1.6 5 0" />}
+        </g>
+      )}
+      <path className="sc-lid" d="M38 48l2-14h16l2 14z" />
+      <circle className="sc-light" cx="48" cy="41" r="1.6" />
+      {!f.armsBehind && arms}
+      {f.hands.map(([x, y], i) => (
+        <circle key={i} className="sc-head sc-hand" cx={x} cy={y} r="2.6" />
+      ))}
+      {f.head === "on-desk" && (
+        <g>
+          <line className="sc-antenna" x1="57" y1="41" x2="62" y2="45" />
+          <circle className="sc-light" cx="63" cy="46" r="2" />
+          <rect className="sc-head" x="38" y="35" width="20" height="13" rx="5" />
+          <rect className="sc-visor" x="41" y="40" width="14" height="5" rx="2.5" />
+          <path className="sc-cross" d="M44 41.5l2 2m0-2l-2 2M50 41.5l2 2m0-2l-2 2" />
+        </g>
+      )}
+      <rect className="sc-desk" x="8" y="48" width="80" height="5" rx="1.5" />
+      <rect className="sc-desk-front" x="13" y="53" width="70" height="17" rx="1" />
+    </svg>
+  );
+}
+
+/**
+ * A chat's team as characters at their desks: its reply first, then each subagent after the one that started it, so a
+ * team sits together. `moves`: the system allows motion; then only a running, current character types.
+ */
+function RoomScene({ room, profile, moves, onOpen }: { room: Room; profile: string; moves: boolean; onOpen: (room: Room, desk: Desk) => void }) {
+  const nameId = useId();
+  return (
+    <section className="scene-team" aria-labelledby={nameId}>
+      <RoomName room={room} profile={profile} id={nameId} />
+      <ul className="scene-seats">
+        {room.desks.map((d) => {
+          const Icon = STATE_ICON[d.state];
+          const parent = parentOf(room, d);
+          const pose = POSE[d.state];
+          return (
+            <li key={d.key}>
+              <button
+                className={`seat state-${d.state}${d.stale ? " is-stale" : ""}${d.agent.kind === "reply" ? " is-reply" : ""}`}
+                data-desk={d.key}
+                data-pose={pose}
+                data-moving={moves && d.state === "running" && !d.stale ? "" : undefined}
+                aria-label={deskLabel(room, d, profile)}
+                onClick={() => onOpen(room, d)}
+              >
+                <span className="seat-stage" aria-hidden>
+                  <Character pose={pose} />
+                  <span className="seat-badge">
+                    <Icon size={12} />
+                  </span>
+                </span>
+                <span className="desk-name">{d.name}</span>
+                <span className="desk-state">
+                  {STATE_LABEL[d.state]}
+                  {d.stale && " · as last seen"}
+                </span>
+                {parent && <span className="desk-under">for {parent.name}</span>}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
