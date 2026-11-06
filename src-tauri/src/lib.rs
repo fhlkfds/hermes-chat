@@ -17,6 +17,7 @@ pub mod terminal;
 pub mod tray;
 pub mod transport;
 pub mod tunnel;
+pub mod page_view;
 pub mod web_page;
 pub mod update;
 
@@ -1117,6 +1118,24 @@ async fn preview_open_in_browser(url: String) -> Result<(), String> {
     web_page::open_in_browser(&url).await
 }
 
+/// Shows a web page in the Preview's own WebKitGTK view (page_view.rs, ADR 0081). `key`: this page's name from now on.
+#[tauri::command]
+fn preview_page_open(app: tauri::AppHandle, key: String, url: String, on_event: Channel<page_view::PageEvent>) -> Result<(), String> {
+    page_view::open(&app, key, &url, on_event)
+}
+
+/// Shows the Preview's page at `placement`, or hides it (`None`).
+#[tauri::command]
+fn preview_page_place(app: tauri::AppHandle, key: String, placement: Option<page_view::Placement>) {
+    page_view::place(&app, key, placement)
+}
+
+/// Hides the Preview's page and stops it.
+#[tauri::command]
+fn preview_page_close(app: tauri::AppHandle, key: String) {
+    page_view::close(&app, key)
+}
+
 #[tauri::command]
 async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     notify::show(app, title, body).await
@@ -1384,6 +1403,9 @@ pub fn run(screenshot: bool, link: Option<String>) {
             preview_read_local_image,
             preview_check_web,
             preview_open_in_browser,
+            preview_page_open,
+            preview_page_place,
+            preview_page_close,
             preview_server_open,
             preview_server_close,
             notify_desktop,

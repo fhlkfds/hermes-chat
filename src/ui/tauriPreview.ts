@@ -29,11 +29,38 @@ export type WebPages = {
   check(url: string): Promise<Framing>;
   /** Opens the page in the owner's browser. Rejects with why it couldn't. */
   openInBrowser(url: string): Promise<void>;
+  /** Where there is one (Linux), the Preview's own page view, which takes the frame's place (ADR 0081). */
+  native?: NativePages;
+};
+
+/** A rectangle in the window's CSS pixels. */
+export type Rect = { x: number; y: number; width: number; height: number };
+/** Where a native page shows, and the parts of that the app's own layers cover, which the page leaves bare. */
+export type Placement = { rect: Rect; holes: Rect[] };
+/** What a native page says: its first response came, so it has something to show; or it couldn't load. */
+export type PageEvent = { kind: "shown" } | { kind: "failed"; message: string };
+/** A page open in the native view. Hidden until placed; `close` hides and stops it. */
+export type NativePage = { place(placement: Placement | null): void; close(): void };
+export type NativePages = { open(url: string, onEvent: (e: PageEvent) => void): NativePage };
+
+export const tauriNativePages: NativePages = {
+  open: (url, onEvent) => {
+    // The page's name in Rust, so a page that went away can't move or close the next one.
+    const key = crypto.randomUUID();
+    const events = new Channel<PageEvent>();
+    events.onmessage = onEvent;
+    invoke("preview_page_open", { key, url, onEvent: events }).catch((e) => onEvent({ kind: "failed", message: String(e) }));
+    return {
+      place: (placement) => void invoke("preview_page_place", { key, placement }).catch(() => {}),
+      close: () => void invoke("preview_page_close", { key }).catch(() => {}),
+    };
+  },
 };
 
 export const tauriWebPages: WebPages = {
   check: (url) => invoke<Framing>("preview_check_web", { url, userAgent: navigator.userAgent }).catch(asError),
   openInBrowser: (url) => invoke<void>("preview_open_in_browser", { url }).catch(asError),
+  ...(/\bLinux\b/.test(navigator.userAgent) && { native: tauriNativePages }),
 };
 
 /**
