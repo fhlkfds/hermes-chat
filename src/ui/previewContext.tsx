@@ -2,7 +2,7 @@
 // benchmark harness, a link still never navigates the app's own window.
 import { createContext, useContext, type ReactNode } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { checkWebUrl, loopbackOf, type PreviewTarget } from "../hermes/preview";
+import { linkTarget, type PreviewTarget } from "../hermes/preview";
 
 export const PreviewContext = createContext<((t: PreviewTarget) => void) | undefined>(undefined);
 
@@ -15,8 +15,8 @@ export const useOpenPreview = () => useContext(PreviewContext);
  */
 export function PreviewLink({ href, children, title }: { href?: string; children?: ReactNode; title?: string }) {
   const open = useOpenPreview();
-  const web = href ? checkWebUrl(href, location.origin) : undefined;
-  const url = web && "url" in web ? web.url : undefined;
+  const link = linkTarget(href, location.origin);
+  const url = link && link.kind !== "elsewhere" ? link.url : undefined;
   const follow = (e: ReactMouseEvent) => {
     if (href?.startsWith("#") && e.type === "click") return;
     e.preventDefault();
@@ -25,7 +25,7 @@ export function PreviewLink({ href, children, title }: { href?: string; children
   return (
     <a
       href={href}
-      title={title ?? (url ? `${url}\nOpens in the preview${loopbackOf(url) ? ", from the Hermes server" : ""}` : href)}
+      title={title ?? (url ? `${url}\nOpens in the preview${link?.kind === "serverPage" ? ", from the Hermes server" : ""}` : href)}
       onClick={follow}
       onAuxClick={follow}
       rel="noreferrer"

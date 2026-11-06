@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect } from "./transport";
-import { checkWebUrl, fenced, loopbackOf, pageOn, parseAddress, readLocalFile, sandboxedHtml, toolTargets, tunnelUrl, withoutBidi, type LocalText } from "./preview";
+import { checkWebUrl, fenced, linkTarget, loopbackOf, pageOn, parseAddress, readLocalFile, sandboxedHtml, toolTargets, tunnelUrl, withoutBidi, type LinkTarget, type LocalText } from "./preview";
 import type { Item } from "./model";
 
 const APP = "tauri://localhost";
@@ -70,6 +70,24 @@ describe("Pages on a loopback address (issue #171)", () => {
     for (const raw of ["http://localhost:41234/", "https://evil.example/", "http://127.0.0.1/", "javascript:alert(1)", "http://u:p@127.0.0.1:4/"])
       expect(tunnelUrl(raw, APP), raw).toBeUndefined();
     expect(tunnelUrl("http://127.0.0.1:1420/", "http://127.0.0.1:1420")).toBeUndefined();
+  });
+
+  it("sorts a link into a page, a server page, or one that can only be copied", () => {
+    const cases: [string | undefined, LinkTarget | undefined][] = [
+      ["https://docs.example.com/crash", { kind: "page", url: "https://docs.example.com/crash" }],
+      ["https://Bücher.example", { kind: "page", url: "https://xn--bcher-kva.example/" }],
+      ["http://localhost:5173/app?v=2", { kind: "serverPage", url: "http://localhost:5173/app?v=2" }],
+      ["http://127.0.0.1:8000", { kind: "serverPage", url: "http://127.0.0.1:8000/" }],
+      ["mailto:x@example.com", { kind: "elsewhere", href: "mailto:x@example.com" }],
+      ["docs/a.md", { kind: "elsewhere", href: "docs/a.md" }],
+      ["file:///etc/passwd", { kind: "elsewhere", href: "file:///etc/passwd" }],
+      ["https://u:p@example.com/", { kind: "elsewhere", href: "https://u:p@example.com/" }],
+      ["#user-content-fn-1", undefined],
+      ["  ", undefined],
+      [undefined, undefined],
+    ];
+    for (const [href, want] of cases) expect(linkTarget(href, APP), href).toEqual(want);
+    expect(linkTarget("http://127.0.0.1:1420/", "http://127.0.0.1:1420")).toEqual({ kind: "elsewhere", href: "http://127.0.0.1:1420/" });
   });
 
   it("takes a typed localhost:port without its scheme, and names a scheme it refuses", () => {

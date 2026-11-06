@@ -127,6 +127,23 @@ export function loopbackOf(raw: string): { at: string } | undefined {
   return { at: `${u.hostname}:${u.port || (u.protocol === "https:" ? "443" : "80")}` };
 }
 
+/**
+ * What a link points at. `page`: an http(s) page `checkWebUrl` passed, which the Preview and this computer's browser
+ * both open. `serverPage`: one on a loopback address, the Hermes server's, which only the Preview's SSH tunnel reaches
+ * (ADR 0052). `elsewhere`: anything the Preview won't load (`mailto:`, a relative path, `file:`, credentials, the app's
+ * own origin), which opens nowhere and can only be copied. `url` is the checked address that opens; `href` is the
+ * link's address as written.
+ */
+export type LinkTarget = { kind: "page"; url: string } | { kind: "serverPage"; url: string } | { kind: "elsewhere"; href: string };
+
+/** A link's `href` as a `LinkTarget`. Undefined for none, an empty one or a same-page `#anchor`, which go nowhere else. */
+export function linkTarget(href: string | undefined, appOrigin: string): LinkTarget | undefined {
+  if (!href?.trim() || href.startsWith("#")) return undefined;
+  const web = checkWebUrl(href, appOrigin);
+  if (!("url" in web)) return { kind: "elsewhere", href };
+  return { kind: loopbackOf(web.url) ? "serverPage" : "page", url: web.url };
+}
+
 /** Where a web target loads from: `server` or `local` for a loopback address, undefined for any other page. */
 export const pageOn = (t: Extract<PreviewTarget, { kind: "web" }>): PageOn | undefined => (loopbackOf(t.url) ? (t.on ?? "server") : undefined);
 
