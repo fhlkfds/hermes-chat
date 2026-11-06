@@ -457,6 +457,14 @@ Attachments.
 A newer version of Hermes Chat itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app. Drafts, unsent and uncertain messages, and queues are kept across the restart, for every connection, profile and chat. Files attached in a composer and a second pane aren't. A saved copy that can't be put back is set aside in a file of its own and never put back automatically (ADR 0060).
 _Avoid_: upgrade (pacman's word, for the package step only)
 
+**Release**:
+A signed standalone AppImage, its signature and the `latest.json` manifest that names it, built from `src-tauri/tauri.release.conf.json`. A dry run builds and checks one with a throwaway key and keeps it as a workflow artifact. Only a published release, served at the update endpoint, reaches installed copies (ADR 0075).
+_Avoid_: build (any compile), package (pacman's)
+
+**Update key**:
+The key pair a Release is signed with. The public half is built into a standalone AppImage, which installs only what that key signed. The private half is the owner's, kept out of Git and logs.
+_Avoid_: signing key (ambiguous with Git commit signing)
+
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.

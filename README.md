@@ -398,29 +398,11 @@ How an update installs depends on how the app was installed:
 - **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
 - **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here. It decides by asking pacman which package owns the binary it started from, so a copy of the packaged binary somewhere else counts as unmanaged too.
 
+An AppImage that a package installed counts as the package's: the app asks pacman about the AppImage file, and the updater never replaces it (ADR 0075).
+
 What has been tested for real: on Arch Linux, the documented `git pull && packaging/aur/build.sh -si` upgraded `hermes-chat-git` under a running app. The real pacman worked on a copy of the real package database, inside an unprivileged namespace made by `tools/arch-update/sandbox.sh`, which runs it without root and without touching the system. Refocusing the app found the new version, and Restart now brought up the new binary with the drafts back. A `pacman -U` on the system itself, as root, hasn't been tested by the app's developers. Standalone AppImage updates have only been tested against a local update server.
 
-The repo ships no AppImage, update server or signing key yet, so standalone updates are off. To turn them on for your own builds, generate a key once. Keep the private key and its password out of the repo:
-
-```sh
-npx tauri signer generate -w ~/.tauri/hermes-chat.key
-```
-
-Bump `version` in `src-tauri/tauri.conf.json` for each release; the updater compares semver. Then build with the signing key in the environment and the updater turned on:
-
-```sh
-TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/hermes-chat.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=… \
-npx tauri build --bundles appimage --config '{
-  "bundle": { "active": true, "createUpdaterArtifacts": true },
-  "plugins": { "updater": {
-    "pubkey": "<contents of ~/.tauri/hermes-chat.key.pub>",
-    "endpoints": ["https://github.com/l0cky12/hermes-chat/releases/latest/download/latest.json"],
-    "requireSignedVersion": true
-  } }
-}'
-```
-
-Publish the `.AppImage`, its `.sig`, and a `latest.json` in Tauri's [static JSON format](https://v2.tauri.app/plugin/updater/#static-json-file) at that endpoint. A build without `plugins.updater` (the PKGBUILD's, for one) doesn't load the updater at all.
+The repo ships no AppImage, update server or signing key yet, so standalone updates are off. [docs/releases.md](docs/releases.md) says how a release is built, signed, staged and checked, what the update endpoint must serve, the version rules, and how to rotate or recover the key. The `release-dry-run` workflow rehearses all of it with a throwaway key and uploads the result as a workflow artifact, without publishing anything. Creating the production key and secret, and publishing, are left to the owner (ADR 0075).
 
 ## Development
 
