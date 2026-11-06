@@ -27,8 +27,8 @@ export const tauriLocalFiles: LocalFiles = {
 export type WebPages = {
   /** Whether the site refuses to be shown in the pane's frame, asked the way the frame asks. */
   check(url: string): Promise<Framing>;
-  /** Opens the page in the owner's browser. Rejects with why it couldn't. */
-  openInBrowser(url: string): Promise<void>;
+  /** Opens the page in the owner's default browser, and gives the browser's name where it is known. Rejects with why it couldn't. */
+  openInBrowser(url: string): Promise<string | null>;
   /** Where there is one (Linux), the Preview's own page view, which takes the frame's place (ADR 0081). */
   native?: NativePages;
 };
@@ -73,7 +73,7 @@ export const tauriNativePages: NativePages = {
 
 export const tauriWebPages: WebPages = {
   check: (url) => invoke<Framing>("preview_check_web", { url, userAgent: navigator.userAgent }).catch(asError),
-  openInBrowser: (url) => invoke<void>("preview_open_in_browser", { url }).catch(asError),
+  openInBrowser: (url) => invoke<string | null>("preview_open_in_browser", { url }).catch(asError),
   ...(/\bLinux\b/.test(navigator.userAgent) && { native: tauriNativePages }),
 };
 

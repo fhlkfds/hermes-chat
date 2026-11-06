@@ -1694,6 +1694,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "gdkx11",
+ "gio",
  "gtk",
  "keyring",
  "libc",

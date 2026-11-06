@@ -73,7 +73,7 @@ async function inspectorFor(server = new FakeHermes(), edit: (c: Chat) => Chat =
   const showInChat = vi.fn(() => true);
   const preview = vi.fn<(t: PreviewTarget) => void>();
   const bar = () => (
-    <LinksProvider preview={preview} web={{ openInBrowser: async () => {} }} onToast={() => {}}>
+    <LinksProvider preview={preview} web={{ openInBrowser: async () => null }} onToast={() => {}}>
       <ShowInChatContext.Provider value={showInChat}>
         <StatusBar
           chat={edit(chat())}

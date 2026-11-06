@@ -93,7 +93,13 @@ function LinkMenu({
             <button
               role="menuitem"
               className="menu-item"
-              onClick={act(() => void web.openInBrowser(link.url).catch((e) => onToast(`Couldn't open it in your browser: ${messageOf(e)}`)))}
+              onClick={act(
+                () =>
+                  void web.openInBrowser(link.url).then(
+                    (browser) => onToast(`Opened in ${browser ?? "your browser"}.`),
+                    (e) => onToast(`Couldn't open it in your browser: ${messageOf(e)}`),
+                  ),
+              )}
             >
               <span className="menu-icon">
                 <ExternalLink size={15} />

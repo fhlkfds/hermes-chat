@@ -87,7 +87,7 @@ export function PreviewPane({
   // Reload bumps this; each target starts again from 0 because the pane is keyed by it.
   const [reloads, setReloads] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [openError, setOpenError] = useState<string>();
+  const [opened, setOpened] = useState<{ text: string; failed: boolean }>();
   // A server page's tunnel address while it is open: the only way the owner's browser can reach that page.
   const [tunnel, setTunnel] = useState<string>();
   const titleId = useId();
@@ -96,8 +96,11 @@ export function PreviewPane({
   const address = target.kind === "server" || target.kind === "local" ? target.path : target.kind === "artifact" ? target.ref.path : target.kind === "web" ? target.url : undefined;
 
   const openInBrowser = (url: string) => {
-    setOpenError(undefined);
-    web.openInBrowser(url).catch((e) => setOpenError(`Couldn't open it in your browser: ${messageOf(e)}`));
+    setOpened(undefined);
+    web.openInBrowser(url).then(
+      (browser) => setOpened({ text: `Opened in ${browser ?? "your browser"}.`, failed: false }),
+      (e) => setOpened({ text: `Couldn't open it in your browser: ${messageOf(e)}`, failed: true }),
+    );
   };
 
   return (
@@ -150,9 +153,9 @@ export function PreviewPane({
           )}
         </div>
       </header>
-      {openError && (
-        <div className="attach-note preview-open-error" role="alert">
-          {openError}
+      {opened && (
+        <div className={opened.failed ? "attach-note preview-opened failed" : "attach-note preview-opened"} role={opened.failed ? "alert" : "status"}>
+          {opened.text}
         </div>
       )}
       <div className="preview-body">
