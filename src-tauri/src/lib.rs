@@ -1,4 +1,6 @@
 pub mod backup;
+#[cfg(target_os = "linux")]
+pub mod browser;
 pub mod defaults_file;
 pub mod display;
 pub mod fonts;
@@ -1112,10 +1114,10 @@ async fn preview_check_web(url: String, user_agent: String) -> Result<web_page::
     web_page::check(&url, &user_agent).await
 }
 
-/// Opens an http(s) page in the owner's browser, for one the preview can't show.
+/// Opens an http(s) page in the owner's default browser, and gives the browser's name where it is known.
 #[tauri::command]
-async fn preview_open_in_browser(url: String) -> Result<(), String> {
-    web_page::open_in_browser(&url).await
+async fn preview_open_in_browser(app: tauri::AppHandle, url: String) -> Result<Option<String>, String> {
+    web_page::open_in_browser(&app, &url).await
 }
 
 /// Shows a web page in the Preview's own WebKitGTK view (page_view.rs, ADR 0081). `key`: this page's name from now on.

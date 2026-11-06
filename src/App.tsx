@@ -2772,7 +2772,7 @@ export function Main({
             toolsets={hermes.toolsets}
             mcp={hermes.mcp}
             gateways={hermes.gateways}
-            openUrl={(url) => webPages.openInBrowser(url)}
+            openUrl={(url) => webPages.openInBrowser(url).then(() => undefined)}
             runningReplies={chats.filter((c) => c.running).length}
             openChat={(() => {
               const c = chats.find((x) => x.id === active.chatId);
