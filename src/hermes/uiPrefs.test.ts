@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks" });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks", inboxAutoDismissDays: null });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -73,6 +73,7 @@ describe("reading", () => {
         chatSectionsShown: ["settled", "bogus", "inbox", "settled"],
         chatSectionsCollapsed: "inbox",
         agentOffice: "floor",
+        inboxAutoDismissDays: "7",
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -91,6 +92,7 @@ describe("reading", () => {
       chatSectionsShown: ["pinned", "inbox", "settled"],
       chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"],
       agentOffice: "desks",
+      inboxAutoDismissDays: null,
     });
   });
 
@@ -143,6 +145,24 @@ describe("reading", () => {
     for (const bad of ["interrupt", true, null]) {
       localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, followUp: bad }));
       expect(getUIPrefs().followUp).toBe("queue");
+    }
+  });
+
+  it("keeps how long finished inbox entries stay, never dismissing them until a time is picked", () => {
+    expect(getUIPrefs().inboxAutoDismissDays).toBeNull();
+    setUIPrefs({ inboxAutoDismissDays: 7 });
+    expect(stored().inboxAutoDismissDays).toBe(7);
+    // A time that isn't a time leaves the old one.
+    setUIPrefs({ inboxAutoDismissDays: -1 });
+    expect(getUIPrefs().inboxAutoDismissDays).toBe(7);
+    setUIPrefs({ inboxAutoDismissDays: null });
+    expect(stored().inboxAutoDismissDays).toBeNull();
+    // A newer app or a hand edit may store a time Settings doesn't offer: it is kept.
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, inboxAutoDismissDays: 3 }));
+    expect(getUIPrefs().inboxAutoDismissDays).toBe(3);
+    for (const bad of [0, -2, "7", true, [7]]) {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, inboxAutoDismissDays: bad }));
+      expect(getUIPrefs().inboxAutoDismissDays).toBeNull();
     }
   });
 

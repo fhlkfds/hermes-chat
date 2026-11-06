@@ -2223,6 +2223,7 @@ label.memory-pick { cursor: pointer; }
 .inbox-heading { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .inbox-heading h2 { margin: 0; font-size: calc(15rem / 14); font-weight: 600; }
 .inbox-server { color: var(--faint); font-size: calc(12rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-clear-done { flex: none; height: 26px; padding: 0 10px; font-size: calc(12rem / 14); white-space: nowrap; }
 .inbox-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
 .inbox-filter {
   padding: 3px 9px; border-radius: 999px; font-size: calc(12rem / 14); color: var(--muted); border: 1px solid var(--line-2);

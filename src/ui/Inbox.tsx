@@ -51,6 +51,7 @@ export function Inbox({
   leaving,
   onOpen,
   onDismiss,
+  onClearDone,
   onRefresh,
   onClose,
   onGuide,
@@ -67,6 +68,8 @@ export function Inbox({
   leaving?: string;
   onOpen: (e: InboxEntry) => void;
   onDismiss: (e: InboxEntry) => void;
+  /** Dismisses the finished entries the filter shows. */
+  onClearDone: (es: InboxEntry[]) => void;
   onRefresh: () => void;
   onClose: () => void;
 }) {
@@ -121,6 +124,11 @@ export function Inbox({
     setFocusAt(shown.indexOf(e));
     onDismiss(e);
   };
+  const done = shown.filter((e) => e.kind === "completed");
+  const clearDone = () => {
+    setFocusAt(0);
+    onClearDone(done);
+  };
 
   // Up and Down move between the entries; Escape closes, or backs out of the question first.
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
@@ -148,6 +156,11 @@ export function Inbox({
             {server}
           </span>
         </div>
+        {done.length > 0 && (
+          <button className="btn inbox-clear-done" title="Dismiss every completed entry shown" onClick={clearDone}>
+            Clear done
+          </button>
+        )}
         <button className="icon-btn" title="Check now" aria-label="Check now" onClick={onRefresh} disabled={!connected}>
           <RefreshCw size={15} />
         </button>

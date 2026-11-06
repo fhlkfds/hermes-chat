@@ -1050,7 +1050,7 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut, agentOffice } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut, agentOffice, inboxAutoDismissDays } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const officeShown = officeOpen && agentOffice !== "off";
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicks[pref] ?? (modelPicker?.profile === pref ? withoutProfile(modelPicker) : catalog?.defaultPick);
@@ -1292,6 +1292,9 @@ export function Main({
   const inboxShown = inbox.entries.filter((e) => !acks.isDismissed(e, dismissed));
   // Writes only when a resumed chat shows cards a dismissed waiting session covered.
   useEffect(() => acks.keepCovered(inbox.entries));
+  useEffect(() => {
+    if (inboxAutoDismissDays !== null) acks.expire(inbox.entries, inboxAutoDismissDays * 86_400_000);
+  });
   const inboxCount = inboxShown.filter(needsOwner).length;
   // A restore reloads the app on what it wrote, so it waits for replies and Approvals, here or in another profile, and
   // for any draft or queue this computer couldn't keep (ADR 0038).
@@ -2669,6 +2672,7 @@ export function Main({
           leaving={leavingNote(profile, chats)}
           onOpen={openEntry}
           onDismiss={(e) => acks.dismiss(e, inbox.entries)}
+          onClearDone={(es) => acks.dismissAll(es, inbox.entries)}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setInboxOpen(false)}
           onGuide={() => openGuide(guideUrl("liveSessions"))}
