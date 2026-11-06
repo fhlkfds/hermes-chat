@@ -228,6 +228,27 @@ describe("Pinned chats, in the list", () => {
   });
 });
 
+describe("The row's menu from the keyboard", () => {
+  it("opens on Shift+F10, which WebKitGTK sends no contextmenu event for", async () => {
+    const user = userEvent.setup();
+    render(<List chats={mix} onPin={() => {}} />);
+    rowOf("read").focus();
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    expect(screen.getByRole("menu", { name: "Actions for read" })).toBeTruthy();
+  });
+
+  it("opens for the Menu key's event, which WebKitGTK sends to the focused row's corner, just outside it", () => {
+    render(<List chats={mix} onPin={() => {}} />);
+    const list = document.querySelector<HTMLElement>(".sb-scroll")!;
+    rowOf("read").focus();
+    const at = rowOf("read").getBoundingClientRect();
+    fireEvent.contextMenu(list, { clientX: at.left + 40, clientY: at.bottom });
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.contextMenu(list, { clientX: at.left, clientY: at.bottom });
+    expect(screen.getByRole("menu", { name: "Actions for read" })).toBeTruthy();
+  });
+});
+
 describe("Settings → General: chat list sections", () => {
   it("turns each section on or off in any mix, but never the last one", async () => {
     const user = userEvent.setup();

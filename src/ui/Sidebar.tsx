@@ -479,6 +479,15 @@ function ChatRow({
         const r = e.currentTarget.getBoundingClientRect();
         setMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: r.left + 8, y: r.bottom });
       }}
+      onKeyDown={(e) => {
+        // WebKitGTK sends no contextmenu event for Shift+F10.
+        if ((e.key === "F10" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) || e.key === "ContextMenu") {
+          e.preventDefault();
+          setRetitleError(undefined);
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenu({ x: r.left + 8, y: r.bottom });
+        }
+      }}
     >
       <button
         ref={openButton}
@@ -907,6 +916,20 @@ function ProfileMenu({
   );
 }
 
+/**
+ * WebKitGTK sends the Menu key's contextmenu event to the point at the focused element's bottom-left corner, which is
+ * just outside its row, so the list gets it instead; it goes on to the focused row, which opens its menu under itself.
+ */
+function menuForFocusedRow(e: ReactMouseEvent<HTMLElement>) {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || !focused.classList.contains("row-open") || !e.currentTarget.contains(focused)) return;
+  if ((e.target as Element).closest(".row")) return;
+  const r = focused.getBoundingClientRect();
+  if (Math.round(e.clientX) !== Math.round(r.left) || Math.round(e.clientY) !== Math.round(r.bottom)) return;
+  e.preventDefault();
+  focused.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+}
+
 /** Up and Down move focus between the chats in the list, top to bottom through its sections, without opening them. */
 function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   // Alt+arrows open the chat above or below instead (App.tsx), so they pass.
@@ -1089,7 +1112,7 @@ export function ChatList({
   const drawnEmpty = (k: SectionKey) => k !== "pinned" && k !== "working" && k !== "snoozed";
   const busy = sections.working.length + sections.snoozed.length > 0;
   return (
-    <aside className="sidebar" onKeyDown={moveBetweenChats}>
+    <aside className="sidebar" onKeyDown={moveBetweenChats} onContextMenu={menuForFocusedRow}>
       <div className="sb-head">
         <ProfileSwitcher
           profile={profile}
