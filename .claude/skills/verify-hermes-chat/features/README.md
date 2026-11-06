@@ -41,4 +41,5 @@ Each feature file starts with an H1 and one paragraph describing the behaviour t
 - [MCP servers](mcp-servers.md): Settings → MCP servers: list, test, add, edit with write-only secrets, remove, switch, OAuth sign-in, catalog, another profile.
 - [Gateways](gateways.md): Settings → Gateways: Telegram and Discord state, token replace and remove with read-back, the switch, a turned-down token, a missing library, a change on the server meanwhile, Check status.
 - [Search chats](search.md): Ctrl+K or the rail opens search, a body-text match opens its chat, and a miss shows No matches.
+- [Rail inbox](rail-inbox.md): Check now, Clear done, and auto-dismissing old completed entries, with the `HV_INBOX=1` seed.
 - [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.

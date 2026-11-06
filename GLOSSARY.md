@@ -264,7 +264,7 @@ Hermes's messaging gateway: the process on the server that connects a profile to
 _Avoid_: channel (a place inside Telegram or Discord), bridge, integration, gateway in front of the dashboard (that's what Extra request headers are for)
 
 **Rail inbox**:
-The list, opened from the rail's Inbox button, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the rail inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
+The list, opened from the rail's Inbox button, of what needs the owner or has finished in any profile on the server: a reply running, an Approval waiting, a failure or Failed message, or a chat with something new. Each entry names its profile and chat, says when, and opens the chat in its profile. Nothing is answered, retried or sent from it. Dismissing an entry takes it out of the rail inbox only, on this computer: the chat stays Unread, Active or Settled, and Archived or not, as it was. An entry shows again only for something newer. Completed entries can also be dismissed all at once with Clear done, or on their own once older than a time set in Settings, off until set (ADR 0088). Running work in other profiles shows only for chats the dashboard itself runs (ADR 0019).
 _Avoid_: notifications, activity, feed
 
 **Chat link**:
