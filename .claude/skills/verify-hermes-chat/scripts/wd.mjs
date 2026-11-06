@@ -7,6 +7,7 @@
 //   wd.mjs wait  <css> [text] [ms]   wait until an element matching css (and containing text) is displayed
 //   wd.mjs gone  <css> [text] [ms]   wait until no displayed element matches
 //   wd.mjs click <css> [text]        click the first displayed match (real pointer input through WebKit automation)
+//   wd.mjs rightclick <css> [text]   right-click the match with real X input (xdotool), which opens a context menu
 //   wd.mjs fill  <css> [text] -- <value>   clear the field, then type value as key presses
 //   wd.mjs select <css> [text] -- <option>   pick a native <select> option by its text (the popup itself never renders)
 //   wd.mjs press <chord>             press a key chord: Control+k, Control+comma is Control+",", Escape, Shift+Tab, ArrowDown
@@ -21,7 +22,9 @@
 //
 // [text] matches an element whose trimmed text, aria-label, title, placeholder or <label> contains text (case-sensitive).
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const run = process.env.HV_RUN;
 if (!run || !existsSync(join(run, "state.env"))) die("HV_RUN is unset or has no state.env: run `hv up` first and export the HV_RUN it prints");
@@ -123,6 +126,30 @@ try {
       await wd("POST", s(`/element/${await one(css, text)}/click`), {});
       console.log("clicked");
       break;
+    case "rightclick": {
+      // Not WebDriver pointer actions: WebKitWebDriver releases button 2 as a mouseup of button 0 plus a click, so a
+      // right-click on a link would also follow it. Real X input through `hv x` sends exactly what a mouse sends.
+      const id = await one(css, text);
+      const xdo = (...a) => execFileSync(join(dirname(fileURLToPath(import.meta.url)), "hv"), ["x", ...a], { env: process.env });
+      await exec(`window.__wdOffset = undefined;
+        addEventListener("mousemove", (e) => { window.__wdOffset = [e.screenX - e.clientX, e.screenY - e.clientY]; }, { capture: true, once: true });`);
+      const win = String(xdo("getactivewindow", "getwindowgeometry", "--shell"));
+      const g = Object.fromEntries(win.trim().split("\n").map((l) => l.split("=")).map(([k, v]) => [k, Number(v)]));
+      xdo("mousemove", String(g.X + g.WIDTH / 2), String(g.Y + g.HEIGHT / 2));
+      xdo("mousemove", String(g.X + g.WIDTH / 2 + 1), String(g.Y + g.HEIGHT / 2 + 1));
+      // xdotool returns before WebKit has delivered the move.
+      let off = null;
+      for (let i = 0; i < 20 && !off; i++) off = await exec("return window.__wdOffset ?? null").then((v) => v ?? new Promise((r) => setTimeout(() => r(null), 100)));
+      if (!off) die("rightclick: the window saw no pointer move, so its screen position is unknown");
+      // The first line of an inline element that wraps, so the point is on it.
+      const [x, y] = await exec("const r = arguments[0].getClientRects()[0]; return [r.left + r.width / 2, r.top + r.height / 2]", [{ [ELEMENT]: id }]);
+      xdo("mousemove", String(Math.round(off[0] + x)), String(Math.round(off[1] + y)));
+      xdo("mousedown", "3");
+      await new Promise((r) => setTimeout(r, 120));
+      xdo("mouseup", "3");
+      console.log("right-clicked");
+      break;
+    }
     case "fill": {
       if (dashdash < 0) die("fill needs `-- <value>`");
       const id = await one(css, text);
@@ -188,7 +215,7 @@ try {
       console.log(evidence(css, ".html"));
       break;
     default:
-      die("usage: wd.mjs open|close|wait|gone|click|fill|keys|text|value|count|handles|eval|shot|html (see the header)");
+      die("usage: wd.mjs open|close|wait|gone|click|rightclick|fill|keys|text|value|count|handles|eval|shot|html (see the header)");
   }
 } catch (e) {
   die(String(e.message ?? e));
