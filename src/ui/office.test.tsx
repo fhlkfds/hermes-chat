@@ -92,7 +92,6 @@ describe("Desks and the list", () => {
     expect(states(hermes).slice(1)).toEqual(["Read the auth code, Running", "Check token expiry, Finished", "Read the tests, Failed"]);
 
     server.transcripts[id] = [{ role: "user", text: "Audit the repo" }];
-    // Dropped: everything is as last seen, nothing looks current, and a running desk shows no typing.
     server.drop();
     await hermes.idle().catch(() => {});
     expect(states(hermes)).toEqual([
@@ -107,7 +106,6 @@ describe("Desks and the list", () => {
     expect(screen.getByRole("dialog", { name: "Office" }).textContent).toMatch(/Not connected to Hermes: every desk is as last seen\./);
     cleanup();
 
-    // Back: Hermes's roster no longer lists the running one, so it ended unheard. That is never shown as finished.
     server.subagents[id] = [];
     await vi.advanceTimersByTimeAsync(1_000);
     await hermes.idle();
@@ -260,7 +258,6 @@ describe("A desk that goes while it has focus", () => {
     const user = userEvent.setup();
     const props = { view, onView: () => {}, server: "hermes", profile: "default", connected: true, onOpen: () => {}, onClose };
     const { rerender } = render(<Office rooms={sample()} {...props} />);
-    // The first room's only desk, as its reply stops waiting and the room leaves the office.
     expect(document.activeElement?.getAttribute("data-desk")).toBe("work deploy reply");
     rerender(<Office rooms={sample().slice(1)} {...props} />);
     expect(document.activeElement?.getAttribute("data-desk")).toBe("default audit reply");

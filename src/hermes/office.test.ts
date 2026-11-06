@@ -53,7 +53,6 @@ describe("The office's rooms", () => {
     expect(rooms([], { others: { byName: { work: listed } } })[0].desks[0].stale).toBeUndefined();
     const failed = rooms([], { others: { byName: { work: listed }, error: "Couldn't list the profiles: 502" } });
     expect(failed[0].desks[0]).toMatchObject({ state: "unread", stale: "As last seen: Hermes couldn't be checked." });
-    // A failure the app saw there before switching away shows first, and is as last seen with the rest.
     const seen = { ...listed, failures: [{ chatId: "w1", title: "Deploy", itemId: "e-1", mark: "x" }] };
     for (const others of [{ byName: { work: seen }, error: "502" }, { byName: { work: { ...seen, error: "502" } } }])
       expect(rooms([], { others })[0].desks[0]).toMatchObject({ state: "failed", stale: "As last seen: Hermes couldn't be checked." });
@@ -77,7 +76,6 @@ describe("The office's rooms", () => {
     expect(rs).toHaveLength(30);
     expect(new Set(rs.flatMap((r) => r.desks.map((d) => d.key))).size).toBe(30 * (SUBAGENTS_MAX + 1));
     expect(officeTally(rs)).toEqual({ working: 30 * (SUBAGENTS_MAX + 1), waiting: 0, failed: 0, desks: 30 * (SUBAGENTS_MAX + 1) });
-    // Each subagent follows the one that started it.
     const order = rs[0].desks.slice(1).map((d) => (d.agent.kind === "subagent" ? d.agent.id : ""));
     expect(order.slice(0, 11)).toEqual(["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"]);
   });
