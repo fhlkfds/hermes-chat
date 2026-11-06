@@ -1070,8 +1070,8 @@ export function ChatList({
       pin={onPin && !c.archived ? { pinned: pins[c.id] !== undefined, onPin: (on) => onPin(c.id, on) } : undefined}
     />
   );
-  // Settled and Archived can hold every chat the profile has ever had, so a collapsed one draws no rows.
-  const keepsHidden = (k: SectionKey) => k !== "settled" && k !== "archived";
+  // Archived, like the Settled drawer, can hold every chat the profile has ever had, so collapsed it draws no rows.
+  const keepsHidden = (k: SectionKey) => k !== "archived";
   const header = (k: SectionKey, open: boolean) => {
     const list = sections[k];
     const unread = list.filter((c) => c.unread).length;

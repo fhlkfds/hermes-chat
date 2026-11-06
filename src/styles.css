@@ -152,7 +152,7 @@ kbd {
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
-/* Every section is in the list's scroll (ADR 0063); the ones out of the way are quieter. */
+/* Every section but Settled is in the list's scroll (ADR 0063, ADR 0090); the ones out of the way are quieter. */
 .section-toggle:first-child { padding-top: 6px; }
 .row[data-section="snoozed"] .row-title,
 .row[data-section="settled"] .row-title,
