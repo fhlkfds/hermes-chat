@@ -5,7 +5,8 @@
 //! turned on Close to tray in Settings and this desktop has somewhere to show the icon now; then closing hides the
 //! window, and the tray icon, a second launch (remote.rs `Show`) or New chat bring the same window back.
 //!
-//! Whether the desktop can show the icon is checked every two seconds: a StatusNotifierItem host on the session bus
+//! On Windows the notification area is always there. On Linux whether the desktop can show the icon is checked every
+//! two seconds: a StatusNotifierItem host on the session bus
 //! (KDE Plasma, Xfce, waybar, GNOME with the AppIndicator extension), or, on X11, an XEmbed tray (i3bar, stalonetray).
 //! If the host goes away while the window is hidden, the window comes back, so the app never ends up hidden with no
 //! way back. The library that draws the icon (libayatana-appindicator) re-registers when the host returns.
@@ -17,10 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
 
 /// Tells the webview the window was hidden or shown: `{ hidden: bool }`.
@@ -33,7 +33,6 @@ pub const INBOX_EVENT: &str = "tray-open-inbox";
 pub const STATUS_EVENT: &str = "tray-status";
 
 const SETTINGS_FILE: &str = "window.json";
-const POLL: Duration = Duration::from_secs(2);
 
 /// Whether the desktop shows the tray icon now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -256,25 +255,6 @@ pub fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEven
     }
 }
 
-/// Whether libayatana-appindicator (or libappindicator) is installed: the icon library panics without one.
-fn indicator_library() -> bool {
-    ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"]
-        .iter()
-        .any(|name| {
-            let c = std::ffi::CString::new(*name).unwrap();
-            // SAFETY: dlopen with a valid C string; the handle is closed again at once.
-            unsafe {
-                let h = libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
-                if h.is_null() {
-                    false
-                } else {
-                    libc::dlclose(h);
-                    true
-                }
-            }
-        })
-}
-
 /// Reads the setting, makes the icon and starts watching for the desktop's tray. Never fails the app: without a tray
 /// the window works as before, and Settings says why.
 pub fn start(app: &AppHandle) {
@@ -287,18 +267,15 @@ pub fn start(app: &AppHandle) {
         }
         Err(e) => eprintln!("hermes-chat: no config folder, so Close to tray can't be kept: {e}"),
     }
-    if !indicator_library() {
-        *tray.state.lock().unwrap() = (
-            TrayState::Unavailable,
-            Some("libayatana-appindicator isn't installed, so Hermes Chat can't put an icon in the tray.".into()),
-        );
+    if let Some(why) = host::missing() {
+        *tray.state.lock().unwrap() = (TrayState::Unavailable, Some(why));
         return;
     }
     match make(app) {
         Ok(parts) => {
             *tray.parts.lock().unwrap() = Some(parts);
             *tray.state.lock().unwrap() = (TrayState::NoTray, None);
-            watch(app.clone());
+            host::watch(app.clone());
         }
         Err(e) => {
             *tray.state.lock().unwrap() = (TrayState::Unavailable, Some(format!("The tray icon couldn't be made: {e}")));
@@ -321,7 +298,14 @@ fn make(app: &AppHandle) -> tauri::Result<Parts> {
         .icon(plain.clone())
         .tooltip("Hermes Chat")
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(host::MENU_ON_LEFT_CLICK)
+        .on_tray_icon_event(|icon, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                if !host::MENU_ON_LEFT_CLICK {
+                    toggle(icon.app_handle());
+                }
+            }
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => toggle(app),
             "new-chat" => {
@@ -337,21 +321,6 @@ fn make(app: &AppHandle) -> tauri::Result<Parts> {
         })
         .build(app)?;
     Ok(Parts { icon, show: show_item, inbox, plain, dotted })
-}
-
-/// Checks for a tray every two seconds and reacts when that changes.
-fn watch(app: AppHandle) {
-    std::thread::spawn(move || {
-        let mut bus = None;
-        let mut misses = 0;
-        loop {
-            let sni = sni_host(&mut bus);
-            let reading = if sni == Some(true) { Some(true) } else { either(sni, xembed_tray(&app)) };
-            let now = app.state::<Tray>().state.lock().unwrap().0;
-            changed(&app, next_state(now, reading, &mut misses));
-            std::thread::sleep(POLL);
-        }
-    });
 }
 
 /// A tray seen by either check is there; with neither seeing one, it is gone only if both answered.
@@ -403,61 +372,131 @@ fn changed<R: Runtime>(app: &AppHandle<R>, now: TrayState) {
     let _ = app.emit(STATUS_EVENT, tray.status());
 }
 
-/// A StatusNotifierItem host is registered on the session bus. `None` when the bus didn't answer.
-fn sni_host(bus: &mut Option<dbus::blocking::Connection>) -> Option<bool> {
-    use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
-    const WATCHER: &str = "org.kde.StatusNotifierWatcher";
-    if bus.is_none() {
-        *bus = dbus::blocking::Connection::new_session().ok();
+/// How this desktop shows tray icons. On Linux a panel may come and go: a StatusNotifierItem host on the session bus
+/// (KDE Plasma, Xfce, waybar, GNOME with the AppIndicator extension) or, on X11, an XEmbed tray (i3bar, stalonetray).
+#[cfg(target_os = "linux")]
+mod host {
+    use super::{changed, either, next_state, Tray};
+    use std::time::Duration;
+    use tauri::{AppHandle, Manager};
+
+    const POLL: Duration = Duration::from_secs(2);
+    /// The panel's own menu opens on a click; appindicator has no click of its own to give.
+    pub const MENU_ON_LEFT_CLICK: bool = true;
+
+    /// Why the icon can't be made at all, if it can't.
+    pub fn missing() -> Option<String> {
+        (!indicator_library())
+            .then(|| "libayatana-appindicator isn't installed, so Hermes Chat can't put an icon in the tray.".into())
     }
-    // No session bus at all: nothing can host a StatusNotifierItem.
-    let Some(conn) = bus.as_ref() else { return Some(false) };
-    let owned: Result<(bool,), _> = conn
-        .with_proxy("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(2))
-        .method_call("org.freedesktop.DBus", "NameHasOwner", (WATCHER,));
-    match owned {
-        // A watcher that can't say whether a host is registered decides nothing: a watcher alone shows no icon, so
-        // taking it at its word could hide the window with no way back.
-        Ok((true,)) => conn
-            .with_proxy(WATCHER, "/StatusNotifierWatcher", Duration::from_secs(2))
-            .get::<bool>(WATCHER, "IsStatusNotifierHostRegistered")
-            .ok(),
-        Ok(_) => Some(false),
-        Err(_) => {
-            *bus = None;
-            None
+
+    /// Whether libayatana-appindicator (or libappindicator) is installed: the icon library panics without one.
+    fn indicator_library() -> bool {
+        ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"]
+            .iter()
+            .any(|name| {
+                let c = std::ffi::CString::new(*name).unwrap();
+                // SAFETY: dlopen with a valid C string; the handle is closed again at once.
+                unsafe {
+                    let h = libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+                    if h.is_null() {
+                        false
+                    } else {
+                        libc::dlclose(h);
+                        true
+                    }
+                }
+            })
+    }
+
+    /// Checks for a tray every two seconds and reacts when that changes.
+    pub fn watch(app: AppHandle) {
+        std::thread::spawn(move || {
+            let mut bus = None;
+            let mut misses = 0;
+            loop {
+                let sni = sni_host(&mut bus);
+                let reading = if sni == Some(true) { Some(true) } else { either(sni, xembed_tray(&app)) };
+                let now = app.state::<Tray>().state.lock().unwrap().0;
+                changed(&app, next_state(now, reading, &mut misses));
+                std::thread::sleep(POLL);
+            }
+        });
+    }
+
+    /// A StatusNotifierItem host is registered on the session bus. `None` when the bus didn't answer.
+    fn sni_host(bus: &mut Option<dbus::blocking::Connection>) -> Option<bool> {
+        use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+        const WATCHER: &str = "org.kde.StatusNotifierWatcher";
+        if bus.is_none() {
+            *bus = dbus::blocking::Connection::new_session().ok();
+        }
+        // No session bus at all: nothing can host a StatusNotifierItem.
+        let Some(conn) = bus.as_ref() else { return Some(false) };
+        let owned: Result<(bool,), _> = conn
+            .with_proxy("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(2))
+            .method_call("org.freedesktop.DBus", "NameHasOwner", (WATCHER,));
+        match owned {
+            // A watcher that can't say whether a host is registered decides nothing: a watcher alone shows no icon, so
+            // taking it at its word could hide the window with no way back.
+            Ok((true,)) => conn
+                .with_proxy(WATCHER, "/StatusNotifierWatcher", Duration::from_secs(2))
+                .get::<bool>(WATCHER, "IsStatusNotifierHostRegistered")
+                .ok(),
+            Ok(_) => Some(false),
+            Err(_) => {
+                *bus = None;
+                None
+            }
+        }
+    }
+
+    /// On X11, something owns the XEmbed system tray selection for the window's screen. Asked on the main thread, through
+    /// GDK's own X connection.
+    /// `None` when the main thread didn't answer within two seconds.
+    fn xembed_tray(app: &AppHandle) -> Option<bool> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(xembed_tray_now());
+        })
+        .ok()?;
+        rx.recv_timeout(Duration::from_secs(2)).ok()
+    }
+
+    fn xembed_tray_now() -> bool {
+        use gtk::glib::object::Cast;
+        use gtk::glib::translate::ToGlibPtr;
+        let Some(display) = gtk::gdk::Display::default() else { return false };
+        let screen = display.default_screen();
+        let Ok(x11) = display.downcast::<gdkx11::X11Display>() else { return false };
+        let screen = match screen.downcast::<gdkx11::X11Screen>() {
+            Ok(s) => s.screen_number(),
+            Err(_) => 0,
+        };
+        let atom = gtk::gdk::Atom::intern(&format!("_NET_SYSTEM_TRAY_S{screen}"));
+        let xatom = gdkx11::functions::x11_atom_to_xatom_for_display(&x11, &atom);
+        // SAFETY: GDK's own Display pointer, used on the main thread that owns it.
+        unsafe {
+            let xdisplay = gdkx11::ffi::gdk_x11_display_get_xdisplay(x11.to_glib_none().0);
+            x11::xlib::XGetSelectionOwner(xdisplay as *mut x11::xlib::Display, xatom) != 0
         }
     }
 }
 
-/// On X11, something owns the XEmbed system tray selection for the window's screen. Asked on the main thread, through
-/// GDK's own X connection.
-/// `None` when the main thread didn't answer within two seconds.
-fn xembed_tray(app: &AppHandle) -> Option<bool> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(xembed_tray_now());
-    })
-    .ok()?;
-    rx.recv_timeout(Duration::from_secs(2)).ok()
-}
+/// On Windows the notification area is part of the taskbar and always there; the icon library puts the icon back
+/// when Explorer restarts. A left click shows or hides the window and a right click opens the menu, as Windows apps do.
+#[cfg(not(target_os = "linux"))]
+mod host {
+    use tauri::AppHandle;
 
-fn xembed_tray_now() -> bool {
-    use gtk::glib::object::Cast;
-    use gtk::glib::translate::ToGlibPtr;
-    let Some(display) = gtk::gdk::Display::default() else { return false };
-    let screen = display.default_screen();
-    let Ok(x11) = display.downcast::<gdkx11::X11Display>() else { return false };
-    let screen = match screen.downcast::<gdkx11::X11Screen>() {
-        Ok(s) => s.screen_number(),
-        Err(_) => 0,
-    };
-    let atom = gtk::gdk::Atom::intern(&format!("_NET_SYSTEM_TRAY_S{screen}"));
-    let xatom = gdkx11::functions::x11_atom_to_xatom_for_display(&x11, &atom);
-    // SAFETY: GDK's own Display pointer, used on the main thread that owns it.
-    unsafe {
-        let xdisplay = gdkx11::ffi::gdk_x11_display_get_xdisplay(x11.to_glib_none().0);
-        x11::xlib::XGetSelectionOwner(xdisplay as *mut x11::xlib::Display, xatom) != 0
+    pub const MENU_ON_LEFT_CLICK: bool = false;
+
+    pub fn missing() -> Option<String> {
+        None
+    }
+
+    pub fn watch(app: AppHandle) {
+        super::changed(&app, super::TrayState::Shown);
     }
 }
 

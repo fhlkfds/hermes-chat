@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! The Repository screen's helper (repo_git_helper.py), run as the server runs it: the exact remote command string
 //! through `sh -c`, against real Git repositories in a temporary folder. Only ssh itself is left out.
 

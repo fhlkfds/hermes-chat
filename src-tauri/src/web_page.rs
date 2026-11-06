@@ -14,7 +14,7 @@ use url::Url;
 
 /// How long a site has to answer before the check gives up and says nothing.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long `xdg-open` may take to fail before the page counts as handed to the browser.
+/// How long `xdg-open` (or a stand-in) may take to fail before the page counts as handed to the browser.
 const OPEN_WAIT: Duration = Duration::from_secs(3);
 const MAX_USER_AGENT: usize = 512;
 
@@ -137,8 +137,33 @@ fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 /// Opens `url` in the owner's browser with `xdg-open`.
+#[cfg(unix)]
 pub async fn open_in_browser(url: &str) -> Result<(), String> {
     open_with("xdg-open", url).await
+}
+
+/// Opens `url` in the owner's browser: the shell's `open` on the address, which goes to the default browser. Only an
+/// http(s) address gets this far, so the shell can't be asked to run anything.
+#[cfg(windows)]
+pub async fn open_in_browser(url: &str) -> Result<(), String> {
+    let url = web_url(url)?;
+    tokio::task::spawn_blocking(move || shell_open(url.as_str())).await.map_err(|e| e.to_string())?
+}
+
+#[cfg(windows)]
+fn shell_open(url: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open"), wide(url));
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    let code = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) } as isize;
+    // Greater than 32 is success; anything else is an error code.
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(format!("Windows couldn't open it in a browser (error {code}). Check which app opens web links in Settings > Apps > Default apps."))
+    }
 }
 
 /// Opens `url` with `program` (`xdg-open`, or a stand-in in tests). The address is checked as the pane checks it and

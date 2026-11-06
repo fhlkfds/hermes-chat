@@ -1,9 +1,9 @@
-//! The dashboard passwords, kept in the system keyring (the Secret Service: GNOME Keyring or KWallet) so the app can
-//! sign in at launch without asking, and beside them the extra request headers, whose values may be secrets such as a
-//! Cloudflare Access client secret. Each saved connection has one entry of each, named by its stable id
-//! (`dashboard-password/<id>`). The connection migrated from the single sign-in kept before keeps the entries it
-//! already had (`dashboard-password`, `extra-request-headers`). The keyring talks D-Bus and blocks, so each call runs
-//! off the async runtime.
+//! The dashboard passwords, kept in the system keyring (the Secret Service: GNOME Keyring or KWallet; on Windows the
+//! Credential Manager) so the app can sign in at launch without asking, and beside them the extra request headers,
+//! whose values may be secrets such as a Cloudflare Access client secret. Each saved connection has one entry of each,
+//! named by its stable id (`dashboard-password/<id>`). The connection migrated from the single sign-in kept before
+//! keeps the entries it already had (`dashboard-password`, `extra-request-headers`). The keyring blocks (D-Bus, or a
+//! Windows API call), so each call runs off the async runtime.
 
 use keyring::{Entry, Error};
 
@@ -28,6 +28,145 @@ fn entry(account: &str) -> Result<Entry, Error> {
     Entry::new(SERVICE, account)
 }
 
+/// The Secret Service holds a secret of any length in one item.
+#[cfg(not(windows))]
+mod store {
+    use super::{entry, Error};
+
+    pub fn load(account: &str) -> Result<String, Error> {
+        entry(account)?.get_password()
+    }
+    pub fn save(account: &str, secret: &str) -> Result<(), Error> {
+        entry(account)?.set_password(secret)
+    }
+    pub fn delete(account: &str) -> Result<(), Error> {
+        entry(account)?.delete_credential()
+    }
+}
+
+/// A Windows credential holds at most 2560 bytes, fewer than a set of extra headers can need, so a secret is split
+/// across credentials (`split`).
+#[cfg(windows)]
+mod store {
+    use super::{entry, split, Error};
+
+    struct Credentials;
+
+    impl split::Vault for Credentials {
+        fn get(&self, account: &str) -> Result<Vec<u8>, Error> {
+            entry(account)?.get_secret()
+        }
+        fn set(&self, account: &str, blob: &[u8]) -> Result<(), Error> {
+            entry(account)?.set_secret(blob)
+        }
+        fn delete(&self, account: &str) -> Result<(), Error> {
+            entry(account)?.delete_credential()
+        }
+    }
+
+    pub fn load(account: &str) -> Result<String, Error> {
+        split::load(&Credentials, account)
+    }
+    pub fn save(account: &str, secret: &str) -> Result<(), Error> {
+        split::save(&Credentials, account, secret)
+    }
+    pub fn delete(account: &str) -> Result<(), Error> {
+        split::delete(&Credentials, account)
+    }
+}
+
+/// A secret kept in parts no bigger than a store's item limit. The first part, under the account itself, starts with
+/// how many parts there are (`3\n`); the rest are `<account>#2`, `#3` and on. An account never holds `#`, so a part
+/// can't be another entry. The first part is written after the others, so it never counts parts that aren't there.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod split {
+    use keyring::Error;
+
+    pub const BLOB: usize = 2560;
+    const MAX_PARTS: usize = 64;
+    /// Room in the first part for its count.
+    const HEADER: usize = 8;
+
+    pub trait Vault {
+        fn get(&self, account: &str) -> Result<Vec<u8>, Error>;
+        fn set(&self, account: &str, blob: &[u8]) -> Result<(), Error>;
+        fn delete(&self, account: &str) -> Result<(), Error>;
+    }
+
+    fn part(account: &str, n: usize) -> String {
+        format!("{account}#{n}")
+    }
+
+    /// The blobs `secret` is kept as, first part first.
+    pub fn parts(secret: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+        let (head, rest) = secret.split_at(secret.len().min(BLOB - HEADER));
+        let count = 1 + rest.len().div_ceil(BLOB);
+        if count > MAX_PARTS {
+            return Err(Error::TooLong("secret".into(), ((BLOB - HEADER) + (MAX_PARTS - 1) * BLOB) as u32));
+        }
+        let mut first = format!("{count}\n").into_bytes();
+        first.extend_from_slice(head);
+        Ok(std::iter::once(first).chain(rest.chunks(BLOB).map(<[u8]>::to_vec)).collect())
+    }
+
+    /// How many parts the first one says there are, and its own share of the secret.
+    pub fn header(first: &[u8]) -> Result<(usize, &[u8]), Error> {
+        let damaged = || Error::Invalid("secret".into(), "its saved parts are damaged".into());
+        let end = first.iter().take(HEADER).position(|b| *b == b'\n').ok_or_else(damaged)?;
+        let count: usize = std::str::from_utf8(&first[..end]).ok().and_then(|s| s.parse().ok()).ok_or_else(damaged)?;
+        if !(1..=MAX_PARTS).contains(&count) {
+            return Err(damaged());
+        }
+        Ok((count, &first[end + 1..]))
+    }
+
+    fn count_of(vault: &impl Vault, account: &str) -> Result<usize, Error> {
+        match vault.get(account) {
+            Ok(first) => Ok(header(&first).map_or(1, |(n, _)| n)),
+            Err(Error::NoEntry) => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn load(vault: &impl Vault, account: &str) -> Result<String, Error> {
+        let first = vault.get(account)?;
+        let (count, head) = header(&first)?;
+        let mut secret = head.to_vec();
+        for n in 2..=count {
+            secret.extend(vault.get(&part(account, n)).map_err(|e| match e {
+                Error::NoEntry => Error::Invalid("secret".into(), format!("part {n} of {count} is missing")),
+                e => e,
+            })?);
+        }
+        String::from_utf8(secret).map_err(|e| Error::BadEncoding(e.into_bytes()))
+    }
+
+    pub fn save(vault: &impl Vault, account: &str, secret: &str) -> Result<(), Error> {
+        let before = count_of(vault, account)?;
+        let parts = parts(secret.as_bytes())?;
+        for (i, blob) in parts.iter().enumerate().skip(1) {
+            vault.set(&part(account, i + 1), blob)?;
+        }
+        vault.set(account, &parts[0])?;
+        for n in parts.len() + 1..=before {
+            let _ = vault.delete(&part(account, n));
+        }
+        Ok(())
+    }
+
+    pub fn delete(vault: &impl Vault, account: &str) -> Result<(), Error> {
+        let count = count_of(vault, account)?;
+        vault.delete(account)?;
+        for n in 2..=count {
+            match vault.delete(&part(account, n)) {
+                Ok(()) | Err(Error::NoEntry) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Error> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
         .await
@@ -37,7 +176,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Error> + Send
 
 /// The saved secret, or none if nothing is saved.
 pub async fn load(account: String) -> Result<Option<String>, String> {
-    blocking(move || match entry(&account)?.get_password() {
+    blocking(move || match store::load(&account) {
         Ok(p) => Ok(Some(p)),
         Err(Error::NoEntry) => Ok(None),
         Err(e) => Err(e),
@@ -46,12 +185,12 @@ pub async fn load(account: String) -> Result<Option<String>, String> {
 }
 
 pub async fn save(account: String, secret: String) -> Result<(), String> {
-    blocking(move || entry(&account)?.set_password(&secret)).await
+    blocking(move || store::save(&account, &secret)).await
 }
 
 /// Deletes the saved secret. Nothing saved counts as done.
 pub async fn delete(account: String) -> Result<(), String> {
-    blocking(move || match entry(&account)?.delete_credential() {
+    blocking(move || match store::delete(&account) {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(e) => Err(e),
     })
@@ -61,6 +200,8 @@ pub async fn delete(account: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
     #[test]
     fn the_migrated_connection_keeps_its_old_entries() {
@@ -77,8 +218,69 @@ mod tests {
 
     #[test]
     fn an_id_cant_name_another_entry() {
-        for bad in ["", "short", "../dashboard-password", "ABCDEF12-0000", "a b c d e f g h", "x/../../y-123456", &"a".repeat(65)] {
+        for bad in ["", "short", "../dashboard-password", "ABCDEF12-0000", "a b c d e f g h", "x/../../y-123456", "abcdefgh#2", &"a".repeat(65)] {
             assert!(account(PASSWORD, Some(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    /// A keyring in memory, holding at most `split::BLOB` bytes an item as Windows does.
+    #[derive(Default)]
+    struct Memory(RefCell<BTreeMap<String, Vec<u8>>>);
+
+    impl split::Vault for Memory {
+        fn get(&self, account: &str) -> Result<Vec<u8>, Error> {
+            self.0.borrow().get(account).cloned().ok_or(Error::NoEntry)
+        }
+        fn set(&self, account: &str, blob: &[u8]) -> Result<(), Error> {
+            if blob.len() > split::BLOB {
+                return Err(Error::TooLong("secret".into(), split::BLOB as u32));
+            }
+            self.0.borrow_mut().insert(account.into(), blob.to_vec());
+            Ok(())
+        }
+        fn delete(&self, account: &str) -> Result<(), Error> {
+            self.0.borrow_mut().remove(account).map(|_| ()).ok_or(Error::NoEntry)
+        }
+    }
+
+    #[test]
+    fn a_secret_too_big_for_one_item_is_kept_in_parts() {
+        let m = Memory::default();
+        let big: String = "é-header-value ".repeat(1000);
+        split::save(&m, "extra-request-headers", &big).unwrap();
+        assert!(m.0.borrow().len() > 1);
+        assert_eq!(split::load(&m, "extra-request-headers").unwrap(), big);
+
+        split::save(&m, "extra-request-headers", "short").unwrap();
+        assert_eq!(m.0.borrow().keys().collect::<Vec<_>>(), ["extra-request-headers"]);
+        assert_eq!(split::load(&m, "extra-request-headers").unwrap(), "short");
+
+        split::save(&m, "extra-request-headers", &big).unwrap();
+        split::delete(&m, "extra-request-headers").unwrap();
+        assert!(m.0.borrow().is_empty());
+        assert!(matches!(split::load(&m, "extra-request-headers"), Err(Error::NoEntry)));
+        assert!(matches!(split::delete(&m, "extra-request-headers"), Err(Error::NoEntry)));
+    }
+
+    #[test]
+    fn every_size_round_trips_across_part_edges() {
+        for len in [0, 1, split::BLOB - 8, split::BLOB - 7, split::BLOB, 2 * split::BLOB - 8, 2 * split::BLOB - 7, 10_000] {
+            let m = Memory::default();
+            let s = "x".repeat(len);
+            split::save(&m, "a", &s).unwrap();
+            assert_eq!(split::load(&m, "a").unwrap(), s, "{len}");
+            assert_eq!(split::header(&m.0.borrow()["a"]).unwrap().0, m.0.borrow().len(), "{len}");
+        }
+    }
+
+    #[test]
+    fn a_damaged_or_incomplete_secret_is_an_error_not_a_wrong_secret() {
+        let m = Memory::default();
+        m.0.borrow_mut().insert("a".into(), b"no count here".to_vec());
+        assert!(matches!(split::load(&m, "a"), Err(Error::Invalid(..))));
+        split::save(&m, "a", &"y".repeat(3 * split::BLOB)).unwrap();
+        m.0.borrow_mut().remove("a#3");
+        assert!(matches!(split::load(&m, "a"), Err(Error::Invalid(..))));
+        assert!(matches!(split::parts(&vec![b'z'; 64 * split::BLOB]), Err(Error::TooLong(..))));
     }
 }

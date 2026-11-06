@@ -257,19 +257,57 @@ impl Serialize for RepoError {
     }
 }
 
+/// The helper program, deflated, then base64.
+fn packed_helper() -> &'static str {
+    static PACKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PACKED.get_or_init(|| {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(HELPER.as_bytes()).expect("deflate in memory");
+        base64::engine::general_purpose::STANDARD.encode(z.finish().expect("deflate in memory"))
+    })
+}
+
 /// The command ssh runs on the server. It is the same string every time: nothing in it comes from the owner. The
 /// program is deflated, then base64: the remote shell gets it as one argument, and Linux allows one argument 128 KiB.
 pub fn remote_command() -> String {
-    static COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    COMMAND
-        .get_or_init(|| {
-            use std::io::Write;
-            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-            z.write_all(HELPER.as_bytes()).expect("deflate in memory");
-            let program = base64::engine::general_purpose::STANDARD.encode(z.finish().expect("deflate in memory"));
-            format!("exec python3 -I -c 'import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{program}\")))'")
-        })
-        .clone()
+    format!("exec python3 -I -c 'import base64,zlib;exec(zlib.decompress(base64.b64decode(\"{}\")))'", packed_helper())
+}
+
+/// The remote command when the helper comes on stdin: it reads one line, the packed helper, and runs it, which then
+/// reads the request from the rest of stdin.
+pub const STDIN_REMOTE_COMMAND: &str =
+    "exec python3 -I -c 'import base64,sys,zlib;exec(zlib.decompress(base64.b64decode(sys.stdin.buffer.readline())))'";
+
+/// How the helper program reaches the server's python3. Windows caps a whole command line at 32,767 characters
+/// (CreateProcess), which the packed helper alone is over, so there it goes on stdin, one line ahead of the request.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HelperDelivery {
+    InCommand,
+    OnStdin,
+}
+
+#[cfg(windows)]
+pub const HELPER_DELIVERY: HelperDelivery = HelperDelivery::OnStdin;
+#[cfg(not(windows))]
+pub const HELPER_DELIVERY: HelperDelivery = HelperDelivery::InCommand;
+
+impl HelperDelivery {
+    /// What ssh asks the server to run.
+    pub fn remote_command(self) -> String {
+        match self {
+            HelperDelivery::InCommand => remote_command(),
+            HelperDelivery::OnStdin => STDIN_REMOTE_COMMAND.to_owned(),
+        }
+    }
+
+    /// What goes on stdin ahead of the request.
+    fn stdin_prefix(self) -> Option<String> {
+        match self {
+            HelperDelivery::InCommand => None,
+            HelperDelivery::OnStdin => Some(format!("{}\n", packed_helper())),
+        }
+    }
 }
 
 /// `ssh` to `target`, running the helper. The target is checked as the tunnel checks it: no leading '-', no whitespace.
@@ -278,7 +316,7 @@ pub fn ssh_command(target: &str) -> Result<Command, RepoError> {
     if target.is_empty() || target.starts_with('-') || target.contains(char::is_whitespace) {
         return Err(RepoError::BadTarget);
     }
-    let mut command = Command::new("ssh");
+    let mut command = crate::tunnel::background_ssh();
     command.args([
         "-T",
         "-o", "BatchMode=yes",
@@ -289,7 +327,7 @@ pub fn ssh_command(target: &str) -> Result<Command, RepoError> {
         "--",
         target,
     ]);
-    command.arg(remote_command());
+    command.arg(HELPER_DELIVERY.remote_command());
     Ok(command)
 }
 
@@ -311,10 +349,11 @@ pub async fn run_over_ssh_streaming(
     request: &Request,
     on_progress: impl Fn(serde_json::Value) + Send + Sync,
 ) -> Result<serde_json::Value, RepoError> {
-    match run_streaming(ssh_command(target)?, request, &on_progress).await {
+    let prefix = HELPER_DELIVERY.stdin_prefix();
+    match run_fed(ssh_command(target)?, prefix.as_deref(), request, &on_progress).await {
         Err(e) if request.reads_only() && dropped_before_login(&e) => {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            run_streaming(ssh_command(target)?, request, &on_progress).await
+            run_fed(ssh_command(target)?, prefix.as_deref(), request, &on_progress).await
         }
         other => other,
     }
@@ -349,11 +388,22 @@ pub async fn run(command: Command, request: &Request) -> Result<serde_json::Valu
 /// `run`, reading the helper's stderr line by line: a progress line (`PROGRESS`, then JSON) goes to `on_progress` as it
 /// comes; anything else is kept, as ssh's own words, for the failure.
 pub async fn run_streaming(
-    mut command: Command,
+    command: Command,
     request: &Request,
     on_progress: &(dyn Fn(serde_json::Value) + Send + Sync),
 ) -> Result<serde_json::Value, RepoError> {
-    let body = serde_json::to_vec(request).map_err(|e| RepoError::BadReply(e.to_string()))?;
+    run_fed(command, None, request, on_progress).await
+}
+
+/// `run_streaming`, writing `prefix` on stdin ahead of the request.
+pub async fn run_fed(
+    mut command: Command,
+    prefix: Option<&str>,
+    request: &Request,
+    on_progress: &(dyn Fn(serde_json::Value) + Send + Sync),
+) -> Result<serde_json::Value, RepoError> {
+    let mut body = prefix.unwrap_or_default().as_bytes().to_vec();
+    body.extend(serde_json::to_vec(request).map_err(|e| RepoError::BadReply(e.to_string()))?);
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = command.spawn().map_err(|e| RepoError::Spawn(e.to_string()))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
@@ -456,9 +506,34 @@ mod tests {
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let dashdash = args.iter().position(|a| a == "--").unwrap();
         assert_eq!(args[dashdash + 1], "liam@hermes");
-        assert_eq!(args[dashdash + 2], remote_command());
+        assert_eq!(args[dashdash + 2], HELPER_DELIVERY.remote_command());
         assert_eq!(args.len(), dashdash + 3);
         assert!(args.windows(2).any(|w| w == ["-o", "BatchMode=yes"]));
+    }
+
+    #[test]
+    fn the_helper_fits_a_windows_command_line_only_when_it_comes_on_stdin() {
+        assert!(remote_command().len() > 32_767, "if the helper fits now, Windows can pass it in the command");
+        assert!(STDIN_REMOTE_COMMAND.len() < 1024);
+        assert!(!STDIN_REMOTE_COMMAND.contains('"'), "nothing for Windows's argument quoting to escape");
+        let prefix = HelperDelivery::OnStdin.stdin_prefix().unwrap();
+        assert_eq!(prefix.matches('\n').count(), 1);
+        assert!(prefix.ends_with('\n'));
+        assert_eq!(HelperDelivery::InCommand.stdin_prefix(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_helper_on_stdin_reads_the_request_after_it() {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(STDIN_REMOTE_COMMAND);
+        let prefix = HelperDelivery::OnStdin.stdin_prefix();
+        let dir = std::env::temp_dir().join(format!("hermes-chat-helper-on-stdin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let request = Request::Status { repo: dir.to_str().unwrap().to_owned() };
+        let err = run_fed(c, prefix.as_deref(), &request, &|_| {}).await.unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&err, RepoError::Helper { .. }), "the helper ran and answered the request: {err:?}");
     }
 
     #[test]

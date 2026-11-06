@@ -7,8 +7,12 @@
 //!   themselves, so without slurp and grim the owner is told to install them, and nothing is captured.
 //! - Everywhere else (GNOME, KDE Plasma): the xdg-desktop-portal Screenshot portal, asked to be interactive, so the
 //!   desktop shows its own region and window picker. A portal too old to offer a picker is refused the same way.
+//! - Windows: Windows has no picker an app can ask for and wait on, so Hermes Chat shows its own (`picker`): a
+//!   still of the screens to drag a region on or click a window in, run by Windows PowerShell with .NET's Windows
+//!   Forms, both part of Windows.
 //!
-//! Captures are written privately under `$XDG_CACHE_HOME/hermes-chat/captures/<pid>/`. Unsent composer captures are
+//! Captures are written privately under `$XDG_CACHE_HOME/hermes-chat/captures/<pid>/` (on Windows
+//! `%LOCALAPPDATA%\hermes-chat\captures\<pid>\`). Unsent composer captures are
 //! removed on abandonment or exit; a screenshot needed by a failed/unknown message stays with its outbox until
 //! accepted, reconciled or dismissed. Crash leftovers without an outbox reference are swept at startup. A file the
 //! portal wrote in a temporary folder is deleted once copied; one it saved anywhere else (some desktops keep a copy in
@@ -16,7 +20,8 @@
 
 use serde::Serialize;
 use std::collections::HashSet;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -75,6 +80,8 @@ pub enum Method {
     Portal,
     /// A wlroots compositor without slurp or grim: its portal can't let the owner pick, so nothing is captured.
     NeedsSlurpAndGrim,
+    /// Windows: Hermes Chat's own picker (`picker`).
+    Picker,
 }
 
 /// Picks the capture method from the session's environment and the tools on PATH.
@@ -112,15 +119,24 @@ pub fn plan(env: impl Fn(&str) -> Option<String>, has: impl Fn(&str) -> bool) ->
 pub fn on_path(tool: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|dir| {
-            std::fs::metadata(dir.join(tool))
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            #[cfg(unix)]
+            return std::fs::metadata(dir.join(tool))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+            #[cfg(windows)]
+            return std::fs::metadata(dir.join(format!("{tool}.exe"))).is_ok_and(|m| m.is_file());
         })
     })
 }
 
 /// This session's capture method.
+#[cfg(unix)]
 pub fn current_method() -> Method {
     plan(|k| std::env::var(k).ok(), on_path)
+}
+
+#[cfg(windows)]
+pub fn current_method() -> Method {
+    Method::Picker
 }
 
 /// What the Settings screen says about screenshots on this desktop. `ok` false: a capture will fail, and `summary`
@@ -151,6 +167,10 @@ pub fn support() -> Support {
             },
         },
         Method::NeedsSlurpAndGrim => Support { ok: false, summary: NEEDS_SLURP_AND_GRIM.into() },
+        Method::Picker => match picker::missing() {
+            None => Support { ok: true, summary: picker::SUMMARY.into() },
+            Some(why) => Support { ok: false, summary: why },
+        },
         Method::Portal => match portal::version() {
             Ok(v) if v >= 2 => Support {
                 ok: true,
@@ -191,6 +211,13 @@ pub async fn capture(captures: &Captures, name: &str) -> Result<Capture, Capture
             })
         }
         Method::NeedsSlurpAndGrim => Err(CaptureError::Unsupported(NEEDS_SLURP_AND_GRIM.into())),
+        Method::Picker => {
+            let path = picker::take(captures, name).await?;
+            Ok(Capture {
+                path: path.to_string_lossy().into_owned(),
+                note: None,
+            })
+        }
         Method::Portal => {
             let source = tokio::task::spawn_blocking(|| {
                 // Version 1 has no picker: it would capture the whole screen without asking.
@@ -274,8 +301,7 @@ async fn grim_slurp(
         .and_then(|()| check_image(&path).map(|_| ()))
         .and_then(|()| {
             // grim writes with the umask; the folder is private already, the file is made so too.
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| failed("Couldn't save the screenshot", e))
+            private::restrict_file(&path).map_err(|e| failed("Couldn't save the screenshot", e))
         });
     if let Err(e) = checked {
         captures.discard(&path);
@@ -448,24 +474,310 @@ pub fn sway_boxes(tree: &str) -> Vec<String> {
     out
 }
 
+// ---- Windows: Hermes Chat's own picker ----
+
+pub mod picker {
+    //! A full-screen still of every screen, dimmed except for the region being dragged or the window under the
+    //! pointer. A drag picks a region; a click picks the window under it; Esc or a right click cancels. Run by Windows
+    //! PowerShell (`powershell.exe`, part of every Windows 10 and 11) compiling a little C# with Windows Forms, so
+    //! nothing is installed. It saves the pick as PNG where `HERMES_CAPTURE_OUT` says, and exits 0, or 3 when
+    //! cancelled, or else says why on stderr.
+    use super::CaptureError;
+
+    pub const SUMMARY: &str = "Screenshots use Hermes Chat's own picker: drag to select a region, or click a window. Esc cancels.";
+    /// The picker's exit code when the owner backed out.
+    pub const CANCELLED: i32 = 3;
+
+    /// `script` as `powershell.exe -EncodedCommand` takes it: base64 of its UTF-16LE text.
+    pub fn encoded_command(script: &str) -> String {
+        use base64::Engine;
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// What the picker's exit code and stderr mean.
+    pub fn outcome(code: Option<i32>, stderr: &[u8]) -> Result<(), CaptureError> {
+        let err = String::from_utf8_lossy(stderr).trim().to_owned();
+        match code {
+            Some(0) => Ok(()),
+            Some(CANCELLED) => Err(CaptureError::Cancelled),
+            // Constrained Language Mode, set by an administrator's application control, refuses to compile C#.
+            _ if err.contains("Cannot add type") || err.contains("language mode") => Err(CaptureError::Unsupported(format!(
+                "This computer's policy doesn't let PowerShell run the screenshot picker: {err}"
+            ))),
+            _ if !err.is_empty() => Err(CaptureError::Failed(format!("The screenshot picker failed: {err}"))),
+            Some(c) => Err(CaptureError::Failed(format!("The screenshot picker failed: it exited with {c}."))),
+            None => Err(CaptureError::Failed("The screenshot picker was stopped.".into())),
+        }
+    }
+
+    /// Windows PowerShell, by its full path in the Windows folder, so no other `powershell.exe` on PATH is run.
+    #[cfg(windows)]
+    fn powershell() -> Option<std::path::PathBuf> {
+        let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|p| p.is_absolute())?;
+        Some(root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+    }
+
+    /// Why the picker can't run here, or `None`.
+    #[cfg(windows)]
+    pub fn missing() -> Option<String> {
+        match powershell() {
+            Some(p) if p.is_file() => None,
+            _ => Some("Screenshots need Windows PowerShell, which isn't in the Windows folder. Turn it back on in Windows Features.".into()),
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn missing() -> Option<String> {
+        Some("Hermes Chat's own screenshot picker is for Windows.".into())
+    }
+
+    #[cfg(not(windows))]
+    pub async fn take(_: &super::Captures, _: &str) -> Result<std::path::PathBuf, CaptureError> {
+        Err(CaptureError::Unsupported(missing().unwrap_or_default()))
+    }
+
+    /// Lets the owner pick, and stages the pick in `captures` as `<name>.png`.
+    #[cfg(windows)]
+    pub async fn take(captures: &super::Captures, name: &str) -> Result<std::path::PathBuf, CaptureError> {
+        use std::process::Stdio;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Some(why) = missing() {
+            return Err(CaptureError::Unsupported(why));
+        }
+        let program = powershell().expect("checked by missing");
+        let path = captures.slot(&format!("{}.png", super::capture_stem(name)))?;
+        let run = tokio::process::Command::new(program)
+            .args(["-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", &encoded_command(SCRIPT)])
+            .env("HERMES_CAPTURE_OUT", &path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        let checked = match tokio::time::timeout(super::PICK_TIMEOUT, run).await {
+            Err(_) => Err(CaptureError::Failed("Nothing was picked within 5 minutes, so the screenshot was cancelled.".into())),
+            Ok(Err(e)) => Err(super::failed("Couldn't start Windows PowerShell for the screenshot picker", e)),
+            Ok(Ok(out)) => outcome(out.status.code(), &out.stderr).and_then(|()| super::check_image(&path).map(|_| ())),
+        };
+        if let Err(e) = checked {
+            captures.discard(&path);
+            return Err(e);
+        }
+        Ok(path)
+    }
+
+    #[cfg(windows)]
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+try {
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+public static class HermesPicker {
+    [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out RECT value, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out int value, int size);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+
+    const int DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
+
+    // The windows on screen, topmost first, by their visible frame.
+    static List<Rectangle> OnScreen() {
+        var found = new List<Rectangle>();
+        EnumWindows(delegate (IntPtr h, IntPtr unused) {
+            if (!IsWindowVisible(h) || IsIconic(h) || (GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) return true;
+            int cloaked;
+            if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) return true;
+            RECT r;
+            if (DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, out r, Marshal.SizeOf(typeof(RECT))) != 0 && !GetWindowRect(h, out r)) return true;
+            if (r.Right > r.Left && r.Bottom > r.Top) found.Add(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom));
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    class Overlay : Form {
+        readonly Bitmap still;
+        readonly Rectangle screens;
+        readonly List<Rectangle> windows;
+        Point from;
+        bool dragging;
+        Rectangle shown = Rectangle.Empty;
+        public Rectangle Picked = Rectangle.Empty;
+
+        public Overlay(Bitmap still, Rectangle screens, List<Rectangle> windows) {
+            this.still = still;
+            this.screens = screens;
+            this.windows = windows;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = screens;
+            TopMost = true;
+            ShowInTaskbar = false;
+            DoubleBuffered = true;
+            KeyPreview = true;
+            Cursor = Cursors.Cross;
+            Text = "Hermes Chat screenshot";
+        }
+
+        protected override void OnShown(EventArgs e) {
+            base.OnShown(e);
+            Bounds = screens;
+            Activate();
+        }
+
+        // Form coordinates are the screens' less their top-left corner.
+        Rectangle ToForm(Rectangle r) {
+            if (r.IsEmpty) return r;
+            r.Offset(-screens.Left, -screens.Top);
+            return r;
+        }
+
+        Rectangle WindowAt(Point p) {
+            var at = new Point(p.X + screens.Left, p.Y + screens.Top);
+            foreach (var w in windows) if (w.Contains(at)) return Rectangle.Intersect(w, screens);
+            return Rectangle.Empty;
+        }
+
+        static Rectangle Between(Point a, Point b) {
+            return Rectangle.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e) {
+            if (e.KeyCode == Keys.Escape) Close();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e) {
+            if (e.Button == MouseButtons.Right) { Close(); return; }
+            if (e.Button != MouseButtons.Left) return;
+            from = e.Location;
+            dragging = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e) {
+            shown = dragging ? Between(from, e.Location) : ToForm(WindowAt(e.Location));
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e) {
+            if (!dragging || e.Button != MouseButtons.Left) return;
+            dragging = false;
+            var r = Between(from, e.Location);
+            if (r.Width < 4 && r.Height < 4) {
+                var w = WindowAt(e.Location);
+                if (w.IsEmpty) return;
+                Picked = w;
+            } else {
+                r.Offset(screens.Left, screens.Top);
+                Picked = r;
+            }
+            Close();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e) {
+            var g = e.Graphics;
+            g.DrawImageUnscaled(still, 0, 0);
+            using (var dim = new SolidBrush(Color.FromArgb(110, 0, 0, 0)))
+            using (var rest = new Region(new Rectangle(Point.Empty, screens.Size))) {
+                if (!shown.IsEmpty) rest.Exclude(shown);
+                g.FillRegion(dim, rest);
+            }
+            if (!shown.IsEmpty) {
+                using (var pen = new Pen(Color.FromArgb(80, 160, 255), 2)) g.DrawRectangle(pen, shown);
+            }
+        }
+    }
+
+    public static int Run(string output) {
+        if (String.IsNullOrEmpty(output)) throw new ArgumentException("No file to save the screenshot in.");
+        // Real pixels on every screen, whatever its scaling: per-monitor aware where Windows has it.
+        try { if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) SetProcessDPIAware(); }
+        catch (EntryPointNotFoundException) { SetProcessDPIAware(); }
+        var screens = SystemInformation.VirtualScreen;
+        var windows = OnScreen();
+        using (var still = new Bitmap(screens.Width, screens.Height, PixelFormat.Format32bppArgb)) {
+            using (var g = Graphics.FromImage(still)) {
+                g.CopyFromScreen(screens.Left, screens.Top, 0, 0, screens.Size, CopyPixelOperation.SourceCopy);
+            }
+            Rectangle picked;
+            using (var overlay = new Overlay(still, screens, windows)) {
+                Application.Run(overlay);
+                picked = overlay.Picked;
+            }
+            picked.Offset(-screens.Left, -screens.Top);
+            picked.Intersect(new Rectangle(Point.Empty, screens.Size));
+            if (picked.Width <= 0 || picked.Height <= 0) return 3;
+            using (var part = still.Clone(picked, still.PixelFormat)) part.Save(output, ImageFormat.Png);
+        }
+        return 0;
+    }
+}
+'@
+exit [HermesPicker]::Run($env:HERMES_CAPTURE_OUT)
+} catch {
+[Console]::Error.WriteLine($_.Exception.Message)
+exit 2
+}
+"#;
+}
+
 // ---- the portal ----
 
 pub mod portal {
     //! The xdg-desktop-portal Screenshot portal over D-Bus: `Screenshot(parent, {interactive})`, then the answer comes
     //! as a `Response` signal on the request object.
+    //! D-Bus and the portal are Linux's; elsewhere `version` and `screenshot` say there is no portal.
     use super::CaptureError;
+    #[cfg(target_os = "linux")]
     use dbus::arg::{PropMap, RefArg, Variant};
+    #[cfg(target_os = "linux")]
     use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+    #[cfg(target_os = "linux")]
     use dbus::blocking::Connection;
+    #[cfg(target_os = "linux")]
     use dbus::message::MatchRule;
     use std::path::PathBuf;
+    #[cfg(target_os = "linux")]
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(target_os = "linux")]
+    use std::time::Instant;
 
+    #[cfg(target_os = "linux")]
     const DEST: &str = "org.freedesktop.portal.Desktop";
+    #[cfg(target_os = "linux")]
     const PATH: &str = "/org/freedesktop/portal/desktop";
+    #[cfg(target_os = "linux")]
     const IFACE: &str = "org.freedesktop.portal.Screenshot";
+    #[cfg(target_os = "linux")]
     const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn version() -> Result<u32, CaptureError> {
+        Err(CaptureError::Unsupported(super::NO_PORTAL.into()))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn screenshot(_: Duration) -> Result<PathBuf, CaptureError> {
+        Err(CaptureError::Unsupported(super::NO_PORTAL.into()))
+    }
 
     /// A D-Bus error from the portal, as the owner should read it.
     pub fn explain(name: &str, message: &str) -> CaptureError {
@@ -487,6 +799,7 @@ pub mod portal {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn dbus_error(e: dbus::Error) -> CaptureError {
         explain(
             e.name().unwrap_or(""),
@@ -516,6 +829,7 @@ pub mod portal {
     }
 
     /// The Screenshot portal's version; an error when there is no portal, or it has no Screenshot interface.
+    #[cfg(target_os = "linux")]
     pub fn version() -> Result<u32, CaptureError> {
         let conn = Connection::new_session().map_err(|e| {
             CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}"))
@@ -524,10 +838,12 @@ pub mod portal {
         proxy.get::<u32>(IFACE, "version").map_err(dbus_error)
     }
 
+    #[cfg(target_os = "linux")]
     type PortalAnswer = Arc<Mutex<Option<(u32, Option<String>)>>>;
 
     /// Asks the portal for an interactive screenshot and waits up to `timeout` for the owner's pick. Returns the file
     /// the portal saved.
+    #[cfg(target_os = "linux")]
     pub fn screenshot(timeout: Duration) -> Result<PathBuf, CaptureError> {
         let conn = Connection::new_session().map_err(|e| {
             CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}"))
@@ -603,23 +919,73 @@ pub struct Captures {
     retained: Mutex<HashSet<PathBuf>>,
 }
 
-fn my_uid() -> std::io::Result<u32> {
-    Ok(std::fs::metadata("/proc/self")?.uid())
+/// Folders and files only this user can open. On Linux by owner and mode (0700, 0600). On Windows by the ACL a new
+/// folder inherits: the captures root is in `%LOCALAPPDATA%`, which grants only this user, SYSTEM and Administrators,
+/// so nothing is set or checked beyond that, and a link in place of a folder is still refused.
+mod private {
+    use std::path::Path;
+    #[cfg(unix)]
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    #[cfg(unix)]
+    fn my_uid() -> std::io::Result<u32> {
+        Ok(std::fs::metadata("/proc/self")?.uid())
+    }
+
+    pub fn create_dir(dir: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::fs::DirBuilder::new().mode(0o700).create(dir);
+        #[cfg(windows)]
+        return std::fs::create_dir(dir);
+    }
+
+    /// A new file, never one already there.
+    pub fn create_file(path: &Path) -> std::io::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options.open(path)
+    }
+
+    /// Makes a file another program wrote readable only by this user.
+    pub fn restrict_file(path: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        #[cfg(windows)]
+        return std::fs::metadata(path).map(|_| ());
+    }
+
+    /// `meta` is of something this user owns. On Windows, whatever this user can read is taken as theirs.
+    pub fn mine(meta: &std::fs::Metadata) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        return Ok(meta.uid() == my_uid()?);
+        #[cfg(windows)]
+        return Ok({
+            let _ = meta;
+            true
+        });
+    }
+
+    /// `meta`, of a folder, is this user's and closed to everyone else.
+    pub fn closed(meta: &std::fs::Metadata) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        return Ok(mine(meta)? && meta.permissions().mode() & 0o077 == 0);
+        #[cfg(windows)]
+        return mine(meta);
+    }
 }
 
 /// Makes `dir` if needed, and checks it is a real folder (not a link) that only this user can open.
 fn private_dir(dir: &Path) -> Result<(), CaptureError> {
     let io = |e: std::io::Error| failed("Couldn't make a private folder for screenshots", e);
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+    match private::create_dir(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(io(e)),
     }
     let meta = std::fs::symlink_metadata(dir).map_err(io)?;
-    if !meta.is_dir()
-        || meta.uid() != my_uid().map_err(io)?
-        || meta.permissions().mode() & 0o077 != 0
-    {
+    if !meta.is_dir() || !private::closed(&meta).map_err(io)? {
         return Err(CaptureError::Failed(format!(
             "Couldn't save the screenshot: {} isn't a private folder.",
             dir.display()
@@ -630,10 +996,14 @@ fn private_dir(dir: &Path) -> Result<(), CaptureError> {
 
 /// A private cache folder, durable across app restarts so a failed message can still be retried with its screenshot.
 pub fn default_root() -> Result<PathBuf, CaptureError> {
+    #[cfg(unix)]
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    #[cfg(windows)]
+    let cache = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).filter(|p| p.is_absolute());
+    let cache = cache
         .ok_or_else(|| CaptureError::Failed("Couldn't find a folder for screenshots.".into()))?;
     std::fs::create_dir_all(&cache).map_err(|e| failed("Couldn't open the screenshot cache", e))?;
     Ok(cache.join("hermes-chat").join("captures"))
@@ -681,8 +1051,7 @@ pub fn is_scratch(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
-    let Ok(uid) = my_uid() else { return false };
-    if !meta.is_file() || meta.uid() != uid {
+    if !meta.is_file() || !private::mine(&meta).unwrap_or(false) {
         return false;
     }
     let Ok(real) = path.canonicalize() else {
@@ -727,7 +1096,7 @@ impl Captures {
                 .mine
                 .join(self.next.fetch_add(1, Ordering::Relaxed).to_string());
             // A reused pid may still own a screenshot in a persisted outbox. Never overwrite an existing slot.
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            match private::create_dir(&dir) {
                 Ok(()) => return Ok(dir.join(file_name)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(failed("Couldn't save the screenshot", e)),
@@ -763,11 +1132,7 @@ impl Captures {
         let path = self.slot(&format!("{}.{ext}", capture_stem(name)))?;
         let copied = (|| -> std::io::Result<()> {
             let mut from = std::fs::File::open(source)?;
-            let mut to = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)?;
+            let mut to = private::create_file(&path)?;
             std::io::copy(&mut from, &mut to)?;
             to.sync_all()
         })();
@@ -905,6 +1270,7 @@ impl Captures {
 
 /// `pid` is a running Hermes Chat: it exists, isn't a zombie, and has this program's name. A pid reused by another
 /// program, or one never reaped, doesn't keep a crashed run's captures around.
+#[cfg(unix)]
 pub fn instance_alive(pid: u32) -> bool {
     let proc = Path::new("/proc").join(pid.to_string());
     let Ok(stat) = std::fs::read_to_string(proc.join("stat")) else {
@@ -919,4 +1285,57 @@ pub fn instance_alive(pid: u32) -> bool {
     }
     let comm = |p: &Path| std::fs::read_to_string(p.join("comm")).map(|c| c.trim_end().to_owned());
     matches!((comm(&proc), comm(Path::new("/proc/self"))), (Ok(a), Ok(b)) if a == b)
+}
+
+/// `pid` is a running Hermes Chat: it hasn't exited, and its program file has this one's name. A pid reused by another
+/// program doesn't keep a crashed run's captures around.
+#[cfg(windows)]
+pub fn instance_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    let Some(me) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_ascii_lowercase())) else {
+        return false;
+    };
+    // SAFETY: the handle is checked before use and closed once; the name buffer's length is passed with it.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+        let mut name = [0u16; 1024];
+        let mut len = name.len() as u32;
+        let named = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, name.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(process);
+        if !(running && named) {
+            return false;
+        }
+        let path = PathBuf::from(String::from_utf16_lossy(&name[..len as usize]));
+        path.file_name().is_some_and(|n| n.to_ascii_lowercase() == me)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_what_the_windows_picker_answers() {
+        assert_eq!(picker::outcome(Some(0), b""), Ok(()));
+        assert_eq!(picker::outcome(Some(picker::CANCELLED), b""), Err(CaptureError::Cancelled));
+        assert!(matches!(picker::outcome(Some(2), b"A generic error occurred in GDI+.\r\n"), Err(CaptureError::Failed(m)) if m.ends_with("in GDI+.")));
+        assert!(matches!(
+            picker::outcome(Some(2), b"Cannot add type. Definition of new types is not supported in this language mode."),
+            Err(CaptureError::Unsupported(m)) if m.contains("policy")
+        ));
+        assert!(matches!(picker::outcome(Some(1), b""), Err(CaptureError::Failed(m)) if m.contains("exited with 1")));
+        assert!(matches!(picker::outcome(None, b""), Err(CaptureError::Failed(_))));
+    }
+
+    #[test]
+    fn hands_powershell_its_script_as_utf16_base64() {
+        assert_eq!(picker::encoded_command("exit 3"), "ZQB4AGkAdAAgADMA");
+        assert_eq!(picker::encoded_command("\u{e9}"), "6QA=");
+    }
 }

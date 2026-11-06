@@ -76,6 +76,7 @@ async fn checks_only_web_addresses() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn opens_the_page_with_the_desktop_opener() {
     let dir = std::env::temp_dir().join(format!("hermes-open-{}", std::process::id()));
