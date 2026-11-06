@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: scripts/release/windows-release.test.sh
 
   rust:
     runs-on: ubuntu-24.04
