@@ -165,6 +165,22 @@ describe("Clone a profile", () => {
     expect(server.otherProfiles["default-copy"]).toBeUndefined();
   });
 
+  it("reads the list again after a refusal, but not the source it already read", async () => {
+    const { server, hermes, user } = await launch();
+    server.profileCreateError = `The dashboard answered 400: {"detail":"Profile name 'default-copy' is reserved."}`;
+    const dialog = await openClone(user);
+    await user.click(within(dialog).getByRole("button", { name: "Clone" }));
+    await within(dialog).findByRole("alert");
+    const post = server.restRequests.findIndex((r) => r.method === "POST" && r.path === "/api/profiles");
+    const readsSince = () => server.restRequests.slice(post + 1).filter((r) => r.method === "GET").map((r) => r.path);
+    await waitFor(() => expect(readsSince()).toContain("/api/profiles"));
+    await act(async () => void (await hermes.idle()));
+
+    expect(readsSince()).not.toContain("/api/profiles/default/soul");
+    expect(within(dialog).getByRole("table", { name: "What the clone copies" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Clone" })).toHaveProperty("disabled", false);
+  });
+
   it("reads the list, SOUL.md and skills in one round when it opens, and nothing while the name is typed or parts are picked", async () => {
     const held = gate();
     const { user } = await launch(held);

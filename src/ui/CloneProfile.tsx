@@ -36,6 +36,8 @@ function suggestName(source: string, profiles: readonly ProfileRow[]): string {
   }
 }
 
+const listProblem = (e: unknown) => `Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`;
+
 const STATE_ICON: Record<Result["state"], ReactElement> = {
   copied: <Check size={13} aria-label="Copied" className="clone-ok" />,
   failed: <CircleAlert size={13} aria-label="Didn't copy" className="clone-bad" />,
@@ -100,7 +102,7 @@ export function CloneProfileDialog({
     const list = api.profiles();
     list.then(
       (rows) => current && setProfiles(rows),
-      (e: unknown) => current && setListError(`Couldn't list profiles: ${e instanceof Error ? e.message : String(e)}`),
+      (e: unknown) => current && setListError(listProblem(e)),
     );
     api.source(sourceName, list).then(
       (s) => current && setSource(s),
@@ -126,8 +128,12 @@ export function CloneProfileDialog({
     if (!live.current) return;
     setRunning(false);
     setOutcome(out);
-    // A name taken meanwhile shows against the list as it is now.
-    if (out.kind === "refused") readAgain();
+    // A name taken meanwhile shows against the list as it is now. The source read at open still stands.
+    if (out.kind === "refused")
+      api.profiles().then(
+        (rows) => live.current && setProfiles(rows),
+        (e: unknown) => live.current && setListError(listProblem(e)),
+      );
   };
   const start = () => {
     if (running || !source || problem) return;
