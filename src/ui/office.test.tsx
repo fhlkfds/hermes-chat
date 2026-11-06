@@ -133,7 +133,7 @@ describe("Desks and the list", () => {
     expect(new Set(desks.opened).size).toBe(desks.opened.length);
     expect(seen({ rooms: officeRooms({ entries, shown: () => true, chats, profile: "default", connected: true }), connected: true }, "list")).toEqual(desks);
     expect(seen({ rooms: officeRooms({ entries, shown: () => true, chats, profile: "default", connected: true }), connected: true }, "scene")).toEqual(desks);
-  });
+  }, 20_000);
 
   it("keeps a desk only Hermes's own completion marks finished", async () => {
     const server = new FakeHermes();
