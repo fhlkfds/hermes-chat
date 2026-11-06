@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Unsettle button on a Settled chat, in the Settled section and in the chat header's More menu, against a fake Hermes.
+// The Unsettle button on a Settled chat, in the Settled drawer and in the chat header's More menu, against a fake Hermes.
 // Each test checks what reached Hermes and what the toast says, not which handler ran.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -28,7 +28,7 @@ const pinnedWrites = (server: FakeHermes) =>
   server.restRequests.filter((r) => r.method === "PATCH" && r.body && "pinned" in r.body).map((r) => r.body!.pinned);
 const toast = () => screen.getByRole("status");
 
-/** Signed in with one Active chat and one Settled chat, the Settled section open. */
+/** Signed in with one Active chat and one Settled chat, the Settled drawer open. */
 async function signedIn() {
   const server = new FakeHermes();
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" }), row("old", 5, { title: "Old notes" })];
@@ -45,7 +45,7 @@ async function signedIn() {
 describe("Unsettle", () => {
   it("is the same icon-only button as Settle on a Settled chat in its section, named on hover, and unsettles with Undo", async () => {
     const { server, hermes, user } = await signedIn();
-    const drawer = document.querySelector<HTMLElement>(".sb-scroll")!;
+    const drawer = document.querySelector<HTMLElement>('[data-drawer="settled"]')!;
     const unsettle = within(drawer).getByRole("button", { name: "Unsettle" });
     // No words in the button: just the icon, with its name in the tooltip, like Settle.
     expect(unsettle.textContent).toBe("");

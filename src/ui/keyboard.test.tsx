@@ -449,12 +449,9 @@ describe("Chat list by keyboard", () => {
     expect(s.server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
   });
 
-  it("reaches Clear, Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
+  it("reaches Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
     const s = await signedIn();
     rowButton("Nightly backup").focus();
-    // A read, quiet chat in the Inbox can be cleared from it first (ADR 0063).
-    await s.user.tab();
-    expect(focused()).toBe(screen.getAllByRole("button", { name: "Clear from the Inbox" })[0]);
     await s.user.tab();
     expect(focused()).toBe(screen.getAllByRole("button", { name: "Settle" })[0]);
     await s.user.tab();

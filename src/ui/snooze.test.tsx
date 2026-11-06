@@ -107,7 +107,7 @@ function ListSince({ chats, since }: { chats: Chat[]; since: Record<string, numb
 
 /** The button that opens chat `id` in the list. */
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`.row-open[data-chat="${id}"]`)!;
-/** The titles of the chats the list shows in `section` ("inbox", "working", "snoozed", "unsettled" or "settled"), in order. */
+/** The titles of the chats the list shows in `section` ("inbox", "working", "snoozed" or "settled"), in order. */
 const titles = (section: string) =>
   [...document.querySelectorAll(`.row[data-section="${section}"]:not([hidden]) .row-open .row-title`)].map((t) => t.textContent);
 
