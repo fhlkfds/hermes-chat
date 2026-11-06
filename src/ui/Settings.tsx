@@ -576,7 +576,14 @@ export function SettingsScreen({
               name="Server details"
               hint="The Hermes version, protocol and sign-in, and which features this server supports."
               control={
-                <button className="btn" onClick={() => pick("diagnostics")}>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    // Server details are Diagnostics' Server group, whichever group was shown last.
+                    setDiagGroup("server");
+                    pick("diagnostics");
+                  }}
+                >
                   <Stethoscope size={14} aria-hidden /> Connection diagnostics
                 </button>
               }

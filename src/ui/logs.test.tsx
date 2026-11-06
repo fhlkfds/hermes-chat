@@ -8,7 +8,11 @@ import { FakeHermes } from "../hermes/fakeHermes";
 import { LogBuffer, note, type RemoteLog } from "../hermes/logs";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
-import { LogsPanel } from "./Logs";
+import { LogsPanel, type LogsWiring } from "./Logs";
+import { SettingsScreen } from "./Settings";
+import { appearanceStore } from "./appearance";
+import type { CapabilityId, CapabilityStore } from "../hermes/capabilities";
+import { useState } from "react";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
@@ -224,5 +228,153 @@ describe("Logs in Settings → Diagnostics", () => {
     await user.paste("support bundle");
     await user.click(await screen.findByRole("button", { name: "Open Diagnostics" }));
     expect(screen.getByRole("tab", { name: /Diagnostics/, selected: true })).toBeTruthy();
+  });
+});
+
+/** Settings alone, as App shows it, with Logs reading `read` every 30 ms; Back to chat closes it. */
+function SettingsWith({
+  hermes,
+  profile = "default",
+  logs,
+  capabilities = hermes.capabilities,
+  showDiagnostics,
+}: {
+  hermes: Hermes;
+  profile?: string;
+  logs?: LogsWiring;
+  capabilities?: CapabilityStore | null;
+  showDiagnostics?: { id?: CapabilityId };
+}) {
+  const [appearance] = useState(() => appearanceStore({ getItem: () => null, setItem: () => {} }, document.createElement("html")));
+  const [open, setOpen] = useState(true);
+  if (!open) return <p>chat</p>;
+  return (
+    <SettingsScreen
+      status="connected"
+      route={{ kind: "ssh", target: "liam@hermes" }}
+      unsecure={false}
+      username="liam"
+      passwordSaved
+      profile={profile}
+      olderPulled={false}
+      cacheBytes={() => 0}
+      appearance={appearance}
+      listFonts={async () => ({ all: [], mono: [] })}
+      modelSettings={hermes.modelSettings}
+      capabilities={capabilities ?? undefined}
+      showDiagnostics={showDiagnostics}
+      logs={logs}
+      onClearCache={() => {}}
+      onPullOlder={async () => []}
+      onSignOut={async () => {}}
+      onClose={() => setOpen(false)}
+    />
+  );
+}
+
+describe("Settings → Diagnostics, Server and Logs", () => {
+  async function hermesFor() {
+    const hermes = await connect(new FakeHermes().openPipe, "default");
+    running.push(hermes);
+    return hermes;
+  }
+  const wiring = (read: LogsWiring["read"]): LogsWiring => ({ connection: "SSH tunnel", read, save: async () => null, pollMs: 30 });
+  const answering = (profile: string) => vi.fn(async (file: RemoteLog) => ({ file, lines: [`2026-11-04 10:00:00,000 INFO agent: from ${profile}\n`] }));
+  const groups = () => screen.getByRole("navigation", { name: "Diagnostics" });
+  const current = () => within(groups()).getAllByRole("button").find((b) => b.getAttribute("aria-current") === "true")?.getAttribute("aria-label");
+  /** No read starts in a few poll intervals. */
+  const stillAt = async (read: ReturnType<typeof vi.fn>) => {
+    const n = read.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(read.mock.calls.length).toBe(n);
+  };
+
+  it("reads Hermes only while Logs is shown: leaving the group, the tab or Settings stops it", { timeout: 20_000 }, async () => {
+    const hermes = await hermesFor();
+    const read = answering("default");
+    render(<SettingsWith hermes={hermes} logs={wiring(read)} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    expect(current()).toBe("Server");
+    await stillAt(read);
+    expect(read).not.toHaveBeenCalled();
+
+    await user.click(within(groups()).getByRole("button", { name: "Logs" }));
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1));
+    await user.click(within(groups()).getByRole("button", { name: "Server" }));
+    await stillAt(read);
+
+    await user.click(within(groups()).getByRole("button", { name: "Logs" }));
+    const before = read.mock.calls.length;
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before + 1));
+    await user.click(screen.getByRole("tab", { name: /General/ }));
+    await stillAt(read);
+
+    // The tab keeps the group shown last.
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    expect(current()).toBe("Logs");
+    await user.click(screen.getByRole("button", { name: /Back to chat/ }));
+    expect(screen.getByText("chat")).toBeTruthy();
+    await stillAt(read);
+  });
+
+  it("opens at Server from General's Connection diagnostics and from a capability note, whatever group was shown", { timeout: 20_000 }, async () => {
+    const hermes = await hermesFor();
+    const logs = wiring(answering("default"));
+    const { rerender } = render(<SettingsWith hermes={hermes} logs={logs} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    await user.click(within(groups()).getByRole("button", { name: "Logs" }));
+    await user.click(screen.getByRole("tab", { name: /General/ }));
+    await user.click(screen.getByRole("button", { name: "Connection diagnostics" }));
+    expect(screen.getByRole("tab", { name: /Diagnostics/, selected: true })).toBeTruthy();
+    expect(current()).toBe("Server");
+    expect(screen.queryByRole("region", { name: "Logs" })).toBeNull();
+
+    await user.click(within(groups()).getByRole("button", { name: "Logs" }));
+    rerender(<SettingsWith hermes={hermes} logs={logs} showDiagnostics={{ id: "memory" }} />);
+    await waitFor(() => expect(current()).toBe("Server"));
+    expect(screen.queryByRole("region", { name: "Logs" })).toBeNull();
+  });
+
+  it("starts afresh for another profile, and drops an answer the old profile's read was still waiting for", { timeout: 20_000 }, async () => {
+    const hermes = await hermesFor();
+    let late: (v: unknown) => void = () => {};
+    let first = true;
+    const fromDefault = vi.fn(async (file: RemoteLog) => {
+      if (first) return (first = false), { file, lines: ["2026-11-04 10:00:00,000 INFO agent: from default\n"] };
+      return new Promise((r) => (late = r));
+    });
+    const { rerender } = render(<SettingsWith hermes={hermes} logs={wiring(fromDefault)} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    await user.click(within(groups()).getByRole("button", { name: "Logs" }));
+    await waitFor(() => expect(rows()).toEqual(["2026-11-04 10:00:00,000 INFO agent: from default"]));
+    await waitFor(() => expect(fromDefault).toHaveBeenCalledTimes(2));
+
+    const fromWork = answering("work");
+    rerender(<SettingsWith hermes={hermes} profile="work" logs={wiring(fromWork)} />);
+    await waitFor(() => expect(rows()).toEqual(["2026-11-04 10:00:00,000 INFO agent: from work"]));
+    act(() => late({ file: "agent", lines: ["2026-11-04 10:00:00,000 INFO agent: from default\n", "2026-11-04 10:00:01,000 INFO agent: late from default\n"] }));
+    await stillAt(fromDefault);
+    expect(rows()).toEqual(["2026-11-04 10:00:00,000 INFO agent: from work"]);
+  });
+
+  it("has no sub-nav with only one group, and no Diagnostics tab with neither", async () => {
+    const hermes = await hermesFor();
+    const { rerender } = render(<SettingsWith hermes={hermes} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Diagnostics/ }));
+    expect(screen.queryByRole("navigation", { name: "Diagnostics" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Server" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Logs" })).toBeNull();
+
+    rerender(<SettingsWith hermes={hermes} capabilities={null} logs={wiring(answering("default"))} />);
+    expect(screen.queryByRole("navigation", { name: "Diagnostics" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Logs" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Server" })).toBeNull();
+
+    rerender(<SettingsWith hermes={hermes} capabilities={null} />);
+    expect(screen.queryByRole("tab", { name: /Diagnostics/ })).toBeNull();
   });
 });

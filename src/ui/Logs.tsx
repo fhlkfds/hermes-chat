@@ -42,6 +42,8 @@ export type LogsWiring = {
   read: (file: RemoteLog, lines: number) => Promise<unknown>;
   /** Saves text where the owner picks; the path, or null when they cancelled. */
   save: (text: string, fileName: string) => Promise<string | null>;
+  /** How often a shown Hermes log is read, in ms: every 2 s unless a test asks for less. */
+  pollMs?: number;
 };
 
 export function LogsPanel({
@@ -56,7 +58,6 @@ export function LogsPanel({
   profile: string;
   connected: boolean;
   app?: LogBuffer;
-  pollMs?: number;
 }) {
   const [source, setSource] = useState<Source>(connected ? "agent" : "app");
   // One follower per Hermes log opened while the screen is, so switching back keeps what was read.
