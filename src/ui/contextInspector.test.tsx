@@ -9,7 +9,7 @@ import { FakeHermes, row, type TranscriptMessage } from "../hermes/fakeHermes";
 import type { Chat } from "../hermes/model";
 import type { PreviewTarget } from "../hermes/preview";
 import { connect, type Hermes } from "../hermes/transport";
-import { PreviewContext } from "./previewContext";
+import { LinksProvider } from "./previewContext";
 import { ShowInChatContext } from "./showInChat";
 import { StatusBar } from "./StatusBar";
 
@@ -73,7 +73,7 @@ async function inspectorFor(server = new FakeHermes(), edit: (c: Chat) => Chat =
   const showInChat = vi.fn(() => true);
   const preview = vi.fn<(t: PreviewTarget) => void>();
   const bar = () => (
-    <PreviewContext.Provider value={preview}>
+    <LinksProvider preview={preview} web={{ openInBrowser: async () => {} }} onToast={() => {}}>
       <ShowInChatContext.Provider value={showInChat}>
         <StatusBar
           chat={edit(chat())}
@@ -82,7 +82,7 @@ async function inspectorFor(server = new FakeHermes(), edit: (c: Chat) => Chat =
           context={{ inspect: () => hermes.inspectContext("nas"), history: () => hermes.compactionHistory("nas"), compact: () => hermes.compact("nas"), cannotCompact: () => hermes.cannotCompact() }}
         />
       </ShowInChatContext.Provider>
-    </PreviewContext.Provider>
+    </LinksProvider>
   );
   const view = render(bar());
   hermes.subscribe(() => view.rerender(bar()));

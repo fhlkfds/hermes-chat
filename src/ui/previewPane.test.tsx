@@ -788,3 +788,127 @@ describe("Closing and resizing", () => {
     expect(fsReads(server).at(-1)!.query.get("profile")).toBe("work");
   });
 });
+
+describe("The link menu (issue #240)", () => {
+  const DOCS = "https://docs.example.com/crash";
+  const menuItems = () => screen.getAllByRole("menuitem").map((b) => b.textContent);
+  const item = (name: string) => screen.getByRole("menuitem", { name });
+  const rightClick = (el: HTMLElement) => fireEvent.contextMenu(el, { clientX: 40, clientY: 50 });
+  /** The clipboard: `writes` records what was copied; `fails` makes writing reject with it; `missing` has no writeText. */
+  function clipboard({ fails, missing }: { fails?: Error; missing?: boolean } = {}) {
+    const writes: string[] = [];
+    const writeText = async (t: string) => {
+      if (fails) throw fails;
+      writes.push(t);
+    };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: missing ? {} : { writeText } });
+    return writes;
+  }
+
+  it("offers the Preview, the browser and copying on a web link in a reply, instead of WebKit's own menu", async () => {
+    const { user, web } = await signedIn();
+    const link = screen.getByRole("link", { name: "the docs" });
+    expect(rightClick(link)).toBe(false);
+    expect(menuItems()).toEqual(["Open in the Preview", "Open in your browser", "Copy link"]);
+
+    await user.click(item("Open in your browser"));
+    expect(web.opened).toEqual([DOCS]);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(paneOpen()).toBe(false);
+
+    rightClick(link);
+    await user.click(item("Open in the Preview"));
+    expect(await within(pane()).findByTitle(`Web page: ${DOCS}`)).toBeTruthy();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(web.opened).toEqual([DOCS]);
+  });
+
+  it("says why the browser didn't open", async () => {
+    const { user } = await signedIn({ web: theWeb({}, "Couldn't find xdg-open, which opens pages in your browser.") });
+    rightClick(screen.getByRole("link", { name: "the docs" }));
+    await user.click(item("Open in your browser"));
+    expect(await screen.findByText("Couldn't open it in your browser: Couldn't find xdg-open, which opens pages in your browser.")).toBeTruthy();
+  });
+
+  it("copies the link and says so, or says why it couldn't", async () => {
+    const { user } = await signedIn();
+    const link = screen.getByRole("link", { name: "the docs" });
+    const writes = clipboard();
+    rightClick(link);
+    await user.click(item("Copy link"));
+    expect(await screen.findByText("Link copied.")).toBeTruthy();
+    expect(writes).toEqual([DOCS]);
+
+    clipboard({ fails: new Error("Write permission denied.") });
+    rightClick(link);
+    await user.click(item("Copy link"));
+    expect(await screen.findByText("Couldn't copy the link: Write permission denied.")).toBeTruthy();
+
+    clipboard({ missing: true });
+    rightClick(link);
+    await user.click(item("Copy link"));
+    expect(await screen.findByText("Couldn't copy the link.")).toBeTruthy();
+  });
+
+  it("keeps a server page out of this computer's browser, and opens it in the Preview through SSH", async () => {
+    const { user, web, pages } = await signedIn();
+    const writes = clipboard();
+    rightClick(screen.getByRole("link", { name: "the dev server" }));
+    expect(menuItems()).toEqual(["Open in the Preview", "Open in your browser", "Copy link"]);
+    const browser = item("Open in your browser");
+    expect(browser.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("A server page opens in your browser only through the Preview.").id).toBe(browser.getAttribute("aria-describedby"));
+
+    await user.click(browser);
+    expect(web.opened).toEqual([]);
+    expect(pages.opened).toEqual([]);
+
+    await user.click(item("Copy link"));
+    expect(writes).toEqual(["http://localhost:5173/app?v=2"]);
+
+    rightClick(screen.getByRole("link", { name: "the dev server" }));
+    await user.click(item("Open in the Preview"));
+    await waitFor(() => expect(pages.opened).toEqual(["http://localhost:5173/app?v=2"]));
+    expect(web.opened).toEqual([]);
+  });
+
+  it("lets a mail link only be copied, as written", async () => {
+    const { user } = await signedIn();
+    const writes = clipboard();
+    expect(rightClick(screen.getByRole("link", { name: "a mail" }))).toBe(false);
+    expect(menuItems()).toEqual(["Copy link"]);
+    await user.click(item("Copy link"));
+    expect(writes).toEqual(["mailto:x@example.com"]);
+  });
+
+  it("leaves a same-page link's own menu alone, and gives a web link in a previewed Markdown file the link menu", async () => {
+    const { server, user } = await signedIn();
+    server.serverFiles["/home/liam/app/GUIDE.md"] = "# Guide\n\nSee [Usage](#usage) and [the site](https://guide.example.com/).\n\n## Usage\n\nRun it.\n";
+    await user.click(screen.getByRole("button", { name: "Open the side panel" }));
+    await user.click(within(pane()).getByRole("textbox"));
+    await user.paste("/home/liam/app/GUIDE.md");
+    await user.keyboard("{Enter}");
+    await within(pane()).findByRole("heading", { name: "Guide" });
+
+    expect(rightClick(within(pane()).getByRole("link", { name: "Usage" }))).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    expect(rightClick(within(pane()).getByRole("link", { name: "the site" }))).toBe(false);
+    expect(menuItems()).toEqual(["Open in the Preview", "Open in your browser", "Copy link"]);
+  });
+
+  it("opens from the keyboard on the focused link, and gives focus back on Escape", async () => {
+    const { user } = await signedIn();
+    const link = screen.getByRole("link", { name: "the docs" });
+    link.focus();
+    // The Menu key and Shift+F10 send a contextmenu with no pointer position.
+    expect(fireEvent.contextMenu(link, { clientX: 0, clientY: 0 })).toBe(false);
+    expect(document.activeElement).toBe(item("Open in the Preview"));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Open in your browser"));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(link);
+  });
+
+});

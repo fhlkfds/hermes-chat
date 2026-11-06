@@ -104,7 +104,7 @@ import { ModelControls } from "./ui/ModelPicker";
 import { PreviewPane } from "./ui/PreviewPane";
 import { PANE_MIN_WIDTH, SidePanel, type PanelTab } from "./ui/SidePanel";
 import { ScreenTab } from "./ui/Screen";
-import { PreviewContext } from "./ui/previewContext";
+import { LinksProvider } from "./ui/previewContext";
 import { tauriLocalFiles, tauriServerPages, tauriWebPages, type LocalFiles, type ServerPages, type WebPages } from "./ui/tauriPreview";
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
@@ -2371,7 +2371,7 @@ export function Main({
   });
 
   return (
-    <PreviewContext.Provider value={openPreview}>
+    <LinksProvider preview={openPreview} web={webPages} onToast={(text) => setToast({ text, at: Date.now() })}>
     <div className="app" inert={covered || restarting}>
       <Rail
         status={status}
@@ -3180,7 +3180,7 @@ export function Main({
           document.body,
         )}
     </div>
-    </PreviewContext.Provider>
+    </LinksProvider>
   );
 }
 
