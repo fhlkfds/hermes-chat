@@ -49,6 +49,10 @@ Claude must never mark the change done while any Codex round is unresolved. Trac
 
 Run the build and test suite after every code change, before committing. A failing build is a blocked task, not a note in the PR body.
 
+### Releases
+
+A release is a `v<version>` tag on `main` plus its GitHub release (`docs/releases.md`). Attach every installer and package built for that version (`.exe`, `.deb`, `.rpm`, `.AppImage`, …) to that one release, each with a `.sha256` beside it. Today `windows.yml` builds and attaches only the Windows `.exe`, on the tag. A change that adds a bundle format also adds the step that attaches it to the tagged release.
+
 ### Merge authority
 
 Agents open and update PRs but never merge to `main`. Merging is human-only.
