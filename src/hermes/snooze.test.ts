@@ -317,6 +317,25 @@ describe("PinStore", () => {
     expect(storage.raw).toEqual({ v: 1, scopes: { B: { y: WED + 1 } } });
   });
 
+  it("pins after every earlier pin when the clock stands still or goes back", () => {
+    let now = WED;
+    const pins = new PinStore(memory(undefined, PINS_KEY), "A", () => now);
+    pins.pin("a");
+    pins.pin("b");
+    now = WED - HOUR;
+    pins.pin("c");
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, pins.getSnapshot()).pinned.map((c) => c.id);
+    const list = [chat("c", WED), chat("a", WED - 2 * HOUR), chat("b", WED - HOUR)];
+    expect(order(list)).toEqual(["a", "b", "c"]);
+    expect(order([...list].reverse())).toEqual(["a", "b", "c"]);
+  });
+
+  it("orders pins stored with the same time the same way whatever order the list comes in", () => {
+    const same = { x: WED, y: WED };
+    const order = (chats: Chat[]) => chatSections(chats, {}, WED, {}, {}, same).pinned.map((c) => c.id);
+    expect(order([chat("y", WED), chat("x", WED)])).toEqual(order([chat("x", WED), chat("y", WED)]));
+  });
+
   it("keeps a chat pinned again in its place, and puts back the place a pin had", () => {
     const storage = memory(undefined, PINS_KEY);
     let now = WED;

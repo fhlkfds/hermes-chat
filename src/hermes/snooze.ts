@@ -206,9 +206,13 @@ export class PinStore extends ChatTimesStore {
     super(storage, scope, now, PINS_KEY, PINS_VERSION, PINS_MIGRATIONS);
   }
 
-  /** Pins the chat last in the Pinned section; `at` puts back the place an earlier pin had. */
-  pin(chatId: string, at = this.now()) {
-    if (!(chatId in this.getSnapshot())) this.set(chatId, at);
+  /**
+   * Pins the chat last in the Pinned section, after every pin so far even when the clock has gone back; `at` puts back
+   * the place an earlier pin had.
+   */
+  pin(chatId: string, at?: number) {
+    const pins = this.getSnapshot();
+    if (!(chatId in pins)) this.set(chatId, at ?? Math.max(this.now(), ...Object.values(pins).map((t) => t + 1)));
   }
 
   unpin(chatId: string) {
@@ -360,7 +364,7 @@ export function chatSections(
     else if (cleared[c.id] !== undefined && recent(c) <= cleared[c.id] && canClear(c)) s.unsettled.push(c);
     else s.inbox.push(c);
   }
-  s.pinned.sort((a, b) => pins[a.id] - pins[b.id]);
+  s.pinned.sort((a, b) => pins[a.id] - pins[b.id] || (a.id < b.id ? -1 : 1));
   s.inbox.sort(byRecent);
   s.working.sort(byRecent);
   s.unsettled.sort(byRecent);
