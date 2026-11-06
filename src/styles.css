@@ -155,9 +155,12 @@ kbd {
 /* Every section is in the list's scroll (ADR 0063); the ones out of the way are quieter. */
 .section-toggle:first-child { padding-top: 6px; }
 .row[data-section="snoozed"] .row-title,
-.row[data-section="unsettled"] .row-title,
 .row[data-section="settled"] .row-title,
 .row[data-section="archived"] .row-title { color: var(--muted); }
+/* Settled is the one drawer (ADR 0090): pinned to the foot, opening upward to half the panel with its own scroll. */
+.settled-drawer { flex: none; display: flex; flex-direction: column; max-height: 50%; padding: 0 10px 8px; border-top: 1px solid var(--line); }
+.settled-drawer .section-toggle { padding-top: 8px; padding-bottom: 6px; }
+.settled-list { overflow-y: auto; min-height: 0; }
 /* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
 .row[hidden] { display: none; }
 .row-pin { flex: none; display: inline-flex; color: var(--faint); }
