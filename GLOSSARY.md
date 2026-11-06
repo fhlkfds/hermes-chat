@@ -347,7 +347,7 @@ The resizable panel beside the chat, with four tabs: Preview, Terminal, Files an
 _Avoid_: drawer, sidebar (that is the chat list), inspector
 
 **Preview**:
-The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). A web page whose site refuses to be shown inside other apps gets a note and Open in your browser instead (ADR 0011).
+The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It opens from a link in a reply or from an opened tool call. What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). On Linux a web page is the top level of a view of its own, so a site that refuses to be shown inside other apps still shows (ADR 0081). On Windows such a site gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word)
 
 **Server page**:
