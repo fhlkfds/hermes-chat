@@ -3,7 +3,7 @@
 // rail's foot. Right-clicking a chat opens its menu (ChatMenu.tsx).
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BarChart3, Bot as BotIcon, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
+import { BarChart3, Bot as BotIcon, Building2, CalendarClock, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, FileOutput, Inbox as InboxIcon, LockOpen, ScrollText, Search, Settings, SquarePen, Trash2, Webhook, FolderGit2 } from "lucide-react";
 import type { Chat, ConnectionStatus, OtherProfile, OtherProfiles } from "../hermes/model";
 import { SOURCE_LABEL, isWaiting } from "../hermes/model";
 import { CHECK_EVERY_MS, totalUnread } from "../hermes/otherProfiles";
@@ -35,6 +35,8 @@ export function Rail({
   onBots,
   botsOpen = false,
   botsNeedYou = false,
+  onOffice,
+  officeOpen = false,
   onOutputs,
   outputsOpen = false,
   onSettings,
@@ -71,6 +73,9 @@ export function Rail({
   onBots?: () => void;
   botsOpen?: boolean;
   botsNeedYou?: boolean;
+  /** Opens or closes the agent office (Office.tsx, ADR 0077); none while Settings turns it off. */
+  onOffice?: () => void;
+  officeOpen?: boolean;
   /** Opens Outputs, the files Hermes's tools wrote (Outputs.tsx). */
   onOutputs?: () => void;
   outputsOpen?: boolean;
@@ -177,6 +182,17 @@ export function Rail({
           >
             <BotIcon size={18} />
             {botsNeedYou && <span className="dot" aria-hidden />}
+          </button>
+        )}
+        {onOffice && (
+          <button
+            className={`icon-btn rail-primary office-btn ${officeOpen ? "on" : ""}`}
+            aria-label="Office"
+            aria-expanded={officeOpen}
+            onClick={onOffice}
+            {...bind("office", { label: "Office", note: "Every agent at work, as desks or a list" })}
+          >
+            <Building2 size={18} />
           </button>
         )}
       </div>

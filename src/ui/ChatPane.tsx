@@ -15,6 +15,8 @@ import { isBotChat } from "../hermes/bots";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ExportChatDialog } from "./ExportChat";
 import { QueuePanel, type QueueApi } from "./Queue";
+import { SubagentsPanel, type SubagentsApi } from "./Subagents";
+import type { SubagentId } from "../hermes/subagents";
 import { SideQuestions } from "./SideQuestions";
 import { Markdown } from "./Markdown";
 import { SourceIcon, Spinner, StoredTime, composing, highlight } from "./bits";
@@ -295,6 +297,8 @@ export function ChatPane({
   headActions,
   queue,
   queueApi,
+  subagents,
+  showSubagent,
   commands,
   onDismissSideQuestion,
   followUp,
@@ -351,6 +355,10 @@ export function ChatPane({
   headActions?: ReactNode;
   queue?: ChatQueue;
   queueApi?: QueueApi;
+  /** Steer, Stop and output for the chat's Subagents; without it the panel only shows them. */
+  subagents?: SubagentsApi;
+  /** A subagent to open in the Subagents panel, from the agent office. */
+  showSubagent?: { id: SubagentId; at: number };
   commands?: CommandHost;
   /** Takes away the card of one of the chat's side questions (ADR 0070). */
   onDismissSideQuestion?: (id: string) => void;
@@ -750,6 +758,19 @@ export function ChatPane({
         </JumpContext.Provider>
       </div>
 
+      <SubagentsPanel
+        tree={chat.subagents}
+        api={subagents}
+        approvalWaiting={waiting}
+        show={showSubagent}
+        onGoToApproval={() => {
+          const id = chat.items.find(isWaiting)?.id;
+          const card = id && rootRef.current?.querySelector<HTMLElement>(`.approval[data-item="${CSS.escape(id)}"]`);
+          if (!card) return;
+          card.scrollIntoView({ block: "center" });
+          card.focus();
+        }}
+      />
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       {chat.sideQuestions && onDismissSideQuestion && <SideQuestions questions={chat.sideQuestions} onDismiss={onDismissSideQuestion} />}
       {chat.source === "import" ? (

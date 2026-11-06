@@ -41,6 +41,9 @@ import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
 import { Bots } from "./ui/Bots";
+import { Office } from "./ui/Office";
+import { officeRooms, type Desk, type Room } from "./hermes/office";
+import type { SubagentId } from "./hermes/subagents";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxEntry } from "./hermes/inbox";
 import { ChatPane, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
@@ -105,7 +108,7 @@ import { tauriLocalFiles, tauriServerPages, tauriWebPages, type LocalFiles, type
 import type { PreviewTarget } from "./hermes/preview";
 import type { Route } from "./hermes/pipe";
 import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
-import { useWindowHidden } from "./ui/windowState";
+import { usePageHidden, useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 
 /** Keeps the repository folder opened last, and the recent ones, on this computer (Repository screen, ADR 0034). */
@@ -672,6 +675,8 @@ type Pane = {
   draftError?: string;
   picked?: { found: Found; at: number };
   jump?: JumpTarget;
+  /** A subagent of the chat `chatId` to open in its Subagents panel, from the agent office; `at` tells one request from the next. */
+  subagent?: { chatId: string; id: SubagentId; at: number };
   /** The worktree a New chat pane starts its chat in, picked in the Repository screen (ADR 0043). */
   worktree?: WorktreeStart;
 };
@@ -1019,6 +1024,8 @@ export function Main({
   /** The Bots view (Bots.tsx, ADR 0066), and a bot's chat to open once its profile is shown. */
   const [botsOpen, setBotsOpen] = useState(false);
   const [botGo, setBotGo] = useState<{ bot: Bot; then: "open" | "new"; nav: number }>();
+  /** The agent office (Office.tsx, ADR 0077), unless Settings turns it off. */
+  const [officeOpen, setOfficeOpen] = useState(false);
   const ackScope = inboxScope(connection);
   const acks = useMemo(() => inboxAcks(localStorage, ackScope), [ackScope]);
   const dismissed = useSyncExternalStore(acks.subscribe, acks.getSnapshot);
@@ -1029,7 +1036,8 @@ export function Main({
   // The model pick is sticky: new chats start on it, in this profile, until the owner picks another. It is kept on this
   // computer only and never becomes the profile's default. Picked in another profile, it gives way to this profile's
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
-  const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut, agentOffice } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const officeShown = officeOpen && agentOffice !== "off";
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicks[pref] ?? (modelPicker?.profile === pref ? withoutProfile(modelPicker) : catalog?.defaultPick);
 
@@ -1309,13 +1317,14 @@ export function Main({
       keepSettings = false,
       newTab = false,
       worktree,
-    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart } = {},
+      subagent,
+    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart; subagent?: SubagentId } = {},
   ) => {
     const go = () => {
       navGen.current++;
       setPanelHidden(true);
       if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
-      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, worktree, ...(fresh && { draftError: undefined }) });
+      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, subagent: subagent && id ? { chatId: id, id: subagent, at: Date.now() } : undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
@@ -1389,7 +1398,7 @@ export function Main({
     navGen.current++;
     setPanelHidden(true);
     hermes.reveal(found);
-    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined });
+    patchPane(active.key, { chatId: found.chatId, picked: { found, at: Date.now() }, jump: undefined, subagent: undefined });
     setReopening(undefined);
     rememberChat(found.chatId);
     setSearchOpen(false);
@@ -1509,7 +1518,7 @@ export function Main({
     setPanelHidden(true);
     const panesNow = out.panes.map((p) => {
       const was = before.get(p.key);
-      return was && was.chatId !== p.chatId ? { ...p, view: newView(), picked: undefined, jump: undefined, worktree: undefined } : p;
+      return was && was.chatId !== p.chatId ? { ...p, view: newView(), picked: undefined, jump: undefined, subagent: undefined, worktree: undefined } : p;
     });
     panesRef.current = panesNow;
     setPanes(panesNow);
@@ -1662,6 +1671,15 @@ export function Main({
       if (e.profile !== profile) switchProfile(e.profile);
       setGoTo({ entry: e, approval: e.kind === "approval" && !e.ended });
     }, e.profile !== profile ? "profile" : "leave");
+  };
+
+  // A reply's desk goes where its inbox entry goes. A subagent's desk is always in the profile shown (ADR 0077), and
+  // opens in the pane already showing its chat, or else the active one.
+  const openDesk = (room: Room, desk: Desk) => {
+    setOfficeOpen(false);
+    if (desk.agent.kind === "reply" && desk.agent.entry) return openEntry(desk.agent.entry);
+    const pane = panes.find((p) => p.chatId === room.chatId)?.key ?? active.key;
+    openChat(room.chatId, { pane, ...(desk.agent.kind === "subagent" && { subagent: desk.agent.id }) });
   };
 
   useEffect(() => {
@@ -1908,9 +1926,13 @@ export function Main({
   useEffect(() => () => tray.reportInbox(0), [tray]);
   // Hidden to the tray, the window shows no chat: replies arriving meanwhile leave their chats Unread.
   const windowHidden = useWindowHidden();
+  const pageHidden = usePageHidden();
+  // The office is drawn, and its rooms worked out, only while it can be seen: hidden to the tray or minimized, it isn't.
+  const officeVisible = officeShown && !windowHidden && !pageHidden;
 
-  // The inbox and the Bots view ask for fresh checks as they open, and keep asking while open: both show what is live.
-  const liveWatched = inboxOpen || botsOpen;
+  // The inbox, the Bots view and the office ask for fresh checks as they open, and keep asking while open: they show
+  // what is live.
+  const liveWatched = inboxOpen || botsOpen || officeVisible;
   useEffect(() => {
     if (!liveWatched) return;
     void hermes.checkOtherProfiles();
@@ -2251,6 +2273,7 @@ export function Main({
           started={!!listed}
           picked={p.picked}
           jump={p.jump}
+          showSubagent={p.subagent?.chatId === p.chatId ? p.subagent : undefined}
           active={!covered && !covering && !previewCovers && (!split || isActive)}
           split={split}
           screenshots={desk}
@@ -2368,6 +2391,7 @@ export function Main({
         outputsOpen={outputsOpen && !settingsOpen && !projectScreenOpen}
         onInbox={() => {
           setBotsOpen(false);
+          setOfficeOpen(false);
           setInboxOpen((o) => !o);
         }}
         inboxOpen={inboxOpen}
@@ -2378,11 +2402,22 @@ export function Main({
             ? undefined
             : () => {
                 setInboxOpen(false);
+                setOfficeOpen(false);
                 setBotsOpen((o) => !o);
               }
         }
         botsOpen={botsOpen}
         botsNeedYou={botsNeedYou}
+        onOffice={
+          agentOffice === "off"
+            ? undefined
+            : () => {
+                setInboxOpen(false);
+                setBotsOpen(false);
+                setOfficeOpen((o) => !o);
+              }
+        }
+        officeOpen={officeShown}
         onSettings={openSettings}
         settingsOpen={settingsOpen}
         onJobs={() =>
@@ -2586,6 +2621,19 @@ export function Main({
           onNewChat={(b) => openBot(b, "new")}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setBotsOpen(false)}
+        />
+      )}
+      {officeVisible && (
+        <Office
+          rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
+          view={agentOffice === "list" ? "list" : "desks"}
+          onView={(view) => setUIPrefs({ agentOffice: view })}
+          server={where ?? "the server"}
+          profile={profile}
+          connected={status === "connected"}
+          leaving={leavingNote(profile, chats)}
+          onOpen={openDesk}
+          onClose={() => setOfficeOpen(false)}
         />
       )}
       {inboxOpen && (
@@ -3143,6 +3191,7 @@ function ChatView({
   started,
   picked,
   jump,
+  showSubagent,
   active,
   split,
   catalog,
@@ -3189,6 +3238,8 @@ function ChatView({
   picked?: { found: Found; at: number };
   /** A tool call to go to, from Outputs. */
   jump?: JumpTarget;
+  /** A subagent to open in the chat's Subagents panel, from the agent office. */
+  showSubagent?: { id: SubagentId; at: number };
   active: boolean;
   split: boolean;
   catalog?: ModelCatalog;
@@ -3561,6 +3612,7 @@ function ChatView({
       notLoaded={started && status !== "connected" && !chat.runtimeId && chat.items.every(isOutgoing)}
       findTarget={findTarget}
       jumpTo={jump}
+      showSubagent={showSubagent}
       onJumpMissed={() =>
         onToast(jump?.rowId !== undefined ? "Couldn't find the message this branch was made from in the chat's history." : "Couldn't find the tool call that made this file in the chat's history.")
       }
@@ -3614,6 +3666,22 @@ function ChatView({
       }
       queue={queue}
       queueApi={queueApi}
+      subagents={
+        started
+          ? {
+              refresh: () => hermes.refreshSubagents(chat.id),
+              output: (id) => hermes.subagentOutput(chat.id, id),
+              steer: (id, text) => hermes.steerSubagent(chat.id, id, text),
+              stop: (id) => hermes.stopSubagent(chat.id, id),
+              blocked:
+                status !== "connected" || !chat.runtimeId
+                  ? "Hermes isn't connected to this chat right now."
+                  : hermes.capabilities.get("subagents").state === "unsupported"
+                    ? "This Hermes can't steer or stop subagents."
+                    : undefined,
+            }
+          : undefined
+      }
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
       branchedFrom={
         link && (

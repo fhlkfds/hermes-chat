@@ -463,6 +463,19 @@ export class FakeHermes {
   readonly sessionModel = new Map<string, ModelInfo>();
   /** runtime session id -> stored session id, for every session.create / session.resume. */
   readonly runtime = new Map<string, string>();
+  /**
+   * The live subagents Hermes's registry holds, by stored session (`tools/delegate_tool_registry.py` at the deployed
+   * `f0d94882`). `subagent.list` shows a stored session's rows through any runtime session resumed on it; `owner`, the
+   * runtime session that started it, is the only one `subagent.tail`, `.steer` and `.interrupt` act for. `tail`: its live
+   * transcript. Tests fill it.
+   */
+  subagents: Record<string, (Record<string, unknown> & { subagent_id: string; owner: string; tail?: string })[]> = {};
+  /** Recently failed background delegations, by stored session, as `subagent.list` returns them in `delegations`. */
+  failedDelegations: Record<string, Record<string, unknown>[]> = {};
+  /** What `subagent.steer` queued, by subagent id. */
+  readonly steered: Record<string, string[]> = {};
+  /** The subagents `subagent.interrupt` stopped. */
+  readonly interrupted: string[] = [];
   private created = new Map<string, { source: string; profile?: string; hidden?: boolean; title?: string }>(); // runtime id, until the first prompt stores it
 
   /**
@@ -580,7 +593,7 @@ export class FakeHermes {
    */
   asOlderHermes() {
     const noMethod = (name: string) => (this.handlers[name] = (r) => this.fail(r.id, -32601, `unknown method: ${name}`));
-    for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete"]) noMethod(m);
+    for (const m of ["client.capabilities", "gateway.capabilities", "projects.list", "projects.create", "learning.frames", "learning.detail", "learning.edit", "learning.delete", "subagent.list", "subagent.tail", "subagent.interrupt"]) noMethod(m);
     for (const r of ["GET /api/health", "GET /api/files", "GET /api/files/read", "GET /api/fs/list"]) delete this.rest[r];
     this.status = { version: "0.16.0", release_date: "2026.6.8", auth_required: true, auth_providers: ["basic"] };
     this.botMode = "none";
@@ -861,6 +874,41 @@ export class FakeHermes {
       this.respond(r.id, { status: "interrupted" });
       // The interrupt withdraws whatever the session was waiting on.
       for (const [id, q] of this.openRequests) if (q.sid === sid) this.cancelRequest(id, "interrupted");
+    },
+    // `tui_gateway/methods_subagents.py` and `methods_session.py` (`subagent.steer`) at the deployed `f0d94882`.
+    "subagent.list": (r) => {
+      const sid = String(r.params.session_id ?? "");
+      const stored = this.runtime.get(sid);
+      if (!stored) return this.fail(r.id, 4001, "session not found or not owned by this transport");
+      const fields = ["subagent_id", "parent_id", "depth", "goal", "delegation_id", "model", "started_at", "status", "tool_count", "last_tool", "accepting_steer"];
+      const rows = (this.subagents[stored] ?? []).map((row) => Object.fromEntries(fields.map((k) => [k, row[k] ?? null])));
+      this.respond(r.id, { subagents: rows, delegations: structuredClone(this.failedDelegations[stored] ?? []) });
+    },
+    "subagent.tail": (r) => {
+      const id = String(r.params.subagent_id ?? "");
+      if (!id) return this.fail(r.id, 4000, "subagent_id required");
+      const row = this.ownedSubagent(r);
+      if (row === null) return this.fail(r.id, 4001, "session not found or not owned by this transport");
+      const tail = row?.tail;
+      this.respond(r.id, tail === undefined ? { subagent_id: id, available: false, text: "", truncated: false } : { subagent_id: id, available: true, text: tail.slice(-16384), truncated: tail.length > 16384 });
+    },
+    "subagent.steer": (r) => {
+      const id = String(r.params.subagent_id ?? "");
+      if (!id) return this.fail(r.id, 4000, "subagent_id required");
+      const text = String(r.params.text ?? "").trim();
+      if (!text) return this.fail(r.id, 4002, "text is required");
+      const row = this.ownedSubagent(r);
+      const queued = !!row && row.accepting_steer === true;
+      if (queued) (this.steered[id] ??= []).push(text);
+      this.respond(r.id, { status: queued ? "queued" : "rejected", subagent_id: id, text });
+    },
+    "subagent.interrupt": (r) => {
+      const id = String(r.params.subagent_id ?? "");
+      if (!id) return this.fail(r.id, 4000, "subagent_id required");
+      const row = this.ownedSubagent(r);
+      if (row === null) return this.fail(r.id, 4001, "session not found or not owned by this transport");
+      if (row) this.interrupted.push(id);
+      this.respond(r.id, { found: !!row, subagent_id: id });
     },
     // `tui_gateway/methods_voice.py` at the deployed `bf0203a`: lists the server→client request kinds it knows.
     "client.capabilities": (r) => {
@@ -1870,6 +1918,14 @@ export class FakeHermes {
   private ownedSession(profile: string | null | undefined, session: string | undefined) {
     if (session === undefined) return;
     if (!session.trim() || !(this.store(profile) ?? []).some((s) => s.id === session)) throw new Error(`The dashboard answered 404: {"detail":"Session not found"}`);
+  }
+
+  /** The subagent a control names, if the session asking started it; null when the session isn't open. */
+  private ownedSubagent(r: Request) {
+    const sid = String(r.params.session_id ?? "");
+    const stored = this.runtime.get(sid);
+    if (!stored) return null;
+    return (this.subagents[stored] ?? []).find((row) => row.subagent_id === r.params.subagent_id && row.owner === sid);
   }
 
   respond(id: number, result: unknown) {

@@ -36,7 +36,8 @@ export type CapabilityId =
   | "scheduledJobs"
   | "automations"
   | "outputs"
-  | "botMode";
+  | "botMode"
+  | "subagents";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -270,6 +271,18 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     // Only a roster whose rows report their Bot Chat counts: an older profiles.list has no Bot Mode.
     probe: { kind: "rpc", method: "profiles.list", params: () => ({}), shape: botRoster, lacks: rosterWithoutBotChats },
     methods: ["profiles.list"],
+  },
+  {
+    id: "subagents",
+    label: "Subagents",
+    usedBy: "The Subagents panel in a chat",
+    needs: "The subagent.* events, and subagent.list, subagent.tail, subagent.steer and subagent.interrupt on /api/ws.",
+    without: "The Subagents panel shows what the events say, but not what happened while the app was disconnected, and has no Steer or Stop.",
+    anchor: "subagents",
+    // `subagent.list` needs a chat's live session, so there's nothing to read without one.
+    notChecked: "Known once a chat opened on this connection lists its subagents.",
+    methods: ["subagent.list", "subagent.tail"],
+    writeMethods: /^subagent\.(steer|interrupt)$/,
   },
 ];
 

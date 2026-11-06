@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks" });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -72,6 +72,7 @@ describe("reading", () => {
         idleCompact: { enabled: "yes", percent: 100, idleMinutes: 30 },
         chatSectionsShown: ["settled", "bogus", "inbox", "settled"],
         chatSectionsCollapsed: "inbox",
+        agentOffice: "floor",
       }),
     );
     expect(getUIPrefs()).toEqual({
@@ -88,6 +89,7 @@ describe("reading", () => {
       idleCompact: { enabled: false, percent: 70, idleMinutes: 30 },
       chatSectionsShown: ["inbox", "settled"],
       chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"],
+      agentOffice: "desks",
     });
   });
 
