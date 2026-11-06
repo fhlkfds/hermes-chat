@@ -2835,6 +2835,9 @@ label.memory-pick { cursor: pointer; }
 .screen-who.you { color: var(--accent); }
 .screen-who.other { color: var(--warn); }
 .screen-tab > .attach-note { flex: none; padding: 6px 14px; color: var(--warn); border-bottom: 1px solid var(--line); }
+.screen-tab > .attach-note.screen-found { color: var(--ok); overflow-wrap: anywhere; }
+.screen-browser { flex: none; margin: 14px 22px 0; }
+.screen-browser > svg { color: var(--warn); }
 .screen-view { flex: 1; min-height: 0; position: relative; display: flex; background: var(--code-bg); border: 2px solid transparent; }
 .screen-view[hidden] { display: none; }
 .screen-view.held { border-color: var(--accent); }
@@ -2844,8 +2847,9 @@ label.memory-pick { cursor: pointer; }
 .screen-start > svg { color: var(--muted); }
 .screen-start p { margin: 0; line-height: 1.55; font-size: calc(13rem / 14); }
 .screen-start .btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
-.screen-command { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.screen-command { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 .screen-command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: calc(12rem / 14); background: var(--raised-2); padding: 6px 8px; border-radius: 6px; }
+.screen-command .copy-failed { flex-basis: 100%; font-size: calc(12rem / 14); color: var(--warn); }
 /* Automations (ADR 0036): webhook routes, the example-event preview, and the delivery history. */
 .automations-screen .automation-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .automations-screen .automation-fieldset legend { padding: 0; margin-bottom: 4px; }

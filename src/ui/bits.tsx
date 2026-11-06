@@ -1,6 +1,6 @@
 // Small shared UI bits, ported from the prototype.
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Archive, ArchiveRestore, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Copy, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -132,6 +132,38 @@ export const slotAt = (items: Element[], at: number, axis: "x" | "y") => {
 
 export function Spinner() {
   return <span className="spinner" aria-label="working" />;
+}
+
+/** A command to run on the server, with a button that copies it. */
+export function CopyCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState<"done" | "failed">();
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(undefined), copied === "done" ? 1200 : 5000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(command);
+      setCopied("done");
+    } catch {
+      setCopied("failed");
+    }
+  };
+  return (
+    <span className="screen-command">
+      <code>{command}</code>
+      <button className="icon-btn" title="Copy the command" onClick={() => void copy()}>
+        {copied === "done" ? <Check size={14} /> : <Copy size={14} />}
+      </button>
+      {copied === "failed" && (
+        <span className="copy-failed" role="alert">
+          Couldn't copy it. Select the command and copy it yourself.
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function relTime(ts: number) {

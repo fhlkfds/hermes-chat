@@ -403,7 +403,7 @@ The Side panel's tab with the owner's own shells: one on the Hermes server, thro
 _Avoid_: console, shell (for the tab), Hermes's terminal tool (the agent's, which runs in a chat)
 
 **Screen**:
-The Side panel's view of Hermes's Bot Desktop for the profile shown: a desktop on the server where the agent's computer use and its browser run. The owner watches it, and can Take over and Hand back. Hermes starts, stops and keeps it, one per profile; this computer only shows it (ADR 0039).
+The Side panel's view of Hermes's Bot Desktop for the profile shown: a desktop on the server where the agent's computer use and its browser run. The owner watches it, and can Take over and Hand back. Hermes starts, stops and keeps it, one per profile; this computer only shows it (ADR 0039). When the server has no Chrome or Chromium for the agent to open there, the Screen and Settings → Diagnostics say so, with the command that installs one (ADR 0078).
 _Avoid_: remote desktop, VNC, browser (for the whole screen), computer use (that is the agent's tool)
 
 **Take over** / **Hand back**:

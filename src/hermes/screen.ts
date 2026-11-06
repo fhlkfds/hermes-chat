@@ -17,9 +17,35 @@ export type DisplayStatus = {
   geometry?: string;
   install_command?: string | null;
   blocker?: string | null;
+  /** Read only through `browserOf`. */
+  browser?: string | null;
+  /** `gateway`, or `terminal:<backend>` for a screen in the terminal's sandbox. */
+  placement?: string;
   lease: DisplayLease;
   profile_key: string;
 };
+
+/**
+ * The Chrome or Chromium the agent's browser and the Bot Desktop's dock open, as `display.status` reports it for the
+ * profile asked about. Hermes sends `browser: null` also where it doesn't look: a server that isn't Linux, and a screen
+ * in the terminal's sandbox, which brings its own (tools/bot_desktop/runtime.py at f0d94882). So only a null from a
+ * Linux server's own screen means none.
+ */
+export type ServerBrowser =
+  | { kind: "found"; path: string }
+  | { kind: "missing" }
+  | { kind: "unknown"; why: "older-hermes" | "not-linux" | "in-sandbox" };
+
+export function browserOf(s: DisplayStatus): ServerBrowser {
+  if (typeof s.browser === "string" && s.browser) return { kind: "found", path: s.browser };
+  if (!s.supported) return { kind: "unknown", why: "not-linux" };
+  if (s.placement?.startsWith("terminal:")) return { kind: "unknown", why: "in-sandbox" };
+  if (s.browser === undefined) return { kind: "unknown", why: "older-hermes" };
+  return { kind: "missing" };
+}
+
+/** Hermes's own fix for no browser (`chromium_missing_hint`, hermes_cli/browser_runtime.py); pm's store serves every profile. */
+export const BROWSER_FIX = "hermes pm install chromium";
 
 /** `display.observe`: a single-use ticket for `/api/display/ws`, good for 30 s, and the viewer id minted for it. */
 export type DisplayObserve = DisplayStatus & { ticket: string; viewer_id: string };

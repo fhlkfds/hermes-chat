@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { connect } from "./transport";
-import { RelayedSocket, heldBy, isOlder, isUnavailable, phaseOf, viewerHash, type DisplayLease, type DisplayStatus, type ScreenSocket } from "./screen";
+import { RelayedSocket, browserOf, heldBy, isOlder, isUnavailable, phaseOf, viewerHash, type DisplayLease, type DisplayStatus, type ScreenSocket } from "./screen";
 
 const agent: DisplayLease = { holder: "agent", viewer_hash: null, since: 1, epoch: 0 };
 const status = (s: Partial<DisplayStatus>): DisplayStatus => ({ supported: true, installed: true, missing: [], running: false, lease: agent, profile_key: "/h", ...s });
@@ -19,6 +19,15 @@ describe("What the Screen shows", () => {
     expect(phaseOf(status({ blocker: "only 900 MB free; the screen needs 1536 MB" }))).toEqual({ kind: "blocked", why: "only 900 MB free; the screen needs 1536 MB" });
     expect(phaseOf(status({}))).toEqual({ kind: "stopped" });
     expect(phaseOf(status({ running: true }))).toEqual({ kind: "live" });
+  });
+
+  it("reads the server's browser, and tells a none apart from a null Hermes sends where it doesn't look", () => {
+    expect(browserOf(status({ browser: "/usr/bin/chromium" }))).toEqual({ kind: "found", path: "/usr/bin/chromium" });
+    expect(browserOf(status({ browser: null }))).toEqual({ kind: "missing" });
+    expect(browserOf(status({ browser: null, placement: "gateway" }))).toEqual({ kind: "missing" });
+    expect(browserOf(status({}))).toEqual({ kind: "unknown", why: "older-hermes" });
+    expect(browserOf(status({ browser: null, supported: false }))).toEqual({ kind: "unknown", why: "not-linux" });
+    expect(browserOf(status({ browser: null, placement: "terminal:docker" }))).toEqual({ kind: "unknown", why: "in-sandbox" });
   });
 
   it("names the lease's holder by the same hash Hermes does, and never trusts an older lease", async () => {
