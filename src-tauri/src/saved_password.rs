@@ -4,14 +4,52 @@
 //! named by its stable id (`dashboard-password/<id>`). The connection migrated from the single sign-in kept before
 //! keeps the entries it already had (`dashboard-password`, `extra-request-headers`). The keyring blocks (D-Bus, or a
 //! Windows API call), so each call runs off the async runtime.
+//!
+//! A dashboard session token (ADR 0058) has its own entry, `dashboard-token/<id>`, which only Rust reads: its value
+//! names the addresses it was entered for (`TokenEntry`), and it is sent only to one of those.
 
 use keyring::{Entry, Error};
+use serde::{Deserialize, Serialize};
 
 const SERVICE: &str = "hermes-chat";
 pub const PASSWORD: &str = "dashboard-password";
 pub const HEADERS: &str = "extra-request-headers";
+pub const TOKEN: &str = "dashboard-token";
 
-/// The keyring account for `base` (`PASSWORD` or `HEADERS`) of one connection. `None`: the migrated connection's own
+/// Where a secret may be sent: a connection's mode (`ssh` or `url`) and its SSH target or URL as typed, trimmed. The
+/// same as the webview's `routeKey`.
+pub type Address = [String; 2];
+
+/// The token entry's value: the token, and every address it was entered for.
+#[derive(Serialize, Deserialize)]
+pub struct TokenEntry {
+    pub v: u8,
+    #[serde(rename = "for")]
+    pub addresses: Vec<Address>,
+    pub token: String,
+}
+
+impl TokenEntry {
+    pub fn new(addresses: Vec<Address>, token: String) -> Self {
+        TokenEntry { v: 1, addresses, token }
+    }
+
+    /// The saved entry, if it is one this version reads.
+    pub fn read(raw: &str) -> Option<Self> {
+        serde_json::from_str::<TokenEntry>(raw).ok().filter(|e| e.v == 1 && !e.token.is_empty())
+    }
+
+    /// The token, only for an address it was entered for.
+    pub fn token_for(&self, address: &Address) -> Option<&str> {
+        self.addresses.contains(address).then_some(self.token.as_str())
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("strings serialize")
+    }
+}
+
+/// The keyring account for `base` (`PASSWORD`, `HEADERS` or `TOKEN`) of one connection. `None`: the migrated connection's own
 /// entry. An id is a UUID as the webview makes it: lowercase letters, digits and dashes, 8 to 64 of them, so it can't
 /// name another entry.
 pub fn account(base: &str, connection: Option<&str>) -> Result<String, String> {
@@ -214,6 +252,21 @@ mod tests {
         let id = "3f2c1a9e-7b4d-4c1e-9a2f-0d6b8e5c4a31";
         assert_eq!(account(PASSWORD, Some(id)).unwrap(), format!("dashboard-password/{id}"));
         assert_eq!(account(HEADERS, Some(id)).unwrap(), format!("extra-request-headers/{id}"));
+    }
+
+    #[test]
+    fn a_token_goes_only_to_an_address_it_was_entered_for() {
+        let lan: Address = ["url".into(), "http://hermes:9119".into()];
+        let ssh: Address = ["ssh".into(), "liam@hermes".into()];
+        let saved = TokenEntry::read(&TokenEntry::new(vec![lan.clone(), ssh.clone()], "t0k3n".into()).to_json()).unwrap();
+        assert_eq!(saved.token_for(&lan), Some("t0k3n"));
+        assert_eq!(saved.token_for(&ssh), Some("t0k3n"));
+        assert_eq!(saved.token_for(&["url".into(), "http://evil:9119".into()]), None);
+        assert_eq!(saved.token_for(&["ssh".into(), "http://hermes:9119".into()]), None);
+        for bad in ["", "t0k3n", r#"{"v":2,"for":[],"token":"x"}"#, r#"{"v":1,"for":[["url","x"]],"token":""}"#] {
+            assert!(TokenEntry::read(bad).is_none(), "{bad:?}");
+        }
+        assert_eq!(account(TOKEN, Some("3f2c1a9e-7b4d")).unwrap(), "dashboard-token/3f2c1a9e-7b4d");
     }
 
     #[test]

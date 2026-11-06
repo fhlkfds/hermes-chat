@@ -8,8 +8,11 @@
 // never sends the old address's secrets to the new one. A connection with several routes (ADR 0056) saves its password
 // with every route it was typed for, and a route added since, whose secrets weren't saved, is skipped (`locked`)
 // until the password is typed again.
-import { type Address, type Connections, type SavedConnection, addressKey, addressOf, cleanName, detailsOf } from "./connections";
-import { routeAddress, routeKey, routesOf, savedRoute, withRoutes, type RouteDetails } from "./routes";
+//
+// A connection can sign in with the dashboard's session token instead (ADR 0058). Rust keeps that token in its own
+// keyring entry and loads it itself; this side only learns which addresses it is saved for (`TokenKeyring`).
+import { type Address, type Connections, type SavedConnection, addressKey, addressOf, cleanName, detailsOf, wayOf } from "./connections";
+import { TOKEN_REFUSED, routeAddress, routeKey, routesOf, savedRoute, withRoutes, type RouteDetails } from "./routes";
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
 import type { Hermes } from "./transport";
 
@@ -19,8 +22,15 @@ export type SavedSignIn = Address;
 /** One saved secret: a dashboard password, or extra headers as JSON. `load` resolves to undefined when none is saved. */
 export type Keyring = { load(): Promise<string | undefined>; save(value: string): Promise<void>; delete(): Promise<void> };
 
-/** A connection's two keyring entries. */
-export type Secrets = { password: Keyring; headers: Keyring };
+/**
+ * A connection's token entry, which only Rust reads (ADR 0058). `saved`: the addresses (`routeKey`s) a token is saved
+ * for, none when there is none. `keep`: saves the token the connection in use signed in with, if it was typed for this
+ * sign-in, for `routes`. `delete`: deletes it.
+ */
+export type TokenKeyring = { saved(): Promise<string[] | undefined>; keep(routes: string[]): Promise<void>; delete(): Promise<void> };
+
+/** A connection's keyring entries. */
+export type Secrets = { password: Keyring; headers: Keyring; token: TokenKeyring };
 
 /**
  * `connections`: the saved connections. `secrets`: a connection's keyring entries. `connect`: signs in to Hermes as `c`,
@@ -36,6 +46,9 @@ export type Account = {
 
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
 export const WRONG_PASSWORD = "Wrong username or password.";
+
+/** Whether `reason` is a sign-in that only asking again can fix, so launch shows the sign-in screen, not Offline. */
+export const turnedDown = (reason: string) => reason === WRONG_PASSWORD || TOKEN_REFUSED.test(reason);
 
 /** What the keyring kept at sign-in. */
 export type Kept = { password: boolean; headers: boolean };
@@ -111,10 +124,11 @@ export async function signIn(
   // The server the routes reached, once one said: every route must reach it from now on (ADR 0056). Only a connection
   // with several routes keeps it.
   const server = d.routes ? (hermes.getSnapshot().route?.server ?? d.server) : undefined;
-  const { routes: _routes, server: _server, ...rest } = c;
+  const { routes: _routes, server: _server, method: _method, provider: _provider, ...rest } = c;
   const connection: SavedConnection = {
     ...rest,
     ...addressOf(d),
+    ...wayOf(d),
     name: name === undefined ? c.name : cleanName(name, d),
     ...(d.routes && { routes: d.routes.map(savedRoute) }),
     ...(server && { server }),
@@ -129,10 +143,21 @@ export async function signIn(
   const secrets = account.secrets(connection);
   const notSaved: string[] = [];
   const kept = { password: true, headers: true };
-  await secrets.password.save(passwordEntry(d, password)).catch((e: Error) => {
-    kept.password = false;
-    notSaved.push(`Couldn't save the password in the system keyring: ${e.message}`);
-  });
+  // A connection keeps one way to sign in: the other's secret goes.
+  if (d.method === "token") {
+    if (d.token?.trim())
+      await secrets.token.keep(routesOf(d).filter((r) => !r.locked).map(routeKey)).catch((e: Error) => {
+        kept.password = false;
+        notSaved.push(`Couldn't save the token in the system keyring: ${e.message}`);
+      });
+    await secrets.password.delete().catch(() => {});
+  } else {
+    await secrets.password.save(passwordEntry(d, password)).catch((e: Error) => {
+      kept.password = false;
+      notSaved.push(`Couldn't save the password in the system keyring: ${e.message}`);
+    });
+    await secrets.token.delete().catch(() => {});
+  }
   // The headers are saved with the URL they were signed in to; `savedHeaders` gives them back for that URL only.
   const headers = headersEntry(d);
   const savingHeaders = headers ? secrets.headers.save(headers) : secrets.headers.delete();
@@ -179,11 +204,24 @@ function detailsFor(c: SavedConnection, password: string, headers: SavedHeaders,
  * skips it.
  */
 export async function savedSignIn(c: SavedConnection, account: Account): Promise<SignInDetails | undefined> {
+  if (c.method === "token") return savedTokenSignIn(c, account);
   const saved = passwordFor(c, await account.secrets(c).password.load().catch(() => undefined));
   if (!saved) return undefined;
   const headers = await savedHeaders(c, account);
   const routes = routesWithHeaders(c, headers).map((r) => (saved.routes.has(routeKey(r)) ? r : { ...r, locked: true }));
   return detailsFor(c, saved.password, headers, routes);
+}
+
+/**
+ * `c` with its saved token, which Rust loads: undefined when none is saved for any of its routes. A route the token
+ * wasn't saved for is `locked`, as with a password.
+ */
+async function savedTokenSignIn(c: SavedConnection, account: Account): Promise<SignInDetails | undefined> {
+  const keys = new Set((await account.secrets(c).token.saved().catch(() => undefined)) ?? []);
+  if (!routesOf(c).some((r) => keys.has(routeKey(r)))) return undefined;
+  const headers = await savedHeaders(c, account);
+  const routes = routesWithHeaders(c, headers).map((r) => (keys.has(routeKey(r)) ? r : { ...r, locked: true }));
+  return { ...detailsFor(c, "", headers, routes), savedToken: c.legacy ? null : c.id };
 }
 
 /** The sign-in screen's details for `c` when it asks: everything saved but the password. */
@@ -201,7 +239,7 @@ export async function launchSignIn(c: SavedConnection, d: SignInDetails, account
     return await account.connect(c, d);
   } catch (e) {
     const reason = (e as Error).message;
-    const offline = reason === WRONG_PASSWORD ? undefined : account.readSaved(c, d, reason);
+    const offline = turnedDown(reason) ? undefined : account.readSaved(c, d, reason);
     if (!offline) throw e;
     return offline;
   }
@@ -222,21 +260,24 @@ export async function signOutToSignIn(hermes: Hermes, c: SavedConnection, accoun
 }
 
 /**
- * Deletes `c`'s saved password, then closes the connection, so a close that fails can't leave the password behind.
- * Rejects, signed out, if the keyring can't delete it.
+ * Deletes `c`'s saved password or token, then closes the connection, so a close that fails can't leave it behind.
+ * Rejects, signed out, if the keyring can't delete it. A token stays valid on the server until it is replaced there.
  */
 export async function signOut(hermes: Hermes, c: SavedConnection, account: Account): Promise<void> {
+  const what = c.method === "token" ? "token" : "password";
   try {
-    await account.secrets(c).password.delete();
+    const secrets = account.secrets(c);
+    await secrets.password.delete();
+    await secrets.token.delete();
   } catch (e) {
-    throw new Error(`Signed out, but couldn't delete the saved password from the system keyring: ${(e as Error).message}`);
+    throw new Error(`Signed out, but couldn't delete the saved ${what} from the system keyring: ${(e as Error).message}`);
   } finally {
     await hermes.close().catch(() => {});
   }
 }
 
 /**
- * Removes a saved connection from this computer: its password and extra headers from the keyring, then (after
+ * Removes a saved connection from this computer: its password, token and extra headers from the keyring, then (after
  * `close`, which signs out of it when it is in use) everything kept locally for it (`forgetLocal`), then the
  * connection itself. Nothing is sent to Hermes, so its chats stay on the server. If the keyring can't delete a
  * secret, nothing else is done and the connection stays in use, so its entries aren't left behind unnamed; this
@@ -252,6 +293,7 @@ export async function removeConnection(
   const failed: string[] = [];
   await secrets.password.delete().catch((e: Error) => failed.push(`the password (${e.message})`));
   await secrets.headers.delete().catch((e: Error) => failed.push(`the extra request headers (${e.message})`));
+  await secrets.token.delete().catch((e: Error) => failed.push(`the token (${e.message})`));
   if (failed.length) throw new Error(`The connection is still saved: the system keyring couldn't delete ${failed.join(" or ")}. Try again.`);
   // Signed out before its data goes, so nothing the connection still writes lands after the deleting.
   await close?.();

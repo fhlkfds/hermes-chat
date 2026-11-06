@@ -150,6 +150,26 @@ describe("Connecting over routes", () => {
     await expect(connect(routedPipe(signIn([LAN, SSH]), r.open))).rejects.toThrow(/^Too many sign-in attempts/);
   });
 
+  it("says a token that no route can use is refused, but uses a route that can, and reconnecting stops there too", async () => {
+    const r = routes();
+    const token = { method: "token" as const, savedToken: "id-1" };
+    r.down.set(LAN.target, "No token is saved for this address. Enter the token to sign in.");
+    const hermes = await connect(routedPipe(signIn([LAN, SSH], token), r.open));
+    expect(hermes.getSnapshot().route?.via?.kind).toBe("ssh");
+    r.down.set(SSH.target, "Token sign-in sends the token in the Authorization header, and this connection's extra request headers already set Authorization.");
+    r.server.drop();
+    await hermes.reconnect();
+    expect(hermes.getSnapshot()).toMatchObject({ status: "offline", closedReason: expect.stringMatching(/^No token is saved/) });
+    const refused = await connect(routedPipe(signIn([LAN, SSH], token), r.open)).catch((e: Error) => e);
+    expect(refused).not.toBeInstanceOf(RoutesFailedError);
+    expect((refused as Error).message).toMatch(/^No token is saved/);
+    r.down.set(SSH.target, "SSH failed: ssh: connect to host hermes port 22: Connection refused");
+    await expect(connect(routedPipe(signIn([LAN, SSH], token), r.open))).rejects.toThrow(RoutesFailedError);
+    r.down.set(LAN.target, "The dashboard took the token as a basic sign-in, not as its session token, so Hermes Chat didn't sign in with it.");
+    await expect(connect(routedPipe(signIn([LAN, SSH], token), r.open))).rejects.toThrow(/^The dashboard took the token as/);
+    expect(r.opened.at(-1)?.at).toBe(LAN.target);
+  });
+
   it("passes one route's own error on as it is, so a connection with one route fails as before", async () => {
     const r = routes();
     r.down.set("liam@hermes", "SSH failed: ssh: connect to host hermes port 22: Connection refused");

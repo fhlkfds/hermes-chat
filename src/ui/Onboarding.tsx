@@ -3,7 +3,7 @@
 // or give Hermes a model provider's key. Nothing is kept until a tested connection is saved.
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { Check, CircleAlert, Globe, KeyRound, Minus, Plus, ShieldAlert, ShieldCheck, Terminal, X } from "lucide-react";
-import type { ExtraHeader, SignInDetails } from "../hermes/tauriPipe";
+import type { ExtraHeader, Methods, SignInDetails } from "../hermes/tauriPipe";
 import type { Kept } from "../hermes/account";
 import type { Hermes } from "../hermes/transport";
 import { STAGES, missing, stageLabel, testConnection, testRoutes, type Probe, type ProviderKey, type ProviderSetup, type RouteTest, type TestOutcome } from "../hermes/setup";
@@ -11,6 +11,8 @@ import { routeLabel } from "./bits";
 import { NAME_MAX, defaultName, routesSummary } from "../hermes/connections";
 import { RouteTests, RoutesEditor, finishRoutes, routesReady, type Reach } from "./Routes";
 import { routesOf } from "../hermes/routes";
+import { isPicked, methodsNote, offered, withMethod } from "../hermes/signInMethods";
+import { MethodPicker, TokenField } from "./SignInMethods";
 
 /**
  * `first-run`: nothing is set up on this computer, so there is nowhere to cancel to; Cancel starts over.
@@ -53,6 +55,7 @@ export function Onboarding({
   onConnect,
   onCancel,
   onDone,
+  readMethods,
 }: {
   mode: SetupMode;
   /** The sign-in to start from: the one saved, without its password. */
@@ -75,6 +78,8 @@ export function Onboarding({
   onCancel?: () => void;
   /** Leaves setup once a connection is saved. */
   onDone: () => void;
+  /** Reads which sign-in methods the server offers, for the Sign in step (ADR 0058). Without it, the password only. */
+  readMethods?: (d: SignInDetails) => Promise<Methods>;
 }) {
   const firstStep: Step = mode === "add" || mode === "edit" ? "server" : "welcome";
   const [step, setStep] = useState<Step>(firstStep);
@@ -111,6 +116,26 @@ export function Onboarding({
   }, [probe]);
   // Each step announces itself by moving focus to its heading.
   useEffect(() => heading.current?.focus(), [step]);
+
+  // The Sign in step offers what the server advertises, read each time the step opens, as the address may have changed.
+  const [methods, setMethods] = useState<Methods>();
+  useEffect(() => {
+    if (step !== "account" || !readMethods) return;
+    let live = true;
+    setMethods(undefined);
+    void readMethods(d).then((got) => {
+      if (!live) return;
+      setMethods(got);
+      setD((was) => {
+        const list = offered(got, was);
+        return list.some((m) => isPicked(m, was)) ? was : withMethod(was, list[0]);
+      });
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, readMethods]);
 
   const stopTest = () => {
     run.current++;
@@ -168,9 +193,9 @@ export function Onboarding({
     setStopped(false);
     try {
       const { notSaved, kept } = await onConnect(withHeaders(d), name, stop.signal);
-      setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept)}`);
+      setNotSaved(notSaved && `${notSaved.replace(/\.?$/, ".")} ${retypeLater(kept, d.method === "token" ? "token" : "password")}`);
       setSaved(true);
-      setD((was) => ({ ...was, password: "" }));
+      setD((was) => ({ ...was, password: "", token: undefined }));
       setStep("providers");
     } catch (e) {
       // Stopped: the owner knows why; say what became of the connection, not a failure.
@@ -194,7 +219,7 @@ export function Onboarding({
   const cancel = () => {
     if (test.state === "testing") stopTest();
     if (onCancel) return onCancel();
-    setD({ ...initial, password: "" });
+    setD({ ...initial, password: "", token: undefined });
     setName(initialName);
     setTest({ state: "idle" });
     setConnectError(undefined);
@@ -315,37 +340,58 @@ export function Onboarding({
               )}{" "}
               This is the Hermes dashboard's own login, not your SSH or computer password.
             </p>
-            <Field label="Dashboard username">
-              {(a) => (
-                <input
-                  {...a}
-                  value={d.username}
-                  autoComplete="username"
-                  spellCheck={false}
-                  readOnly={test.state === "testing" || connecting}
-                  onChange={(e) => set({ username: e.target.value })}
-                />
-              )}
-            </Field>
-            <Field
-              label="Dashboard password"
-              hint={
-                <>
-                  <KeyRound size={12} /> Saved in your system keyring once the connection works.
-                </>
-              }
-            >
-              {(a) => (
-                <input
-                  {...a}
-                  type="password"
-                  autoComplete="current-password"
-                  value={d.password}
-                  readOnly={test.state === "testing" || connecting}
-                  onChange={(e) => set({ password: e.target.value })}
-                />
-              )}
-            </Field>
+            <MethodPicker
+              list={offered(methods, d)}
+              d={d}
+              disabled={test.state === "testing" || connecting}
+              onPick={(m) => {
+                if (isPicked(m, d)) return;
+                const next = withMethod(d, m);
+                set({ method: next.method, provider: next.provider, token: next.token, savedToken: next.savedToken, password: next.password });
+              }}
+            />
+            {methodsNote(methods, d, initial.method) && (
+              <p className="field-hint block">
+                {methodsNote(methods, d, initial.method)}
+              </p>
+            )}
+            {d.method === "token" ? (
+              <TokenField d={d} set={set} readOnly={test.state === "testing" || connecting} />
+            ) : (
+              <>
+                <Field label="Dashboard username">
+                  {(a) => (
+                    <input
+                      {...a}
+                      value={d.username}
+                      autoComplete="username"
+                      spellCheck={false}
+                      readOnly={test.state === "testing" || connecting}
+                      onChange={(e) => set({ username: e.target.value })}
+                    />
+                  )}
+                </Field>
+                <Field
+                  label="Dashboard password"
+                  hint={
+                    <>
+                      <KeyRound size={12} /> Saved in your system keyring once the connection works.
+                    </>
+                  }
+                >
+                  {(a) => (
+                    <input
+                      {...a}
+                      type="password"
+                      autoComplete="current-password"
+                      value={d.password}
+                      readOnly={test.state === "testing" || connecting}
+                      onChange={(e) => set({ password: e.target.value })}
+                    />
+                  )}
+                </Field>
+              </>
+            )}
 
             <div aria-live="polite">
               {test.state === "testing" && !test.routes && (
@@ -487,10 +533,10 @@ function Welcome({
 
 /** The SSH or URL choice and its field, shared with the sign-in screen. */
 /** What the owner types again because the keyring couldn't keep it. */
-function retypeLater(kept: Kept = { password: false, headers: true }): string {
-  if (!kept.password && !kept.headers) return "You'll type the password and the extra request headers again at the next launch.";
+function retypeLater(kept: Kept = { password: false, headers: true }, what: "password" | "token" = "password"): string {
+  if (!kept.password && !kept.headers) return `You'll type the ${what} and the extra request headers again at the next launch.`;
   if (!kept.headers) return "You'll type the extra request headers again at the next sign-in.";
-  return "You'll type the password again at the next launch.";
+  return `You'll type the ${what} again at the next launch.`;
 }
 
 /**

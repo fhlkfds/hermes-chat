@@ -1,6 +1,6 @@
 # Sign-in methods are what Hermes advertises, and their secrets stay in Rust
 
-> **Proposed** (#93). Under review. Nothing here is built yet.
+> **Accepted and built for discovery and token sign-in** (#93): sections 1 and 2. Browser sign-in (section 3), passkeys through it (section 4), and Sign-in needed with the identity check (section 5) are still proposed and not built.
 
 Hermes Chat signs in only with the dashboard's username and password (ADR 0003, ADR 0004). A Hermes dashboard can also be set up to take a provisioned token or a browser sign-in through an identity provider. Issue #93 asks the app to offer the methods a server supports and nothing else, while keeping password sign-in as it is. This ADR records what Hermes offers, which of those methods the app supports, and where each secret lives.
 
@@ -25,7 +25,7 @@ Before it shows the sign-in fields for a connection, the app reads `GET /api/sta
 | **Browser** (one per provider) | `auth_flows` has `native_pkce`, and `/api/auth/providers` lists a provider without `supports_password` | Labelled with the provider's `display_name`, such as "Sign in with Self-Hosted OIDC". |
 
 - A provider the app doesn't recognise, such as `conduit-local-live` or `drain-secret`, isn't offered. The Diagnostics tab still lists its name, as it does today (ADR 0044).
-- When the answer is missing or can't be read (an older Hermes, a timeout, or a gateway's login page), the screen offers Password only, as it does today, and says it couldn't read the server's methods. It never fails closed to nothing.
+- When the answer is missing or can't be read (an older Hermes, a timeout, or a gateway's login page), the screen offers Password only, as it does today. It never fails closed to nothing. A connection that signs in with a token is offered Token beside it, and the screen says it couldn't read the server's methods. For a password connection that guess is what the screen always showed, so it says nothing.
 - When `auth_required` is `false`, the dashboard is bound to loopback and needs a per-process token that the app has no way to get. The screen says so. This is out of scope, as it is today.
 - **The picker.** The sign-in screen and Setup's sign-in step show the methods as one segmented control above the fields, reachable by keyboard, with the chosen method's fields below it. The method the connection used last is picked first. With one method, there is no picker, so a password-only server looks as it does now. Setup reads the methods once the server's address is entered, as its test already reads `/api/status`.
 - The connection records the method it signed in with (`password`, `token` or `browser:<provider>`) beside its address in `hermes-chat.connections`. A method isn't a secret. Launch and reconnect use the recorded method without asking again. If a later `/api/status` no longer offers that method, the sign-in screen says so and offers the ones it does.
@@ -33,10 +33,10 @@ Before it shows the sign-in fields for a connection, the app reads `GET /api/sta
 ### 2. Token sign-in (first PR)
 
 - **Entry.** A masked field with no autocomplete and no spellcheck, as for the provider key (ADR 0054). Its value goes to Rust once, in the connect or test command, and is never read back into the webview.
-- **Storage.** The keyring entry is `dashboard-token/<id>` (service `hermes-chat`, named by `saved_password::account`, ADR 0049). Its value is `{"v":1,"for":[mode,target],"token":…}`. **Rust** loads the token at connect time and uses it only while the connection's mode and target still match `for`, so a token is never sent to an edited address (ADR 0049's rule, applied in Rust instead of the webview). The webview learns only whether a token is saved.
+- **Storage.** The keyring entry is `dashboard-token/<id>` (service `hermes-chat`, named by `saved_password::account`, ADR 0049). Its value is `{"v":1,"for":[[mode,target],…],"token":…}`, one `[mode,target]` for each route the token was entered for (ADR 0056), as a password is saved with every route. Rust saves it only after a sign-in with the typed token went through, and only when the address that sign-in used is among them. **Rust** loads the token at connect time and uses it only while the route's mode and target are in `for`, so a token is never sent to an edited address (ADR 0049's rule, applied in Rust instead of the webview). The webview learns only which addresses a token is saved for, so a route it wasn't saved for is skipped until the token is typed again, as with a password.
 - **On the wire.** `Authorization: Bearer <token>` on every REST request and on `POST /api/auth/ws-ticket`. `/api/ws` opens with the one-time `?ticket=` as it does today, never `?token=`, so the token never appears in a URL. A same-origin redirect is followed and any other redirect is refused (ADR 0006, ADR 0049). If the connection's Extra request headers already set `Authorization`, token sign-in is refused, with a message naming the header.
-- **Check.** Setup's test and the sign-in read `GET /api/auth/me` with the token. A `401` means the token is wrong or was rotated. The answer's `provider` must be `session-token`.
-- **Expiry and revoke.** The session-token provider has no expiry, refresh or revoke: a token stops working when the server's token is replaced. Sign out deletes it from this computer's keyring and says so: "To revoke it, replace `HERMES_DASHBOARD_SESSION_TOKEN` on the server." A `401` on a connection that was working becomes **Sign-in needed** (section 5), not a reconnect loop.
+- **Check.** Before the token goes out, the `/api/status` read before every sign-in must list `session-token` (an unreadable status doesn't stop it). Setup's test and the sign-in then read `GET /api/auth/me` with the token. A `401` means the token is wrong or was rotated. The answer's `provider` must be `session-token`.
+- **Expiry and revoke.** The session-token provider has no expiry, refresh or revoke: a token stops working when the server's token is replaced. Sign out deletes it from this computer's keyring and says so: "To revoke it, replace `HERMES_DASHBOARD_SESSION_TOKEN` on the server." A `401` on a connection that was working becomes **Sign-in needed** (section 5), not a reconnect loop. Until section 5 is built, a token turned down while reconnecting puts the connection Offline at once, without the retries a dropped connection gets.
 - **Server version.** Needs a Hermes with the session-token provider, from `2edfd0d` on. The owner's server (`bf0203a`) doesn't have it and doesn't advertise it, so the screen won't offer Token there.
 
 ### 3. Browser sign-in through Hermes, for OIDC and Nous Portal (second PR)
@@ -61,7 +61,7 @@ Hermes has no WebAuthn relying party: no dashboard provider registers or checks 
 ### 5. Session expiry, sign-out and signing in again
 
 - **Sign-in needed.** A new connection state, for a credential that Hermes turned down while connected (`401` after a refresh attempt, or a turned-down token). The socket closes, the app stops reconnecting, and a banner offers **Sign in again**. Drafts stay, because they are local and kept under the connection's scope (ADR 0049). Queued messages pause.
-- **No queued work under another identity.** Every method, password included, records the identity it signed in as, from `GET /api/auth/me` (`provider` and `user_id`). After signing in again, the queue resumes only if the identity is the same. Otherwise the queue stays paused and the app says the sign-in is a different account, so the owner chooses. When `/api/auth/me` can't be read, a password connection resumes as today (the same username is the same identity), and a token or browser connection keeps the queue paused. Failed messages are never resent on their own (ADR 0018).
+- **No queued work under another identity.** Every method, password included, records the identity it signed in as, from `GET /api/auth/me` (`provider` and `user_id`). After signing in again, the queue resumes only if the identity is the same. Otherwise the queue stays paused and the app says the sign-in is a different account, so the owner chooses. When `/api/auth/me` can't be read, a password connection resumes only if it signed in again with the same password provider and the same username as before: a username is an identity only within its provider, so `alice` at another provider is another account. Anything else, and a token or browser connection, keeps the queue paused. Failed messages are never resent on their own (ADR 0018).
 - **Sign out.** Password: as now. Token: deletes `dashboard-token/<id>`. Browser: deletes `dashboard-refresh/<id>` and drops the access token from memory. There is no server-side revoke for a native token (see the gap), so the screen says the session ends when its refresh token expires on the server. Removing a connection deletes all four keyring entries before anything else (ADR 0049).
 - **Several connections.** Every secret and identity is keyed by connection id, and Rust holds one connection (ADR 0049), so two connections can't share tokens. A refresh that finishes after a switch updates only its own connection's keyring entry, and its access token is dropped with that connection.
 
@@ -77,9 +77,9 @@ Hermes has no WebAuthn relying party: no dashboard provider registers or checks 
 
 One method per PR. Each PR says which method it covers and is "Part of #93" until the last one.
 
-1. **Discovery and Token**: this ADR, `/api/status` and `/api/auth/providers` parsing, the method picker, the token keyring entry, bearer transport, Sign-in needed for a turned-down token, and the identity check before the queue resumes.
+1. **Discovery and Token** (built): this ADR, `/api/status` and `/api/auth/providers` parsing, the method picker, the token keyring entry, and bearer transport. A turned-down token goes Offline.
 2. **Browser sign-in**: the loopback listener, PKCE and state, token exchange, refresh, refresh-token storage, and Browser sign-in on the sign-in screen and in Setup. Passkeys are covered by this flow, as section 4 says.
-3. If anything in section 5 is left over, a last PR finishes it and says `Fixes #93`. Otherwise PR 2 says it.
+3. **Sign-in needed and the identity check** (section 5), in PR 2 or a last PR, which says `Fixes #93`.
 
 ## Verification
 

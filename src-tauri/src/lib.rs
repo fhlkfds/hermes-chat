@@ -27,7 +27,8 @@ use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use transport::{Dashboard, ExtraHeader, LocalFile, LocalText, PickedFiles, Pipe, PipeEvent, ProbeFailure, SavedKey, SignIn, Stage};
+use saved_password::{Address, TokenEntry};
+use transport::{Credential, Dashboard, ExtraHeader, LocalFile, LocalText, PickedFiles, Pipe, PipeEvent, ProbeFailure, SavedKey, SignIn, Stage};
 use tunnel::Tunnel;
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
@@ -40,6 +41,54 @@ struct Connection {
     _tunnel: Option<Tunnel>,
     /// The SSH target the sign-in went through, if it did: where the Preview's server pages go (server_page.rs).
     ssh_target: Option<String>,
+    /// A token typed for this sign-in, and the address it signed in at, until `token_keep` saves it (ADR 0058).
+    typed_token: Option<(String, Address)>,
+}
+
+/// How the webview asks to sign in (ADR 0058). `Password`: the provider Hermes listed, `basic` when none is given.
+/// `Token`: one typed now, or else the one saved for `connection` (its keyring id; none for the migrated
+/// connection), which only goes to an address it was saved for. The saved token never comes back to the webview.
+#[derive(Deserialize)]
+#[serde(tag = "method", rename_all = "camelCase")]
+enum SignInWith {
+    Password {
+        username: String,
+        password: String,
+        #[serde(default)]
+        provider: Option<String>,
+    },
+    Token {
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        connection: Option<String>,
+    },
+}
+
+const NO_SAVED_TOKEN: &str = "No token is saved for this address. Enter the token to sign in.";
+
+impl SignInWith {
+    /// The credential to sign in with at `address`, and the token typed now, if one was, for `token_keep`.
+    async fn credential(self, address: &Address) -> Result<(Credential, Option<String>), String> {
+        match self {
+            SignInWith::Password { username, password, provider } => {
+                let provider = provider.filter(|p| transport::provider_name(p)).unwrap_or_else(|| transport::PASSWORD_PROVIDER.into());
+                Ok((Credential::Password { provider, username, password }, None))
+            }
+            SignInWith::Token { token: Some(token), .. } if !token.trim().is_empty() => {
+                let token = token.trim().to_owned();
+                Ok((Credential::Token(token.clone()), Some(token)))
+            }
+            SignInWith::Token { connection, .. } => {
+                let raw = saved_password::load(saved_password::account(saved_password::TOKEN, connection.as_deref())?).await?;
+                let saved = raw.as_deref().and_then(TokenEntry::read);
+                match saved.as_ref().and_then(|e| e.token_for(address)) {
+                    Some(token) => Ok((Credential::Token(token.to_owned()), None)),
+                    None => Err(NO_SAVED_TOKEN.into()),
+                }
+            }
+        }
+    }
 }
 
 /// Where the owner signs in: through an SSH tunnel (ADR 0003), or straight to a dashboard URL.
@@ -72,6 +121,16 @@ enum Route {
         #[serde(skip_serializing_if = "Option::is_none")]
         server: Option<String>,
     },
+}
+
+impl Target {
+    /// Where a secret for this target may go: its mode and its target or URL as typed, trimmed.
+    fn address(&self) -> Address {
+        match self {
+            Target::Ssh { target } => ["ssh".into(), target.trim().into()],
+            Target::Url { url, .. } => ["url".into(), url.trim().into()],
+        }
+    }
 }
 
 impl Route {
@@ -157,8 +216,7 @@ async fn hermes_connect(
     displays: State<'_, display::Displays>,
     pages: State<'_, Arc<server_page::ServerPages>>,
     target: Target,
-    username: String,
-    password: String,
+    credential: SignInWith,
     profile: String,
     attempt: Option<String>,
     on_event: Channel<PipeEvent>,
@@ -178,7 +236,7 @@ async fn hermes_connect(
             return Err(CONNECT_STOPPED.into());
         }
         let task = tokio::spawn(async move {
-            let opening = open_connection(target, username, password, profile, on_event, expect_server, quick.unwrap_or(false), ssh_route);
+            let opening = open_connection(target, credential, profile, on_event, expect_server, quick.unwrap_or(false), ssh_route);
             tokio::time::timeout(CONNECT_TIMEOUT, opening)
                 .await
                 .unwrap_or_else(|_| Err(format!("Hermes didn't finish connecting within {}s.", CONNECT_TIMEOUT.as_secs())))
@@ -210,19 +268,22 @@ async fn hermes_connect(
 #[allow(clippy::too_many_arguments)]
 async fn open_connection(
     target: Target,
-    username: String,
-    password: String,
+    credential: SignInWith,
     profile: String,
     on_event: Channel<PipeEvent>,
     expect_server: Option<String>,
     quick: bool,
     ssh_route: Option<String>,
 ) -> Result<(Connection, Route), String> {
+    let address = target.address();
+    let (credential, typed_token) = credential.credential(&address).await?;
     let (base, tunnel, route, headers) = open_target(target, quick).await?;
-    // Before the password goes anywhere.
+    // Before the password or token goes anywhere.
     let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick)).await.map_err(|e| e.to_string())?;
     let route = route.with_server(seen.server);
-    let dashboard = Dashboard::sign_in(&base, &SignIn { username, password, headers }).await.map_err(|e| e.to_string())?;
+    let sign_in = SignIn { credential, headers };
+    transport::offered(&sign_in, seen.status.as_deref()).map_err(|e| e.to_string())?;
+    let dashboard = Dashboard::sign_in(&base, &sign_in).await.map_err(|e| e.to_string())?;
     let pipe = dashboard
         .open_pipe(&profile, move |e| {
             let _ = on_event.send(e);
@@ -233,7 +294,8 @@ async fn open_connection(
         Route::Ssh { target, .. } => Some(target.clone()),
         Route::Url { .. } => ssh_route.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && !t.starts_with('-')),
     };
-    Ok((Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel, ssh_target }, route))
+    let typed_token = typed_token.map(|t| (t, address));
+    Ok((Connection { dashboard: Arc::new(dashboard), pipe: Arc::new(pipe), _tunnel: tunnel, ssh_target, typed_token }, route))
 }
 
 /// Stops the connection `hermes_connect` is opening for `attempt`, or, if it hasn't begun, stops it before it does.
@@ -263,16 +325,16 @@ struct ProbeResult {
 async fn hermes_probe(
     state: State<'_, AppState>,
     target: Target,
-    username: String,
-    password: String,
+    credential: SignInWith,
     profile: String,
     expect_server: Option<String>,
     quick: Option<bool>,
 ) -> Result<ProbeResult, ProbeFailure> {
     let quick = quick.unwrap_or(false);
     let task = tokio::spawn(async move {
+        let (credential, _) = credential.credential(&target.address()).await.map_err(|e| ProbeFailure::new(Stage::SignIn, e))?;
         let (base, _tunnel, route, headers) = open_target(target, quick).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
-        let sign_in = SignIn { username, password, headers };
+        let sign_in = SignIn { credential, headers };
         let probed = transport::probe_expecting(&base, &sign_in, &profile, transport::PROBE_STEP_TIMEOUT, reach_within(quick), expect_server.as_deref()).await?;
         Ok(ProbeResult { route: route.with_server(probed.server.clone()), probed })
     });
@@ -293,16 +355,23 @@ async fn hermes_probe(
 struct Reached {
     route: Route,
     status: Option<String>,
+    /// The sign-in methods it offers (ADR 0058), when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    methods: Option<transport::Methods>,
 }
 
 #[tauri::command]
-async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>) -> Result<Reached, ProbeFailure> {
+async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>, methods: Option<bool>) -> Result<Reached, ProbeFailure> {
     let quick = quick.unwrap_or(false);
     let (base, _tunnel, route, headers) = open_target(target, quick).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
     let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick))
         .await
         .map_err(|e| ProbeFailure::new(Stage::Reach, e.to_string()))?;
-    Ok(Reached { route: route.with_server(seen.server), status: seen.status })
+    let methods = match methods {
+        Some(true) => Some(transport::read_methods(&base, &headers, seen.status.as_deref(), reach_within(quick)).await),
+        _ => None,
+    };
+    Ok(Reached { route: route.with_server(seen.server), status: seen.status, methods })
 }
 
 #[tauri::command]
@@ -861,6 +930,42 @@ async fn headers_delete(connection: Option<String>) -> Result<(), String> {
     saved_password::delete(saved_password::account(saved_password::HEADERS, connection.as_deref())?).await
 }
 
+/// Saves the token the connection in use signed in with, when it was typed for this sign-in, in the keyring as
+/// `dashboard-token/<id>` for `addresses`: the routes it was entered for, which must include the one it signed in at.
+/// Nothing typed: nothing to save. The webview never reads the token back (ADR 0058).
+#[tauri::command]
+async fn token_keep(state: State<'_, AppState>, connection: Option<String>, addresses: Vec<Address>) -> Result<(), String> {
+    let account = saved_password::account(saved_password::TOKEN, connection.as_deref())?;
+    let typed = match &*state.0.lock().await {
+        Some(conn) => conn.typed_token.clone(),
+        None => return Err(transport::TransportError::Closed.to_string()),
+    };
+    let Some((token, at)) = typed else { return Ok(()) };
+    let mut keep: Vec<Address> = Vec::new();
+    for a in addresses.into_iter().map(|[mode, target]| [mode, target.trim().to_owned()]) {
+        if matches!(a[0].as_str(), "ssh" | "url") && !a[1].is_empty() && !keep.contains(&a) {
+            keep.push(a);
+        }
+    }
+    if !keep.contains(&at) {
+        return Err("The token wasn't saved: the addresses given don't include the one it signed in at.".into());
+    }
+    saved_password::save(account, TokenEntry::new(keep, token).to_json()).await
+}
+
+/// The addresses a saved token is for, so the webview knows which routes it can sign in over without asking. None when
+/// no token is saved. Never the token itself.
+#[tauri::command]
+async fn token_saved(connection: Option<String>) -> Result<Option<Vec<Address>>, String> {
+    let raw = saved_password::load(saved_password::account(saved_password::TOKEN, connection.as_deref())?).await?;
+    Ok(raw.as_deref().and_then(TokenEntry::read).map(|e| e.addresses))
+}
+
+#[tauri::command]
+async fn token_delete(connection: Option<String>) -> Result<(), String> {
+    saved_password::delete(saved_password::account(saved_password::TOKEN, connection.as_deref())?).await
+}
+
 /// Writes `text` where the owner picks in the native Save dialog, which asks before replacing a file. The webview
 /// never names the path. `None`: the owner cancelled, and nothing was written.
 async fn save_with_dialog(app: &tauri::AppHandle, title: &str, file_name: String, filter: (&str, &[&str]), text: String) -> Result<Option<String>, String> {
@@ -1266,6 +1371,9 @@ pub fn run(screenshot: bool, link: Option<String>) {
             headers_load,
             headers_save,
             headers_delete,
+            token_keep,
+            token_saved,
+            token_delete,
             chat_export,
             import_pick_file,
             templates_export,

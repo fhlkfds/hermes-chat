@@ -11,7 +11,7 @@ use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
 use hermes_chat::display;
-use hermes_chat::transport::{self, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
+use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -476,7 +476,7 @@ async fn serve(app: Router) -> Url {
 }
 
 fn sign_in(password: &str) -> SignIn {
-    SignIn { username: "liam".into(), password: password.into(), headers: Default::default() }
+    SignIn { credential: Credential::password("liam", password), headers: Default::default() }
 }
 
 fn header(name: &str, value: &str) -> ExtraHeader {
@@ -2386,4 +2386,233 @@ async fn a_plain_http_route_to_a_public_address_is_refused() {
     assert!(transport::check_plain_http(&direct("http://hermes.example.com:9119/", &["192.168.1.10", "203.0.113.7"])).is_err());
     let local = transport::resolve_direct("http://localhost:9119").await.unwrap();
     assert!(transport::check_plain_http(&local).is_ok());
+}
+
+// Token sign-in (ADR 0058): a dashboard with the session-token provider, which takes `Authorization: Bearer GOOD`.
+
+/// Every request the token stub got: its path, query, and `Authorization` header.
+type Heard = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
+
+async fn hear(State(heard): State<Heard>, req: Request, next: Next) -> Response {
+    let auth = header_of(&req, "authorization");
+    heard.lock().unwrap().push((req.uri().path().to_owned(), req.uri().query().unwrap_or("").to_owned(), auth));
+    next.run(req).await
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
+}
+
+async fn token_me(headers: HeaderMap) -> Response {
+    match bearer(&headers) {
+        Some("GOOD") => Json(json!({"user_id": "deployment-token", "provider": "session-token", "expires_at": 0})).into_response(),
+        Some("BASIC") => Json(json!({"user_id": "liam", "provider": "basic", "expires_at": 0})).into_response(),
+        Some("abcd") => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": "abcd"}))).into_response(),
+        Some("deadbeef1234") => Json(json!({"user_id": "x", "provider": "deadbeef1234"})).into_response(),
+        Some("echo-header") => {
+            let echoed = headers.get("x-hermes-chat-token").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": echoed}))).into_response()
+        }
+        _ => (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response(),
+    }
+}
+
+async fn token_ticket(headers: HeaderMap) -> Response {
+    if bearer(&headers) == Some("GOOD") {
+        Json(json!({"ticket": "TICKET-1", "ttl_seconds": 30})).into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response()
+    }
+}
+
+async fn token_sessions(headers: HeaderMap) -> Response {
+    if bearer(&headers) != Some("GOOD") {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "Unauthorized"}))).into_response();
+    }
+    Json(json!({"sessions": [], "cookie": cookie(&headers)})).into_response()
+}
+
+/// The token stub, whose `/api/status` lists `providers`, and what it heard. `/api/away` redirects to `elsewhere`,
+/// when given.
+async fn token_stub(providers: &[&str], elsewhere: Option<&Url>) -> (Url, Heard) {
+    let heard = Heard::default();
+    let status = json!({"version": "0.22.7", "auth_required": true, "auth_providers": providers, "auth_flows": ["cookie"]});
+    let mut app = Router::new()
+        .route("/api/status", get(move || async move { Json(status) }))
+        .route("/api/auth/me", get(token_me))
+        .route("/api/auth/ws-ticket", post(token_ticket))
+        .route("/api/ws", get(api_ws))
+        .route("/api/sessions", get(token_sessions))
+        .route("/auth/password-login", post(login));
+    if let Some(away) = elsewhere {
+        let away = away.join("steal").unwrap().to_string();
+        app = app.route("/api/away", get(move || async move { Redirect::temporary(&away) }));
+    }
+    (serve(app.layer(middleware::from_fn_with_state(heard.clone(), hear))).await, heard)
+}
+
+fn token(t: &str) -> SignIn {
+    SignIn { credential: Credential::Token(t.into()), headers: Default::default() }
+}
+
+#[tokio::test]
+async fn a_token_signs_in_as_a_bearer_and_opens_the_socket_with_a_ticket_only() {
+    let (base, heard) = token_stub(&["session-token"], None).await;
+    let dashboard = Dashboard::sign_in(&base, &token("GOOD")).await.expect("signed in");
+    let got = get_json(&dashboard, "api/sessions").await;
+    assert_eq!(got["cookie"], "");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _pipe = dashboard
+        .open_pipe("default", move |e| {
+            let _ = tx.send(e);
+        })
+        .await
+        .expect("pipe open");
+    assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
+    let heard = heard.lock().unwrap().clone();
+    let by_path = |p: &str| heard.iter().find(|(path, ..)| path == p).cloned().unwrap_or_else(|| panic!("no {p} in {heard:?}"));
+    assert_eq!(by_path("/api/auth/me").2.as_deref(), Some("Bearer GOOD"));
+    assert_eq!(by_path("/api/sessions").2.as_deref(), Some("Bearer GOOD"));
+    assert_eq!(by_path("/api/auth/ws-ticket").2.as_deref(), Some("Bearer GOOD"));
+    let (_, query, auth) = by_path("/api/ws");
+    assert_eq!(query, "ticket=TICKET-1&profile=default");
+    assert_eq!(auth, None, "the socket is let in by its ticket alone");
+    assert!(heard.iter().all(|(_, q, _)| !q.contains("GOOD")), "the token never goes in a URL: {heard:?}");
+}
+
+#[tokio::test]
+async fn a_wrong_token_is_turned_down_and_a_token_for_another_provider_too() {
+    let (base, _) = token_stub(&["session-token"], None).await;
+    let err = Dashboard::sign_in(&base, &token("WRONG")).await.err().unwrap();
+    assert!(matches!(err, TransportError::BadToken), "{err:?}");
+    assert!(err.to_string().starts_with("Wrong token"), "{err}");
+    let err = Dashboard::sign_in(&base, &token("BASIC")).await.err().unwrap();
+    assert!(matches!(&err, TransportError::NotSessionToken(p) if p == "basic"), "{err:?}");
+    // Nothing the server echoes of the token is shown, however short, not even as the provider's name.
+    let err = Dashboard::sign_in(&base, &token("abcd")).await.err().unwrap().to_string();
+    assert!(err.starts_with("The dashboard answered 500") && !err.contains("abcd"), "{err}");
+    let err = Dashboard::sign_in(&base, &token("deadbeef1234")).await.err().unwrap().to_string();
+    assert!(err.contains("as a different sign-in") && !err.contains("deadbeef"), "{err}");
+    // An extra header that happens to share the name the token is hidden under keeps its own value hidden.
+    let headers = transport::extra_headers(&[header("X-Hermes-Chat-Token", "gateway-secret-value")]).unwrap();
+    let err = Dashboard::sign_in(&base, &SignIn { credential: Credential::Token("echo-header".into()), headers }).await.err().unwrap().to_string();
+    assert!(err.starts_with("The dashboard answered 500") && !err.contains("gateway-secret"), "{err}");
+    for bad in ["", "  ", "two words", "line\nbreak"] {
+        assert!(matches!(Dashboard::sign_in(&base, &token(bad)).await.err().unwrap(), TransportError::BadToken), "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_token_isnt_sent_when_extra_headers_set_authorization() {
+    let (base, heard) = token_stub(&["session-token"], None).await;
+    let headers = transport::extra_headers(&[header("Authorization", "Basic Z2F0ZXdheQ==")]).unwrap();
+    let err = Dashboard::sign_in(&base, &SignIn { credential: Credential::Token("GOOD".into()), headers }).await.err().unwrap();
+    assert!(matches!(err, TransportError::AuthorizationHeaderSet), "{err:?}");
+    assert!(err.to_string().contains("Authorization"), "{err}");
+    assert!(heard.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_token_goes_only_to_a_server_that_lists_the_session_token_provider() {
+    let (base, heard) = token_stub(&["basic"], None).await;
+    let failed = transport::probe_with(&base, &token("GOOD"), "default", Duration::from_secs(5)).await.unwrap_err();
+    assert_eq!(failed.stage, Stage::SignIn);
+    assert!(failed.message.starts_with("This Hermes server doesn't take a token"), "{}", failed.message);
+    assert!(heard.lock().unwrap().iter().all(|(_, _, auth)| auth.is_none()), "{:?}", heard.lock().unwrap());
+    assert!(transport::offered(&token("GOOD"), None).is_ok(), "an unread status doesn't stop it; /api/auth/me checks the token");
+    assert!(transport::offered(&sign_in("hunter2"), Some(r#"{"auth_providers":["session-token"]}"#)).is_ok());
+
+    let (base, _) = token_stub(&["basic", "session-token"], None).await;
+    let probed = transport::probe_with(&base, &token("GOOD"), "default", Duration::from_secs(5)).await.expect("probed");
+    assert!(probed.ready.contains("gateway.ready"));
+}
+
+#[tokio::test]
+async fn a_token_never_follows_a_redirect_to_another_site() {
+    let (elsewhere, seen) = other_site().await;
+    let (base, _) = token_stub(&["session-token"], Some(&elsewhere)).await;
+    let dashboard = Dashboard::sign_in(&base, &token("GOOD")).await.expect("signed in");
+    let err = dashboard.request("GET", "api/away", None).await.unwrap_err();
+    assert!(err.to_string().contains("another site"), "{err}");
+    assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
+}
+
+#[tokio::test]
+async fn a_password_goes_to_the_provider_hermes_listed() {
+    let logins = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let kept = logins.clone();
+    let app = Router::new().route(
+        "/auth/password-login",
+        post(move |Json(body): Json<Value>| {
+            let kept = kept.clone();
+            async move {
+                kept.lock().unwrap().push(body);
+                Json(json!({"ok": true}))
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let with = |provider: &str| SignIn {
+        credential: Credential::Password { provider: provider.into(), username: "liam".into(), password: "hunter2".into() },
+        headers: Default::default(),
+    };
+    Dashboard::sign_in(&base, &with("team-sso")).await.expect("signed in");
+    Dashboard::sign_in(&base, &with("../evil")).await.expect("signed in");
+    let providers: Vec<Value> = logins.lock().unwrap().iter().map(|b| b["provider"].clone()).collect();
+    assert_eq!(providers, vec![json!("team-sso"), json!("basic")]);
+}
+
+#[test]
+fn the_methods_are_what_the_server_lists_and_supports() {
+    use transport::{sign_in_methods as methods, MethodsNote, SignInMethod};
+    let password = |p: &str, l: &str| SignInMethod::Password { provider: p.into(), label: l.into() };
+    let owners = r#"{"version":"0.21.5","auth_required":true,"auth_providers":["basic","conduit-local-live"],"auth_flows":["cookie","native_pkce"]}"#;
+    let listed = r#"{"providers":[{"name":"basic","display_name":"Username & password","supports_password":true},{"name":"conduit-local-live","display_name":"Conduit","supports_password":false}]}"#;
+    let got = methods(Some(owners), Some(listed));
+    assert_eq!((got.methods, got.note), (vec![password("basic", "Username & password")], None));
+    let got = methods(Some(owners), None);
+    assert_eq!((got.methods, got.note), (vec![password("basic", "Password")], None));
+
+    let token_only = r#"{"auth_required":true,"auth_providers":["session-token"],"auth_flows":["cookie"]}"#;
+    let got = methods(Some(token_only), None);
+    assert_eq!((got.methods, got.note), (vec![SignInMethod::Token], None));
+    let got = methods(Some(token_only), Some(r#"{"providers":[]}"#));
+    assert_eq!(got.methods, vec![SignInMethod::Token]);
+
+    let both = r#"{"auth_required":true,"auth_providers":["basic","session-token","drain-secret"],"auth_flows":["cookie","native_pkce"]}"#;
+    let two = r#"{"providers":[{"name":"basic","display_name":"Basic","supports_password":true},{"name":"ldap","display_name":"Company login","supports_password":true},{"name":"bad name","supports_password":true},{"name":"self-hosted","display_name":"OIDC","supports_password":false}]}"#;
+    let got = methods(Some(both), Some(two));
+    assert_eq!(got.methods, vec![password("basic", "Basic"), password("ldap", "Company login"), SignInMethod::Token]);
+
+    for unread in [None, Some("<html>"), Some("[]"), Some(r#"{"version":"0.12.0"}"#)] {
+        let got = methods(unread, None);
+        assert_eq!((got.methods, got.note), (vec![password("basic", "Password")], Some(MethodsNote::Unread)), "{unread:?}");
+    }
+    let got = methods(Some(r#"{"auth_required":false,"auth_providers":[]}"#), None);
+    assert_eq!(got.note, Some(MethodsNote::GateOff));
+    let got = methods(Some(r#"{"auth_required":true,"auth_providers":["conduit-local-live","drain-secret"]}"#), None);
+    assert_eq!((got.methods, got.note), (vec![password("basic", "Password")], Some(MethodsNote::NoneSupported)));
+    assert_eq!(serde_json::to_value(methods(Some(both), Some(two))).unwrap()["methods"][2], json!({"method": "token"}));
+}
+
+/// Against a real Hermes dashboard with the session-token provider, when `HERMES_LIVE_TOKEN_DASHBOARD` (its URL) and
+/// `HERMES_LIVE_TOKEN` are set; skipped otherwise. A throwaway one: docs/compatibility.md, "Sign-in methods".
+#[tokio::test]
+async fn live_token_sign_in() {
+    let (Ok(url), Ok(secret)) = (std::env::var("HERMES_LIVE_TOKEN_DASHBOARD"), std::env::var("HERMES_LIVE_TOKEN")) else { return };
+    let base = Url::parse(&url).unwrap();
+    let wait = Duration::from_secs(20);
+    let seen = transport::read_server(&base, &Default::default(), None, wait).await.expect("status read");
+    let methods = transport::read_methods(&base, &Default::default(), seen.status.as_deref(), wait).await;
+    assert!(methods.methods.contains(&transport::SignInMethod::Token), "{methods:?}");
+    let probed = transport::probe_with(&base, &token(&secret), "default", wait).await.expect("the right token signs in");
+    assert!(probed.ready.contains("gateway.ready"), "{}", probed.ready);
+    let wrong = transport::probe_with(&base, &token(&format!("{secret}-wrong")), "default", wait).await.unwrap_err();
+    assert_eq!(wrong.stage, Stage::SignIn);
+    assert!(wrong.message.starts_with("Wrong token"), "{}", wrong.message);
+    assert!(!wrong.message.contains(&secret));
+    let dashboard = Dashboard::sign_in(&base, &token(&secret)).await.expect("signed in");
+    let me: Value = serde_json::from_str(&dashboard.request("GET", "api/auth/me", None).await.expect("me")).unwrap();
+    assert_eq!(me["provider"], "session-token");
+    println!("live: {methods:?}; signed in as {}; a wrong token: {}", me["user_id"], wrong.message);
 }

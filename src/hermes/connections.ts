@@ -24,7 +24,19 @@ export const NAME_MAX = 60;
 /** How a connection reaches the dashboard, and as whom. Nothing here is secret. */
 export type Address = { mode: "ssh" | "url"; sshTarget: string; url: string; username: string };
 
-export type SavedConnection = Address & {
+/**
+ * How a connection signs in (ADR 0058), which isn't a secret. `method` absent: the password. `provider`: the password
+ * provider Hermes listed, absent for `basic`.
+ */
+export type SignInWay = { method?: "token"; provider?: string };
+
+const PROVIDER = /^[a-z0-9_-]{1,64}$/;
+
+/** `w`'s sign-in way alone, without a field that says nothing: a token, or the password provider if not `basic`. */
+export const wayOf = (w: SignInWay): SignInWay =>
+  w.method === "token" ? { method: "token" } : w.provider && w.provider !== "basic" && PROVIDER.test(w.provider) ? { provider: w.provider } : {};
+
+export type SavedConnection = Address & SignInWay & {
   /** Stable for the life of the connection: a random UUID. Keyring entries and local storage are keyed by it. */
   id: string;
   name: string;
@@ -166,6 +178,7 @@ function toConnection(v: unknown): SavedConnection | undefined {
     ...(legacy && { legacy }),
     ...(routes && { routes }),
     ...(server && { server }),
+    ...wayOf({ method: v.method === "token" ? "token" : undefined, provider: str(v.provider, 64) }),
   });
 }
 
@@ -187,8 +200,8 @@ export const newConnectionId = () => globalThis.crypto.randomUUID();
 /** The details a connection signs in with, apart from its secrets. */
 export const addressOf = (d: Address): Address => ({ mode: d.mode, sshTarget: d.sshTarget, url: d.url, username: d.username });
 
-/** The sign-in details for a connection, with the password and headers given. */
-export const detailsOf = (c: Address, password = "", headers: ExtraHeader[] = []): SignInDetails => ({ ...addressOf(c), password, headers });
+/** The sign-in details for a connection, with the password and headers given, and the way it signs in. */
+export const detailsOf = (c: Address & SignInWay, password = "", headers: ExtraHeader[] = []): SignInDetails => ({ ...addressOf(c), ...wayOf(c), password, headers });
 
 /**
  * The saved connections, in one versioned document in local storage. Reads go through memory, so a store that can't

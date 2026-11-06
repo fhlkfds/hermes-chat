@@ -48,7 +48,7 @@ function account(server = "a1b2c3d4e5f60718293a4b5c6d7e8f90") {
   const headers = keyring();
   const a: Account = {
     connections,
-    secrets: () => ({ password, headers }),
+    secrets: () => ({ password, headers, token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }),
     connect: async () => connect(fake.openPipe, "default"),
     readSaved: (_c, _d, reason) => readSaved(fake.openPipe, reason, memoryCache()),
   };

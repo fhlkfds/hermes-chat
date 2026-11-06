@@ -836,6 +836,8 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .conn-form { text-align: left; display: flex; flex-direction: column; gap: 16px; }
 .conn-form > .btn.primary { height: 38px; justify-content: center; margin-top: 4px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+.sign-in-methods .segmented { align-self: flex-start; }
+.sign-in-methods .segmented button { padding: 4px 14px; }
 .field-label { font-size: calc(12.5rem / 14); color: var(--muted); display: flex; align-items: center; gap: 8px; }
 .field input {
   background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 12px; outline: none;

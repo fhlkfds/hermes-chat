@@ -31,6 +31,7 @@ import { ConnectionManager, RailConnections, RemoveConnection, SwitchConnection 
 import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 
 import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
+import { readMethods } from "./hermes/signInMethods";
 import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";
 import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
@@ -187,6 +188,9 @@ const account: Account = {
   connect: (c, d, signal) => connect(pipeFor(c, d), undefined, localChatCache(c), desktopNotify, signal),
   readSaved: (c, d, reason) => readSaved(pipeFor(c, d), reason, localChatCache(c), desktopNotify),
 };
+
+/** The sign-in methods a connection's server offers, read without signing in (ADR 0058). */
+const serverMethods = (d: SignInDetails) => readMethods((one, expect) => tauriReach(one, expect, true, true), d);
 
 /** Deletes what this computer keeps for a removed connection (forgetConnection.ts). */
 const forgetLocal = (c: SavedConnection) => forgetConnectionData(c, { defaults: savedDefaults, tags: savedTagsFile, persona: savedPersona, afterwards: syncScreenshotOutbox });
@@ -510,6 +514,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         initialName={setup.name}
         probe={tauriProbe}
         reach={tauriReach}
+        readMethods={serverMethods}
         hermes={hermes ?? undefined}
         onConnect={(d, name, signal) => connectWith(setup.target, d, name, signal)}
         onCancel={setup.mode === "first-run" ? undefined : () => setSetup(undefined)}
@@ -520,7 +525,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
 
   /** Setup to change `c`: from the sign-in it is using, if it's the one in use, header values and all but the password. */
   const editConnection = async (c: SavedConnection) => {
-    const now = c.id === connectionRef.current?.id && signedInWith.current ? withKnownServer(c, { ...signedInWith.current, password: "" }) : await signInForm(c, account);
+    const now = c.id === connectionRef.current?.id && signedInWith.current ? withKnownServer(c, { ...signedInWith.current, password: "", token: undefined }) : await signInForm(c, account);
     // ServerFields clears the header values if the URL changes, so they never go to another server.
     setSetup({ mode: c.id === connectionRef.current?.id && current.current ? "reconfigure" : "edit", initial: now, target: c, name: c.name });
   };
@@ -563,7 +568,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
           onRemoveConnection={removeSaved}
           onTestConnection={async (c) => {
             const d = c.id === connection.id && signedInWith.current ? withKnownServer(c, signedInWith.current) : await savedSignIn(c, account);
-            if (!d) throw new Error("No password is saved for this connection, so it can't be tested. Edit it to sign in again.");
+            if (!d) throw new Error(`No ${c.method === "token" ? "token" : "password"} is saved for this connection, so it can't be tested. Edit it to sign in again.`);
             return testSignIn(tauriProbe, d);
           }}
           onSignOut={() =>
@@ -609,6 +614,7 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
         error={error}
         connection={connection}
         connections={recent}
+        readMethods={serverMethods}
         onSetUp={() => {
           signInAsks.current++;
           setSetup({ mode: "sign-in", initial: BLANK, target: store.draft(BLANK) });
@@ -2752,6 +2758,7 @@ export function Main({
             route={route}
             unsecure={unsecure}
             username={connection.username}
+            signsInWith={connection.method}
             passwordSaved={kept.password}
             headersSaved={kept.headers}
             headers={route?.kind === "url" ? headers : []}
