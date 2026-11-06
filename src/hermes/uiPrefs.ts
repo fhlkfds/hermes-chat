@@ -12,7 +12,7 @@ import type { TerminalKind } from "./terminal";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
-export const UI_PREFS_VERSION = 2;
+export const UI_PREFS_VERSION = 3;
 
 export type Theme = "light" | "dark" | "system";
 export const THEMES: readonly Theme[] = ["light", "dark", "system"];
@@ -107,8 +107,8 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
-  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
-  chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
+  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"] as SectionKey[],
+  chatSectionsCollapsed: ["snoozed", "settled", "archived"] as SectionKey[],
   agentOffice: "desks",
   inboxAutoDismissDays: null,
 });
@@ -123,6 +123,15 @@ export const UI_PREFS_MIGRATIONS: UIPrefsMigrations = {
   0: (doc) => doc,
   // Pinned is new in version 2 (ADR 0085): a list of shown sections from before it shows Pinned too.
   1: (doc) => (toShown(doc.chatSectionsShown) ? { ...doc, chatSectionsShown: ["pinned", ...(doc.chatSectionsShown as unknown[])] } : doc),
+  // Unsettled is gone in version 3 (ADR 0090): its place in either list goes with it.
+  2: (doc) => {
+    const next = { ...doc };
+    for (const field of ["chatSectionsShown", "chatSectionsCollapsed"]) {
+      const list = doc[field];
+      if (Array.isArray(list)) next[field] = list.filter((k) => k !== "unsettled");
+    }
+    return next;
+  },
 };
 
 const isDoc = (v: unknown): v is UIPrefsDoc => typeof v === "object" && v !== null && !Array.isArray(v);

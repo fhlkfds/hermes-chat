@@ -1,9 +1,8 @@
-// Snoozing, Clearing from the Inbox, Pinning, and the chat list's sections (GLOSSARY.md, ADR 0036, ADR 0063, ADR 0085).
-// Hermes has nowhere to keep a snooze or a clear, and its own pin flag already holds Active (ADR 0002), so each is kept
-// on this computer only, in its own versioned localStorage document, separately for each connection and profile (the
-// scope projectLinks.ts `projectScope` gives), and never sent to Hermes. A snooze is the time the chat wakes, in Unix
-// ms; a clear is when the chat was last active as the owner cleared it, so anything newer brings it back; a pin is
-// when the chat was pinned.
+// Snoozing, Pinning, and the chat list's sections (GLOSSARY.md, ADR 0036, ADR 0063, ADR 0085, ADR 0090).
+// Hermes has nowhere to keep a snooze, and its own pin flag already holds Active (ADR 0002), so each is kept on this
+// computer only, in its own versioned localStorage document, separately for each connection and profile (the scope
+// projectLinks.ts `projectScope` gives), and never sent to Hermes. A snooze is the time the chat wakes, in Unix ms; a
+// pin is when the chat was pinned.
 //
 // The list shows each chat in one section only, worked out from what the app already reads:
 //   1. Archived: Hermes has it archived, whatever else holds.
@@ -11,8 +10,7 @@
 //   3. Settled: the owner settled it (ADR 0002). It stays there whatever happens in it.
 //   4. Snoozed: the owner snoozed it and it hasn't woken yet.
 //   5. Working: Hermes is writing a reply in it and isn't waiting on the owner.
-//   6. Unsettled: the owner cleared it from the Inbox and nothing has happened in it since.
-//   7. Otherwise it is in the Inbox: Hermes waits for the owner's answer, or is done, or it is new.
+//   6. Otherwise it is in the Inbox: Hermes waits for the owner's answer, or is done, or it is new.
 import type { Chat } from "./model";
 import { isWaiting } from "./model";
 import type { SectionKey } from "./sectionKeys";
@@ -33,12 +31,10 @@ const MORNING = 9;
 const SCOPE_LIMIT = 200;
 const CHATS_PER_SCOPE = 5_000;
 
-/** One connection and profile's times, one per chat, Unix ms: when each snoozed chat wakes, or each cleared chat's mark. */
+/** One connection and profile's times, one per chat, Unix ms: when each snoozed chat wakes, or when each chat was pinned. */
 export type ChatTimes = Readonly<Record<string, number>>;
 /** One connection and profile's snoozes: when each chat wakes, Unix ms. */
 export type Snoozes = ChatTimes;
-/** One connection and profile's cleared chats: when each was last active as the owner cleared it, Unix ms. */
-export type Cleared = ChatTimes;
 export type SnoozeStorage = Pick<Storage, "getItem" | "setItem">;
 
 const EMPTY: ChatTimes = Object.freeze({});
@@ -167,33 +163,6 @@ export class SnoozeStore extends ChatTimesStore {
   isSnoozed = (chatId: string) => (this.getSnapshot()[chatId] ?? 0) > this.now();
 }
 
-export const CLEARED_KEY = "hermes-chat.cleared";
-export const CLEARED_VERSION = 1;
-const CLEARED_MIGRATIONS: UIPrefsMigrations = { 0: (doc) => doc };
-
-/**
- * The chats the owner cleared from the Inbox, for one connection and profile, kept in `storage`. Each is kept with
- * `lastActive` (snooze.ts `lastActive`) as it was then; the chat is back in the Inbox once something newer happens in it.
- */
-export class ClearedStore extends ChatTimesStore {
-  constructor(storage: SnoozeStorage, scope: string, now: () => number = Date.now) {
-    super(storage, scope, now, CLEARED_KEY, CLEARED_VERSION, CLEARED_MIGRATIONS);
-  }
-
-  /**
-   * Clears the chat from the Inbox as it is now: `mark`, when it was last active, kept exactly (Hermes's activity times
-   * have fractions of a millisecond, and a mark rounded down would leave the chat in the Inbox).
-   */
-  clear(chatId: string, mark: number) {
-    this.set(chatId, mark > 0 ? mark : 1);
-  }
-
-  /** Puts the chat back in the Inbox, or forgets a clear that no longer holds. */
-  restore(chatId: string) {
-    if (chatId in this.getSnapshot()) this.forget(chatId);
-  }
-}
-
 export const PINS_KEY = "hermes-chat.pins";
 export const PINS_VERSION = 1;
 const PINS_MIGRATIONS: UIPrefsMigrations = { 0: (doc) => doc };
@@ -320,57 +289,32 @@ export function lastActive(c: Chat, snoozes: Snoozes, now: number, since: Readon
   return Math.max(c.updatedAt, woke, since[c.id] ?? 0);
 }
 
-/** The chat can be cleared from the Inbox: the owner has read it, and Hermes isn't replying in it or waiting on them. */
-export const canClear = (c: Chat) => !c.unread && !c.running && !c.items.some(isWaiting) && !c.settled && !c.archived;
-
-/**
- * The clears among `chats` that no longer hold, because something happened in the chat after it was cleared, or it is
- * Unread or Hermes waits on the owner in it, or it is Settled or Archived (here or in another Hermes client: settling
- * or archiving doesn't change when the chat was last active, so it is seen only as the state itself). Forgetting them
- * keeps the chat in the Inbox once that activity stops counting (a woken snooze does after WOKEN_KEPT_MS), or once it is
- * unsettled or restored. A reply still running doesn't end a clear: its end does.
- */
-export function staleClears(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>>, cleared: Cleared): string[] {
-  return chats
-    .filter(
-      (c) =>
-        cleared[c.id] !== undefined &&
-        (c.settled || !!c.archived || lastActive(c, snoozes, now, since) > cleared[c.id] || !!c.unread || c.items.some(isWaiting)),
-    )
-    .map((c) => c.id);
-}
-
 /**
  * Where each chat shows in the list, in the order shown. A pinned chat (`pins`) is in Pinned, in the order it was
  * pinned, whatever happens in it, unless it is Archived. The Inbox is newest first, a chat counting as new when it woke
- * from a snooze or stopped working (`lastActive`). Working, Unsettled and Settled are newest first; Snoozed wakes
- * soonest first. A cleared chat (`cleared`) is in Unsettled until something happens in it after it was cleared, or it is
- * unread or waiting on the owner; it is then back in the Inbox.
+ * from a snooze or stopped working (`lastActive`). Working and Settled are newest first; Snoozed wakes soonest first.
  */
 export function chatSections(
   chats: Chat[],
   snoozes: Snoozes,
   now: number,
   since: Readonly<Record<string, number>> = {},
-  cleared: Cleared = {},
   pins: Pins = {},
 ): ChatSections {
   const recent = (c: Chat) => lastActive(c, snoozes, now, since);
   const byRecent = (a: Chat, b: Chat) => recent(b) - recent(a);
-  const s: ChatSections = { pinned: [], inbox: [], working: [], snoozed: [], unsettled: [], settled: [], archived: [] };
+  const s: ChatSections = { pinned: [], inbox: [], working: [], snoozed: [], archived: [], settled: [] };
   for (const c of chats) {
     if (c.archived) s.archived.push(c);
     else if (pins[c.id] !== undefined) s.pinned.push(c);
     else if (c.settled) s.settled.push(c);
     else if ((snoozes[c.id] ?? 0) > now) s.snoozed.push(c);
     else if (isWorking(c)) s.working.push(c);
-    else if (cleared[c.id] !== undefined && recent(c) <= cleared[c.id] && canClear(c)) s.unsettled.push(c);
     else s.inbox.push(c);
   }
   s.pinned.sort((a, b) => pins[a.id] - pins[b.id] || (a.id < b.id ? -1 : 1));
   s.inbox.sort(byRecent);
   s.working.sort(byRecent);
-  s.unsettled.sort(byRecent);
   s.settled.sort((a, b) => b.updatedAt - a.updatedAt);
   s.archived.sort((a, b) => b.updatedAt - a.updatedAt);
   s.snoozed.sort((a, b) => snoozes[a.id] - snoozes[b.id]);
