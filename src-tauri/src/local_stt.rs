@@ -675,7 +675,10 @@ pub async fn transcribe_routed<'a>(
 
 /// The transcriptions running, by the webview's id, and cancels that came before their transcription did (kept a
 /// minute, so a cancel sent just after the recording isn't lost to the order the two commands arrive in).
-static RUNS: Mutex<Vec<(String, watch::Sender<bool>, Instant, bool)>> = Mutex::new(Vec::new());
+static RUNS: Mutex<Vec<RunEntry>> = Mutex::new(Vec::new());
+/// One of `RUNS`: the webview's run id, the cancel its transcription watches, when it was entered, and whether the
+/// transcription has started (false while only a cancel has arrived).
+type RunEntry = (String, watch::Sender<bool>, Instant, bool);
 const EARLY_CANCEL_KEPT: Duration = Duration::from_secs(60);
 /// The most cancels kept waiting for their transcription; the oldest go first.
 const EARLY_CANCELS_MAX: usize = 64;

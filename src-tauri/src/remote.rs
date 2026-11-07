@@ -167,11 +167,14 @@ fn pipe_name(domain: &str, user: &str, session: &str) -> String {
     format!(r"\\.\pipe\net.l0cky12.HermesChat-{}-{}-{}", part(domain), part(user), part(session))
 }
 
+/// What the app does with a request once it is set up.
+type Handler = Box<dyn Fn(Request) + Send>;
+
 /// Where requests go: the app's handler once it is set up, and until then a list it takes over, so a request that
 /// arrives while the app starts (a second launch, a shortcut pressed early) isn't lost.
 #[derive(Default)]
 pub struct Inbox {
-    handler: Mutex<Option<Box<dyn Fn(Request) + Send>>>,
+    handler: Mutex<Option<Handler>>,
     early: Mutex<Vec<Request>>,
 }
 

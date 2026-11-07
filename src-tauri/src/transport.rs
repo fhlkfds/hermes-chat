@@ -2086,11 +2086,10 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
             && !n.starts_with('/')
             && !n.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
     });
-    let value_ok = match (second, fields.get(second)) {
-        ("enabled", Some(serde_json::Value::Bool(_))) => true,
-        ("content", Some(serde_json::Value::String(_))) => true,
-        _ => false,
-    };
+    let value_ok = matches!(
+        (second, fields.get(second)),
+        ("enabled", Some(serde_json::Value::Bool(_))) | ("content", Some(serde_json::Value::String(_)))
+    );
     name_ok && value_ok
 }
 

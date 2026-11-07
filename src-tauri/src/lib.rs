@@ -218,6 +218,7 @@ impl Screenshots {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn hermes_connect(
     state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
@@ -782,7 +783,10 @@ async fn files_download(
 /// Each is kept with the transfers' epoch it was picked in: a pick is good for one upload, over the connection that was
 /// current when it was picked.
 #[derive(Default)]
-struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, (std::path::PathBuf, u64)>)>);
+struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, Pick>)>);
+
+/// A picked file: its local path and the transfers' epoch it was picked in.
+type Pick = (std::path::PathBuf, u64);
 
 /// A local file picked to upload: its token, name and size.
 #[derive(Serialize)]
@@ -831,6 +835,7 @@ fn files_discard_pick(picks: State<'_, UploadPicks>, token: u64) {
 /// Uploads the file picked as `token` to the server path `path` (`Dashboard::upload`, ADR 0023). `overwrite` false:
 /// Hermes refuses when a file is already there. Resolves to Hermes's answer, the written entry as JSON.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn files_upload(
     app: tauri::AppHandle,
     transfers: State<'_, Transfers>,
