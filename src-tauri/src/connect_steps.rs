@@ -1,6 +1,6 @@
 //! The steps of opening a connection, in the order they run (#270, ADR 0033). The webview records which step each
-//! attempt reached and how long each took (src/hermes/attempts.ts `STEPS`, which a test holds to this list). A step
-//! that should have its own time limit (#269) gets it in `Steps::run`, the one place a connect step runs.
+//! attempt reached and how long each took (src/hermes/attempts.ts `STEPS`, which a test holds to this list). Each step
+//! runs through `Steps::run`, its time limit for one of several routes (`transport::StepLimits`, #269) inside it.
 use std::future::Future;
 use std::time::Instant;
 
@@ -30,9 +30,12 @@ pub struct Started {
     pub at: u64,
 }
 
+/// Told each step as it starts.
+type Report = Box<dyn Fn(Started) + Send + Sync>;
+
 /// Where a connection being opened says which step it starts. Setup's test and route checks report nowhere.
 #[derive(Default)]
-pub struct Steps(Option<(Instant, Box<dyn Fn(Started) + Send + Sync>)>);
+pub struct Steps(Option<(Instant, Report)>);
 
 impl Steps {
     /// Reports to `to`, timing each step from now.

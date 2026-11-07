@@ -113,7 +113,6 @@ function Host() {
               <StatusBar
                 chat={chat}
                 status={snap.status}
-                onYolo={async () => {}}
                 context={{
                   inspect: () => hermes.inspectContext("nas"),
                   history: () => hermes.compactionHistory("nas"),

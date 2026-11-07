@@ -1,7 +1,7 @@
 // The composer's model picker and reasoning pill. The picker lists the models Hermes offers, starred ones first under
 // Favorites; hovering a row (or moving to it with the arrow keys) shows its options beside the list: reasoning effort
 // and fast mode. The pill shows the effort in use and changes it directly; it hides for a model without reasoning.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Brain, Check, ChevronDown, Search, Star, Zap } from "lucide-react";
 import {
   EFFORT_LABEL,
@@ -18,7 +18,7 @@ import {
   type ModelOption,
   type ModelPick,
 } from "../hermes/models";
-import { useReturnFocus } from "./bits";
+import { useDismiss, useReturnFocus } from "./bits";
 
 /** The effort's name in menus. */
 const EFFORT_NAME: Record<Effort, string> = {
@@ -43,6 +43,7 @@ export type ModelControlsProps = {
   favorites: string[];
   onPick: (pick: ModelPick) => void;
   onToggleFavorite: (key: string) => void;
+  children?: ReactNode;
 };
 
 /** The picker's button and, beside it, the reasoning pill. */
@@ -51,22 +52,9 @@ export function ModelControls(props: ModelControlsProps) {
     <div className="model-controls">
       <ModelPicker {...props} />
       <ReasoningPill {...props} />
+      {props.children}
     </div>
   );
-}
-
-/** Closes a popover on a click outside `ref`, or when the window loses focus. */
-function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: Event) => ref.current?.contains(e.target as Node) || close();
-    window.addEventListener("mousedown", away);
-    window.addEventListener("blur", close);
-    return () => {
-      window.removeEventListener("mousedown", away);
-      window.removeEventListener("blur", close);
-    };
-  }, [open, close, ref]);
 }
 
 /** One row of the list. `favorite`: it sits under Favorites. */

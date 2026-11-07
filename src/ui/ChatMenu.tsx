@@ -2,7 +2,7 @@
 // menu uses too. Escape or a click elsewhere closes one, and focus goes back to what had it. The arrow keys move
 // between a menu's items, and an item's letter (`aria-keyshortcuts`) picks it.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AlarmClock, AlarmClockOff, AppWindow, CalendarClock, Check, CheckCheck, Columns2, Inbox as InboxIcon, Link2, PanelLeft, PanelRight, Pencil, Pin, PinOff, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
+import { AlarmClock, AlarmClockOff, AppWindow, Archive, ArchiveRestore, CalendarClock, Check, Columns2, Link2, PanelLeft, PanelRight, Pencil, Pin, PinOff, Sparkles, Tag as TagIcon, Trash2 } from "lucide-react";
 import type { Chat } from "../hermes/model";
 import type { Project } from "../hermes/projects";
 import { snoozePresets, wakeFull } from "../hermes/snooze";
@@ -28,10 +28,10 @@ export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: s
 export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
 
 /**
- * Clearing the chat from the Inbox, or putting it back (snooze.ts `ClearedStore`, ADR 0063): `cleared`, whether it is
- * cleared now, in Unsettled.
+ * Settling the chat, or unsettling it (ADR 0002). Settling is also how a chat is cleared from the Inbox (ADR 0090);
+ * unsettling puts it back in the Inbox.
  */
-export type ChatClear = { cleared: boolean; onClear: (cleared: boolean) => void };
+export type ChatSettle = { settled: boolean; onSettle: (settled: boolean) => void };
 
 /** Pinning the chat to the top of the list, or unpinning it (snooze.ts `PinStore`, ADR 0085). */
 export type ChatPin = { pinned: boolean; onPin: (pinned: boolean) => void };
@@ -75,7 +75,7 @@ export function ChatMenu({
   projects,
   tags,
   snooze,
-  clear,
+  settle,
   pin,
   onDelete,
   onClose,
@@ -93,7 +93,7 @@ export function ChatMenu({
   projects?: ChatProjects;
   tags?: ChatTags;
   snooze?: ChatSnooze;
-  clear?: ChatClear;
+  settle?: ChatSettle;
   pin?: ChatPin;
   onDelete?: () => void;
   onClose: () => void;
@@ -181,18 +181,18 @@ export function ChatMenu({
           </button>
         ))}
       {pin && <PinItem pin={pin} onClose={onClose} />}
-      {clear && (
+      {settle && (
         <button
           role="menuitem"
           className="menu-item"
-          title={clear.cleared ? "Show this chat in the Inbox again" : "Move this chat to Unsettled until something new happens in it"}
+          title={settle.settled ? "Move this chat back to the Inbox" : "Clear this chat from the Inbox into Settled"}
           onClick={() => {
             onClose();
-            clear.onClear(!clear.cleared);
+            settle.onSettle(!settle.settled);
           }}
         >
-          <span className="menu-icon">{clear.cleared ? <InboxIcon size={15} /> : <CheckCheck size={15} />}</span>
-          <span className="menu-label">{clear.cleared ? "Back to the Inbox" : "Clear from the Inbox"}</span>
+          <span className="menu-icon">{settle.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />}</span>
+          <span className="menu-label">{settle.settled ? "Unsettle" : "Settle"}</span>
         </button>
       )}
       {snooze && (

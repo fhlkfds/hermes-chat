@@ -10,9 +10,9 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
-use hermes_chat::connect_steps::{Started, Step, Steps};
+use hermes_chat::connect_steps::{Step, Steps};
 use hermes_chat::display;
-use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
+use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, StepLimits, TransportError};
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -556,13 +556,9 @@ async fn open_stub_for(profile: &str) -> (transport::Pipe, mpsc::UnboundedReceiv
     let (tx, rx) = mpsc::unbounded_channel();
     let pipe = signed_in()
         .await
-        .open_pipe(
-            profile,
-            move |e| {
-                let _ = tx.send(e);
-            },
-            &Steps::default(),
-        )
+        .open_pipe(profile, move |e| {
+            let _ = tx.send(e);
+        })
         .await
         .expect("pipe open");
     (pipe, rx)
@@ -1287,16 +1283,8 @@ async fn a_direct_ws_url_is_signed_in_to_over_http() {
     assert_eq!(direct.base, base);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let dashboard = Dashboard::sign_in(&direct.base, &sign_in("hunter2")).await.expect("signed in");
-    // The ticket and the socket are each a step, said as each starts (the record of connection attempts, #270).
-    let steps = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let said = steps.clone();
-    let _pipe = dashboard
-        .open_pipe("default", move |e| drop(tx.send(e)), &Steps::reporting(move |s| said.lock().unwrap().push(s)))
-        .await
-        .expect("pipe open");
+    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
-    let said: Vec<Step> = steps.lock().unwrap().iter().map(|s: &Started| s.step).collect();
-    assert_eq!(said, [Step::Ticket, Step::WebSocket]);
 
     let secure = transport::resolve_direct("wss://127.0.0.1/hermes/").await.expect("parsed");
     assert_eq!(secure.base.as_str(), "https://127.0.0.1/hermes/");
@@ -1736,7 +1724,7 @@ async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
     let (base, seen) = gated_stub(&elsewhere).await;
     let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in through the gate");
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e)), &Steps::default()).await.expect("socket opened through the gate");
+    let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("socket opened through the gate");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
     assert_eq!(get_json(&dashboard, "api/sessions?order=recent").await["query"], "order=recent");
 
@@ -2537,13 +2525,9 @@ async fn a_token_signs_in_as_a_bearer_and_opens_the_socket_with_a_ticket_only() 
     assert_eq!(got["cookie"], "");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let _pipe = dashboard
-        .open_pipe(
-            "default",
-            move |e| {
-                let _ = tx.send(e);
-            },
-            &Steps::default(),
-        )
+        .open_pipe("default", move |e| {
+            let _ = tx.send(e);
+        })
         .await
         .expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
@@ -2693,4 +2677,125 @@ async fn live_token_sign_in() {
     let me: Value = serde_json::from_str(&dashboard.request("GET", "api/auth/me", None).await.expect("me")).unwrap();
     assert_eq!(me["provider"], "session-token");
     println!("live: {methods:?}; signed in as {}; a wrong token: {}", me["user_id"], wrong.message);
+}
+
+// ── one of several routes gives way on a step that stalls (#269, ADR 0056) ──────────────────────────────────
+
+/// Step limits short enough for a test.
+const SHORT: StepLimits = StepLimits { lookup: Duration::from_millis(300), sign_in: Duration::from_millis(300), ticket: Duration::from_millis(300), socket: Duration::from_millis(300) };
+/// Well past every `SHORT` limit, far short of the whole attempt's 60 s.
+const GIVE_UP: Duration = Duration::from_secs(3);
+
+/// Holds a request for `path` for good, as a dashboard that stopped answering midway does.
+async fn stall(State(path): State<&'static str>, req: Request, next: Next) -> Response {
+    if req.uri().path() == path {
+        std::future::pending::<()>().await;
+    }
+    next.run(req).await
+}
+
+/// The stub, whose `/api/status` answers and whose `path` never does.
+async fn stalling_at(path: &'static str) -> Url {
+    serve(stub_routes().layer(middleware::from_fn_with_state(path, stall))).await
+}
+
+type Opened = (Dashboard, transport::Pipe, transport::ServerSeen);
+
+async fn open_route(base: &Url, limits: Option<StepLimits>, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Opened, TransportError> {
+    open_route_reporting(base, limits, &Steps::default(), on_event).await
+}
+
+async fn open_route_reporting(base: &Url, limits: Option<StepLimits>, steps: &Steps, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Opened, TransportError> {
+    transport::open_route(base, &sign_in("hunter2"), "default", None, Duration::from_secs(5), limits, steps, on_event).await
+}
+
+/// The steps `open_route` said it started at `base`, in order, and whether it opened.
+async fn steps_said(base: &Url) -> (Vec<Step>, bool) {
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let to = said.clone();
+    let steps = Steps::reporting(move |s| to.lock().unwrap().push(s.step));
+    let opened = tokio::time::timeout(GIVE_UP, open_route_reporting(base, Some(SHORT), &steps, |_| {})).await.expect("gave up in time").is_ok();
+    let said = said.lock().unwrap().clone();
+    (said, opened)
+}
+
+#[tokio::test]
+async fn opening_a_route_says_each_step_as_it_starts() {
+    // The record of connection attempts (#270) shows how far a route got and how long each step took.
+    assert_eq!(steps_said(&stub().await).await, (vec![Step::Status, Step::SignIn, Step::Ticket, Step::WebSocket], true));
+    assert_eq!(steps_said(&stalling_at("/api/auth/ws-ticket").await).await, (vec![Step::Status, Step::SignIn, Step::Ticket], false));
+}
+
+/// Opens the route at `base` with the `SHORT` limits: its failure, which must come within `GIVE_UP`.
+async fn gives_up(base: &Url) -> String {
+    match tokio::time::timeout(GIVE_UP, open_route(base, Some(SHORT), |_| {})).await {
+        Err(_) => panic!("still waiting after {}s: the step has no limit of its own", GIVE_UP.as_secs()),
+        Ok(Ok(_)) => panic!("opened a route that stalls"),
+        Ok(Err(e)) => e.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn a_route_whose_name_lookup_stalls_gives_up_within_the_lookup_limit() {
+    let never = |_: String, _: u16| std::future::pending::<std::io::Result<Vec<std::net::SocketAddr>>>();
+    let looked_up = tokio::time::timeout(GIVE_UP, transport::resolve_direct_using("https://hermes.example.com/", Some(SHORT.lookup), never))
+        .await
+        .unwrap_or_else(|_| panic!("still looking up after {}s: the lookup has no limit of its own", GIVE_UP.as_secs()));
+    let err = looked_up.unwrap_err().to_string();
+    assert!(err.starts_with("Can't reach the Hermes dashboard: looking up hermes.example.com didn't finish within"), "{err}");
+}
+
+#[tokio::test]
+async fn a_route_whose_sign_in_stalls_gives_up_within_the_sign_in_limit() {
+    let err = gives_up(&stalling_at("/auth/password-login").await).await;
+    assert!(err.starts_with("Can't reach the Hermes dashboard: the sign-in didn't answer within"), "{err}");
+}
+
+#[tokio::test]
+async fn a_route_whose_ws_ticket_stalls_gives_up_within_the_ticket_limit() {
+    let err = gives_up(&stalling_at("/api/auth/ws-ticket").await).await;
+    assert!(err.starts_with("Can't reach the Hermes dashboard: the chat connection's ticket didn't answer within"), "{err}");
+}
+
+#[tokio::test]
+async fn a_route_whose_websocket_stalls_gives_up_within_the_socket_limit() {
+    let err = gives_up(&stalling_at("/api/ws").await).await;
+    assert!(err.starts_with("The chat connection failed: it didn't open within"), "{err}");
+}
+
+#[tokio::test]
+async fn the_next_route_is_signed_in_to_within_the_step_limit_of_one_that_stalls() {
+    let routes = [stalling_at("/auth/password-login").await, stub().await];
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let started = std::time::Instant::now();
+    let mut used = None;
+    // As routes.ts `routedPipe` does: each route in turn, the first that opens.
+    for base in &routes {
+        let tx = tx.clone();
+        let opening = open_route(base, Some(SHORT), move |e| {
+            let _ = tx.send(e);
+        });
+        match tokio::time::timeout(GIVE_UP, opening).await {
+            Err(_) => panic!("{base} held the connection past {}s", GIVE_UP.as_secs()),
+            Ok(Err(_)) => continue,
+            Ok(Ok(opened)) => {
+                used = Some((base.clone(), opened));
+                break;
+            }
+        }
+    }
+    let (base, _opened) = used.expect("a route opened");
+    assert_eq!(base, routes[1]);
+    assert!(started.elapsed() < GIVE_UP, "took {:?}", started.elapsed());
+    assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
+}
+
+#[tokio::test]
+async fn a_connection_with_several_routes_limits_each_step_and_one_with_a_single_route_does_not() {
+    let secs = |l: StepLimits| [l.lookup, l.sign_in, l.ticket, l.socket].map(|d| d.as_secs());
+    assert_eq!(transport::StepLimits::of(true).map(secs), Some([5, 10, 10, 10]));
+    assert_eq!(transport::StepLimits::of(false), None);
+    // A single route waits on a slow sign-in as long as the whole attempt allows (ADR 0056).
+    let slow = stalling_at("/auth/password-login").await;
+    assert!(tokio::time::timeout(Duration::from_secs(1), open_route(&slow, None, |_| {})).await.is_err(), "a single route gave up early");
 }

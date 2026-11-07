@@ -183,7 +183,8 @@ async fn open_target(target: Target, quick: bool, steps: &Steps) -> Result<(url:
         }
         Target::Url { url, headers } => {
             let headers = transport::extra_headers(&headers).map_err(|e| e.to_string())?;
-            let direct = steps.run(Step::Resolve, transport::resolve_direct(&url)).await.map_err(|e| e.to_string())?;
+            let lookup = transport::StepLimits::of(quick).map(|l| l.lookup);
+            let direct = steps.run(Step::Resolve, transport::resolve_direct_within(&url, lookup)).await.map_err(|e| e.to_string())?;
             transport::check_plain_http(&direct).map_err(|e| e.to_string())?;
             let addresses = direct.addresses.iter().map(ToString::to_string).collect();
             (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses, server: None }, headers)
@@ -289,22 +290,14 @@ async fn open_connection(
     let address = target.address();
     let (credential, typed_token) = steps.run(Step::Keyring, credential.credential(&address)).await?;
     let (base, tunnel, route, headers) = open_target(target, quick, &steps).await?;
-    // Before the password or token goes anywhere.
-    let seen = steps.run(Step::Status, transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick))).await.map_err(|e| e.to_string())?;
-    let route = route.with_server(seen.server);
     let sign_in = SignIn { credential, headers };
-    transport::offered(&sign_in, seen.status.as_deref()).map_err(|e| e.to_string())?;
-    let dashboard = steps.run(Step::SignIn, Dashboard::sign_in(&base, &sign_in)).await.map_err(|e| e.to_string())?;
-    let pipe = dashboard
-        .open_pipe(
-            &profile,
-            move |e| {
-                let _ = on_event.send(e);
-            },
-            &steps,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let limits = transport::StepLimits::of(quick);
+    let (dashboard, pipe, seen) = transport::open_route(&base, &sign_in, &profile, expect_server.as_deref(), reach_within(quick), limits, &steps, move |e| {
+        let _ = on_event.send(e);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let route = route.with_server(seen.server);
     let ssh_target = match &route {
         Route::Ssh { target, .. } => Some(target.clone()),
         Route::Url { .. } => ssh_route.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && !t.starts_with('-')),

@@ -1,14 +1,14 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, X } from "lucide-react";
-import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { CONNECT_STOPPED, RenameConflict, connect, openSaved, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import { STEER, type ServerCommandList } from "./hermes/commands";
 import type { SkillCall, SkillCommands } from "./hermes/skillCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
-import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
+import { type Account, type Kept, type SavedSignIn, launchOpen, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
+import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, keptRouteHealth, prefScope } from "./hermes/connections";
 import { forgetConnectionData } from "./hermes/forgetConnection";
 import { serial as makeSerial } from "./hermes/serial";
 import { localChatCache } from "./hermes/chatCache";
@@ -17,6 +17,7 @@ import { PersonaStore, personaKey } from "./hermes/personaStore";
 import { sending, unsaved, type Sending } from "./hermes/unsaved";
 import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
+import { EMPTY_FLOOR_MEMORY } from "./hermes/officeFloor";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
@@ -33,7 +34,7 @@ import { checkShortcut, shortcutLabel, shortcutOf } from "./ui/shortcut";
 import { reachRoute, tauriPipe, tauriProbe, tauriReach, type SignInDetails } from "./hermes/tauriPipe";
 import { AttemptLog, tauriAttemptStore } from "./hermes/attempts";
 import { readMethods } from "./hermes/signInMethods";
-import { PreferredRoutes, RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
+import { PreferredRoutes, type RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { isSetUp, testSignIn, type TestOutcome } from "./hermes/setup";
 import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found } from "./hermes/model";
 import type { ModelCatalog, ModelPick } from "./hermes/models";
@@ -66,7 +67,7 @@ import { SearchPalette } from "./ui/Search";
 import { SavedFilters, TagManager } from "./ui/Tags";
 import { useSnoozeClock } from "./ui/Snooze";
 import { TagsStore, savedTagsFile, type SavedFilter } from "./hermes/tags";
-import { AttentionClock, CLEARED_KEY, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, chatSections, lastActive, staleClears, wakeFull } from "./hermes/snooze";
+import { AttentionClock, ClearedStore, PINS_KEY, PinStore, SNOOZE_KEY, SnoozeStore, chatSections, heldClears, wakeFull } from "./hermes/snooze";
 import { IDLE_COMPACT_CHECK_MS, IdleCompactor, idleCompactionNote } from "./hermes/idleCompact";
 import { runFilter } from "./hermes/chatFilter";
 import { SettingsScreen, type PersonaWiring } from "./ui/Settings";
@@ -98,6 +99,7 @@ import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
+import { ApprovalsPill } from "./ui/ApprovalsPill";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { Onboarding, type SetupMode } from "./ui/Onboarding";
@@ -175,9 +177,9 @@ let connectionStore: Connections | undefined;
 /** The saved connections, read (and the old single sign-in migrated) the first time they're needed. */
 const savedConnections = () => (connectionStore ??= new Connections(localStorage));
 
-/** How each connection's routes did lately, for this run of the app (routes.ts `RouteHealth`). */
+/** How each connection's routes did lately, kept with the connection across restarts (routes.ts `RouteHealth`). */
 const routeHealth = new Map<string, RouteHealth>();
-const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, new RouteHealth()).get(id)!;
+const healthOf = (id: string) => routeHealth.get(id) ?? routeHealth.set(id, keptRouteHealth(savedConnections(), id)).get(id)!;
 /** The record of recent connection attempts, kept on disk between launches (attempts.ts, #270). */
 const connectionAttempts = new AttemptLog(tauriAttemptStore);
 /**
@@ -194,6 +196,7 @@ const account: Account = {
   secrets: systemSecrets,
   connect: (c, d, signal) => connect(pipeFor(c, d), undefined, localChatCache(c), desktopNotify, signal),
   readSaved: (c, d, reason) => readSaved(pipeFor(c, d), reason, localChatCache(c), desktopNotify),
+  openSaved: (c, d) => openSaved(pipeFor(c, d), localChatCache(c), desktopNotify),
 };
 
 /** The sign-in methods a connection's server offers, read without signing in (ADR 0058). */
@@ -235,7 +238,7 @@ const withKnownServer = (c: SavedConnection, d: SignInDetails): SignInDetails =>
  * `firstRun`: nothing is saved on this computer, so setup opens instead of the sign-in screen.
  */
 type Launch =
-  | { hermes: Hermes; connection: SavedConnection; details: SignInDetails }
+  | { hermes: Hermes; connection: SavedConnection; details: SignInDetails; turnedDown?: Promise<string | undefined> }
   | { connection?: SavedConnection; initial: SignInDetails; error?: string; firstRun?: boolean };
 
 /**
@@ -246,8 +249,10 @@ type Setup = { mode: SetupMode; initial: SignInDetails; target: SavedConnection;
 let launching: Promise<Launch> | undefined;
 
 /**
- * Signs in to the connection in use with its saved password, if there is one; if Hermes can't be reached, what this
- * computer saved for it opens to read. If that fails the sign-in screen has it filled in, so Connect tries again.
+ * Signs in to the connection in use with its saved password, if there is one. With a chat list saved for it, that
+ * shows at once while signing in runs, and `turnedDown` says if the password turns out wrong (ADR 0089). With none,
+ * signing in is waited for; if Hermes can't be reached, what this computer saved for it opens to read. If that fails
+ * the sign-in screen has it filled in, so Connect tries again.
  * With no password saved, the sign-in screen asks for it. With no connection in use, the sign-in screen offers the
  * saved ones and picks none, unless nothing is saved at all: then it's the first run, and setup opens. Runs once,
  * though StrictMode runs effects twice.
@@ -259,7 +264,7 @@ function launch(): Promise<Launch> {
     const saved = await savedSignIn(c, account);
     if (!saved) return { connection: c, initial: await signInForm(c, account) };
     try {
-      return { hermes: await launchSignIn(c, saved, account), connection: c, details: saved };
+      return { ...(await launchOpen(c, saved, account)), connection: c, details: saved };
     } catch (e) {
       return { connection: c, initial: saved, error: messageOf(e) };
     }
@@ -354,7 +359,14 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
       if ("hermes" in l) {
         signedInWith.current = l.details;
         setHeaders(headerNames(l.details));
-        return setHermes(l.hermes);
+        current.current = l.hermes;
+        setHermes(l.hermes);
+        // The saved password or token was turned down while the saved chats showed: the sign-in screen asks, as it
+        // would have without them, unless the owner has moved on meanwhile.
+        void l.turnedDown?.then((why) => {
+          if (why !== undefined && current.current === l.hermes) showSignIn(l.connection, l.details, why);
+        });
+        return;
       }
       setInitial(l.initial);
       setError(l.error);
@@ -1060,6 +1072,9 @@ export function Main({
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
   const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut, agentOffice, inboxAutoDismissDays } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const officeShown = officeOpen && agentOffice !== "off";
+  // Who sits where in the building. It outlives the building's view, so hidden to the tray, minimized, behind Settings
+  // or switched to List and back, each agent comes back to the desk it had.
+  const officeFloorMemory = useRef(EMPTY_FLOOR_MEMORY);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicks[pref] ?? (modelPicker?.profile === pref ? withoutProfile(modelPicker) : catalog?.defaultPick);
 
@@ -1175,19 +1190,6 @@ export function Main({
   );
   // When each chat last stopped working, so the list puts it at the top then (snooze.ts). Noted on every change.
   const attention = useMemo(() => new AttentionClock(), [scope]);
-  // The chats cleared from the Inbox: kept on this computer for each connection and profile, like snoozes (ADR 0063).
-  const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
-  const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
-  useEffect(() => {
-    const changed = (e: StorageEvent) => e.key === CLEARED_KEY && clearedStore.reread();
-    window.addEventListener("storage", changed);
-    return () => window.removeEventListener("storage", changed);
-  }, [clearedStore]);
-  // A clear that something newer has ended is forgotten, so the chat stays in the Inbox from then on, even once that
-  // activity stops counting (a woken snooze, after a week).
-  useEffect(() => {
-    for (const id of staleClears(chats, snoozes, Date.now(), attention.since, cleared)) clearedStore.restore(id);
-  }, [chats, snoozes, snoozeNow, cleared, clearedStore]);
   // Pinned chats: kept on this computer for each connection and profile, like snoozes (ADR 0085).
   const pinStore = useMemo(() => new PinStore(localStorage, scope), [scope]);
   const pins = useSyncExternalStore(pinStore.subscribe, pinStore.getSnapshot);
@@ -1219,7 +1221,7 @@ export function Main({
   };
   const openSettings = () => {
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1284,6 +1286,16 @@ export function Main({
   // The profile's list, once read from Hermes, is every chat it has: the records of the others go, whether or not
   // Outputs is open. A chat deleted, or no longer listed, keeps no record (outputs.ts `keepOnly`).
   const listedFromHermes = hermes.hasListed();
+  // Clears from the Inbox were kept on this computer until clearing a chat settled it (ADR 0090). Once Hermes has
+  // listed the profile's chats, the clears that still hold, the chats the old Unsettled section showed, are settled
+  // once, as the Settle button would, and every clear of the connection and profile is dropped.
+  const clearedStore = useMemo(() => new ClearedStore(localStorage, scope), [scope]);
+  const cleared = useSyncExternalStore(clearedStore.subscribe, clearedStore.getSnapshot);
+  useEffect(() => {
+    if (!listedFromHermes || status !== "connected" || !Object.keys(cleared).length) return;
+    for (const id of heldClears(chats, snoozes, Date.now(), attention.since, cleared, pins)) void hermes.settle(id);
+    clearedStore.dropAll();
+  }, [listedFromHermes, status, cleared, clearedStore]);
   const allChatsKey = chats.map((c) => c.id).join("\n");
   useEffect(() => {
     if (listedFromHermes) outputsIndex.keepOnly(new Set(chats.map((c) => c.id)));
@@ -1376,7 +1388,7 @@ export function Main({
       setReopening(undefined);
       if (!keepSettings) setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -1397,6 +1409,7 @@ export function Main({
       setUsageOpen(false);
       setRepoOpen(false);
       setAutomationsOpen(false);
+      setOfficeOpen(false);
       setJobsAt((a) => ({ id, n: (a?.n ?? 0) + 1 }));
       setJobsOpen(true);
     });
@@ -1430,7 +1443,7 @@ export function Main({
     guard(() => {
       setProjectOpen(false);
       setSettingsOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
       setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
@@ -1447,7 +1460,7 @@ export function Main({
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1468,7 +1481,7 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1498,7 +1511,7 @@ export function Main({
     flushSync(() => {
       setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -1808,8 +1821,6 @@ export function Main({
     const move = (s: boolean) => void (s ? hermes.settle(id) : hermes.unsettle(id));
     move(settled);
     if (settled) snoozeStore.wake(id);
-    // Unsettling is the owner asking for the chat back, so it comes back to the Inbox, not to a clear it had before.
-    clearedStore.restore(id);
     setToast({
       text: `${settled ? "Settled" : "Unsettled"}: ${title}`,
       undo: () => {
@@ -1825,8 +1836,6 @@ export function Main({
     const title = chats.find((c) => c.id === id)?.title ?? "";
     const before = snoozeStore.isSnoozed(id) ? snoozes[id] : undefined;
     const put = (to: number | undefined) => (to ? snoozeStore.snooze(id, to) : snoozeStore.wake(id));
-    // A snooze ends in the Inbox, so it replaces a clear the chat had.
-    if (until) clearedStore.restore(id);
     // Unsnoozing wakes it now, so it comes to the top as a snooze that ran out would.
     put(until ?? Date.now());
     setToast({ text: `${until ? `Snoozed until ${wakeFull(until)}` : "Unsnoozed"}: ${title}`, undo: () => put(before), at: Date.now() });
@@ -1839,16 +1848,6 @@ export function Main({
     const put = (to: boolean, at?: number) => (to ? pinStore.pin(id, at) : pinStore.unpin(id));
     put(on);
     setToast({ text: `${on ? "Pinned" : "Unpinned"}: ${title}`, undo: () => put(!on, before), at: Date.now() });
-  };
-
-  // Clearing a chat from the Inbox is kept on this computer only, with when the chat was last active, so anything newer
-  // brings it back (ADR 0063). Undo does the opposite.
-  const clearFromInbox = (id: string, on: boolean) => {
-    const chat = chats.find((c) => c.id === id);
-    if (!chat) return;
-    const put = (to: boolean) => (to ? clearedStore.clear(id, lastActive(chat, snoozes, Date.now(), attention.since)) : clearedStore.restore(id));
-    put(on);
-    setToast({ text: `${on ? "Cleared from the Inbox" : "Back in the Inbox"}: ${chat.title}`, undo: () => put(!on), at: Date.now() });
   };
 
   // Putting a chat in a project, or taking it out: Hermes's once it keeps membership, waiting here until it confirms,
@@ -1873,7 +1872,6 @@ export function Main({
         projects.forgetChat(id);
         tagChange(() => tagsStore.forgetChat(id));
         snoozeStore.wake(id);
-        clearedStore.restore(id);
         pinStore.unpin(id);
         if (stillIn(profile)) setToast({ text: `Deleted: ${title}`, at: Date.now() });
       }
@@ -1887,7 +1885,6 @@ export function Main({
   const setArchived = (id: string, archived: boolean) => {
     const title = chats.find((c) => c.id === id)?.title ?? "";
     if (archived && !archivedListed) clearChat(id);
-    clearedStore.restore(id);
     const done = (ok: boolean) =>
       ok &&
       stillIn(profile) &&
@@ -2211,7 +2208,7 @@ export function Main({
       const onChat = !covering && !previewCovers && !projectScreenOpen && !searchOpen;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         if (!onChat || e.defaultPrevented || (e.target as Element | null)?.tagName === "SELECT") return;
-        const { pinned, inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, cleared, pins);
+        const { pinned, inbox, working } = chatSections(listed, snoozes, Date.now(), attention.since, pins);
         const order = [...pinned, ...inbox, ...working];
         const at = order.findIndex((c) => c.id === active.chatId);
         const next = order[at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1)];
@@ -2262,7 +2259,7 @@ export function Main({
   // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage
   // and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
   // open there.
-  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || repoOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || repoOpen || officeVisible;
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
@@ -2361,7 +2358,7 @@ export function Main({
             hermes.memory
               ? () => {
                   setProjectOpen(false);
-                  setJobsOpen(false); setAutomationsOpen(false);
+                  setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                   setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
@@ -2431,7 +2428,7 @@ export function Main({
           guard(() => {
             setSettingsOpen(false);
             setProjectOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setUsageOpen(false);
             setOutputsOpen((o) => !o);
@@ -2463,10 +2460,16 @@ export function Main({
             : () => {
                 setInboxOpen(false);
                 setBotsOpen(false);
-                setOfficeOpen((o) => !o);
+                // Over Settings, it opens in Settings' place, as the rail's other screens do; otherwise it toggles.
+                if (settingsOpen)
+                  guard(() => {
+                    setSettingsOpen(false);
+                    setOfficeOpen(true);
+                  });
+                else setOfficeOpen((o) => !o);
               }
         }
-        officeOpen={officeShown}
+        officeOpen={officeShown && !settingsOpen}
         onSettings={openSettings}
         settingsOpen={settingsOpen}
         onJobs={() =>
@@ -2490,6 +2493,7 @@ export function Main({
             setUsageOpen(false);
             setRepoOpen(false);
             setJobsOpen(false);
+            setOfficeOpen(false);
             setAutomationsOpen(true);
           })
         }
@@ -2498,7 +2502,7 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setRepoAt(undefined);
@@ -2510,7 +2514,7 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen((o) => !o);
@@ -2551,7 +2555,7 @@ export function Main({
                   await projects.create(name);
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false); setAutomationsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -2561,7 +2565,7 @@ export function Main({
                 onManage={() =>
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false); setAutomationsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -2608,8 +2612,6 @@ export function Main({
           onSettle={setSettled}
           snoozes={snoozes}
           attentionSince={attention.since}
-          cleared={cleared}
-          onClear={clearFromInbox}
           pins={pins}
           onPin={pinChat}
           onSnooze={(id, until) => snoozeChat(id, until)}
@@ -2621,7 +2623,7 @@ export function Main({
           onCopyLink={copyChatLink}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
@@ -2655,19 +2657,6 @@ export function Main({
           onClose={() => setBotsOpen(false)}
         />
       )}
-      {officeVisible && (
-        <Office
-          rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
-          view={agentOffice}
-          onView={(view) => setUIPrefs({ agentOffice: view })}
-          server={where ?? "the server"}
-          profile={profile}
-          connected={status === "connected"}
-          leaving={leavingNote(profile, chats)}
-          onOpen={openDesk}
-          onClose={() => setOfficeOpen(false)}
-        />
-      )}
       {inboxOpen && (
         <Inbox
           entries={inboxShown}
@@ -2688,7 +2677,23 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {automationsOpen && !settingsOpen ? (
+            {officeVisible && !settingsOpen ? (
+              <Office
+                rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
+                floorMemory={officeFloorMemory}
+                view={agentOffice === "list" ? "list" : "building"}
+                onView={(view) => setUIPrefs({ agentOffice: view })}
+                server={where ?? "the server"}
+                profile={profile}
+                connected={status === "connected"}
+                leaving={leavingNote(profile, chats)}
+                onOpen={openDesk}
+                onClose={() => {
+                  flushSync(() => setOfficeOpen(false));
+                  focusPane(active.key);
+                }}
+              />
+            ) : automationsOpen && !settingsOpen ? (
               <CapabilityGate
                 store={hermes.capabilities}
                 id="automations"
@@ -3744,7 +3749,6 @@ function ChatView({
         <StatusBar
           chat={chat}
           status={status}
-          onYolo={(on) => hermes.setYolo(chat.id, on)}
           context={{
             inspect: () => hermes.inspectContext(chat.id),
             history: () => hermes.compactionHistory(chat.id),
@@ -3762,7 +3766,11 @@ function ChatView({
           favorites={favorites}
           onPick={pickModel}
           onToggleFavorite={toggleModelFavorite}
-        />
+        >
+          {started && (
+            <ApprovalsPill key={chat.id} approvals={chat.live?.approvals} connected={status === "connected"} profile={profile} onPick={(pick) => hermes.setApprovals(chat.id, pick)} />
+          )}
+        </ModelControls>
       }
     />
     {replayFrom && (
