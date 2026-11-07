@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { AttemptLog, KEEP, STEPS, TEXT_MAX, WITHHELD, addressFree, attemptText, scrubberFor, type Attempt, type AttemptStore } from "./attempts";
 import { FakeHermes } from "./fakeHermes";
+import { LogBuffer } from "./logs";
 import { RoutesFailedError, routedPipe, withRoutes, type OpenRoute, type RouteDetails } from "./routes";
 import type { SignInDetails } from "./tauriPipe";
 import { connect } from "./transport";
@@ -89,7 +90,7 @@ describe("Scrubbing error texts for the file", () => {
     }
     expect(scrub(RAW[0])).toBe("Can't reach the Hermes dashboard: error sending request for url ([address])");
     expect(scrub(RAW[7])).toBe("ssh: Could not resolve hostname [host]: Name or service not known");
-    expect(scrub(RAW[8])).toBe("ssh: connect to host [address] port 22: Connection refused");
+    expect(scrub(RAW[8])).toBe("ssh: connect to host [host] port 22: Connection refused");
   });
 
   it("keeps sentences that hold no address as they are", () => {
@@ -105,6 +106,35 @@ describe("Scrubbing error texts for the file", () => {
     // The host `hermes` (a bare LAN name) doesn't take the word "Hermes" with it.
     const bare = scrubberFor(details([{ id: "a", kind: "lan", target: "http://hermes:9119" }]));
     expect(bare("Can't reach the Hermes dashboard at hermes:9119")).toBe("Can't reach the Hermes dashboard at [address]");
+  });
+
+  it("doesn't let a short saved value split an address, and leaves no part of it", () => {
+    for (const d of [
+      { ...details([SSH]), username: "10" },
+      { ...details([SSH]), password: "10.1" },
+      { ...details([{ ...WEB, headers: [{ name: "X-Key", value: "10" }] }]) },
+    ]) {
+      const scrub = scrubberFor(d);
+      for (const raw of ["Connection closed by 10.1.2.3 port 22", "Warning: Permanently added '10.1.2.3' (ED25519) to the list of known hosts."]) {
+        const text = scrub(raw);
+        expect(text, `${raw} → ${text}`).not.toMatch(/\d\.\d|\.\d+\.\d/);
+        expect(text).toMatch(/\[address\]|\[redacted\]/);
+      }
+    }
+  });
+
+  it("takes out a host name with an underscore that isn't one of the connection's own", () => {
+    const text = scrubberFor(details([{ id: "a", kind: "ssh", target: "myalias" }]))("Warning: Permanently added 'my_server.local' (ED25519) to the list of known hosts.");
+    expect(text).toBe("Warning: Permanently added '[host]' (ED25519) to the list of known hosts.");
+  });
+
+  it("takes out a password, token or header value with a line break or tab in it, echoed without a label", () => {
+    for (const secret of ["hello\nworld", "tab\tbed", "cr\r\nlf"]) {
+      for (const d of [{ ...details(), password: secret }, { ...details(), token: secret }, { ...details([{ ...WEB, headers: [{ name: "X-Key", value: secret }] }]) }]) {
+        const text = scrubberFor(d)(`server said ${secret} again`);
+        expect(text).toBe("server said [redacted] again");
+      }
+    }
   });
 
   it("cuts a long text, and withholds one that still looks like an address", () => {
@@ -314,6 +344,27 @@ describe("An attempt the app was closed during", () => {
     // What Logs and the support bundle show is what was kept, not the text Rust refused.
     expect(log.getSnapshot().entries.at(-1)?.text).toContain(WITHHELD);
     expect(log.getSnapshot().entries.at(-1)?.text).not.toContain("anything");
+  });
+
+  it("a write that fails for another reason (a full disk, a lock) keeps the texts, writes nothing withheld, and is noted once", async () => {
+    const puts: Attempt[] = [];
+    const app = new LogBuffer(10);
+    const store: AttemptStore = {
+      read: async () => ({ attempts: [], unreadable: 0 }),
+      put: async (a) => {
+        puts.push(a);
+        throw new Error("No space left on device (os error 28)");
+      },
+    };
+    const log = new AttemptLog(store, { notes: app });
+    const trace = log.begin(details());
+    trace.route(LAN).failed(new Error("Wrong username or password."));
+    trace.failed();
+    await log.settled();
+    expect(puts.length).toBeGreaterThan(0);
+    expect(puts.some((p) => JSON.stringify(p).includes(WITHHELD))).toBe(false);
+    expect(log.getSnapshot().entries.at(-1)?.text).toContain("Wrong username or password.");
+    expect(app.getSnapshot().entries.map((e) => e.text)).toEqual(["A connection attempt couldn't be kept on disk: No space left on device (os error 28)"]);
   });
 });
 

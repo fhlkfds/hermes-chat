@@ -8,7 +8,7 @@
 // step it was on, and the next launch says so.
 
 import { invoke } from "@tauri-apps/api/core";
-import { clean, type Entry, type Level, type Snapshot, note } from "./logs";
+import { clean, type Entry, type Level, type LogBuffer, type Snapshot, note } from "./logs";
 import { KIND_LABEL, type RouteDetails, type RouteKind, routesOf } from "./routes";
 import type { SignInDetails } from "./tauriPipe";
 
@@ -75,17 +75,17 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** `gateway.ready` and its like: dotted words a message can hold that are not host names. */
 const NOT_HOSTS = new Set(["gateway.ready"]);
 
-/** A URL, whole: it goes before the connection's own addresses, so none of it is left beside them. */
-const URL_SHAPE = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>(){}]+/gi;
-// Each replaces what it finds with `[address]` or `[host]`, after the connection's own addresses are out.
+// Each replaces what it finds with `[address]` or `[host]`. They run before the connection's own addresses are taken
+// out, so that a saved value inside an address (a username `10` in 10.1.2.3) can't split it and leave part behind.
 const SHAPES: [RegExp, (m: string, ...g: string[]) => string][] = [
+  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>(){}]+/gi, () => "[address]"],
   [/[^\s@"'<>(){}[\]]*@[^\s@"'<>(){}[\]:,;]*/g, () => "[address]"],
   // IPv6, with brackets, a zone or a port: hex and colons with `::` or three colons. A time like 10:00:00 has two.
   [/\[?(?=[0-9a-f]*:[0-9a-f]*:)(?=[0-9a-f:]*(?:::|:[0-9a-f]*:[0-9a-f]*:))[0-9a-f:.]+(?:%[\w.-]+)?\]?(?::\d{1,5})?/gi, () => "[address]"],
   [/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, () => "[address]"],
   // ssh's own words for the host it tried: "resolve hostname X:", "connect to host X port 22", "by X port 22".
   [/\b(hostname|host|by|from|to)\s+(?!\[)([^\s:,;]+)(?=:|\s+port\s+\d)/gi, (_, w: string) => `${w} [host]`],
-  [/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*\b(?::\d{1,5})?/gi, (m) => (NOT_HOSTS.has(m.toLowerCase()) ? m : "[host]")],
+  [/\b(?:[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\.)+[a-z_][a-z0-9_-]*\b(?::\d{1,5})?/gi, (m) => (NOT_HOSTS.has(m.toLowerCase()) ? m : "[host]")],
 ];
 
 /**
@@ -103,11 +103,15 @@ export function addressFree(text: string): boolean {
   return !text.split(/[^0-9a-fA-F:]/).some((t) => /[0-9a-f]/i.test(t) && (t.includes("::") || (t.match(/:/g)?.length ?? 0) >= 3));
 }
 
+/** What ends a word for a saved value: a short one matches only between these, so `ab` doesn't eat words. */
+const EDGE = `\\s"'(){}<>,;:/@\\[\\]`;
+
 /**
- * How error texts are cleaned for the file, for one sign-in: terminal codes out, `redact()`'s secret shapes, control
- * characters written out and line breaks made spaces; then whole URLs, then this connection's own addresses, username,
- * password, token and header values, then any other address's shape; then cut to `TEXT_MAX`. A text that still looks
- * like it holds an address is withheld.
+ * How error texts are cleaned for the file, for one sign-in: first, on the text as it came, every word that holds this
+ * connection's password, token or a header value goes whole (before line breaks are folded, so a value with one in it
+ * still matches); then terminal codes out, `redact()`'s secret shapes, control characters written out and line breaks
+ * made spaces; then the shapes of any address; then this connection's own addresses and username; then a cut to
+ * `TEXT_MAX`. A text that still looks like it holds an address is withheld.
  */
 export function scrubberFor(d: SignInDetails): (text: string) => string {
   const addresses = new Set<string>();
@@ -141,17 +145,19 @@ export function scrubberFor(d: SignInDetails): (text: string) => string {
   add(secrets, d.password);
   add(secrets, d.token);
   for (const h of d.headers ?? []) add(secrets, h.value);
-  // Longest first, so a URL goes before the host inside it. A short one only as a whole word, so `ab` doesn't eat words.
-  const literal = (set: Set<string>, to: string): [RegExp, string][] =>
-    [...set]
-      .sort((a, b) => b.length - a.length)
-      .map((v) => [new RegExp(v.length < 4 ? `(?<![\\w.-])${escape(v)}(?![\\w-])` : escape(v), "g"), to]);
-  const literals = [...literal(secrets, "[redacted]"), ...literal(addresses, "[address]")];
+  // Longest first, so a URL goes before the host inside it. A short value only as a whole word (a full stop may end it).
+  const short = (v: string) => `(?<![^${EDGE}])${escape(v)}(?=\\.?(?:[${EDGE}]|$))`;
+  const literal = (set: Set<string>, long: (v: string) => string): RegExp[] =>
+    [...set].sort((a, b) => b.length - a.length).map((v) => new RegExp(v.length < 4 ? short(v) : long(v), "g"));
+  // A secret takes its whole word with it: what is left of a word around it could be part of an address.
+  const secretWords = literal(secrets, (v) => `[^${EDGE}]*${escape(v)}[^${EDGE}]*`);
+  const ownAddresses = literal(addresses, escape);
   return (raw) => {
+    for (const re of secretWords) raw = raw.replace(re, "[redacted]");
     // One line: ssh's and reqwest's messages can run over several, and the file keeps no control characters.
-    let text = clean(raw.replace(/\r\n?/g, "\n")).text.replace(/\s*[\n\t]+\s*/g, " ").replace(URL_SHAPE, "[address]");
-    for (const [re, to] of literals) text = text.replace(re, to);
+    let text = clean(raw.replace(/\r\n?/g, "\n")).text.replace(/\s*[\n\t]+\s*/g, " ");
     for (const [re, to] of SHAPES) text = text.replace(re, to as (m: string, ...g: string[]) => string);
+    for (const re of ownAddresses) text = text.replace(re, "[address]");
     const chars = Array.from(text);
     if (chars.length > TEXT_MAX) text = `${chars.slice(0, TEXT_MAX - 1).join("")}…`;
     return addressFree(text) ? text : WITHHELD;
@@ -159,6 +165,9 @@ export function scrubberFor(d: SignInDetails): (text: string) => string {
 }
 
 // ---------- the log ----------
+
+/** How Rust refuses a line for one of its error texts (connection_attempts.rs `put`, `text_ok`). */
+const TEXT_REFUSED = /^Not kept: an error text /;
 
 /** This launch of the app. */
 const RUN = globalThis.crypto.randomUUID();
@@ -184,13 +193,16 @@ export class AttemptLog implements AttemptRecorder {
   private listeners = new Set<() => void>();
   /** The latest state of each attempt not yet written, and the writes, one at a time, in order. */
   private pending = new Map<string, Attempt>();
-  /** Attempts a line of which Rust refused: kept, on screen too, without their error texts from then on. */
+  /** Attempts a line of which Rust refused for its texts: kept, on screen too, without them from then on. */
   private withheld = new Set<string>();
+  /** Attempts a write of which failed otherwise, already noted in this app's log. */
+  private unwritten = new Set<string>();
   private writing: Promise<void> = Promise.resolve();
 
   constructor(
     private store: AttemptStore,
-    private opts: { run?: string; now?: () => number; tick?: () => number } = {},
+    /** `notes`: where a write that failed is noted, this app's own log unless a test asks. */
+    private opts: { run?: string; now?: () => number; tick?: () => number; notes?: LogBuffer } = {},
   ) {}
 
   private get run() {
@@ -298,6 +310,12 @@ export class AttemptLog implements AttemptRecorder {
       if (!next) return;
       this.pending.delete(a.id);
       await this.store.put(next).catch(async (e: unknown) => {
+        // A full disk, a lock, or a line Rust can't take as it is: the attempt keeps its texts, and the failure is noted.
+        if (!TEXT_REFUSED.test(messageOf(e))) {
+          if (!this.unwritten.has(next.id)) note("WARNING", `A connection attempt couldn't be kept on disk: ${messageOf(e)}`, this.opts.notes);
+          this.unwritten.add(next.id);
+          return;
+        }
         // Rust found something in a text that looks like an address: keep the attempt without its texts, here too.
         this.withheld.add(next.id);
         const bare = withheld(next);
@@ -306,7 +324,7 @@ export class AttemptLog implements AttemptRecorder {
           this.attempts[at] = withheld(this.attempts[at]);
           this.changed();
         }
-        await this.store.put(bare).catch(() => note("WARNING", `A connection attempt couldn't be kept on disk: ${messageOf(e)}`));
+        await this.store.put(bare).catch(() => note("WARNING", `A connection attempt couldn't be kept on disk: ${messageOf(e)}`, this.opts.notes));
       });
     });
   }
