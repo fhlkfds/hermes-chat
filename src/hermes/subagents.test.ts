@@ -173,6 +173,15 @@ describe("The subagent tree from Hermes's events", () => {
   });
 });
 
+describe("When a subagent started", () => {
+  it("is when its start was heard, and the first time heard stands over a later one", () => {
+    const heard = onSubagentEvent(undefined, "subagent.start", { subagent_id: "a", goal: "G", depth: 0 }, 5_000);
+    expect(onRoster(heard, { subagents: [{ subagent_id: "a", status: "running", started_at: 9 }] }, 9_500)!.subagents[0].startedAt).toBe(5_000);
+    const listed = onRoster(undefined, { subagents: [{ subagent_id: "b", status: "running", started_at: 4 }] }, 4_500);
+    expect(onSubagentEvent(listed, "subagent.start", { subagent_id: "b", goal: "G", depth: 0 }, 6_000)!.subagents[0].startedAt).toBe(4_000);
+  });
+});
+
 describe("Recovering the tree after a reconnect", () => {
   afterEach(() => void vi.useRealTimers());
 

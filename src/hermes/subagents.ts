@@ -127,7 +127,7 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
     case "subagent.spawn_requested":
       return { ...base, state: "queued", partial: false };
     case "subagent.start":
-      return { ...base, state: "running", partial: false, lastActivity: { at, text: "Started", seq: 0 } };
+      return { ...base, state: "running", partial: false, startedAt: at, lastActivity: { at, text: "Started", seq: 0 } };
     // Batched tool names, which `subagent.tool` has already reported one by one.
     case "subagent.progress":
       return { ...base, state: "running" };
@@ -218,6 +218,8 @@ function merged(s: Subagent, r: Report): Subagent {
   return {
     ...s,
     ...fields,
+    // The first word of when it started stands: its start event as heard, or the roster's time, whichever came first.
+    ...(s.startedAt !== undefined && { startedAt: s.startedAt }),
     state: next,
     toolCount: toolCount === undefined ? s.toolCount : Math.max(toolCount, s.toolCount ?? 0),
     lastActivity: lastActivity && (!s.lastActivity || fresh) ? lastActivity : s.lastActivity,
