@@ -27,11 +27,9 @@ pub struct Launched {
 /// The browser the desktop opens `url` with, as `x-scheme-handler/http(s)` in `mimeapps.list` names it.
 pub fn default_browser(url: &str) -> Result<gio::DesktopAppInfo, String> {
     let url = crate::web_page::web_url(url)?;
-    gio::AppInfo::default_for_uri_scheme(url.scheme())
-        .and_then(|app| app.downcast::<gio::DesktopAppInfo>().ok())
-        .ok_or_else(|| {
-            "No default browser is set. Pick one in your desktop's settings, or run `xdg-settings set default-web-browser` with its .desktop file.".to_owned()
-        })
+    gio::AppInfo::default_for_uri_scheme(url.scheme()).and_then(|app| app.downcast::<gio::DesktopAppInfo>().ok()).ok_or_else(|| {
+        "No default browser is set. Pick one in your desktop's settings, or run `xdg-settings set default-web-browser` with its .desktop file.".to_owned()
+    })
 }
 
 /// Starts `browser` on `url`, as one argument and never through a shell. `context`: the display's launch context, which

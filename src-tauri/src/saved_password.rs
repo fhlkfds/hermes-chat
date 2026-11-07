@@ -55,9 +55,7 @@ impl TokenEntry {
 pub fn account(base: &str, connection: Option<&str>) -> Result<String, String> {
     match connection {
         None => Ok(base.to_string()),
-        Some(id) if (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => {
-            Ok(format!("{base}/{id}"))
-        }
+        Some(id) if (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => Ok(format!("{base}/{id}")),
         Some(_) => Err("That isn't a saved connection's id.".to_string()),
     }
 }
@@ -206,10 +204,7 @@ mod split {
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, Error> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("The system keyring failed: {e}"))
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(|e| format!("The system keyring failed: {e}"))
 }
 
 /// The saved secret, or none if nothing is saved.

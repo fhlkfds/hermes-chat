@@ -16,9 +16,7 @@ use url::Url;
 /// `_`, `-` or `.`. Hermes itself takes any name; a server named otherwise is listed but not changed from here.
 pub fn server_name(n: &str) -> bool {
     let mut b = n.bytes();
-    n.len() <= 64
-        && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric())
-        && b.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+    n.len() <= 64 && matches!(b.next(), Some(c) if c.is_ascii_alphanumeric()) && b.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
 }
 
 /// An environment variable's name: a letter or `_`, then letters, digits or `_`, at most 128.
@@ -69,7 +67,8 @@ fn env_map(v: Option<&Value>, nonempty_values: bool) -> bool {
     match v {
         None => true,
         Some(Value::Object(o)) => {
-            o.len() <= MAX_ENV && o.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|s| env_value_ok(s) && (!nonempty_values || !s.trim().is_empty())))
+            o.len() <= MAX_ENV
+                && o.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|s| env_value_ok(s) && (!nonempty_values || !s.trim().is_empty())))
         }
         _ => false,
     }
@@ -527,7 +526,8 @@ mod tests {
 
     #[test]
     fn keeping_a_value_hermes_lacks_is_refused() {
-        let err = edited(&servers(), &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": [{"key": "MISSING"}]}}))).unwrap_err();
+        let err = edited(&servers(), &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": [{"key": "MISSING"}]}})))
+            .unwrap_err();
         assert!(err.contains("MISSING has no saved value"), "{err}");
     }
 
@@ -552,19 +552,27 @@ mod tests {
         assert_eq!(e.servers["web"], servers()["web"]);
         assert!(e.token.is_none());
         // Bearer sign-in with no header saved needs a token.
-        let err = edited(&servers(), &edit(json!({"name": "sso", "server": {"transport": "http", "url": "https://sso.example/mcp", "auth": "header"}}))).unwrap_err();
+        let err =
+            edited(&servers(), &edit(json!({"name": "sso", "server": {"transport": "http", "url": "https://sso.example/mcp", "auth": "header"}}))).unwrap_err();
         assert!(err.contains("Type the bearer token"), "{err}");
     }
 
     #[test]
     fn http_auth_switches() {
-        let none = edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "none"}}))).unwrap();
+        let none =
+            edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "none"}}))).unwrap();
         assert_eq!(none.servers["web"], json!({"url": "https://old.example/mcp", "headers": {"X-Team": "blue"}, "tools": {"include": ["a"]}}));
-        let oauth = edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "oauth"}}))).unwrap();
-        assert_eq!(oauth.servers["web"], json!({"url": "https://old.example/mcp", "auth": "oauth", "headers": {"X-Team": "blue"}, "tools": {"include": ["a"]}}));
+        let oauth =
+            edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "oauth"}}))).unwrap();
+        assert_eq!(
+            oauth.servers["web"],
+            json!({"url": "https://old.example/mcp", "auth": "oauth", "headers": {"X-Team": "blue"}, "tools": {"include": ["a"]}})
+        );
         let off = edited(&servers(), &edit(json!({"name": "sso", "server": {"transport": "http", "url": "https://sso.example/mcp", "auth": "none"}}))).unwrap();
         assert_eq!(off.servers["sso"], json!({"url": "https://sso.example/mcp", "oauth": {"scope": "read"}}));
-        let err = edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://x.example", "auth": "oauth", "bearerToken": "t"}}))).unwrap_err();
+        let err =
+            edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://x.example", "auth": "oauth", "bearerToken": "t"}})))
+                .unwrap_err();
         assert!(err.contains("only with bearer-token"), "{err}");
     }
 
@@ -581,9 +589,12 @@ mod tests {
         let e = edited(&servers(), &edit(json!({"name": "fs", "newName": "files", "server": {"transport": "stdio", "command": "npx", "args": ["-y", "pkg"], "env": [{"key": "API_KEY"}, {"key": "MODE"}]}}))).unwrap();
         assert!(!e.servers.contains_key("fs"));
         assert_eq!(e.servers["files"], servers()["fs"]);
-        let taken = edited(&servers(), &edit(json!({"name": "fs", "newName": "web", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}}))).unwrap_err();
+        let taken =
+            edited(&servers(), &edit(json!({"name": "fs", "newName": "web", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}})))
+                .unwrap_err();
         assert!(taken.contains("already has a server named web"), "{taken}");
-        let bad = edited(&servers(), &edit(json!({"name": "fs", "newName": "a/b", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}}))).unwrap_err();
+        let bad = edited(&servers(), &edit(json!({"name": "fs", "newName": "a/b", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}})))
+            .unwrap_err();
         assert!(bad.contains("A server's name"), "{bad}");
         // A header-auth rename with a new token stores it under the new name's variable.
         let moved = edited(&servers(), &edit(json!({"name": "web", "newName": "web-2", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "header", "bearerToken": "t0k3n"}}))).unwrap();
@@ -593,12 +604,19 @@ mod tests {
 
     #[test]
     fn missing_or_bad_edits_are_refused() {
-        assert!(edited(&servers(), &edit(json!({"name": "gone", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}}))).unwrap_err().contains("no server named gone"));
+        assert!(edited(&servers(), &edit(json!({"name": "gone", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}})))
+            .unwrap_err()
+            .contains("no server named gone"));
         assert!(edited(&servers(), &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "", "args": [], "env": []}}))).is_err());
         assert!(edited(&servers(), &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "x", "args": [], "env": [{"key": "A", "value": "1"}, {"key": "A", "value": "2"}]}}))).is_err());
-        assert!(edited(&servers(), &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "x", "args": [], "env": [{"key": "A", "value": "a\nb"}]}}))).is_err());
+        assert!(edited(
+            &servers(),
+            &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "x", "args": [], "env": [{"key": "A", "value": "a\nb"}]}}))
+        )
+        .is_err());
         assert!(edited(&servers(), &edit(json!({"name": "web", "server": {"transport": "http", "url": "file:///etc/passwd", "auth": "none"}}))).is_err());
-        assert!(serde_json::from_value::<Edit>(json!({"name": "fs", "profile": "x", "server": {"transport": "stdio", "command": "x", "args": [], "env": []}})).is_err());
+        assert!(serde_json::from_value::<Edit>(json!({"name": "fs", "profile": "x", "server": {"transport": "stdio", "command": "x", "args": [], "env": []}}))
+            .is_err());
     }
 
     #[test]

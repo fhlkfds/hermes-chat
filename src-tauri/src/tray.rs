@@ -210,9 +210,7 @@ fn set_show_label(tray: &Tray, hidden: bool) {
 
 fn toggle<R: Runtime>(app: &AppHandle<R>) {
     let tray = app.state::<Tray>();
-    let shown = app
-        .get_webview_window("main")
-        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+    let shown = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
     if shown && !tray.hidden.load(Ordering::SeqCst) {
         hide(app)
     } else {
@@ -290,10 +288,7 @@ fn make(app: &AppHandle) -> tauri::Result<Parts> {
     let new_chat = MenuItem::with_id(app, "new-chat", "New chat", true, None::<&str>)?;
     let inbox = MenuItem::with_id(app, "inbox", inbox_label(0), true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Hermes Chat", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[&show_item, &new_chat, &inbox, &PredefinedMenuItem::separator(app)?, &quit_item],
-    )?;
+    let menu = Menu::with_items(app, &[&show_item, &new_chat, &inbox, &PredefinedMenuItem::separator(app)?, &quit_item])?;
     let icon = TrayIconBuilder::with_id("hermes-chat")
         .icon(plain.clone())
         .tooltip("Hermes Chat")
@@ -343,7 +338,11 @@ pub fn next_state(now: TrayState, reading: Option<bool>, misses: &mut u32) -> Tr
         None => now,
         Some(true) => {
             *misses = 0;
-            if now == TrayState::Unavailable { now } else { TrayState::Shown }
+            if now == TrayState::Unavailable {
+                now
+            } else {
+                TrayState::Shown
+            }
         }
         Some(false) => {
             *misses += 1;
@@ -386,27 +385,24 @@ mod host {
 
     /// Why the icon can't be made at all, if it can't.
     pub fn missing() -> Option<String> {
-        (!indicator_library())
-            .then(|| "libayatana-appindicator isn't installed, so Hermes Chat can't put an icon in the tray.".into())
+        (!indicator_library()).then(|| "libayatana-appindicator isn't installed, so Hermes Chat can't put an icon in the tray.".into())
     }
 
     /// Whether libayatana-appindicator (or libappindicator) is installed: the icon library panics without one.
     fn indicator_library() -> bool {
-        ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"]
-            .iter()
-            .any(|name| {
-                let c = std::ffi::CString::new(*name).unwrap();
-                // SAFETY: dlopen with a valid C string; the handle is closed again at once.
-                unsafe {
-                    let h = libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
-                    if h.is_null() {
-                        false
-                    } else {
-                        libc::dlclose(h);
-                        true
-                    }
+        ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"].iter().any(|name| {
+            let c = std::ffi::CString::new(*name).unwrap();
+            // SAFETY: dlopen with a valid C string; the handle is closed again at once.
+            unsafe {
+                let h = libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+                if h.is_null() {
+                    false
+                } else {
+                    libc::dlclose(h);
+                    true
                 }
-            })
+            }
+        })
     }
 
     /// Checks for a tray every two seconds and reacts when that changes.
@@ -433,16 +429,17 @@ mod host {
         }
         // No session bus at all: nothing can host a StatusNotifierItem.
         let Some(conn) = bus.as_ref() else { return Some(false) };
-        let owned: Result<(bool,), _> = conn
-            .with_proxy("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(2))
-            .method_call("org.freedesktop.DBus", "NameHasOwner", (WATCHER,));
+        let owned: Result<(bool,), _> = conn.with_proxy("org.freedesktop.DBus", "/org/freedesktop/DBus", Duration::from_secs(2)).method_call(
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            (WATCHER,),
+        );
         match owned {
             // A watcher that can't say whether a host is registered decides nothing: a watcher alone shows no icon, so
             // taking it at its word could hide the window with no way back.
-            Ok((true,)) => conn
-                .with_proxy(WATCHER, "/StatusNotifierWatcher", Duration::from_secs(2))
-                .get::<bool>(WATCHER, "IsStatusNotifierHostRegistered")
-                .ok(),
+            Ok((true,)) => {
+                conn.with_proxy(WATCHER, "/StatusNotifierWatcher", Duration::from_secs(2)).get::<bool>(WATCHER, "IsStatusNotifierHostRegistered").ok()
+            }
             Ok(_) => Some(false),
             Err(_) => {
                 *bus = None;

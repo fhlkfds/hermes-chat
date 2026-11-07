@@ -137,13 +137,7 @@ pub fn local_shell_command() -> Command {
 
 impl Terminals {
     /// Starts `command` in a new PTY of `cols` × `rows`, sending what it prints, then how it ended, to `on_event`.
-    pub fn open(
-        &self,
-        mut command: Command,
-        cols: u16,
-        rows: u16,
-        on_event: impl Fn(TerminalEvent) + Send + 'static,
-    ) -> Result<u64, TerminalError> {
+    pub fn open(&self, mut command: Command, cols: u16, rows: u16, on_event: impl Fn(TerminalEvent) + Send + 'static) -> Result<u64, TerminalError> {
         command.env("TERM", "xterm-256color").env("COLORTERM", "truecolor");
         let Started { master, mut reader, exit, kill } = pty::start(command, cols, rows)?;
         std::thread::spawn(move || {
@@ -489,7 +483,9 @@ mod tests {
         let mut out = String::new();
         let code = loop {
             match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap() {
-                Some(TerminalEvent::Output { data }) => out.push_str(&String::from_utf8_lossy(&base64::engine::general_purpose::STANDARD.decode(data).unwrap())),
+                Some(TerminalEvent::Output { data }) => {
+                    out.push_str(&String::from_utf8_lossy(&base64::engine::general_purpose::STANDARD.decode(data).unwrap()))
+                }
                 Some(TerminalEvent::Exit { code }) => break code,
                 None => panic!("no exit"),
             }

@@ -32,13 +32,7 @@ impl Drop for Dir {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> String {
-    let out = StdCommand::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
+    let out = StdCommand::new("git").args(args).current_dir(cwd).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
     assert!(out.status.success() || args[0] == "merge", "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
@@ -410,8 +404,13 @@ async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
     let text = shown["diff"].as_str().unwrap();
     assert_eq!(text.matches("\n@@").count(), 2, "{text}");
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![1], reverse: false, context: 1,
-        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![1],
+        reverse: false,
+        context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap();
@@ -424,8 +423,13 @@ async fn one_hunk_can_be_staged_and_unstaged_on_its_own() {
     let s = status(&d).await;
     let staged = diff(&d, "notes.txt", None, DiffSide::Staged, 1).await;
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: true, context: 1,
-        diff_sha: staged["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![0],
+        reverse: true,
+        context: 1,
+        diff_sha: staged["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap();
@@ -441,8 +445,13 @@ async fn a_hunk_from_a_diff_with_no_context_applies_too() {
     let text = shown["diff"].as_str().unwrap();
     assert!(text.contains("@@ -1 +1 @@") && text.contains("@@ -10 +10 @@"), "{text}");
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: false, context: 0,
-        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![0],
+        reverse: false,
+        context: 0,
+        diff_sha: shown["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap();
@@ -457,8 +466,13 @@ async fn a_hunk_from_a_diff_that_changed_is_refused() {
     let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
     write(d.path(), "notes.txt", b"ONE\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n");
     let e = ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![1], reverse: false, context: 1,
-        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![1],
+        reverse: false,
+        context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap_err();
@@ -580,8 +594,13 @@ async fn a_hunk_that_isnt_there_is_refused() {
     let s = status(&d).await;
     let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
     let e = ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![5], reverse: false, context: 1,
-        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![5],
+        reverse: false,
+        context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap_err();
@@ -598,8 +617,13 @@ async fn hunks_apply_under_the_owners_whitespace_and_prefix_settings() {
     let s = status(&d).await;
     let shown = diff(&d, "notes.txt", None, DiffSide::Unstaged, 1).await;
     ask(Request::Apply {
-        repo: d.s(), path: "notes.txt".into(), hunks: vec![0], reverse: false, context: 1,
-        diff_sha: shown["sha"].as_str().unwrap().into(), expect: expect_of(&s),
+        repo: d.s(),
+        path: "notes.txt".into(),
+        hunks: vec![0],
+        reverse: false,
+        context: 1,
+        diff_sha: shown["sha"].as_str().unwrap().into(),
+        expect: expect_of(&s),
     })
     .await
     .unwrap();
@@ -654,7 +678,11 @@ async fn a_commit_that_fails_for_another_reason_isnt_blamed_on_a_hook() {
 async fn nothing_another_agent_stages_during_the_commit_gets_in() {
     let d = busy("commit-concurrent");
     // The hook plays an agent working in the same checkout: mid-commit it tries to stage new.txt in the real index.
-    hook(&d, "pre-commit", "if env -u GIT_INDEX_FILE git add new.txt 2>/dev/null; then echo 'agent staged new.txt'; else echo 'agent blocked by the index lock'; fi");
+    hook(
+        &d,
+        "pre-commit",
+        "if env -u GIT_INDEX_FILE git add new.txt 2>/dev/null; then echo 'agent staged new.txt'; else echo 'agent blocked by the index lock'; fi",
+    );
     git(d.path(), &["add", "notes.txt"]);
     let p = preview(&d).await;
     let c = commit(&d, &p, "Only notes").await.unwrap();
@@ -793,7 +821,15 @@ fn head(d: &Dir) -> String {
 }
 
 async fn push(d: &Dir, expect: Option<String>) -> Result<Value, RepoError> {
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(d, "origin"), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
+    ask(Request::Push {
+        repo: d.s(),
+        remote: "origin".into(),
+        push_url: shown_url(d, "origin"),
+        branch: "feature".into(),
+        remote_branch: "feature".into(),
+        expect: HeadExpect { head: expect },
+    })
+    .await
 }
 
 #[tokio::test]
@@ -843,9 +879,16 @@ async fn a_new_branch_on_commits_the_remote_has_can_still_be_pushed() {
     assert_eq!(p["remoteBranch"], "fresh");
     assert_eq!(p["ahead"], 0, "every commit is already on the remote: {p}");
     assert_eq!(p["remoteBranchExists"], false, "but the remote has no branch called fresh: {p}");
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "fresh".into(), remote_branch: "fresh".into(), expect: HeadExpect { head: Some(head(&d)) } })
-        .await
-        .unwrap();
+    ask(Request::Push {
+        repo: d.s(),
+        remote: "origin".into(),
+        push_url: shown_url(&d, "origin"),
+        branch: "fresh".into(),
+        remote_branch: "fresh".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap();
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/fresh"]), head(&d));
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert_eq!(p["ahead"], 0);
@@ -909,9 +952,27 @@ async fn a_push_to_an_unreachable_remote_is_a_network_failure() {
 #[tokio::test]
 async fn names_that_could_be_options_are_refused() {
     let (d, _remote) = with_remote("push-names");
-    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "feature".into(), remote_branch: "--force".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push {
+        repo: d.s(),
+        remote: "origin".into(),
+        push_url: shown_url(&d, "origin"),
+        branch: "feature".into(),
+        remote_branch: "--force".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
     assert_eq!(kind(e), "bad-branch");
-    let e = ask(Request::Push { repo: d.s(), remote: "--mirror".into(), push_url: String::new(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push {
+        repo: d.s(),
+        remote: "--mirror".into(),
+        push_url: String::new(),
+        branch: "feature".into(),
+        remote_branch: "feature".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
     assert_eq!(kind(e), "bad-remote");
 }
 
@@ -919,8 +980,16 @@ async fn names_that_could_be_options_are_refused() {
 async fn pull_requests_need_a_github_remote_and_never_push() {
     let (d, remote) = with_remote("pr-local");
     let e = ask(Request::PrCreate {
-        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
-        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
+        repo: d.s(),
+        branch: "feature".into(),
+        remote: "origin".into(),
+        github_repo: "acme/widgets".into(),
+        remote_branch: "feature".into(),
+        base: "main".into(),
+        title: "Feature".into(),
+        body: String::new(),
+        draft: false,
+        expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
     .unwrap_err();
@@ -940,7 +1009,16 @@ async fn a_branch_tracking_main_is_never_pushed_to_main() {
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert_eq!(p["upstream"]["branch"], "main");
     assert_eq!(p["remoteBranch"], "fix", "{p}");
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "fix".into(), remote_branch: "fix".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap();
+    ask(Request::Push {
+        repo: d.s(),
+        remote: "origin".into(),
+        push_url: shown_url(&d, "origin"),
+        branch: "fix".into(),
+        remote_branch: "fix".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap();
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/main"]), main_before);
     assert_eq!(git(remote.path(), &["rev-parse", "refs/heads/fix"]), head(&d));
 }
@@ -974,7 +1052,16 @@ async fn a_configured_remote_named_like_an_option_is_refused() {
     git(d.path(), &["config", "remote.--no-verify.url", &remote.s()]);
     let p = ask(Request::PublishInfo { repo: d.s() }).await.unwrap();
     assert!(p["remotes"].as_array().unwrap().iter().all(|r| r["name"] != "--no-verify"));
-    let e = ask(Request::Push { repo: d.s(), remote: "--no-verify".into(), push_url: String::new(), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } }).await.unwrap_err();
+    let e = ask(Request::Push {
+        repo: d.s(),
+        remote: "--no-verify".into(),
+        push_url: String::new(),
+        branch: "feature".into(),
+        remote_branch: "feature".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
     assert_eq!(kind(e), "bad-remote");
 }
 
@@ -1055,10 +1142,21 @@ async fn a_pull_request_made_but_slow_to_read_back_keeps_its_link() {
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut c = helper();
     c.env("PATH", format!("{}:{}", bin.s(), std::env::var("PATH").unwrap())).env("HERMES_REPO_READBACK_TIMEOUT", "1");
-    let r = repo_git::run(c, &Request::PrCreate {
-        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
-        title: "Feature".into(), body: "Body".into(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
-    })
+    let r = repo_git::run(
+        c,
+        &Request::PrCreate {
+            repo: d.s(),
+            branch: "feature".into(),
+            remote: "origin".into(),
+            github_repo: "acme/widgets".into(),
+            remote_branch: "feature".into(),
+            base: "main".into(),
+            title: "Feature".into(),
+            body: "Body".into(),
+            draft: false,
+            expect: HeadExpect { head: Some(head(&d)) },
+        },
+    )
     .await
     .unwrap();
     assert_eq!(r["pr"]["url"], "https://github.com/acme/widgets/pull/5");
@@ -1132,8 +1230,16 @@ async fn a_pull_request_is_refused_when_the_local_branch_or_commit_moved() {
     push(&d, Some(head(&d))).await.unwrap();
     let shown = head(&d);
     let pr = |branch: &str, h: &str| Request::PrCreate {
-        repo: d.s(), branch: branch.into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
-        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(h.into()) },
+        repo: d.s(),
+        branch: branch.into(),
+        remote: "origin".into(),
+        github_repo: "acme/widgets".into(),
+        remote_branch: "feature".into(),
+        base: "main".into(),
+        title: "Feature".into(),
+        body: String::new(),
+        draft: false,
+        expect: HeadExpect { head: Some(h.into()) },
     };
     // An agent committed here after the form was read.
     write(d.path(), "notes.txt", b"an agent's later work\n");
@@ -1155,9 +1261,16 @@ async fn a_push_is_refused_when_the_remote_now_points_somewhere_else() {
     let second = Dir::new("push-url-moved-other");
     git(second.path(), &["init", "-q", "--bare", "-b", "main"]);
     git(d.path(), &["remote", "set-url", "origin", &second.s()]);
-    let e = ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown, branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: Some(head(&d)) } })
-        .await
-        .unwrap_err();
+    let e = ask(Request::Push {
+        repo: d.s(),
+        remote: "origin".into(),
+        push_url: shown,
+        branch: "feature".into(),
+        remote_branch: "feature".into(),
+        expect: HeadExpect { head: Some(head(&d)) },
+    })
+    .await
+    .unwrap_err();
     assert_eq!(kind(e), "stale");
     assert_eq!(git(first.path(), &["branch", "--list", "feature"]), "");
     assert_eq!(git(second.path(), &["branch", "--list", "feature"]), "", "nothing went to the new URL");
@@ -1168,8 +1281,16 @@ async fn a_pull_request_is_refused_when_the_remote_now_names_another_github_repo
     let (d, _remote) = with_remote("pr-repo-moved");
     git(d.path(), &["remote", "set-url", "origin", "https://github.com/acme/other.git"]);
     let e = ask(Request::PrCreate {
-        repo: d.s(), branch: "feature".into(), remote: "origin".into(), github_repo: "acme/widgets".into(), remote_branch: "feature".into(), base: "main".into(),
-        title: "Feature".into(), body: String::new(), draft: false, expect: HeadExpect { head: Some(head(&d)) },
+        repo: d.s(),
+        branch: "feature".into(),
+        remote: "origin".into(),
+        github_repo: "acme/widgets".into(),
+        remote_branch: "feature".into(),
+        base: "main".into(),
+        title: "Feature".into(),
+        body: String::new(),
+        draft: false,
+        expect: HeadExpect { head: Some(head(&d)) },
     })
     .await
     .unwrap_err();

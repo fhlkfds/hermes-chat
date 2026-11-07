@@ -16,8 +16,8 @@
 //! Before any password goes out, `read_server` reads the dashboard's public `/api/status` and `identify` checks it is
 //! a Hermes dashboard, and the same one the connection signed in to before (ADR 0056).
 
-use base64::Engine;
 use crate::connect_steps::{Step, Steps};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
@@ -146,8 +146,18 @@ fn reserved(name: &HeaderName) -> bool {
     let n = name.as_str(); // always lowercase
     matches!(
         n,
-        "host" | "content-length" | "content-type" | "transfer-encoding" | "connection" | "upgrade" | "cookie" | "te" | "trailer"
-            | "keep-alive" | "expect" | "origin"
+        "host"
+            | "content-length"
+            | "content-type"
+            | "transfer-encoding"
+            | "connection"
+            | "upgrade"
+            | "cookie"
+            | "te"
+            | "trailer"
+            | "keep-alive"
+            | "expect"
+            | "origin"
     ) || n.starts_with("sec-websocket-")
         || n.starts_with("proxy-")
 }
@@ -415,14 +425,12 @@ where
     let addresses = match base.host() {
         Some(url::Host::Domain(name)) => {
             let port = base.port_or_known_default().expect("http(s) has a default port");
-            let looked_up = within(limit, async { lookup(name.to_owned(), port).await.map_err(|e| TransportError::Unreachable(format!("couldn't look up {name}: {e}"))) }, |s| {
-                TransportError::Unreachable(format!("looking up {name} didn't finish within {s}s."))
-            });
-            let mut found: Vec<IpAddr> = looked_up
-                .await?
-                .into_iter()
-                .map(|a| a.ip())
-                .collect();
+            let looked_up = within(
+                limit,
+                async { lookup(name.to_owned(), port).await.map_err(|e| TransportError::Unreachable(format!("couldn't look up {name}: {e}"))) },
+                |s| TransportError::Unreachable(format!("looking up {name} didn't finish within {s}s.")),
+            );
+            let mut found: Vec<IpAddr> = looked_up.await?.into_iter().map(|a| a.ip()).collect();
             found.sort();
             found.dedup();
             found
@@ -467,7 +475,11 @@ pub fn check_plain_http(direct: &DirectUrl) -> Result<(), TransportError> {
         Some(ip) => is_local_or_private(ip),
         None => !direct.addresses.is_empty() && direct.addresses.iter().all(|ip| is_local_or_private(*ip)),
     };
-    if local { Ok(()) } else { Err(TransportError::PlainHttpPublic(host)) }
+    if local {
+        Ok(())
+    } else {
+        Err(TransportError::PlainHttpPublic(host))
+    }
 }
 
 /// A Hermes install's id as this app keeps it: a hash, so the id itself, which `/api/status` shows anyone who asks,
@@ -550,7 +562,8 @@ pub struct StepLimits {
 }
 
 impl StepLimits {
-    pub const ROUTES: StepLimits = StepLimits { lookup: Duration::from_secs(5), sign_in: Duration::from_secs(10), ticket: Duration::from_secs(10), socket: Duration::from_secs(10) };
+    pub const ROUTES: StepLimits =
+        StepLimits { lookup: Duration::from_secs(5), sign_in: Duration::from_secs(10), ticket: Duration::from_secs(10), socket: Duration::from_secs(10) };
 
     /// The limits for a connection with several routes on (`quick`), none for one.
     pub fn of(quick: bool) -> Option<StepLimits> {
@@ -644,9 +657,7 @@ pub fn sign_in_methods(status: Option<&str>, providers: Option<&str>) -> Methods
     }
     let Some(names) = status["auth_providers"].as_array() else { return guess(MethodsNote::Unread) };
     let names: Vec<&str> = names.iter().filter_map(serde_json::Value::as_str).collect();
-    let listed = providers
-        .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
-        .and_then(|v| v["providers"].as_array().cloned());
+    let listed = providers.and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok()).and_then(|v| v["providers"].as_array().cloned());
     let mut methods = Vec::new();
     match listed {
         Some(list) => {
@@ -820,7 +831,9 @@ async fn read_opened_text(file: std::sync::Arc<std::fs::File>) -> Result<LocalTe
         let binary = head.contains(&0) || (!head.is_empty() && control as f64 / head.len() as f64 > 0.12);
         let text = if binary { String::new() } else { String::from_utf8_lossy(&bytes).into_owned() };
         Ok(LocalText { size, truncated: size > bytes.len() as u64, binary, text })
-    }).await.map_err(|e| TransportError::File(e.to_string()))?
+    })
+    .await
+    .map_err(|e| TransportError::File(e.to_string()))?
 }
 
 /// Reads the start of a local regular file. The preview IPC uses `PickedFiles::read` instead.
@@ -842,8 +855,7 @@ impl PickedFiles {
     }
 
     fn file(&self, path: &str) -> Result<std::sync::Arc<std::fs::File>, TransportError> {
-        self.0.lock().unwrap().get(path).cloned()
-            .ok_or_else(|| TransportError::File("it wasn't picked in the Open dialog".into()))
+        self.0.lock().unwrap().get(path).cloned().ok_or_else(|| TransportError::File("it wasn't picked in the Open dialog".into()))
     }
 
     pub async fn read(&self, path: &str) -> Result<LocalText, TransportError> {
@@ -862,9 +874,10 @@ impl PickedFiles {
                 return Err(TransportError::FileTooLarge { size: bytes.len() as u64, max: PREVIEW_MAX_BYTES });
             }
             checked_image(bytes)
-        }).await.map_err(|e| TransportError::File(e.to_string()))?
+        })
+        .await
+        .map_err(|e| TransportError::File(e.to_string()))?
     }
-
 }
 
 /// Writes a file pasted into the composer to a new temp file and returns its path, so it attaches like a dropped
@@ -979,7 +992,11 @@ fn safe_name(name: &str) -> String {
         stem.pop();
     }
     let stem = if stem.trim().is_empty() { "clipboard" } else { stem.as_str() };
-    if ext.is_empty() { stem.to_owned() } else { format!("{stem}.{ext}") }
+    if ext.is_empty() {
+        stem.to_owned()
+    } else {
+        format!("{stem}.{ext}")
+    }
 }
 
 /// Reads a whole file, refusing one over `max_bytes`; the size is checked again after reading, in case it grew.
@@ -1071,8 +1088,14 @@ impl Dashboard {
     pub async fn sign_in(http: reqwest::Client, base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
         match &sign_in.credential {
             Credential::Password { provider, username, password } => {
-                let dashboard =
-                    Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone(), hide: sign_in.headers.clone(), token: false };
+                let dashboard = Dashboard {
+                    http,
+                    base: base.clone(),
+                    cookies: Mutex::default(),
+                    headers: sign_in.headers.clone(),
+                    hide: sign_in.headers.clone(),
+                    token: false,
+                };
                 let provider = if provider_name(provider) { provider.as_str() } else { PASSWORD_PROVIDER };
                 let login = dashboard
                     .http
@@ -1205,11 +1228,7 @@ impl Dashboard {
 
     /// A single-use ticket for `/api/ws`.
     async fn ws_ticket(&self) -> Result<String, TransportError> {
-        let ticket = self
-            .signed(Method::POST, endpoint(&self.base, "api/auth/ws-ticket"))
-            .send()
-            .await
-            .map_err(unreachable)?;
+        let ticket = self.signed(Method::POST, endpoint(&self.base, "api/auth/ws-ticket")).send().await.map_err(unreachable)?;
         self.keep_cookies(&ticket);
         if !ticket.status().is_success() {
             return Err(unexpected(ticket, &self.hide).await);
@@ -1222,9 +1241,7 @@ impl Dashboard {
     /// cookie: each socket is let in by its own single-use ticket in the query, as the official clients do.
     pub fn ws_handshake(&self, path: &str, query: &[(&str, &str)]) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, TransportError> {
         let mut ws_url = endpoint(&self.base, path);
-        ws_url
-            .set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" })
-            .expect("http(s) URLs map to ws(s)");
+        ws_url.set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" }).expect("http(s) URLs map to ws(s)");
         ws_url.query_pairs_mut().extend_pairs(query);
         let mut handshake = ws_url.as_str().into_client_request().map_err(|e| TransportError::WebSocket(e.to_string()))?;
         for (name, value) in &self.headers {
@@ -1393,8 +1410,8 @@ impl Dashboard {
     pub async fn toolset_guards(&self, profile: &str) -> Result<ToolsetGuards, TransportError> {
         let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
         let body = self.request("GET", &format!("api/config?{query}"), None).await?;
-        let config: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|_| TransportError::Unexpected { status: 200, body: "the profile's config isn't JSON".into() })?;
+        let config: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| TransportError::Unexpected { status: 200, body: "the profile's config isn't JSON".into() })?;
         Ok(toolset_guards(&config))
     }
 
@@ -1402,12 +1419,7 @@ impl Dashboard {
     async fn post_audio(&self, path: &str, profile: &str, body: &serde_json::Value) -> Result<AudioAnswer, TransportError> {
         let mut url = endpoint(&self.base, path);
         url.query_pairs_mut().append_pair("profile", profile);
-        let resp = self
-            .signed(Method::POST, url)
-            .json(body)
-            .send()
-            .await
-            .map_err(unreachable)?;
+        let resp = self.signed(Method::POST, url).json(body).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
@@ -1439,11 +1451,7 @@ impl Dashboard {
     pub async fn get_limited(&self, path_and_query: &str, max_bytes: u64) -> Result<String, TransportError> {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let (url, _) = relay_url(&self.base, path, query)?;
-        let mut resp = self
-            .signed(Method::GET, url)
-            .send()
-            .await
-            .map_err(unreachable)?;
+        let mut resp = self.signed(Method::GET, url).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => {}
@@ -1576,10 +1584,8 @@ impl Dashboard {
             }
         };
         let part = part.file_name(name).mime_str("application/octet-stream").expect("a valid MIME type");
-        let form = reqwest::multipart::Form::new()
-            .text("path", server_path.to_owned())
-            .text("overwrite", if overwrite { "true" } else { "false" })
-            .part("file", part);
+        let form =
+            reqwest::multipart::Form::new().text("path", server_path.to_owned()).text("overwrite", if overwrite { "true" } else { "false" }).part("file", part);
         let (url, _) = relay_url(&self.base, "api/files/upload-stream", "")?;
         let resp = self.signed(Method::POST, url).multipart(form).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
@@ -1687,12 +1693,24 @@ const UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 /// write them, to keep the credential files the browser can't show from being overwritten unseen.
 pub fn protected_server_path(path: &str) -> bool {
     const NAMES: [&str; 12] = [
-        "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json", "google_token.json",
-        "google_oauth_pending.json", "google_oauth.json", "webhook_subscriptions.json", "bws_cache.json",
-        "bws_cache.enc.json", ".git-credentials",
+        "auth.json",
+        "auth.lock",
+        "credentials",
+        "config.yaml",
+        ".anthropic_oauth.json",
+        "google_token.json",
+        "google_oauth_pending.json",
+        "google_oauth.json",
+        "webhook_subscriptions.json",
+        "bws_cache.json",
+        "bws_cache.enc.json",
+        ".git-credentials",
     ];
     let name = path.rsplit('/').next().unwrap_or_default().to_lowercase();
-    name == ".env" || name.starts_with(".env.") || name == ".envrc" || NAMES.contains(&name.as_str())
+    name == ".env"
+        || name.starts_with(".env.")
+        || name == ".envrc"
+        || NAMES.contains(&name.as_str())
         || path.split('/').any(|part| matches!(part.to_lowercase().as_str(), "mcp-tokens" | "pairing"))
 }
 
@@ -1842,15 +1860,16 @@ fn config_string_list(value: &serde_json::Value) -> ConfigList {
                     plain.then(|| name.to_owned())
                 })
             };
-            let items: Option<Vec<String>> = inner.map(|inner| {
-                let mut parts: Vec<&str> = inner.split(',').collect();
-                // `['a',]` is a list of one; `[]` of none.
-                if parts.last().is_some_and(|p| py_strip(p).is_empty()) {
-                    parts.pop();
-                }
-                parts
-            })
-            .and_then(|parts| parts.into_iter().map(quoted).collect());
+            let items: Option<Vec<String>> = inner
+                .map(|inner| {
+                    let mut parts: Vec<&str> = inner.split(',').collect();
+                    // `['a',]` is a list of one; `[]` of none.
+                    if parts.last().is_some_and(|p| py_strip(p).is_empty()) {
+                        parts.pop();
+                    }
+                    parts
+                })
+                .and_then(|parts| parts.into_iter().map(quoted).collect());
             match items {
                 Some(names) => ConfigList { names: clean(names), unclear: false },
                 None => ConfigList { names: Vec::new(), unclear: true },
@@ -1884,9 +1903,7 @@ pub fn import_body_allowed(body: Option<&str>) -> bool {
         return false;
     };
     match body.get("sessions").and_then(|s| s.as_array()) {
-        Some(sessions) if !sessions.is_empty() => {
-            sessions.iter().all(|s| s.get("source").and_then(|v| v.as_str()) == Some("import"))
-        }
+        Some(sessions) if !sessions.is_empty() => sessions.iter().all(|s| s.get("source").and_then(|v| v.as_str()) == Some("import")),
         _ => false,
     }
 }
@@ -1931,10 +1948,7 @@ pub fn toolset_toggle_allowed(path: &str, body: Option<&str>) -> bool {
     let Some(name) = path.strip_prefix("api/tools/toolsets/") else {
         return false;
     };
-    let safe = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    let safe = !name.is_empty() && name != "." && name != ".." && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
     if !safe {
         return false;
     }
@@ -1982,9 +1996,7 @@ pub fn voice_provider_write(path: &str, body: Option<&str>) -> bool {
     };
     match field {
         "provider" => value.as_str().is_some_and(|p| text_ok(p, 200)),
-        _ => value
-            .as_object()
-            .is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|v| text_ok(v, 4096)))),
+        _ => value.as_object().is_some_and(|env| !env.is_empty() && env.iter().all(|(k, v)| env_name(k) && v.as_str().is_some_and(|v| text_ok(v, 4096)))),
     }
 }
 
@@ -2039,14 +2051,38 @@ fn webhook_write(method: &str, path: &str, body: Option<&str>) -> bool {
             && (n.as_bytes()[0].is_ascii_lowercase() || n.as_bytes()[0].is_ascii_digit())
             && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
     };
-    let id_ok = |i: &str| (1..=200).contains(&i.len()) && i != "." && i != ".." && i.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'));
+    let id_ok = |i: &str| {
+        (1..=200).contains(&i.len()) && i != "." && i != ".." && i.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+    };
     let keys: &[&str] = match (method, rest.strip_prefix('/').map(|r| r.split('/').collect::<Vec<_>>()).as_deref()) {
         ("POST", None) if rest.is_empty() => &[
-            "name", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "script", "provider", "filters", "coalesce",
-            "secret_env", "enabled", "create_only",
+            "name",
+            "description",
+            "events",
+            "prompt",
+            "skills",
+            "deliver",
+            "deliver_chat_id",
+            "script",
+            "provider",
+            "filters",
+            "coalesce",
+            "secret_env",
+            "enabled",
+            "create_only",
         ],
         ("PUT", Some([name])) if name_ok(name) => &[
-            "revision", "description", "events", "prompt", "skills", "deliver", "deliver_chat_id", "provider", "filters", "coalesce", "secret_env",
+            "revision",
+            "description",
+            "events",
+            "prompt",
+            "skills",
+            "deliver",
+            "deliver_chat_id",
+            "provider",
+            "filters",
+            "coalesce",
+            "secret_env",
             "rotate_secret",
         ],
         ("PUT", Some([name, "enabled"])) if name_ok(name) => &["enabled"],
@@ -2086,10 +2122,7 @@ pub fn skill_write_allowed(path: &str, body: Option<&str>) -> bool {
             && !n.starts_with('/')
             && !n.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
     });
-    let value_ok = matches!(
-        (second, fields.get(second)),
-        ("enabled", Some(serde_json::Value::Bool(_))) | ("content", Some(serde_json::Value::String(_)))
-    );
+    let value_ok = matches!((second, fields.get(second)), ("enabled", Some(serde_json::Value::Bool(_))) | ("content", Some(serde_json::Value::String(_))));
     name_ok && value_ok
 }
 
@@ -2369,7 +2402,14 @@ pub async fn probe_with(base: &Url, sign_in: &SignIn, profile: &str, step: Durat
 
 /// `probe_with`, which also refuses, before the password goes out, a server that isn't the one `expect` names
 /// (`identify`, ADR 0056). `reach`: how long the status read may take, shorter for one of several routes.
-pub async fn probe_expecting(base: &Url, sign_in: &SignIn, profile: &str, step: Duration, reach: Duration, expect: Option<&str>) -> Result<Probed, ProbeFailure> {
+pub async fn probe_expecting(
+    base: &Url,
+    sign_in: &SignIn,
+    profile: &str,
+    step: Duration,
+    reach: Duration,
+    expect: Option<&str>,
+) -> Result<Probed, ProbeFailure> {
     let timed_out = |what: &str| format!("{what} didn't answer within {}s.", step.as_secs());
     // The same headers and redirect rule as the sign-in, so a gateway in front of the dashboard lets this through too.
     let http = client(&sign_in.headers).map_err(|e| ProbeFailure::new(Stage::Address, e.to_string()))?;
@@ -2482,9 +2522,7 @@ impl Dashboard {
     /// `save_provider_key`, giving up after `limit`, every request and answer included, so setup never waits on a
     /// Hermes or provider that stopped answering.
     pub async fn save_provider_key_within(&self, profile: &str, key: &str, value: &str, limit: Duration) -> Result<SavedKey, TransportError> {
-        tokio::time::timeout(limit, self.check_and_save_key(profile, key, value))
-            .await
-            .unwrap_or(Err(TransportError::KeyTimedOut(limit.as_secs())))
+        tokio::time::timeout(limit, self.check_and_save_key(profile, key, value)).await.unwrap_or(Err(TransportError::KeyTimedOut(limit.as_secs())))
     }
 
     async fn check_and_save_key(&self, profile: &str, key: &str, value: &str) -> Result<SavedKey, TransportError> {
@@ -2506,9 +2544,8 @@ impl Dashboard {
         let env: serde_json::Value = serde_json::from_str(&self.call(&http, Method::GET, scoped("api/env"), None, true).await?)
             .map_err(|e| TransportError::Unexpected { status: 200, body: format!("GET /api/env: {e}") })?;
         let row = &env[key];
-        let is_provider_secret = row["provider"].as_str().is_some_and(|p| !p.is_empty())
-            && row["is_password"] == json!(true)
-            && row["channel_managed"] != json!(true);
+        let is_provider_secret =
+            row["provider"].as_str().is_some_and(|p| !p.is_empty()) && row["is_password"] == json!(true) && row["channel_managed"] != json!(true);
         if !is_provider_secret {
             return Err(TransportError::NotRelayed(format!("{key}: Hermes doesn't list it as a model provider's key")));
         }
@@ -2571,8 +2608,10 @@ impl Dashboard {
         };
         let read = || async {
             let text = self.call(&http, Method::GET, scoped("api/config", true), None, true).await?;
-            let config: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|_| TransportError::Unexpected { status: 200, body: "Hermes's config wasn't understood (not shown, as it may hold a secret).".into() })?;
+            let config: serde_json::Value = serde_json::from_str(&text).map_err(|_| TransportError::Unexpected {
+                status: 200,
+                body: "Hermes's config wasn't understood (not shown, as it may hold a secret).".into(),
+            })?;
             Ok::<_, TransportError>(match &config["mcp_servers"] {
                 serde_json::Value::Object(o) => o.clone(),
                 _ => serde_json::Map::new(),
@@ -2587,7 +2626,11 @@ impl Dashboard {
                 Ok(_) => token_saved = true,
                 // A refusal wrote nothing; anything else may have saved the token.
                 Err(e @ TransportError::Unexpected { status: 400..=499, .. }) => return Err(e),
-                Err(e) => return Err(TransportError::McpUnconfirmed(format!("the new bearer token may have been saved, and the rest of the change wasn't sent: {e}"))),
+                Err(e) => {
+                    return Err(TransportError::McpUnconfirmed(format!(
+                        "the new bearer token may have been saved, and the rest of the change wasn't sent: {e}"
+                    )))
+                }
             }
         }
         // Once the token is saved, an existing `${…}` reference already uses it: nothing after this is "not changed".
@@ -2807,7 +2850,11 @@ mod tests {
             ("POST", "api/webhooks", r#"{"name":"triage","events":["issues"],"prompt":"p","filters":[],"create_only":true}"#),
             ("PUT", "api/webhooks/triage", r#"{"revision":"abc","prompt":"p","rotate_secret":true}"#),
             ("PUT", "api/webhooks/triage-2_x/enabled", r#"{"enabled":false}"#),
-            ("POST", "api/webhooks/triage/deliveries/7b1c0a10-0000-4000-8000-000000000001~retry~ab12/retry", r#"{"idempotency_key":"k","confirm_side_effects":true}"#),
+            (
+                "POST",
+                "api/webhooks/triage/deliveries/7b1c0a10-0000-4000-8000-000000000001~retry~ab12/retry",
+                r#"{"idempotency_key":"k","confirm_side_effects":true}"#,
+            ),
         ] {
             assert!(webhook_write(method, path, Some(body)), "{method} {path} {body}");
         }

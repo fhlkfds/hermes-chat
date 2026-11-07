@@ -83,11 +83,18 @@ impl Requests {
 pub enum Request {
     Screenshot,
     /// Bring the window forward. `token`: the desktop's Wayland activation token, if it gave one.
-    Show { token: Option<String> },
+    Show {
+        token: Option<String>,
+    },
     /// Bring it forward, or hide it if it is already in front.
-    Toggle { token: Option<String> },
+    Toggle {
+        token: Option<String>,
+    },
     /// Open a chat link (links.rs) and bring the window forward. Only something that could be a link gets here.
-    OpenLink { link: String, token: Option<String> },
+    OpenLink {
+        link: String,
+        token: Option<String>,
+    },
 }
 
 /// Set by an update's restart (update.rs), so the new app starts even though the old one still owns the bus name.
@@ -143,9 +150,7 @@ fn decode(line: &str) -> Result<Request, String> {
     if line.len() > WIRE_MAX {
         return Err("That request is too long.".into());
     }
-    let request: Request = serde_json::from_str(line.trim_end()).map_err(|_| {
-        "Hermes Chat only answers screenshot, show, toggle and openLink.".to_owned()
-    })?;
+    let request: Request = serde_json::from_str(line.trim_end()).map_err(|_| "Hermes Chat only answers screenshot, show, toggle and openLink.".to_owned())?;
     let token = |t: Option<String>| t.filter(|t| !t.is_empty());
     Ok(match request {
         Request::Screenshot => Request::Screenshot,
@@ -161,9 +166,8 @@ fn decode(line: &str) -> Result<Request, String> {
 /// so the same user always gets the same name.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn pipe_name(domain: &str, user: &str, session: &str) -> String {
-    let part = |s: &str| -> String {
-        s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c.to_ascii_lowercase() } else { '_' }).collect()
-    };
+    let part =
+        |s: &str| -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c.to_ascii_lowercase() } else { '_' }).collect() };
     format!(r"\\.\pipe\net.l0cky12.HermesChat-{}-{}-{}", part(domain), part(user), part(session))
 }
 
@@ -286,9 +290,6 @@ mod tests {
     fn an_unhandled_request_expires_after_two_minutes() {
         let requests = Requests::default();
         requests.ask();
-        assert_eq!(
-            requests.pending_at(Instant::now() + Duration::from_secs(120)),
-            None
-        );
+        assert_eq!(requests.pending_at(Instant::now() + Duration::from_secs(120)), None);
     }
 }

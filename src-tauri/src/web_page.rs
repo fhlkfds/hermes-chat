@@ -45,10 +45,7 @@ pub fn web_url(raw: &str) -> Result<Url, String> {
 /// final response refuses framing. Only the headers are read; the body is dropped. No cookies are sent or kept.
 pub async fn check(url: &str, user_agent: &str) -> Result<Framing, String> {
     let url = web_url(url)?;
-    let http = reqwest::Client::builder()
-        .timeout(CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let http = reqwest::Client::builder().timeout(CHECK_TIMEOUT).build().map_err(|e| e.to_string())?;
     let mut req = http
         .get(url)
         .header(ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -220,10 +217,7 @@ mod tests {
     #[test]
     fn says_which_header_refused() {
         // www.google.com's answer, as fetched on 2026-11-02.
-        let google = headers(&[
-            ("content-security-policy-report-only", "object-src 'none';base-uri 'self'"),
-            (XFO, "SAMEORIGIN"),
-        ]);
+        let google = headers(&[("content-security-policy-report-only", "object-src 'none';base-uri 'self'"), (XFO, "SAMEORIGIN")]);
         assert_eq!(refusal(&google).as_deref(), Some("X-Frame-Options: SAMEORIGIN"));
         let csp = headers(&[(CSP, "default-src 'self'; Frame-Ancestors 'self' https://a.example; script-src 'none'")]);
         assert_eq!(refusal(&csp).as_deref(), Some("Content-Security-Policy: frame-ancestors 'self' https://a.example"));
