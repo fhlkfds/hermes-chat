@@ -2,6 +2,7 @@
 //! attempt reached and how long each took (src/hermes/attempts.ts `STEPS`, which a test holds to this list). A step
 //! that should have its own time limit (#269) gets it in `Steps::run`, the one place a connect step runs.
 use std::future::Future;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,19 +22,28 @@ pub enum Step {
     Ready,
 }
 
+/// A step starting, `at` ms after the connection began opening. The webview's messages can arrive after the command's
+/// answer, so each carries its own time: a late one still goes in its place, with the right durations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Started {
+    pub step: Step,
+    pub at: u64,
+}
+
 /// Where a connection being opened says which step it starts. Setup's test and route checks report nowhere.
 #[derive(Default)]
-pub struct Steps(Option<Box<dyn Fn(Step) + Send + Sync>>);
+pub struct Steps(Option<(Instant, Box<dyn Fn(Started) + Send + Sync>)>);
 
 impl Steps {
-    pub fn reporting(to: impl Fn(Step) + Send + Sync + 'static) -> Self {
-        Steps(Some(Box::new(to)))
+    /// Reports to `to`, timing each step from now.
+    pub fn reporting(to: impl Fn(Started) + Send + Sync + 'static) -> Self {
+        Steps(Some((Instant::now(), Box::new(to))))
     }
 
     /// Runs one step: says it started, then runs it.
     pub async fn run<F: Future>(&self, step: Step, fut: F) -> F::Output {
-        if let Some(report) = &self.0 {
-            report(step);
+        if let Some((began, report)) = &self.0 {
+            report(Started { step, at: u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX) });
         }
         fut.await
     }
@@ -48,7 +58,7 @@ mod tests {
     async fn run_reports_the_step_before_it_runs() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
-        let steps = Steps::reporting(move |s| log.lock().unwrap().push(format!("start {s:?}")));
+        let steps = Steps::reporting(move |s| log.lock().unwrap().push(format!("start {:?}", s.step)));
         let inner = seen.clone();
         let got = steps.run(Step::Status, async move { inner.lock().unwrap().push("ran".into()); 7 }).await;
         assert_eq!(got, 7);

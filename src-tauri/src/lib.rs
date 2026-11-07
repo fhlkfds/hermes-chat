@@ -230,7 +230,7 @@ async fn hermes_connect(
     expect_server: Option<String>,
     quick: Option<bool>,
     ssh_route: Option<String>,
-    on_step: Channel<Step>,
+    on_step: Channel<connect_steps::Started>,
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;

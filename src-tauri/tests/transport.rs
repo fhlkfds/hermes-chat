@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
-use hermes_chat::connect_steps::{Step, Steps};
+use hermes_chat::connect_steps::{Started, Step, Steps};
 use hermes_chat::display;
 use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, TransportError};
 use std::sync::{Arc, Mutex};
@@ -1295,7 +1295,8 @@ async fn a_direct_ws_url_is_signed_in_to_over_http() {
         .await
         .expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
-    assert_eq!(*steps.lock().unwrap(), [Step::Ticket, Step::WebSocket]);
+    let said: Vec<Step> = steps.lock().unwrap().iter().map(|s: &Started| s.step).collect();
+    assert_eq!(said, [Step::Ticket, Step::WebSocket]);
 
     let secure = transport::resolve_direct("wss://127.0.0.1/hermes/").await.expect("parsed");
     assert_eq!(secure.base.as_str(), "https://127.0.0.1/hermes/");

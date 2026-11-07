@@ -199,9 +199,9 @@ export function sshAddressOf(c: Address & { routes?: SavedRoute[] }): { mode: "s
 
 /**
  * Opens one route. `expectServer`: the install the route must reach. `quick`: give up on a dead route sooner. `onStep`:
- * told as each step of opening it starts (attempts.ts).
+ * told as each step of opening it starts, `at` ms after it began (attempts.ts).
  */
-export type OpenRoute = (d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step) => void }) => OpenPipe;
+export type OpenRoute = (d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step, at?: number) => void }) => OpenPipe;
 
 export const NO_ROUTES = "Every route of this connection is turned off, or needs the password typed again. Edit the connection to turn one on, or sign in again.";
 /** What Rust and transport say when connecting was stopped. */
@@ -275,8 +275,9 @@ export function routedPipe(d: SignInDetails, open: OpenRoute, hooks: RoutedHooks
       const pipe = await openRoutes(attempt, onEvent, profile, signal);
       return attempt ? { ...pipe, attempt } : pipe;
     } catch (e) {
+      if (signal?.aborted || (e instanceof Error && e.message === STOPPED)) attempt?.stopped();
       // Every route failed: their own errors say why, and the list of them names their addresses.
-      attempt?.failed(e instanceof RoutesFailedError ? undefined : e);
+      else attempt?.failed(e instanceof RoutesFailedError ? undefined : e);
       throw e;
     }
   };

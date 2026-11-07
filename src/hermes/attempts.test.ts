@@ -208,6 +208,72 @@ describe("The record of one connection attempt", () => {
   });
 });
 
+describe("Stops and late step messages", () => {
+  it("a stop while waiting for gateway.ready, through the real dial and close, is kept as stopped", async () => {
+    const { store, file } = memoryStore();
+    const log = new AttemptLog(store);
+    const server = new FakeHermes();
+    let opened!: () => void;
+    const open = new Promise<void>((r) => (opened = r));
+    // The pipe opens, but its frames never reach the dial, so gateway.ready never comes.
+    const silent: OpenRoute = (d, opts) => async (_onEvent, profile, signal) => {
+      for (const s of ["keyring", "resolve", "status", "sign-in", "ticket", "websocket"] as const) opts.onStep?.(s);
+      const pipe = await server.openPipe(() => {}, profile, signal);
+      setTimeout(opened, 0);
+      return { ...pipe, route: { kind: "url", url: d.url, addresses: [] } };
+    };
+    const stop = new AbortController();
+    const dialing = connect(routedPipe(details([LAN]), silent, { attempts: log }), undefined, undefined, undefined, stop.signal);
+    await open;
+    stop.abort();
+    await expect(dialing).rejects.toThrow(/^Connecting was stopped/);
+    await log.settled();
+    expect(file()[0]).toMatchObject({ outcome: "stopped" });
+    expect(file()[0].error).toBeUndefined();
+    expect(file()[0].routes[0].steps.at(-1)).toMatchObject({ step: "ready", ms: expect.any(Number) });
+  });
+
+  it("a step whose message comes after the route opened or failed goes in its place, with the durations around it", async () => {
+    const { store, file } = memoryStore();
+    let t = 1000;
+    const log = new AttemptLog(store, { tick: () => t });
+    const trace = log.begin(details([LAN, SSH]));
+    // LAN: Rust started keyring at 0, resolve at 5, status at 20; it failed at 520 ms, before status's message came.
+    const lan = trace.route(LAN);
+    lan.step("keyring", 0);
+    lan.step("resolve", 5);
+    t = 1520;
+    lan.failed(new Error("Can't reach the Hermes dashboard: operation timed out"));
+    lan.step("status", 20);
+    // SSH: opened at 600 ms; its websocket message arrives after the pipe opened and the ready wait began.
+    t = 1520;
+    const ssh = trace.route(SSH);
+    for (const [s, at] of [["keyring", 0], ["tunnel", 10], ["status", 300], ["sign-in", 310], ["ticket", 400]] as const) ssh.step(s, at);
+    t = 2130;
+    trace.ready();
+    ssh.step("websocket", 450);
+    t = 2200;
+    trace.connected();
+    await log.settled();
+    const [a] = file();
+    expect(a.routes[0].steps).toEqual([
+      { step: "keyring", ms: 5 },
+      { step: "resolve", ms: 15 },
+      { step: "status", ms: 500 },
+    ]);
+    expect(a.routes[1].steps).toEqual([
+      { step: "keyring", ms: 10 },
+      { step: "tunnel", ms: 290 },
+      { step: "status", ms: 10 },
+      { step: "sign-in", ms: 90 },
+      { step: "ticket", ms: 50 },
+      { step: "websocket", ms: 160 },
+      { step: "ready", ms: 70 },
+    ]);
+    expect(a.outcome).toBe("connected");
+  });
+});
+
 describe("An attempt the app was closed during", () => {
   it("is on disk at the step it was on, and the next launch says the app was closed while connecting", async () => {
     const { store, file } = memoryStore();
@@ -245,6 +311,9 @@ describe("An attempt the app was closed during", () => {
     trace.failed();
     await log.settled();
     expect(puts.at(-1)?.routes[0].error).toBe(WITHHELD);
+    // What Logs and the support bundle show is what was kept, not the text Rust refused.
+    expect(log.getSnapshot().entries.at(-1)?.text).toContain(WITHHELD);
+    expect(log.getSnapshot().entries.at(-1)?.text).not.toContain("anything");
   });
 });
 

@@ -1030,7 +1030,9 @@ export class Hermes {
       readyPayload = payload;
       pipe.attempt?.connected();
     } catch (e) {
-      pipe?.attempt?.failed(e);
+      // `close()` gives up a dial on purpose: a stop, not a failure.
+      if (this.closing) pipe?.attempt?.stopped();
+      else pipe?.attempt?.failed(e);
       this.generation++;
       await pipe?.close().catch(() => {});
       throw e;

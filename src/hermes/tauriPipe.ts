@@ -104,13 +104,14 @@ export function tauriPipe(d: SignInDetails, hooks?: RoutedHooks): OpenPipe {
 }
 
 /** One route's pipe. `expectServer`, `quick`, `sshRoute` and `onStep`: see routes.ts `OpenRoute`. */
-function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step) => void }): OpenPipe {
+function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step, at?: number) => void }): OpenPipe {
   const target = targetOf(d);
   return async (onEvent, profile, signal) => {
     const channel = new Channel<PipeEvent>();
     channel.onmessage = onEvent;
-    const steps = new Channel<Step>();
-    steps.onmessage = (s) => opts.onStep?.(s);
+    // src-tauri connect_steps.rs `Started`.
+    const steps = new Channel<{ step: Step; at: number }>();
+    steps.onmessage = (s) => opts.onStep?.(s.step, s.at);
     // Names this opening, so stopping it can't stop a later one (src-tauri `hermes_connect_cancel`).
     const attempt = crypto.randomUUID();
     const stop = () => void invoke("hermes_connect_cancel", { attempt }).catch(() => {});

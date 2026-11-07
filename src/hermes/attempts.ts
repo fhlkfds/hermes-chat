@@ -40,9 +40,10 @@ export const KEEP = 50;
 export const TEXT_MAX = 300;
 /** What an error text becomes when it still looks like it holds an address after scrubbing. */
 export const WITHHELD = "[withheld: the message may have named an address]";
-const STOPPED = "Connecting was stopped.";
 
-/** One attempt as routes.ts and transport.ts fill it in. Every call after it ended does nothing. */
+/**
+ * One attempt as routes.ts and transport.ts fill it in. Once it ended, only a step Rust reported late still goes in.
+ */
 export interface AttemptTrace {
   /** A route is tried next. Only its id and kind are kept. */
   route(r: Pick<RouteDetails, "id" | "kind">): RouteTrace;
@@ -51,10 +52,15 @@ export interface AttemptTrace {
   connected(): void;
   /** It ended without a connection. With no error, the routes' own errors say why. */
   failed(error?: unknown): void;
+  /** The owner or the app stopped it. */
+  stopped(): void;
 }
 export interface RouteTrace {
-  /** Rust started this step (`hermes_connect`'s `onStep`). */
-  step(s: Step): void;
+  /**
+   * Rust started this step `at` ms after it began opening the route (`hermes_connect`'s `onStep`). Its message can
+   * arrive after the route opened or failed; it still goes in its place, and the durations around it follow.
+   */
+  step(s: Step, at?: number): void;
   failed(error: unknown): void;
 }
 
@@ -178,6 +184,8 @@ export class AttemptLog implements AttemptRecorder {
   private listeners = new Set<() => void>();
   /** The latest state of each attempt not yet written, and the writes, one at a time, in order. */
   private pending = new Map<string, Attempt>();
+  /** Attempts a line of which Rust refused: kept, on screen too, without their error texts from then on. */
+  private withheld = new Set<string>();
   private writing: Promise<void> = Promise.resolve();
 
   constructor(
@@ -210,69 +218,76 @@ export class AttemptLog implements AttemptRecorder {
     const scrub = scrubberFor(d);
     const started = this.tick();
     const a: Attempt = { v: 1, id: globalThis.crypto.randomUUID(), run: this.run, at: this.now(), outcome: "unfinished", routes: [] };
-    let stepAt = started;
     let ended = false;
     const keep = () => this.keep(a);
-    /** Closes the running step of the last route, if it has one without a time. */
-    const closeStep = () => {
-      const last = a.routes.at(-1)?.steps.at(-1);
-      if (last && last.ms === undefined) last.ms = Math.max(0, Math.round(this.tick() - stepAt));
+    /**
+     * A route as it runs: when it began, when each of its steps started (this side's clock, beside `r.steps`), and when
+     * it ended. A step's duration runs to the next step's start, or to the route's end; the last has none until then.
+     */
+    type Live = { r: RouteTry; began: number; starts: number[]; end?: number };
+    const live: Live[] = [];
+    const times = (l: Live) =>
+      l.r.steps.forEach((s, i) => {
+        const until = l.starts[i + 1] ?? l.end;
+        if (until === undefined) delete s.ms;
+        else s.ms = Math.max(0, Math.round(until - l.starts[i]));
+      });
+    const startStep = (l: Live, s: Step, at: number) => {
+      if (l.r.steps.some((x) => x.step === s)) return;
+      // In the steps' order, wherever its message arrived.
+      let i = l.r.steps.findIndex((x) => STEPS.indexOf(x.step) > STEPS.indexOf(s));
+      if (i < 0) i = l.r.steps.length;
+      l.r.steps.splice(i, 0, { step: s });
+      l.starts.splice(i, 0, at);
+      times(l);
+      keep();
     };
     const end = (outcome: Outcome, error?: string) => {
       if (ended) return;
       ended = true;
-      closeStep();
+      const l = live.at(-1);
+      if (l && l.end === undefined) {
+        l.end = this.tick();
+        times(l);
+      }
       a.outcome = outcome;
       a.ms = Math.max(0, Math.round(this.tick() - started));
-      const last = a.routes.at(-1)?.error;
-      if (error && error !== last) a.error = error;
-      keep();
-    };
-    const startStep = (r: RouteTry, s: Step) => {
-      if (ended || a.routes.at(-1) !== r) return;
-      // Rust says when a step starts; each step is reported once, in order.
-      if (r.steps.some((x) => STEPS.indexOf(x.step) >= STEPS.indexOf(s))) return;
-      closeStep();
-      stepAt = this.tick();
-      r.steps.push({ step: s });
+      if (error && error !== l?.r.error) a.error = error;
       keep();
     };
     keep();
     return {
       route: (route) => {
-        const r: RouteTry = { id: route.id, kind: route.kind, steps: [] };
-        let done = false;
+        const l: Live = { r: { id: route.id, kind: route.kind, steps: [] }, began: this.tick(), starts: [] };
         if (!ended) {
-          closeStep();
-          a.routes.push(r);
+          live.push(l);
+          a.routes.push(l.r);
           keep();
         }
         return {
-          step: (s) => !done && startStep(r, s),
+          step: (s, at) => live.includes(l) && startStep(l, s, at === undefined ? this.tick() : l.began + at),
           failed: (e) => {
-            if (done || ended || a.routes.at(-1) !== r) return;
-            done = true;
-            closeStep();
-            r.error = scrub(messageOf(e));
+            if (ended || l.end !== undefined || live.at(-1) !== l) return;
+            l.end = this.tick();
+            l.r.error = scrub(messageOf(e));
+            times(l);
             keep();
           },
         };
       },
       ready: () => {
-        const r = a.routes.at(-1);
-        if (r) startStep(r, "ready");
+        const l = live.at(-1);
+        if (l && !ended) startStep(l, "ready", this.tick());
       },
       connected: () => end("connected"),
-      failed: (e) => {
-        const message = e === undefined ? undefined : messageOf(e);
-        end(message === STOPPED ? "stopped" : "failed", message === undefined || message === STOPPED ? undefined : scrub(message));
-      },
+      failed: (e) => end("failed", e === undefined ? undefined : scrub(messageOf(e))),
+      stopped: () => end("stopped"),
     };
   }
 
   /** Shows `a` as it is now and writes it, after any write before it. */
   private keep(a: Attempt) {
-    const copy: Attempt = structuredClone(a);
+    const copy: Attempt = this.withheld.has(a.id) ? withheld(structuredClone(a)) : structuredClone(a);
     const at = this.attempts.findIndex((x) => x.id === a.id);
     if (at >= 0) this.attempts[at] = copy;
     else this.attempts.push(copy);
@@ -283,8 +298,15 @@ export class AttemptLog implements AttemptRecorder {
       if (!next) return;
       this.pending.delete(a.id);
       await this.store.put(next).catch(async (e: unknown) => {
-        // Rust found something in a text that looks like an address: keep the attempt without its texts.
-        await this.store.put(withheld(next)).catch(() => note("WARNING", `A connection attempt couldn't be kept on disk: ${messageOf(e)}`));
+        // Rust found something in a text that looks like an address: keep the attempt without its texts, here too.
+        this.withheld.add(next.id);
+        const bare = withheld(next);
+        const at = this.attempts.findIndex((x) => x.id === next.id);
+        if (at >= 0) {
+          this.attempts[at] = withheld(this.attempts[at]);
+          this.changed();
+        }
+        await this.store.put(bare).catch(() => note("WARNING", `A connection attempt couldn't be kept on disk: ${messageOf(e)}`));
       });
     });
   }
