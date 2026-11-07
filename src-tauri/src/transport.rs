@@ -195,8 +195,10 @@ pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportErro
 }
 
 /// The HTTP client for one dashboard: all redirects stay on its origin. Even without extra headers, a 307/308
-/// redirect can forward a password body or a manually supplied cookie to another server.
-fn client(headers: &HeaderMap) -> Result<reqwest::Client, TransportError> {
+/// redirect can forward a password body or a manually supplied cookie to another server. One is built per route
+/// attempt, from the route's extra `headers`, and shared by `read_server` and `Dashboard::sign_in`, so the sign-in
+/// and its ticket reuse the connection the status read opened (#271). It carries no credential itself.
+pub fn client(headers: &HeaderMap) -> Result<reqwest::Client, TransportError> {
     client_kept_to_origin(headers, true)
 }
 
@@ -523,10 +525,10 @@ pub struct ServerSeen {
     pub server: Option<String>,
 }
 
-/// Reads `/api/status` within `wait` and checks it with `identify`, before anything signs in (ADR 0056).
-pub async fn read_server(base: &Url, headers: &HeaderMap, expect: Option<&str>, wait: Duration) -> Result<ServerSeen, TransportError> {
-    let http = client(headers)?;
-    let status = tokio::time::timeout(wait, read_status(&http, base, headers))
+/// Reads `/api/status` within `wait` and checks it with `identify`, before anything signs in (ADR 0056). `http`: the
+/// route's `client(headers)`, which the sign-in then reuses.
+pub async fn read_server(http: &reqwest::Client, base: &Url, headers: &HeaderMap, expect: Option<&str>, wait: Duration) -> Result<ServerSeen, TransportError> {
+    let status = tokio::time::timeout(wait, read_status(http, base, headers))
         .await
         .map_err(|_| TransportError::Unreachable(format!("the dashboard didn't answer within {}s.", wait.as_secs())))??;
     let server = identify(status.as_deref(), expect)?;
@@ -582,9 +584,12 @@ pub async fn open_route(
     steps: &Steps,
     on_event: impl Fn(PipeEvent) + Send + 'static,
 ) -> Result<(Dashboard, Pipe, ServerSeen), TransportError> {
-    let seen = steps.run(Step::Status, read_server(base, &sign_in.headers, expect, reach)).await?;
+    // One client for this route attempt: the sign-in and its ticket reuse the connection the status read opened
+    // (#271). It carries no credential, and the status check still passes before one is sent.
+    let http = client(&sign_in.headers)?;
+    let seen = steps.run(Step::Status, read_server(&http, base, &sign_in.headers, expect, reach)).await?;
     offered(sign_in, seen.status.as_deref())?;
-    let signing_in = within(limits.map(|l| l.sign_in), Dashboard::sign_in(base, sign_in), |s| {
+    let signing_in = within(limits.map(|l| l.sign_in), Dashboard::sign_in(http, base, sign_in), |s| {
         TransportError::Unreachable(format!("the sign-in didn't answer within {s}s."))
     });
     let dashboard = steps.run(Step::SignIn, signing_in).await?;
@@ -1052,18 +1057,20 @@ pub struct Dashboard {
     /// What an error or close reason mustn't repeat to be shown: `headers`, and a token on its own, however short.
     /// Never sent.
     hide: HeaderMap,
-    /// Signed in with a token: `headers` holds its `Authorization`, which the WebSocket handshake leaves out, as the
-    /// socket is let in by its ticket.
+    /// Signed in with a token: `headers` holds its `Authorization`, which `signed` adds to each request (`http` is
+    /// the route's shared client, which doesn't carry it) and the WebSocket handshake leaves out, as the socket is let
+    /// in by its ticket.
     token: bool,
 }
 
 impl Dashboard {
-    /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel). A password goes to the provider's
-    /// login form. A token is checked with `GET /api/auth/me`, which must name the session-token provider.
-    pub async fn sign_in(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
+    /// Sign in at `base`, the dashboard root (e.g. the local end of the SSH tunnel), with `http`, the route's
+    /// `client(&sign_in.headers)` that read its status (`read_server`), kept for every later request. A password goes
+    /// to the provider's login form. A token is checked with `GET /api/auth/me`, which must name the session-token
+    /// provider.
+    pub async fn sign_in(http: reqwest::Client, base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
         match &sign_in.credential {
             Credential::Password { provider, username, password } => {
-                let http = client(&sign_in.headers)?;
                 let dashboard =
                     Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers: sign_in.headers.clone(), hide: sign_in.headers.clone(), token: false };
                 let provider = if provider_name(provider) { provider.as_str() } else { PASSWORD_PROVIDER };
@@ -1100,14 +1107,13 @@ impl Dashboard {
                 bearer.set_sensitive(true);
                 let mut headers = sign_in.headers.clone();
                 headers.insert(header::AUTHORIZATION, bearer);
-                let http = client(&headers)?;
                 let mut hide = headers.clone();
                 let mut bare = HeaderValue::from_str(token).map_err(|_| TransportError::BadToken)?;
                 bare.set_sensitive(true);
                 // Appended: an extra header of the same name keeps its own value hidden too.
                 hide.append(HeaderName::from_static("x-hermes-chat-token"), bare);
                 let dashboard = Dashboard { http, base: base.clone(), cookies: Mutex::default(), headers, hide, token: true };
-                let me = dashboard.http.get(endpoint(base, "api/auth/me")).send().await.map_err(unreachable)?;
+                let me = dashboard.signed(Method::GET, endpoint(base, "api/auth/me")).send().await.map_err(unreachable)?;
                 match me.status() {
                     s if s.is_success() => {}
                     StatusCode::UNAUTHORIZED => return Err(TransportError::BadToken),
@@ -1200,9 +1206,7 @@ impl Dashboard {
     /// A single-use ticket for `/api/ws`.
     async fn ws_ticket(&self) -> Result<String, TransportError> {
         let ticket = self
-            .http
-            .post(endpoint(&self.base, "api/auth/ws-ticket"))
-            .header(header::COOKIE, self.cookie_header())
+            .signed(Method::POST, endpoint(&self.base, "api/auth/ws-ticket"))
             .send()
             .await
             .map_err(unreachable)?;
@@ -1287,7 +1291,7 @@ impl Dashboard {
         if method != Method::GET && is_file_route(&routed) {
             return Err(TransportError::NotRelayed(format!("{method} {path}")));
         }
-        let mut req = self.http.request(method, url).header(header::COOKIE, self.cookie_header());
+        let mut req = self.signed(method, url);
         if let Some(body) = body {
             req = req.header(header::CONTENT_TYPE, "application/json").body(body);
         }
@@ -1399,9 +1403,7 @@ impl Dashboard {
         let mut url = endpoint(&self.base, path);
         url.query_pairs_mut().append_pair("profile", profile);
         let resp = self
-            .http
-            .post(url)
-            .header(header::COOKIE, self.cookie_header())
+            .signed(Method::POST, url)
             .json(body)
             .send()
             .await
@@ -1438,9 +1440,7 @@ impl Dashboard {
         let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
         let (url, _) = relay_url(&self.base, path, query)?;
         let mut resp = self
-            .http
-            .get(url)
-            .header(header::COOKIE, self.cookie_header())
+            .signed(Method::GET, url)
             .send()
             .await
             .map_err(unreachable)?;
@@ -1478,7 +1478,7 @@ impl Dashboard {
         use std::io::Write;
         let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("path", server_path).finish();
         let (url, _) = relay_url(&self.base, "api/files/download", &query)?;
-        let mut resp = self.http.get(url).header(header::COOKIE, self.cookie_header()).send().await.map_err(unreachable)?;
+        let mut resp = self.signed(Method::GET, url).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => {}
@@ -1581,7 +1581,7 @@ impl Dashboard {
             .text("overwrite", if overwrite { "true" } else { "false" })
             .part("file", part);
         let (url, _) = relay_url(&self.base, "api/files/upload-stream", "")?;
-        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).multipart(form).send().await.map_err(unreachable)?;
+        let resp = self.signed(Method::POST, url).multipart(form).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
@@ -1615,7 +1615,7 @@ impl Dashboard {
         let body = agent_text_body(path, text, session)?;
         let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("profile", profile).finish();
         let (url, _) = relay_url(&self.base, "api/fs/write-text", &query)?;
-        let resp = self.http.post(url).header(header::COOKIE, self.cookie_header()).json(&body).send().await.map_err(unreachable)?;
+        let resp = self.signed(Method::POST, url).json(&body).send().await.map_err(unreachable)?;
         self.keep_cookies(&resp);
         match resp.status() {
             s if s.is_success() => resp.text().await.map_err(unreachable),
@@ -1637,6 +1637,20 @@ impl Dashboard {
             if !value.is_empty() {
                 jar.push((name.to_owned(), value.to_owned()));
             }
+        }
+    }
+
+    /// A request on the shared client with what the sign-in holds: the session cookies, or a token sign-in's
+    /// `Authorization`.
+    fn signed(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        let mut req = self.http.request(method, url);
+        let cookies = self.cookie_header();
+        if !cookies.is_empty() {
+            req = req.header(header::COOKIE, cookies);
+        }
+        match self.headers.get(header::AUTHORIZATION).filter(|_| self.token) {
+            Some(bearer) => req.header(header::AUTHORIZATION, bearer.clone()),
+            None => req,
         }
     }
 
@@ -2369,7 +2383,7 @@ pub async fn probe_expecting(base: &Url, sign_in: &SignIn, profile: &str, step: 
     let server = identify(status.as_deref(), expect).map_err(|e| ProbeFailure { stage: Stage::Reach, message: e.to_string(), status: status.clone() })?;
     let fail = |stage, message: String| ProbeFailure { stage, message, status: status.clone() };
     offered(sign_in, status.as_deref()).map_err(|e| fail(Stage::SignIn, e.to_string()))?;
-    let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(base, sign_in)).await {
+    let dashboard = match tokio::time::timeout(step, Dashboard::sign_in(http, base, sign_in)).await {
         Err(_) => return Err(fail(Stage::SignIn, timed_out("The dashboard's sign-in"))),
         Ok(Err(e)) => return Err(fail(Stage::SignIn, e.to_string())),
         Ok(Ok(d)) => d,

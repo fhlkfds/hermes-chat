@@ -372,7 +372,8 @@ struct Reached {
 async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>, methods: Option<bool>) -> Result<Reached, ProbeFailure> {
     let quick = quick.unwrap_or(false);
     let (base, _tunnel, route, headers) = open_target(target, quick, &Steps::default()).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
-    let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick))
+    let http = transport::client(&headers).map_err(|e| ProbeFailure::new(Stage::Address, e.to_string()))?;
+    let seen = transport::read_server(&http, &base, &headers, expect_server.as_deref(), reach_within(quick))
         .await
         .map_err(|e| ProbeFailure::new(Stage::Reach, e.to_string()))?;
     let methods = match methods {
@@ -1514,5 +1515,79 @@ mod tests {
         let late = transfers.run(8, epoch, async move { s.store(true, std::sync::atomic::Ordering::SeqCst); Ok(()) }).await;
         assert_eq!(late, Err(super::TRANSFER_STOPPED.to_owned()));
         assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Each request a stub got, in order: its path and its `Authorization` header.
+    type Heard = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A stub dashboard that answers a password or a token sign-in, notes each request in the order it came, and
+    /// counts the TCP connections it accepted.
+    async fn counting_dashboard() -> (url::Url, std::sync::Arc<std::sync::atomic::AtomicUsize>, Heard) {
+        use axum::extract::ws::{Message, WebSocketUpgrade};
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post};
+        use axum::serve::{Listener, ListenerExt};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+        let paths = Heard::default();
+        let ready = r#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}"#;
+        let note = paths.clone();
+        let app = axum::Router::new()
+            .route(
+                "/api/status",
+                get(|| async { axum::Json(serde_json::json!({"version": "0.22.7", "auth_required": true, "auth_providers": ["basic", "session-token"]})) }),
+            )
+            .route(
+                "/auth/password-login",
+                post(|| async { ([(axum::http::header::SET_COOKIE, "hermes_session_at=AT; Path=/; HttpOnly")], axum::Json(serde_json::json!({"ok": true}))) }),
+            )
+            .route("/api/auth/me", get(|| async { axum::Json(serde_json::json!({"provider": "session-token"})) }))
+            .route("/api/auth/ws-ticket", post(|| async { axum::Json(serde_json::json!({"ticket": "TICKET-1"})) }))
+            .route(
+                "/api/ws",
+                get(move |ws: WebSocketUpgrade| async move {
+                    ws.on_upgrade(move |mut ws| async move {
+                        let _ = ws.send(Message::text(ready)).await;
+                        while let Some(Ok(_)) = ws.recv().await {}
+                    })
+                    .into_response()
+                }),
+            )
+            .layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let auth = req.headers().get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
+                note.lock().unwrap().push((req.uri().path().to_owned(), auth));
+                next.run(req)
+            }));
+        let count = accepted.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().tap_io(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url::Url::parse(&format!("http://{addr}/")).unwrap(), accepted, paths)
+    }
+
+    async fn connect(base: &url::Url, credential: super::SignInWith) -> super::Connection {
+        let target = super::Target::Url { url: base.to_string(), headers: Vec::new() };
+        let on_event = tauri::ipc::Channel::new(|_| Ok(()));
+        let (connection, _) = super::open_connection(target, credential, "default".into(), on_event, None, false, None, super::Steps::default()).await.expect("connected");
+        connection
+    }
+
+    /// Issue #271: the status read, the sign-in and the ticket share one kept-alive HTTP connection; the WebSocket
+    /// is the only other one. The status read still comes first, before the password or token (ADR 0056).
+    #[tokio::test]
+    async fn a_sign_in_opens_one_http_connection_for_status_sign_in_and_ticket() {
+        let password = super::SignInWith::Password { username: "liam".into(), password: "hunter2".into(), provider: None };
+        let token = super::SignInWith::Token { token: Some("GOOD".into()), connection: None };
+        let bearer = Some("Bearer GOOD".to_owned());
+        for (credential, sign_in, auth) in [(password, "/auth/password-login", None), (token, "/api/auth/me", bearer)] {
+            let (base, accepted, heard) = counting_dashboard().await;
+            let _connection = connect(&base, credential).await;
+            let want = [("/api/status", None), (sign_in, auth.clone()), ("/api/auth/ws-ticket", auth), ("/api/ws", None)];
+            // The shared client never carries the token: the status read and the socket go without it.
+            assert_eq!(*heard.lock().unwrap(), want.map(|(p, a)| (p.to_owned(), a)));
+            assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2, "one HTTP connection plus the WebSocket, for {sign_in}");
+        }
     }
 }
