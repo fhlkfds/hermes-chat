@@ -2,27 +2,28 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{AppendHeaders, IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
-use hermes_chat::transport::{ProbeFailure, SavedKey, Stage};
-use axum::{Json, Router};
 use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use axum::response::{AppendHeaders, IntoResponse, Response};
+use axum::routing::{get, patch, post, put};
+use axum::{Json, Router};
 use hermes_chat::connect_steps::{Step, Steps};
 use hermes_chat::display;
 use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, StepLimits, TransportError};
-use std::sync::{Arc, Mutex};
+use hermes_chat::transport::{ProbeFailure, SavedKey, Stage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use url::Url;
 
-const READY: &str = r#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"heartbeat":true,"replay_epoch":"e1"}}}"#;
+const READY: &str =
+    r#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"heartbeat":true,"replay_epoch":"e1"}}}"#;
 
 async fn login(Json(body): Json<Value>) -> Response {
     if body == json!({"provider": "basic", "username": "liam", "password": "hunter2"}) {
@@ -361,10 +362,7 @@ type Closes = mpsc::UnboundedSender<Option<u16>>;
 
 async fn screen_stub() -> (Arc<Dashboard>, mpsc::UnboundedReceiver<Option<u16>>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let app = Router::new()
-        .route("/auth/password-login", post(login))
-        .route("/api/display/ws", get(display_ws))
-        .with_state(tx);
+    let app = Router::new().route("/auth/password-login", post(login)).route("/api/display/ws", get(display_ws)).with_state(tx);
     let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
     (Arc::new(dashboard), rx)
 }
@@ -662,19 +660,23 @@ async fn relays_the_model_settings_writes() {
     let dashboard = signed_in().await;
     let body = json!({"scope": "main", "provider": "nous", "model": "m"}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("POST", "api/model/set?profile=default", Some(body)).await.unwrap()).unwrap();
-    assert_eq!(got, json!({"uri": "/api/model/set?profile=default", "content_type": "application/json", "body": {"scope": "main", "provider": "nous", "model": "m"}}));
+    assert_eq!(
+        got,
+        json!({"uri": "/api/model/set?profile=default", "content_type": "application/json", "body": {"scope": "main", "provider": "nous", "model": "m"}})
+    );
     let body = json!({"config": {"agent": {"reasoning_effort": "low"}}}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/config?profile=default", Some(body)).await.unwrap()).unwrap();
-    assert_eq!(got, json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}}));
+    assert_eq!(
+        got,
+        json!({"uri": "/api/config?profile=default", "content_type": "application/json", "body": {"config": {"agent": {"reasoning_effort": "low"}}}})
+    );
 }
 
 #[tokio::test]
 async fn relays_the_toolset_switch_with_only_enabled_in_the_body() {
     let dashboard = signed_in().await;
-    let got: Value = serde_json::from_str(
-        &dashboard.request("PUT", "api/tools/toolsets/web?profile=work", Some(r#"{"enabled":false}"#.into())).await.unwrap(),
-    )
-    .unwrap();
+    let got: Value =
+        serde_json::from_str(&dashboard.request("PUT", "api/tools/toolsets/web?profile=work", Some(r#"{"enabled":false}"#.into())).await.unwrap()).unwrap();
     assert_eq!(got, json!({"uri": "/api/tools/toolsets/web?profile=work", "content_type": "application/json", "body": {"enabled": false}}));
     // The write-support check: only the probe name, and only with its invalid body.
     let probe = format!("api/tools/toolsets/{}?profile=work", transport::TOOLSET_PROBE_NAME);
@@ -792,7 +794,10 @@ async fn relays_a_memory_entry_edit_for_any_profile_and_nothing_else_there() {
         let err = dashboard.request("PUT", "api/learning/node", Some(body.into())).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{body}: {err:?}");
     }
-    assert!(matches!(dashboard.request("POST", "api/learning/node", Some(r#"{"id":"memory:memory:0:0123456789ab"}"#.into())).await, Err(TransportError::NotRelayed(_))));
+    assert!(matches!(
+        dashboard.request("POST", "api/learning/node", Some(r#"{"id":"memory:memory:0:0123456789ab"}"#.into())).await,
+        Err(TransportError::NotRelayed(_))
+    ));
 }
 
 #[tokio::test]
@@ -895,7 +900,10 @@ async fn relays_no_other_voice_provider_write() {
 async fn relays_the_gateway_save_and_status_check() {
     let dashboard = signed_in().await;
     for (path, body) in [
-        ("api/messaging/platforms/telegram?profile=work", json!({"enabled": true, "env": {"TELEGRAM_BOT_TOKEN": "123456789:AAAAdummydummydummydummydummydummy00"}})),
+        (
+            "api/messaging/platforms/telegram?profile=work",
+            json!({"enabled": true, "env": {"TELEGRAM_BOT_TOKEN": "123456789:AAAAdummydummydummydummydummydummy00"}}),
+        ),
         ("api/messaging/platforms/telegram?profile=work", json!({"enabled": false, "clear_env": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"]})),
         ("api/messaging/platforms/discord?profile=bot", json!({"enabled": true, "env": {"DISCORD_ALLOWED_USERS": "1, 2"}, "clear_env": ["DISCORD_BOT_TOKEN"]})),
         ("api/messaging/platforms/discord", json!({"enabled": false})),
@@ -998,7 +1006,8 @@ async fn relays_the_scheduled_job_writes() {
     let got: Value = serde_json::from_str(&dashboard.request("PUT", "api/cron/jobs/f8f9e9ea90bc?profile=default", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got, json!({"uri": "/api/cron/jobs/f8f9e9ea90bc?profile=default", "content_type": "application/json", "body": {"updates": {"name": "n"}}}));
     for action in ["pause", "resume", "trigger"] {
-        let got: Value = serde_json::from_str(&dashboard.request("POST", &format!("api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"), None).await.unwrap()).unwrap();
+        let got: Value =
+            serde_json::from_str(&dashboard.request("POST", &format!("api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"), None).await.unwrap()).unwrap();
         assert_eq!(got["uri"], format!("/api/cron/jobs/f8f9e9ea90bc/{action}?profile=default"));
     }
 }
@@ -1006,7 +1015,8 @@ async fn relays_the_scheduled_job_writes() {
 #[tokio::test]
 async fn relays_a_session_import_only_when_every_session_is_marked_imported() {
     let dashboard = signed_in().await;
-    let body = json!({"profile": "default", "request_id": "r", "expected_revision": 0, "sessions": [{"id": "a", "source": "import", "messages": []}]}).to_string();
+    let body =
+        json!({"profile": "default", "request_id": "r", "expected_revision": 0, "sessions": [{"id": "a", "source": "import", "messages": []}]}).to_string();
     let got: Value = serde_json::from_str(&dashboard.request("POST", "api/sessions/import", Some(body)).await.unwrap()).unwrap();
     assert_eq!(got["uri"], "/api/sessions/import");
     assert_eq!(got["body"]["sessions"][0]["source"], "import");
@@ -1200,7 +1210,7 @@ fn scratch(test: &str) -> PathBuf {
     dir
 }
 
-fn path_of(p: &Path) -> String {
+fn path_of(p: &std::path::Path) -> String {
     p.to_str().unwrap().to_owned()
 }
 
@@ -1235,10 +1245,7 @@ async fn sends_a_file_as_base64_inside_one_frame() {
     next(&mut rx).await;
     let head = r#"{"jsonrpc":"2.0","id":3,"method":"echo","params":{"name":"notes.txt","data_url":"data:application/octet-stream;base64,"#;
     pipe.send_file(head, &path_of(&file), r#""}}"#, 1024).await.unwrap();
-    assert_eq!(
-        frame(next(&mut rx).await)["result"],
-        json!({"name": "notes.txt", "data_url": "data:application/octet-stream;base64,c2RhIDkyJQ=="})
-    );
+    assert_eq!(frame(next(&mut rx).await)["result"], json!({"name": "notes.txt", "data_url": "data:application/octet-stream;base64,c2RhIDkyJQ=="}));
 }
 
 #[tokio::test]
@@ -1566,14 +1573,7 @@ async fn reads_the_voice_setup_without_passing_on_any_key() {
 async fn a_server_without_voice_has_neither_route() {
     for profile in ["old", "older"] {
         let setup = signed_in().await.voice_setup(profile).await.unwrap();
-        let none = transport::VoiceSetup {
-            transcribe: false,
-            speak: false,
-            stt_enabled: None,
-            stt_provider: None,
-            tts_provider: None,
-            ..Default::default()
-        };
+        let none = transport::VoiceSetup { transcribe: false, speak: false, stt_enabled: None, stt_provider: None, tts_provider: None, ..Default::default() };
         assert_eq!(setup, none, "{profile}");
     }
 }
@@ -1695,10 +1695,9 @@ async fn voice_redirects_to_another_origin_stop_without_sending_credentials_or_a
         .route("/api/audio/transcribe", post(move || async move { Redirect::temporary(&away) }))
         .route("/api/audio/speak", post(move || async move { Redirect::temporary(&speak_away) }));
     let dashboard = sign_in_at(&serve(app).await, &access_sign_in()).await.unwrap();
-    for err in [
-        dashboard.transcribe("default", "audio/wav", b"private audio").await.err().unwrap(),
-        dashboard.speak("default", "private reply").await.err().unwrap(),
-    ] {
+    for err in
+        [dashboard.transcribe("default", "audio/wav", b"private audio").await.err().unwrap(), dashboard.speak("default", "private reply").await.err().unwrap()]
+    {
         assert!(matches!(&err, TransportError::Redirected(to) if *to == elsewhere.origin().ascii_serialization()), "{err:?}");
         assert!(!err.to_string().contains("s3cret"));
     }
@@ -1777,12 +1776,20 @@ async fn a_password_never_follows_a_cross_origin_307_or_308_without_extra_header
     for permanent in [false, true] {
         let (elsewhere, other_seen) = other_site().await;
         let login = elsewhere.join("steal").unwrap().to_string();
-        let base = serve(Router::new().route("/auth/password-login", post(move || {
-            let login = login.clone();
-            async move {
-                if permanent { Redirect::permanent(&login) } else { Redirect::temporary(&login) }
-            }
-        }))).await;
+        let base = serve(Router::new().route(
+            "/auth/password-login",
+            post(move || {
+                let login = login.clone();
+                async move {
+                    if permanent {
+                        Redirect::permanent(&login)
+                    } else {
+                        Redirect::temporary(&login)
+                    }
+                }
+            }),
+        ))
+        .await;
         let err = sign_in_at(&base, &sign_in("hunter2")).await.err().unwrap();
         assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
         assert!(other_seen.lock().unwrap().is_empty(), "the password reached another origin");
@@ -1820,7 +1827,10 @@ fn refuses_extra_headers_that_are_malformed_reserved_or_set_twice() {
         ((0..33).map(|i| header(&format!("X-{i}"), "v")).collect(), "Hermes Chat sends at most 32 extra request headers."),
     ];
     for (headers, want) in cases {
-        let err = transport::extra_headers(&headers).err().unwrap_or_else(|| panic!("accepted {:?}", headers.iter().map(|h| (&h.name, &h.value)).collect::<Vec<_>>())).to_string();
+        let err = transport::extra_headers(&headers)
+            .err()
+            .unwrap_or_else(|| panic!("accepted {:?}", headers.iter().map(|h| (&h.name, &h.value)).collect::<Vec<_>>()))
+            .to_string();
         assert!(err.starts_with(want), "got {err:?}, want {want:?}");
         // An error names the header, never its value.
         for h in &headers {
@@ -1959,11 +1969,8 @@ async fn echoing_gateway(refuse: &'static str) -> Url {
         (StatusCode::FORBIDDEN, format!("Forbidden: bad service token {secret}")).into_response()
     };
     let mut app = Router::new().route("/api/status", get(status));
-    app = if refuse == "/auth/password-login" {
-        app.route(refuse, post(echo))
-    } else {
-        app.route("/auth/password-login", post(login)).route(refuse, post(echo))
-    };
+    app =
+        if refuse == "/auth/password-login" { app.route(refuse, post(echo)) } else { app.route("/auth/password-login", post(login)).route(refuse, post(echo)) };
     serve(app).await
 }
 
@@ -2022,13 +2029,17 @@ async fn a_redirect_loop_never_shows_the_key_or_a_header_value_it_put_in_the_url
     let app = Router::new()
         .route("/auth/password-login", post(login))
         .route("/api/env", get(env_rows))
-        .route("/api/providers/validate", post(|Json(body): Json<Value>| async move {
-            Redirect::temporary(&format!("/loop?k={}", body["value"].as_str().unwrap_or("none")))
-        }))
-        .route("/api/status", get(|headers: HeaderMap| async move {
-            let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
-            Redirect::temporary(&format!("/loop?s={secret}"))
-        }))
+        .route(
+            "/api/providers/validate",
+            post(|Json(body): Json<Value>| async move { Redirect::temporary(&format!("/loop?k={}", body["value"].as_str().unwrap_or("none"))) }),
+        )
+        .route(
+            "/api/status",
+            get(|headers: HeaderMap| async move {
+                let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+                Redirect::temporary(&format!("/loop?s={secret}"))
+            }),
+        )
         .route("/loop", get(lap).post(lap));
     let base = serve(app).await;
     let dashboard = sign_in_at(&base, &sign_in("hunter2")).await.unwrap();
@@ -2086,10 +2097,7 @@ async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
         let secret = headers.get("cf-access-client-secret").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
         Redirect::temporary(&format!("https://{secret}.gateway.invalid/login"))
     };
-    let app = Router::new()
-        .route("/api/status", get(away))
-        .route("/auth/password-login", post(login))
-        .route("/api/sessions", get(away));
+    let app = Router::new().route("/api/status", get(away)).route("/auth/password-login", post(login)).route("/api/sessions", get(away));
     let base = serve(app).await;
     let headers = transport::extra_headers(&[header("CF-Access-Client-Secret", "Round6PrivateHeader")]).unwrap();
     let sign_in = SignIn { headers, ..sign_in("hunter2") };
@@ -2163,7 +2171,12 @@ async fn cancelling_a_download_removes_its_part_file() {
     let d = dashboard.clone();
     let task = tokio::spawn({
         let dest = dest.clone();
-        async move { d.download("/srv/slow", &dest, move |done, _| { let _ = tx.send(done); }).await }
+        async move {
+            d.download("/srv/slow", &dest, move |done, _| {
+                let _ = tx.send(done);
+            })
+            .await
+        }
     });
     // Wait until bytes have been written, so the part file exists.
     while rx.recv().await.unwrap() < 8192 {}
@@ -2213,10 +2226,7 @@ async fn fs_write_text(State(writes): State<Arc<Mutex<Vec<String>>>>, headers: H
 
 async fn fs_write_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
     let writes = Arc::new(Mutex::new(Vec::new()));
-    let app = Router::new()
-        .route("/auth/password-login", post(login))
-        .route("/api/fs/write-text", post(fs_write_text))
-        .with_state(writes.clone());
+    let app = Router::new().route("/auth/password-login", post(login)).route("/api/fs/write-text", post(fs_write_text)).with_state(writes.clone());
     let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     (dashboard, writes)
 }
@@ -2264,10 +2274,7 @@ async fn the_generic_relay_still_refuses_writes_to_the_agent_fs_routes() {
 /// A stub dashboard with only sign-in and the upload route, and the server paths it was sent.
 async fn upload_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
     let uploads = Arc::new(Mutex::new(Vec::new()));
-    let app = Router::new()
-        .route("/auth/password-login", post(login))
-        .route("/api/files/upload-stream", post(upload_stream))
-        .with_state(uploads.clone());
+    let app = Router::new().route("/auth/password-login", post(login)).route("/api/files/upload-stream", post(upload_stream)).with_state(uploads.clone());
     let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     (dashboard, uploads)
 }
@@ -2281,7 +2288,10 @@ async fn uploads_a_local_file_as_hermes_takes_it_and_reports_progress() {
     std::fs::write(&local, &bytes).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
-    let got = dashboard.upload("/srv/in/report.pdf", transport::UploadSource::File(local.clone()), false, move |done, total| s.lock().unwrap().push((done, total))).await.expect("uploaded");
+    let got = dashboard
+        .upload("/srv/in/report.pdf", transport::UploadSource::File(local.clone()), false, move |done, total| s.lock().unwrap().push((done, total)))
+        .await
+        .expect("uploaded");
     let got: Value = serde_json::from_str(&got).unwrap();
     assert_eq!(got["path"], "/srv/in/report.pdf");
     assert_eq!(got["overwrite"], "false");
@@ -2301,7 +2311,8 @@ async fn an_upload_that_would_replace_a_file_is_refused_unless_asked() {
     std::fs::write(&local, "new").unwrap();
     let err = dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), false, |_, _| {}).await.err().unwrap();
     assert!(matches!(&err, TransportError::Unexpected { status: 409, body } if body.contains("already exists")), "{err:?}");
-    let got: Value = serde_json::from_str(&dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), true, |_, _| {}).await.unwrap()).unwrap();
+    let got: Value =
+        serde_json::from_str(&dashboard.upload("/srv/taken.txt", transport::UploadSource::File(local.clone()), true, |_, _| {}).await.unwrap()).unwrap();
     assert_eq!(got["overwrite"], "true");
 }
 
@@ -2311,7 +2322,19 @@ async fn never_uploads_to_a_credential_file_or_more_than_hermes_takes() {
     let dir = scratch("upload-refused");
     let local = dir.join("x");
     std::fs::write(&local, "SECRET=1").unwrap();
-    for path in ["/srv/.env", "/srv/.ENV", "/srv/.env.local", "/srv/.envrc", "/srv/Auth.JSON", "/home/u/.hermes/config.yaml", "/srv/mcp-tokens/a.json", "/srv/Pairing/x", "/srv/.git-credentials", "/srv/", "/srv/.."] {
+    for path in [
+        "/srv/.env",
+        "/srv/.ENV",
+        "/srv/.env.local",
+        "/srv/.envrc",
+        "/srv/Auth.JSON",
+        "/home/u/.hermes/config.yaml",
+        "/srv/mcp-tokens/a.json",
+        "/srv/Pairing/x",
+        "/srv/.git-credentials",
+        "/srv/",
+        "/srv/..",
+    ] {
         let err = dashboard.upload(path, transport::UploadSource::File(local.clone()), true, |_, _| {}).await.err().unwrap();
         assert!(matches!(err, TransportError::NotRelayed(_)), "{path}: {err:?}");
     }
@@ -2330,7 +2353,8 @@ async fn never_uploads_to_a_credential_file_or_more_than_hermes_takes() {
 async fn saves_an_edits_text_through_the_upload_route() {
     let (dashboard, uploads) = upload_stub().await;
     let text = "caf\u{e9}\r\nline two\r\n".as_bytes().to_vec();
-    let got: Value = serde_json::from_str(&dashboard.upload("/srv/notes.md", transport::UploadSource::Bytes(text.clone()), true, |_, _| {}).await.unwrap()).unwrap();
+    let got: Value =
+        serde_json::from_str(&dashboard.upload("/srv/notes.md", transport::UploadSource::Bytes(text.clone()), true, |_, _| {}).await.unwrap()).unwrap();
     assert_eq!(got["size"], text.len());
     assert_eq!(got["sum"], text.iter().map(|&b| b as u64).sum::<u64>());
     assert_eq!(got["overwrite"], "true");
@@ -2349,9 +2373,10 @@ async fn installed(install: &'static str) -> (Url, Arc<Mutex<u32>>) {
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(api_ws))
-        .route("/api/status", get(move || async move {
-            Json(json!({"version": "0.22.5", "auth_required": true, "auth_providers": ["basic"], "install_id": install}))
-        }))
+        .route(
+            "/api/status",
+            get(move || async move { Json(json!({"version": "0.22.5", "auth_required": true, "auth_providers": ["basic"], "install_id": install})) }),
+        )
         .layer(middleware::from_fn(move |req: Request, next: Next| {
             let counted = counted.clone();
             async move {
@@ -2391,7 +2416,14 @@ async fn reading_the_server_needs_no_sign_in_and_names_its_install() {
     assert_eq!(seen.server, Some(transport::server_id("install-home")));
     assert!(seen.status.unwrap().contains("0.22.5"));
     assert_eq!(*logins.lock().unwrap(), 0);
-    let wrong = transport::read_server(&transport::client(&HeaderMap::new()).unwrap(), &base, &HeaderMap::new(), Some(&transport::server_id("install-away")), Duration::from_secs(5)).await;
+    let wrong = transport::read_server(
+        &transport::client(&HeaderMap::new()).unwrap(),
+        &base,
+        &HeaderMap::new(),
+        Some(&transport::server_id("install-away")),
+        Duration::from_secs(5),
+    )
+    .await;
     assert!(matches!(wrong, Err(TransportError::WrongServer)));
 }
 
@@ -2399,14 +2431,16 @@ async fn reading_the_server_needs_no_sign_in_and_names_its_install() {
 async fn a_route_that_reaches_another_server_never_gets_the_password() {
     let (base, logins) = installed("install-neighbour").await;
     let expect = transport::server_id("install-home");
-    let failed = transport::probe_expecting(&base, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap_err();
+    let failed =
+        transport::probe_expecting(&base, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap_err();
     assert_eq!(failed.stage, Stage::Reach);
     assert!(failed.message.starts_with("Wrong server:"), "{}", failed.message);
     assert_eq!(*logins.lock().unwrap(), 0, "the password went out");
 
     // The same server passes, and the test says which it was.
     let (home, logins) = installed("install-home").await;
-    let probed = transport::probe_expecting(&home, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap();
+    let probed =
+        transport::probe_expecting(&home, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap();
     assert_eq!(probed.server, Some(expect));
     assert_eq!(*logins.lock().unwrap(), 1);
 }
@@ -2437,12 +2471,13 @@ async fn a_connection_test_opens_one_http_connection_plus_the_socket() {
 async fn something_that_isnt_hermes_never_gets_the_password() {
     let logins = Arc::new(Mutex::new(0u32));
     let counted = logins.clone();
-    let app = Router::new()
-        .route("/api/status", get(|| async { "<html>Router admin</html>" }))
-        .route("/auth/password-login", post(move || async move {
+    let app = Router::new().route("/api/status", get(|| async { "<html>Router admin</html>" })).route(
+        "/auth/password-login",
+        post(move || async move {
             *counted.lock().unwrap() += 1;
             StatusCode::NOT_FOUND
-        }));
+        }),
+    );
     let failed = transport::probe(&serve(app).await, &sign_in("hunter2"), "default").await.unwrap_err();
     assert_eq!(failed.stage, Stage::Reach);
     assert!(failed.message.contains("isn't a Hermes dashboard"), "{}", failed.message);
@@ -2451,7 +2486,20 @@ async fn something_that_isnt_hermes_never_gets_the_password() {
 
 #[test]
 fn plain_http_goes_only_to_this_computer_a_lan_or_tailscale() {
-    for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.10", "169.254.3.4", "100.64.0.1", "100.127.255.254", "::1", "fd7a:115c:a1e0::1", "fc00::5", "fe80::1", "::ffff:192.168.1.10"] {
+    for ip in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.9",
+        "192.168.1.10",
+        "169.254.3.4",
+        "100.64.0.1",
+        "100.127.255.254",
+        "::1",
+        "fd7a:115c:a1e0::1",
+        "fc00::5",
+        "fe80::1",
+        "::ffff:192.168.1.10",
+    ] {
         assert!(transport::is_local_or_private(ip.parse().unwrap()), "{ip}");
     }
     for ip in ["8.8.8.8", "100.63.255.255", "100.128.0.1", "172.32.0.1", "2001:4860:4860::8888", "::ffff:8.8.8.8", "0.0.0.0"] {
@@ -2709,7 +2757,12 @@ async fn live_token_sign_in() {
 // ── one of several routes gives way on a step that stalls (#269, ADR 0056) ──────────────────────────────────
 
 /// Step limits short enough for a test.
-const SHORT: StepLimits = StepLimits { lookup: Duration::from_millis(300), sign_in: Duration::from_millis(300), ticket: Duration::from_millis(300), socket: Duration::from_millis(300) };
+const SHORT: StepLimits = StepLimits {
+    lookup: Duration::from_millis(300),
+    sign_in: Duration::from_millis(300),
+    ticket: Duration::from_millis(300),
+    socket: Duration::from_millis(300),
+};
 /// Well past every `SHORT` limit, far short of the whole attempt's 60 s.
 const GIVE_UP: Duration = Duration::from_secs(3);
 
@@ -2732,7 +2785,12 @@ async fn open_route(base: &Url, limits: Option<StepLimits>, on_event: impl Fn(Pi
     open_route_reporting(base, limits, &Steps::default(), on_event).await
 }
 
-async fn open_route_reporting(base: &Url, limits: Option<StepLimits>, steps: &Steps, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Opened, TransportError> {
+async fn open_route_reporting(
+    base: &Url,
+    limits: Option<StepLimits>,
+    steps: &Steps,
+    on_event: impl Fn(PipeEvent) + Send + 'static,
+) -> Result<Opened, TransportError> {
     transport::open_route(base, &sign_in("hunter2"), "default", None, Duration::from_secs(5), limits, steps, on_event).await
 }
 

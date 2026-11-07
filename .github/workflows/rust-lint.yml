@@ -1,4 +1,4 @@
-# Temporary: runs clippy and cargo fmt on a runner and uploads the fmt diffs, for a PC without a Rust toolchain.
+# Temporary: runs clippy and cargo fmt --check on a runner, for a PC without a Rust toolchain.
 name: rust-lint
 on:
   workflow_dispatch:
@@ -28,17 +28,11 @@ jobs:
       - name: fmt
         run: |
           cargo fmt --check > ../out/fmt-check.txt 2>&1 || echo "FMT_FAILED=1" >> "$GITHUB_ENV"
-          for w in 100 120 140 160 180 200; do
-            for h in Default Max; do
-              printf 'max_width = %s\nuse_small_heuristics = "%s"\n' "$w" "$h" > rustfmt.toml
-              cargo fmt
-              rm rustfmt.toml
-              echo "width $w heuristics $h: $(git -C .. diff --shortstat)" >> ../out/summary.txt
-              git -C .. diff > "../out/fmt-$w-$h.patch"
-              git -C .. checkout -- .
-            done
-          done
-          cat ../out/summary.txt
+          cargo fmt
+          git -C .. diff > ../out/fmt.patch
+          git -C .. checkout -- .
+        working-directory: src-tauri
+      - run: cargo test --lib --test transport --test media --test screenshot --test update > ../out/test.txt 2>&1 || echo "TEST_FAILED=1" >> "$GITHUB_ENV"
         working-directory: src-tauri
       - uses: actions/upload-artifact@v4
         if: always()
@@ -47,5 +41,5 @@ jobs:
           path: out
       - name: verdict
         run: |
-          echo "clippy failed: ${CLIPPY_FAILED:-0}; fmt check failed: ${FMT_FAILED:-0}"
-          test -z "$CLIPPY_FAILED" && test -z "$FMT_FAILED"
+          echo "clippy failed: ${CLIPPY_FAILED:-0}; fmt check failed: ${FMT_FAILED:-0}; tests failed: ${TEST_FAILED:-0}"
+          test -z "$CLIPPY_FAILED" && test -z "$FMT_FAILED" && test -z "$TEST_FAILED"
