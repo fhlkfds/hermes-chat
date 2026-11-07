@@ -168,6 +168,9 @@ export function OfficeBuilding({
   useEffect(() => scene?.setSelected(selected), [scene, selected]);
 
   const picked = floor.characters.find((c) => c.key === selected);
+  // An agent that leaves the floor takes its selection with it, so its card can't open again by itself if it comes back.
+  // Cleared during render: React draws again before the card mounts and takes focus.
+  if (selected !== undefined && !picked) setSelected(undefined);
   const close = () => {
     const key = selected;
     setSelected(undefined);
