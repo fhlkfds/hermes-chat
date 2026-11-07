@@ -12,7 +12,7 @@ import type { TerminalKind } from "./terminal";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
-export const UI_PREFS_VERSION = 2;
+export const UI_PREFS_VERSION = 3;
 
 export type Theme = "light" | "dark" | "system";
 export const THEMES: readonly Theme[] = ["light", "dark", "system"];
@@ -60,14 +60,14 @@ export type UIPrefs = {
   chatSectionsShown: SectionKey[];
   /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
   chatSectionsCollapsed: SectionKey[];
-  /** How the agent office shows the agents at work: as desks, as a list, as characters in one room (ADR 0083), or not at all, with no rail button (ADR 0077). */
+  /** How the agent office shows the agents at work: as a 3D building (ADR 0089), as a list, or not at all, with no rail button (ADR 0077). */
   agentOffice: OfficeView;
   /** How many days a finished entry stays in the inbox before it is dismissed on its own, as if by hand; null: never. */
   inboxAutoDismissDays: number | null;
 };
 
-export type OfficeView = "desks" | "list" | "scene" | "off";
-export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "scene", "off"];
+export type OfficeView = "building" | "list" | "off";
+export const OFFICE_VIEWS: readonly OfficeView[] = ["building", "list", "off"];
 
 export type FollowUp = "queue" | "steer";
 
@@ -89,7 +89,7 @@ export const IDLE_COMPACT_MINUTES = [5, 10, 15, 30, 60, 120] as const;
 const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
 export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
 /** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
-export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
+export const STATUS_BAR_ITEMS = ["context", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -109,7 +109,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
   chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"] as SectionKey[],
   chatSectionsCollapsed: ["snoozed", "archived", "settled"] as SectionKey[],
-  agentOffice: "desks",
+  agentOffice: "building",
   inboxAutoDismissDays: null,
 });
 
@@ -123,6 +123,8 @@ export const UI_PREFS_MIGRATIONS: UIPrefsMigrations = {
   0: (doc) => doc,
   // Pinned is new in version 2 (ADR 0085): a list of shown sections from before it shows Pinned too.
   1: (doc) => (toShown(doc.chatSectionsShown) ? { ...doc, chatSectionsShown: ["pinned", ...(doc.chatSectionsShown as unknown[])] } : doc),
+  // The building replaces the Desks and Scene views in version 3 (ADR 0089): whoever picked either sees the building.
+  2: (doc) => (doc.agentOffice === "desks" || doc.agentOffice === "scene" ? { ...doc, agentOffice: "building" } : doc),
 };
 
 const isDoc = (v: unknown): v is UIPrefsDoc => typeof v === "object" && v !== null && !Array.isArray(v);

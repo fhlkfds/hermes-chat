@@ -105,7 +105,8 @@ export function Rail({
     where,
     unsecure && "Unsecure: traffic to the server isn't encrypted",
     status !== "connected" && closedReason,
-    status !== "connected" && "Click to reconnect",
+    // The first try at launch is still under way (ADR 0089); a click would only join it.
+    status !== "connected" && status !== "connecting" && "Click to reconnect",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -182,7 +183,7 @@ export function Rail({
             aria-label="Office"
             aria-expanded={officeOpen}
             onClick={onOffice}
-            {...bind("office", { label: "Office", note: "Every agent at work, as desks or a list" })}
+            {...bind("office", { label: "Office", note: "Every agent at work, in the building or a list" })}
           >
             <Building2 size={18} />
           </button>

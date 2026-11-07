@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"], chatSectionsCollapsed: ["snoozed", "archived", "settled"], agentOffice: "desks", inboxAutoDismissDays: null });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"], chatSectionsCollapsed: ["snoozed", "archived", "settled"], agentOffice: "building", inboxAutoDismissDays: null });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -91,7 +91,7 @@ describe("reading", () => {
       // A version 1 list gains Pinned, new in version 2.
       chatSectionsShown: ["pinned", "inbox", "settled"],
       chatSectionsCollapsed: ["snoozed", "archived", "settled"],
-      agentOffice: "desks",
+      agentOffice: "building",
       inboxAutoDismissDays: null,
     });
   });
@@ -292,6 +292,13 @@ describe("migration", () => {
     expect(migrateUIPrefs({ v: 1, theme: "dark" }, {}, 2)).toEqual({ v: 2 });
     expect(migrateUIPrefs({ v: "1", theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
     expect(migrateUIPrefs({ v: 1.5, theme: "dark" })).toEqual({ v: UI_PREFS_VERSION });
+  });
+
+  it("shows the building, new in version 3, to whoever picked the Desks or the Scene", () => {
+    for (const [saved, read] of [["desks", "building"], ["scene", "building"], ["list", "list"], ["off", "off"]]) {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, agentOffice: saved }));
+      expect(getUIPrefs().agentOffice).toBe(read);
+    }
   });
 
   it("shows Pinned, new in version 2, above the sections a version 1 document picked", () => {

@@ -66,3 +66,14 @@ export async function followWindowVisibility(): Promise<void> {
     // Outside the desktop app there is no window to hide.
   }
 }
+
+const subscribeFocus = (fn: () => void) => {
+  window.addEventListener("focus", fn);
+  window.addEventListener("blur", fn);
+  return () => {
+    window.removeEventListener("focus", fn);
+    window.removeEventListener("blur", fn);
+  };
+};
+/** The window has the keyboard focus: the owner is in this app, not another one. */
+export const useWindowFocused = () => useSyncExternalStore(subscribeFocus, () => document.hasFocus());
