@@ -1,4 +1,4 @@
-# Temporary: runs clippy and cargo fmt on a runner and uploads the fmt diff, for a PC without a Rust toolchain.
+# Temporary: runs clippy and cargo fmt on a runner and uploads the fmt diffs, for a PC without a Rust toolchain.
 name: rust-lint
 on:
   workflow_dispatch:
@@ -23,14 +23,22 @@ jobs:
       - run: rustc --version > ../out/versions.txt && cargo clippy --version >> ../out/versions.txt && cargo fmt --version >> ../out/versions.txt
         working-directory: src-tauri
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings > ../out/clippy.txt 2>&1 || echo "CLIPPY_FAILED=1" >> "$GITHUB_ENV"
+        run: cargo clippy --all-targets --keep-going -- -D warnings > ../out/clippy.txt 2>&1 || echo "CLIPPY_FAILED=1" >> "$GITHUB_ENV"
         working-directory: src-tauri
       - name: fmt
         run: |
           cargo fmt --check > ../out/fmt-check.txt 2>&1 || echo "FMT_FAILED=1" >> "$GITHUB_ENV"
-          cargo fmt
-          git -C .. diff --stat > ../out/fmt.stat
-          git -C .. diff > ../out/fmt.patch
+          for w in 100 120 140 160 180 200; do
+            for h in Default Max; do
+              printf 'max_width = %s\nuse_small_heuristics = "%s"\n' "$w" "$h" > rustfmt.toml
+              cargo fmt
+              rm rustfmt.toml
+              echo "width $w heuristics $h: $(git -C .. diff --shortstat)" >> ../out/summary.txt
+              git -C .. diff > "../out/fmt-$w-$h.patch"
+              git -C .. checkout -- .
+            done
+          done
+          cat ../out/summary.txt
         working-directory: src-tauri
       - uses: actions/upload-artifact@v4
         if: always()

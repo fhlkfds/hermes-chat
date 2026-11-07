@@ -793,7 +793,7 @@ fn head(d: &Dir) -> String {
 }
 
 async fn push(d: &Dir, expect: Option<String>) -> Result<Value, RepoError> {
-    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(&d, "origin"), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
+    ask(Request::Push { repo: d.s(), remote: "origin".into(), push_url: shown_url(d, "origin"), branch: "feature".into(), remote_branch: "feature".into(), expect: HeadExpect { head: expect } }).await
 }
 
 #[tokio::test]

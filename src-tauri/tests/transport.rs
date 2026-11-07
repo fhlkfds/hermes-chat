@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use url::Url;
@@ -135,7 +135,7 @@ async fn validate(Json(body): Json<Value>) -> Response {
 async fn read_file(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let n: usize = q.get("n").and_then(|n| n.parse().ok()).unwrap_or(0);
     let head = json!({"path": q.get("path"), "cookie": cookie(&headers)}).to_string();
-    let body = format!("{}{}", &head[..head.len() - 1], format!(r#","pad":"{}"}}"#, "x".repeat(n.saturating_sub(head.len() + 9))));
+    let body = format!(r#"{},"pad":"{}"}}"#, &head[..head.len() - 1], "x".repeat(n.saturating_sub(head.len() + 9)));
     if q.contains_key("chunked") {
         let chunks: Vec<Result<String, std::io::Error>> = body.as_bytes().chunks(1024).map(|c| Ok(String::from_utf8(c.to_vec()).unwrap())).collect();
         axum::body::Body::from_stream(futures_util::stream::iter(chunks)).into_response()
@@ -1200,7 +1200,7 @@ fn scratch(test: &str) -> PathBuf {
     dir
 }
 
-fn path_of(p: &PathBuf) -> String {
+fn path_of(p: &Path) -> String {
     p.to_str().unwrap().to_owned()
 }
 
