@@ -22,7 +22,7 @@ $S/hv bootstrap   # once per machine: Xvfb, xwd, xdotool, openbox, WebKitWebDriv
 $S/hv build       # npm ci if needed, npm run build, cargo build --features tauri/custom-protocol --bins
 ```
 
-- `bootstrap` uses system tools when present. On Debian without sudo it `apt-get download`s the packages and unpacks them under `~/.cache/hermes-verify/root`; on Arch it prints the `pacman` line to run. Done when it prints `hv: bootstrap ok`.
+- `bootstrap` uses system tools when present. On Debian without sudo it `apt-get download`s the packages and unpacks them under `~/.cache/hermes-verify/root`. On Arch it needs `xorg-server-xvfb` and `xdotool` installed, and fetches `webkitgtk-6.0` (which holds `WebKitWebDriver`), `openbox` and `xorg-xwd` from pacman's mirror, checks each against pacman's sync database, and unpacks them there. Done when it prints `hv: bootstrap ok`.
 - `build` embeds the frontend in the binary (no Vite port to fight over) and writes to `~/.cache/hermes-verify/target` (`HV_TARGET` overrides). It stamps the build with the source revision, including uncommitted edits to `src/`, `src-tauri/` and the frontend config. Done when it prints `hv: built … from <rev>`.
 - A first build from an empty target takes many minutes. To speed it up, seed the target with hard links from a recent one on the same filesystem: `mkdir -p T/debug && cp -al <old target>/debug/{deps,build,.fingerprint} T/debug/`. Use hard links only within `~/.cache`, because `/tmp` is a different filesystem.
 - Rebuild after every code change before you prove it. `hv up` warns and `hv doctor` fails when the build is stale.
@@ -71,6 +71,7 @@ This is read-only. Each line is `ok` or `FAIL`, and the command exits non-zero o
 | `wd.mjs wait / gone <css> [text] [ms]` | Polls until a match is displayed or gone. Exits 2 on timeout. Use these instead of `sleep`. |
 | `wd.mjs text / value / count <css> [text]` | Read state for assertions. |
 | `wd.mjs eval <js>` | Read-only DOM queries, such as listing `.row-open[data-chat]` ids. |
+| `cpu.sh <seconds> [samples]` | The app's CPU over a window, as a percentage of one core, summed over its processes on the run's display. |
 
 Prefer handles in this order: aria-label or `<label>` text (`input "Dashboard password"`, `button "Search all chats (Ctrl+K)"`), visible button text (`button "Save and connect"`), then the app's own data attributes and classes (`textarea[data-composer]`, `.row-open[data-chat=backup]`, `.msg.user`, `.msg.assistant`, `.chat-title`, `.hit-row`). Never use coordinates or tab order. Drive with `click`, `fill`, `select`, `press` and `keys`, because these go through WebKit's input pipeline as a user's would. `eval` is for reading state only.
 
