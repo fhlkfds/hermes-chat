@@ -216,6 +216,16 @@ export type SideQuestion = { id: string; question: string; after?: string; taskI
  */
 export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean; compactions?: number };
 
+/** The profile's `approvals.mode` (GLOSSARY "Approval mode"). The app shows "off" but never offers it. */
+export type ApprovalMode = "smart" | "manual" | "off";
+
+/**
+ * What Hermes does before a command it counts as dangerous in a chat, as it reports it (`approval_mode`, `yolo` in
+ * `session.info`). `mode`: the profile's, shared by every session on the profile. `yolo`: Hermes runs such commands in
+ * this chat without asking, because the chat's own flag is on, `mode` is "off", or Hermes was launched with `--yolo`.
+ */
+export type Approvals = { mode: ApprovalMode; yolo: boolean };
+
 /** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
 export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
 
