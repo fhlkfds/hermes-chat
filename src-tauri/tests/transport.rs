@@ -364,7 +364,7 @@ async fn screen_stub() -> (Arc<Dashboard>, mpsc::UnboundedReceiver<Option<u16>>)
         .route("/auth/password-login", post(login))
         .route("/api/display/ws", get(display_ws))
         .with_state(tx);
-    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
+    let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.expect("signed in");
     (Arc::new(dashboard), rx)
 }
 
@@ -477,6 +477,11 @@ async fn serve(app: Router) -> Url {
     Url::parse(&format!("http://{addr}/")).unwrap()
 }
 
+/// `Dashboard::sign_in` on a route's own client, as `open_connection` builds one.
+async fn sign_in_at(base: &Url, sign_in: &SignIn) -> Result<Dashboard, TransportError> {
+    Dashboard::sign_in(transport::client(&sign_in.headers)?, base, sign_in).await
+}
+
 fn sign_in(password: &str) -> SignIn {
     SignIn { credential: Credential::password("liam", password), headers: Default::default() }
 }
@@ -544,7 +549,7 @@ fn frame(event: PipeEvent) -> Value {
 }
 
 async fn signed_in() -> Dashboard {
-    Dashboard::sign_in(&stub().await, &sign_in("hunter2")).await.expect("signed in")
+    sign_in_at(&stub().await, &sign_in("hunter2")).await.expect("signed in")
 }
 
 async fn open_stub() -> (transport::Pipe, mpsc::UnboundedReceiver<PipeEvent>) {
@@ -609,14 +614,14 @@ async fn reports_when_the_server_closes_the_socket() {
 #[tokio::test]
 async fn wrong_password_is_bad_credentials() {
     let base = stub().await;
-    let err = Dashboard::sign_in(&base, &sign_in("nope")).await.err().unwrap();
+    let err = sign_in_at(&base, &sign_in("nope")).await.err().unwrap();
     assert!(matches!(err, TransportError::BadCredentials), "{err:?}");
 }
 
 #[tokio::test]
 async fn rate_limited_sign_in_is_reported() {
     let base = stub().await;
-    let err = Dashboard::sign_in(&base, &sign_in("slow-down")).await.err().unwrap();
+    let err = sign_in_at(&base, &sign_in("slow-down")).await.err().unwrap();
     assert!(matches!(err, TransportError::RateLimited), "{err:?}");
 }
 
@@ -624,7 +629,7 @@ async fn rate_limited_sign_in_is_reported() {
 async fn nothing_listening_is_unreachable() {
     let port = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
     let base = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-    let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+    let err = sign_in_at(&base, &sign_in("hunter2")).await.err().unwrap();
     assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
 }
 
@@ -1156,7 +1161,7 @@ async fn never_relays_a_change_to_the_servers_files() {
 async fn relays_under_a_dashboard_whose_path_is_percent_encoded() {
     for prefix in ["team%20one", "caf%C3%A9"] {
         let base = stub_under(prefix).await;
-        let dashboard = Dashboard::sign_in(&base, &sign_in("hunter2")).await.expect(prefix);
+        let dashboard = sign_in_at(&base, &sign_in("hunter2")).await.expect(prefix);
         assert_eq!(get_json(&dashboard, "api/sessions?profile=default").await["query"], "profile=default", "{prefix}");
         dashboard.request("DELETE", "api/sessions/a%20b", None).await.expect(prefix);
         assert!(dashboard.get_limited("api/files/read?path=/srv/a&n=10", 1024).await.is_ok(), "{prefix}");
@@ -1281,7 +1286,7 @@ async fn a_direct_ws_url_is_signed_in_to_over_http() {
     let direct = transport::resolve_direct(&typed).await.expect("parsed");
     assert_eq!(direct.base, base);
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let dashboard = Dashboard::sign_in(&direct.base, &sign_in("hunter2")).await.expect("signed in");
+    let dashboard = sign_in_at(&direct.base, &sign_in("hunter2")).await.expect("signed in");
     let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("pipe open");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
 
@@ -1669,7 +1674,7 @@ async fn passes_on_hermess_whole_reason_for_having_no_transcriber() {
 async fn voice_requests_carry_the_gate_headers_too() {
     let (elsewhere, _) = other_site().await;
     let (base, seen) = gated_stub(&elsewhere).await;
-    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.unwrap();
+    let dashboard = sign_in_at(&base, &access_sign_in()).await.unwrap();
     dashboard.transcribe("default", "audio/wav", b"RIFF").await.unwrap();
     dashboard.speak("default", "Hello").await.unwrap();
     assert!(dashboard.voice_setup("default").await.unwrap().speak);
@@ -1688,7 +1693,7 @@ async fn voice_redirects_to_another_origin_stop_without_sending_credentials_or_a
         .route("/auth/password-login", post(login))
         .route("/api/audio/transcribe", post(move || async move { Redirect::temporary(&away) }))
         .route("/api/audio/speak", post(move || async move { Redirect::temporary(&speak_away) }));
-    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &access_sign_in()).await.unwrap();
     for err in [
         dashboard.transcribe("default", "audio/wav", b"private audio").await.err().unwrap(),
         dashboard.speak("default", "private reply").await.err().unwrap(),
@@ -1721,7 +1726,7 @@ async fn local_image_preview_keeps_the_picked_handle_and_checks_its_content_and_
 async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
     let (elsewhere, _) = other_site().await;
     let (base, seen) = gated_stub(&elsewhere).await;
-    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in through the gate");
+    let dashboard = sign_in_at(&base, &access_sign_in()).await.expect("signed in through the gate");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let _pipe = dashboard.open_pipe("default", move |e| drop(tx.send(e))).await.expect("socket opened through the gate");
     assert_eq!(frame(next(&mut rx).await)["params"]["type"], "gateway.ready");
@@ -1737,7 +1742,7 @@ async fn extra_headers_go_with_the_sign_in_rest_calls_and_the_socket() {
 async fn without_the_extra_headers_the_gate_refuses() {
     let (elsewhere, _) = other_site().await;
     let (base, _) = gated_stub(&elsewhere).await;
-    let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+    let err = sign_in_at(&base, &sign_in("hunter2")).await.err().unwrap();
     assert!(matches!(err, TransportError::Unexpected { status: 403, .. }), "{err:?}");
 }
 
@@ -1745,7 +1750,7 @@ async fn without_the_extra_headers_the_gate_refuses() {
 async fn extra_headers_follow_a_redirect_within_the_dashboard_only() {
     let (elsewhere, other_seen) = other_site().await;
     let (base, _) = gated_stub(&elsewhere).await;
-    let dashboard = Dashboard::sign_in(&base, &access_sign_in()).await.expect("signed in");
+    let dashboard = sign_in_at(&base, &access_sign_in()).await.expect("signed in");
     assert_eq!(get_json(&dashboard, "api/moved").await["query"], "moved=1");
 
     let err = dashboard.request("GET", "api/away", None).await.err().unwrap();
@@ -1761,7 +1766,7 @@ async fn a_sign_in_redirected_to_another_site_stops_there() {
     let (elsewhere, other_seen) = other_site().await;
     let login = elsewhere.join("cdn-cgi/access/login").unwrap().to_string();
     let base = serve(Router::new().route("/auth/password-login", post(move || async move { Redirect::to(&login) }))).await;
-    let err = Dashboard::sign_in(&base, &access_sign_in()).await.err().unwrap();
+    let err = sign_in_at(&base, &access_sign_in()).await.err().unwrap();
     assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
     assert!(other_seen.lock().unwrap().is_empty());
 }
@@ -1777,7 +1782,7 @@ async fn a_password_never_follows_a_cross_origin_307_or_308_without_extra_header
                 if permanent { Redirect::permanent(&login) } else { Redirect::temporary(&login) }
             }
         }))).await;
-        let err = Dashboard::sign_in(&base, &sign_in("hunter2")).await.err().unwrap();
+        let err = sign_in_at(&base, &sign_in("hunter2")).await.err().unwrap();
         assert!(matches!(err, TransportError::Redirected(_)), "{err:?}");
         assert!(other_seen.lock().unwrap().is_empty(), "the password reached another origin");
     }
@@ -1921,7 +1926,7 @@ async fn a_provider_key_never_follows_a_redirect_to_another_site() {
         .route("/api/env", get(env_rows))
         .route("/api/providers/validate", post(move || async move { Redirect::temporary(&away) }));
     // No extra headers: provider keys must still stay on the dashboard origin.
-    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good").await.unwrap_err().to_string();
     assert!(err.contains("307") && !err.contains("sk-good"), "{err}");
     assert!(other.lock().unwrap().is_empty(), "the key went to another site");
@@ -1976,7 +1981,7 @@ async fn with_extra_headers_the_dashboards_own_detail_is_still_shown_unless_it_r
         .route("/auth/password-login", post(login))
         .route("/api/plain", get(|| async { (StatusCode::NOT_FOUND, Json(json!({"detail": "Profile 'x' does not exist."}))) }))
         .route("/api/repeats", get(|| async { (StatusCode::BAD_REQUEST, Json(json!({"detail": [{"input": "s3cret"}]}))) }));
-    let dashboard = Dashboard::sign_in(&serve(app).await, &access_sign_in()).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &access_sign_in()).await.unwrap();
     let plain = dashboard.request("GET", "api/plain", None).await.unwrap_err().to_string();
     assert!(plain.contains("Profile 'x' does not exist."), "{plain}");
     let repeats = dashboard.request("GET", "api/repeats", None).await.unwrap_err().to_string();
@@ -1989,7 +1994,7 @@ async fn a_provider_key_check_that_never_answers_gives_up() {
         .route("/auth/password-login", post(login))
         .route("/api/env", get(env_rows))
         .route("/api/providers/validate", post(std::future::pending::<Response>));
-    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     let started = std::time::Instant::now();
     let err = dashboard.save_provider_key_within("default", "OPENROUTER_API_KEY", "sk-good", Duration::from_millis(300)).await.unwrap_err();
     assert!(matches!(err, TransportError::KeyTimedOut(_)), "{err:?}");
@@ -2025,7 +2030,7 @@ async fn a_redirect_loop_never_shows_the_key_or_a_header_value_it_put_in_the_url
         }))
         .route("/loop", get(lap).post(lap));
     let base = serve(app).await;
-    let dashboard = Dashboard::sign_in(&base, &sign_in("hunter2")).await.unwrap();
+    let dashboard = sign_in_at(&base, &sign_in("hunter2")).await.unwrap();
     let err = dashboard.save_provider_key("default", "OPENROUTER_API_KEY", "sk-good-and-long").await.unwrap_err().to_string();
     assert!(err.contains("redirect") && !err.contains("sk-good"), "{err}");
     let failed = transport::probe(&base, &long_secret_sign_in(), "default").await.unwrap_err();
@@ -2046,7 +2051,7 @@ async fn a_voice_refusal_never_shows_a_header_value_even_cut_short() {
         .route("/auth/password-login", post(login))
         .route("/api/audio/transcribe", post(refuse(StatusCode::FORBIDDEN)))
         .route("/api/audio/speak", post(refuse(StatusCode::BAD_REQUEST)));
-    let dashboard = Dashboard::sign_in(&serve(app).await, &long_secret_sign_in()).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &long_secret_sign_in()).await.unwrap();
     let heard = dashboard.transcribe("default", "audio/wav", b"RIFF").await.err().unwrap().to_string();
     assert!(heard.ends_with("the server answered 403 Forbidden") && !shows_part_of_secret(&heard), "{heard}");
     let spoken = dashboard.speak("default", "Hello").await.err().unwrap().to_string();
@@ -2090,7 +2095,7 @@ async fn a_redirect_to_an_address_that_repeats_a_header_value_never_shows_it() {
     let failed = transport::probe(&base, &sign_in, "default").await.unwrap_err();
     assert_eq!(failed.stage, Stage::Reach);
     assert!(failed.message.contains("another site") && !failed.message.to_lowercase().contains("privateh"), "{}", failed.message);
-    let dashboard = Dashboard::sign_in(&base, &sign_in).await.unwrap();
+    let dashboard = sign_in_at(&base, &sign_in).await.unwrap();
     let err = dashboard.request("GET", "api/sessions", None).await.unwrap_err();
     assert!(matches!(err, TransportError::RedirectedHidden), "{err:?}");
 }
@@ -2211,7 +2216,7 @@ async fn fs_write_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
         .route("/auth/password-login", post(login))
         .route("/api/fs/write-text", post(fs_write_text))
         .with_state(writes.clone());
-    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     (dashboard, writes)
 }
 
@@ -2262,7 +2267,7 @@ async fn upload_stub() -> (Dashboard, Arc<Mutex<Vec<String>>>) {
         .route("/auth/password-login", post(login))
         .route("/api/files/upload-stream", post(upload_stream))
         .with_state(uploads.clone());
-    let dashboard = Dashboard::sign_in(&serve(app).await, &sign_in("hunter2")).await.unwrap();
+    let dashboard = sign_in_at(&serve(app).await, &sign_in("hunter2")).await.unwrap();
     (dashboard, uploads)
 }
 
@@ -2381,11 +2386,11 @@ fn a_server_is_told_apart_by_its_hashed_install_id() {
 #[tokio::test]
 async fn reading_the_server_needs_no_sign_in_and_names_its_install() {
     let (base, logins) = installed("install-home").await;
-    let seen = transport::read_server(&base, &HeaderMap::new(), None, Duration::from_secs(5)).await.unwrap();
+    let seen = transport::read_server(&transport::client(&HeaderMap::new()).unwrap(), &base, &HeaderMap::new(), None, Duration::from_secs(5)).await.unwrap();
     assert_eq!(seen.server, Some(transport::server_id("install-home")));
     assert!(seen.status.unwrap().contains("0.22.5"));
     assert_eq!(*logins.lock().unwrap(), 0);
-    let wrong = transport::read_server(&base, &HeaderMap::new(), Some(&transport::server_id("install-away")), Duration::from_secs(5)).await;
+    let wrong = transport::read_server(&transport::client(&HeaderMap::new()).unwrap(), &base, &HeaderMap::new(), Some(&transport::server_id("install-away")), Duration::from_secs(5)).await;
     assert!(matches!(wrong, Err(TransportError::WrongServer)));
 }
 
@@ -2403,6 +2408,28 @@ async fn a_route_that_reaches_another_server_never_gets_the_password() {
     let probed = transport::probe_expecting(&home, &sign_in("hunter2"), "default", Duration::from_secs(5), Duration::from_secs(5), Some(&expect)).await.unwrap();
     assert_eq!(probed.server, Some(expect));
     assert_eq!(*logins.lock().unwrap(), 1);
+}
+
+/// `serve`, counting the TCP connections the stub accepts.
+async fn serve_counting(app: Router) -> (Url, Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::serve::{Listener, ListenerExt};
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = accepted.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().tap_io(move |_| {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (Url::parse(&format!("http://{addr}/")).unwrap(), accepted)
+}
+
+/// Issue #271: a connection test reads the status, signs in and mints the ticket on one HTTP connection, plus the
+/// WebSocket.
+#[tokio::test]
+async fn a_connection_test_opens_one_http_connection_plus_the_socket() {
+    let (base, accepted) = serve_counting(stub_routes()).await;
+    transport::probe(&base, &sign_in("hunter2"), "default").await.expect("probed");
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -2519,7 +2546,7 @@ fn token(t: &str) -> SignIn {
 #[tokio::test]
 async fn a_token_signs_in_as_a_bearer_and_opens_the_socket_with_a_ticket_only() {
     let (base, heard) = token_stub(&["session-token"], None).await;
-    let dashboard = Dashboard::sign_in(&base, &token("GOOD")).await.expect("signed in");
+    let dashboard = sign_in_at(&base, &token("GOOD")).await.expect("signed in");
     let got = get_json(&dashboard, "api/sessions").await;
     assert_eq!(got["cookie"], "");
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2544,22 +2571,22 @@ async fn a_token_signs_in_as_a_bearer_and_opens_the_socket_with_a_ticket_only() 
 #[tokio::test]
 async fn a_wrong_token_is_turned_down_and_a_token_for_another_provider_too() {
     let (base, _) = token_stub(&["session-token"], None).await;
-    let err = Dashboard::sign_in(&base, &token("WRONG")).await.err().unwrap();
+    let err = sign_in_at(&base, &token("WRONG")).await.err().unwrap();
     assert!(matches!(err, TransportError::BadToken), "{err:?}");
     assert!(err.to_string().starts_with("Wrong token"), "{err}");
-    let err = Dashboard::sign_in(&base, &token("BASIC")).await.err().unwrap();
+    let err = sign_in_at(&base, &token("BASIC")).await.err().unwrap();
     assert!(matches!(&err, TransportError::NotSessionToken(p) if p == "basic"), "{err:?}");
     // Nothing the server echoes of the token is shown, however short, not even as the provider's name.
-    let err = Dashboard::sign_in(&base, &token("abcd")).await.err().unwrap().to_string();
+    let err = sign_in_at(&base, &token("abcd")).await.err().unwrap().to_string();
     assert!(err.starts_with("The dashboard answered 500") && !err.contains("abcd"), "{err}");
-    let err = Dashboard::sign_in(&base, &token("deadbeef1234")).await.err().unwrap().to_string();
+    let err = sign_in_at(&base, &token("deadbeef1234")).await.err().unwrap().to_string();
     assert!(err.contains("as a different sign-in") && !err.contains("deadbeef"), "{err}");
     // An extra header that happens to share the name the token is hidden under keeps its own value hidden.
     let headers = transport::extra_headers(&[header("X-Hermes-Chat-Token", "gateway-secret-value")]).unwrap();
-    let err = Dashboard::sign_in(&base, &SignIn { credential: Credential::Token("echo-header".into()), headers }).await.err().unwrap().to_string();
+    let err = sign_in_at(&base, &SignIn { credential: Credential::Token("echo-header".into()), headers }).await.err().unwrap().to_string();
     assert!(err.starts_with("The dashboard answered 500") && !err.contains("gateway-secret"), "{err}");
     for bad in ["", "  ", "two words", "line\nbreak"] {
-        assert!(matches!(Dashboard::sign_in(&base, &token(bad)).await.err().unwrap(), TransportError::BadToken), "{bad:?}");
+        assert!(matches!(sign_in_at(&base, &token(bad)).await.err().unwrap(), TransportError::BadToken), "{bad:?}");
     }
 }
 
@@ -2567,7 +2594,7 @@ async fn a_wrong_token_is_turned_down_and_a_token_for_another_provider_too() {
 async fn a_token_isnt_sent_when_extra_headers_set_authorization() {
     let (base, heard) = token_stub(&["session-token"], None).await;
     let headers = transport::extra_headers(&[header("Authorization", "Basic Z2F0ZXdheQ==")]).unwrap();
-    let err = Dashboard::sign_in(&base, &SignIn { credential: Credential::Token("GOOD".into()), headers }).await.err().unwrap();
+    let err = sign_in_at(&base, &SignIn { credential: Credential::Token("GOOD".into()), headers }).await.err().unwrap();
     assert!(matches!(err, TransportError::AuthorizationHeaderSet), "{err:?}");
     assert!(err.to_string().contains("Authorization"), "{err}");
     assert!(heard.lock().unwrap().is_empty());
@@ -2592,7 +2619,7 @@ async fn a_token_goes_only_to_a_server_that_lists_the_session_token_provider() {
 async fn a_token_never_follows_a_redirect_to_another_site() {
     let (elsewhere, seen) = other_site().await;
     let (base, _) = token_stub(&["session-token"], Some(&elsewhere)).await;
-    let dashboard = Dashboard::sign_in(&base, &token("GOOD")).await.expect("signed in");
+    let dashboard = sign_in_at(&base, &token("GOOD")).await.expect("signed in");
     let err = dashboard.request("GET", "api/away", None).await.unwrap_err();
     assert!(err.to_string().contains("another site"), "{err}");
     assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
@@ -2617,8 +2644,8 @@ async fn a_password_goes_to_the_provider_hermes_listed() {
         credential: Credential::Password { provider: provider.into(), username: "liam".into(), password: "hunter2".into() },
         headers: Default::default(),
     };
-    Dashboard::sign_in(&base, &with("team-sso")).await.expect("signed in");
-    Dashboard::sign_in(&base, &with("../evil")).await.expect("signed in");
+    sign_in_at(&base, &with("team-sso")).await.expect("signed in");
+    sign_in_at(&base, &with("../evil")).await.expect("signed in");
     let providers: Vec<Value> = logins.lock().unwrap().iter().map(|b| b["provider"].clone()).collect();
     assert_eq!(providers, vec![json!("team-sso"), json!("basic")]);
 }
@@ -2663,7 +2690,7 @@ async fn live_token_sign_in() {
     let (Ok(url), Ok(secret)) = (std::env::var("HERMES_LIVE_TOKEN_DASHBOARD"), std::env::var("HERMES_LIVE_TOKEN")) else { return };
     let base = Url::parse(&url).unwrap();
     let wait = Duration::from_secs(20);
-    let seen = transport::read_server(&base, &Default::default(), None, wait).await.expect("status read");
+    let seen = transport::read_server(&transport::client(&HeaderMap::new()).unwrap(), &base, &HeaderMap::new(), None, wait).await.expect("status read");
     let methods = transport::read_methods(&base, &Default::default(), seen.status.as_deref(), wait).await;
     assert!(methods.methods.contains(&transport::SignInMethod::Token), "{methods:?}");
     let probed = transport::probe_with(&base, &token(&secret), "default", wait).await.expect("the right token signs in");
@@ -2672,7 +2699,7 @@ async fn live_token_sign_in() {
     assert_eq!(wrong.stage, Stage::SignIn);
     assert!(wrong.message.starts_with("Wrong token"), "{}", wrong.message);
     assert!(!wrong.message.contains(&secret));
-    let dashboard = Dashboard::sign_in(&base, &token(&secret)).await.expect("signed in");
+    let dashboard = sign_in_at(&base, &token(&secret)).await.expect("signed in");
     let me: Value = serde_json::from_str(&dashboard.request("GET", "api/auth/me", None).await.expect("me")).unwrap();
     assert_eq!(me["provider"], "session-token");
     println!("live: {methods:?}; signed in as {}; a wrong token: {}", me["user_id"], wrong.message);
