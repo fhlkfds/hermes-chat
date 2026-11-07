@@ -52,6 +52,7 @@ import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, 
 import { RemoteFilesError, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, SESSION_GONE, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { TOKEN_REFUSED } from "./routes";
+import { WRONG_PASSWORD } from "./account";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
@@ -99,6 +100,9 @@ const SCREEN_RELEASE_MS = 1_500;
 /** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until the
  * owner asks to reconnect, so a wrong password isn't retried for ever. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
+/** After a launch that couldn't connect, once those tries are spent, how often the app tries again while it is open,
+ * Offline in between, until it connects or Hermes turns the password down (#269). */
+const LAUNCH_RETRY_MS = 60_000;
 /** A `gateway.ping` goes out this often. A connection that has sent nothing for longer than the official client's
  * heartbeat deadline is dropped. */
 const PING_EVERY_MS = 15_000;
@@ -548,6 +552,9 @@ export class Hermes {
   private droppedClosing?: Promise<void>;
   private redialing?: Promise<void>;
   private failedTries = 0;
+  /** Opened by a launch on what this computer saved (`readSaved`, `openSaved`), and not connected since: once its quick
+   * tries are spent it keeps trying (`LAUNCH_RETRY_MS`). */
+  private launchFailed = false;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private heartbeat?: ReturnType<typeof setInterval>;
   private lastHeard = 0;
@@ -837,6 +844,7 @@ export class Hermes {
   static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
     const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
+    hermes.launchFailed = true;
     hermes.dropped(reason);
     return hermes;
   }
@@ -845,6 +853,7 @@ export class Hermes {
   static openSaved(openPipe: OpenPipe, cache: ChatCache, notify?: Notify): { hermes: Hermes; firstTry: Promise<string | undefined> } | undefined {
     const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
+    hermes.launchFailed = true;
     hermes.update({ status: "connecting" });
     const firstTry = hermes.reconnect().then(() => {
       const { status, closedReason } = hermes.snapshot;
@@ -3546,8 +3555,11 @@ export class Hermes {
 
   private retryLater() {
     const wait = RETRY_DELAYS_MS[this.failedTries];
-    if (wait === undefined) return this.update({ status: "offline" });
-    this.retryTimer = setTimeout(() => void this.redial(), wait);
+    if (wait !== undefined) this.retryTimer = setTimeout(() => void this.redial(), wait);
+    else {
+      this.update({ status: "offline" });
+      if (this.launchFailed) this.retryTimer = setTimeout(() => void this.redial(), LAUNCH_RETRY_MS);
+    }
   }
 
   private redial(): Promise<void> {
@@ -3561,6 +3573,7 @@ export class Hermes {
       try {
         await this.dial();
         this.failedTries = 0;
+        this.launchFailed = false;
         this.resumeBusyChats();
         void this.sync();
         // What was live before may have ended meanwhile, so it is asked again at once.
@@ -3571,7 +3584,11 @@ export class Hermes {
         this.update({ status: "reconnecting", closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
         // A server that changed protocol won't change back on its own, nor will a token it turned down (ADR 0058).
         if (e instanceof ProtocolMismatchError || TOKEN_REFUSED.test((e as Error).message)) this.update({ status: "offline" });
-        else this.retryLater();
+        else {
+          // Retrying a password Hermes turned down would only spend sign-in attempts.
+          if ((e as Error).message === WRONG_PASSWORD) this.launchFailed = false;
+          this.retryLater();
+        }
       } finally {
         this.redialing = undefined;
       }
