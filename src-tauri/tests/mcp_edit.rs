@@ -116,7 +116,8 @@ async fn stub_with(extra: Vec<ExtraHeader>) -> (Dashboard, Shared) {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let base = Url::parse(&format!("http://{addr}/")).unwrap();
-    let sign_in = SignIn { credential: hermes_chat::transport::Credential::password("liam", "hunter2"), headers: hermes_chat::transport::extra_headers(&extra).unwrap() };
+    let sign_in =
+        SignIn { credential: hermes_chat::transport::Credential::password("liam", "hunter2"), headers: hermes_chat::transport::extra_headers(&extra).unwrap() };
     let dashboard = Dashboard::sign_in(hermes_chat::transport::client(&sign_in.headers).unwrap(), &base, &sign_in).await.unwrap();
     (dashboard, shared)
 }
@@ -129,7 +130,10 @@ fn edit(v: Value) -> Edit {
 async fn an_edit_changes_one_server_from_the_raw_config_and_reads_it_back() {
     let (dashboard, shared) = stub().await;
     dashboard
-        .mcp_edit("work", &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "uvx", "args": ["tool"], "env": [{"key": "API_KEY"}, {"key": "REF"}]}})))
+        .mcp_edit(
+            "work",
+            &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "uvx", "args": ["tool"], "env": [{"key": "API_KEY"}, {"key": "REF"}]}})),
+        )
         .await
         .unwrap();
     let s = shared.lock().unwrap();
@@ -151,7 +155,12 @@ async fn an_edit_changes_one_server_from_the_raw_config_and_reads_it_back() {
 async fn a_new_bearer_token_goes_to_the_profiles_env_before_the_map() {
     let (dashboard, shared) = stub().await;
     dashboard
-        .mcp_edit("work", &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://new.example/mcp", "auth": "header", "bearerToken": "Bearer tok-1234"}})))
+        .mcp_edit(
+            "work",
+            &edit(
+                json!({"name": "web", "server": {"transport": "http", "url": "https://new.example/mcp", "auth": "header", "bearerToken": "Bearer tok-1234"}}),
+            ),
+        )
         .await
         .unwrap();
     let s = shared.lock().unwrap();
@@ -187,7 +196,10 @@ async fn a_token_saved_before_a_refused_map_is_not_called_unchanged() {
     let (dashboard, shared) = stub().await;
     shared.lock().unwrap().refuse_echoing = true;
     let err = dashboard
-        .mcp_edit("work", &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "header", "bearerToken": "tok-new-5678"}})))
+        .mcp_edit(
+            "work",
+            &edit(json!({"name": "web", "server": {"transport": "http", "url": "https://old.example/mcp", "auth": "header", "bearerToken": "tok-new-5678"}})),
+        )
         .await
         .unwrap_err();
     // The token went to `.env` first, so the server already signs in with it: that's said, never "not changed".
@@ -209,7 +221,10 @@ async fn an_edit_refused_before_sending_writes_nothing() {
         assert!(matches!(err, TransportError::Mcp(_)), "{e}: {err:?}");
     }
     // Another profile's config is its own: an unknown one is Hermes's 404, and nothing is written.
-    let err = dashboard.mcp_edit("nobody", &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}}))).await.unwrap_err();
+    let err = dashboard
+        .mcp_edit("nobody", &edit(json!({"name": "fs", "server": {"transport": "stdio", "command": "npx", "args": [], "env": []}})))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("404"), "{err}");
     let s = shared.lock().unwrap();
     assert!(s.puts.is_empty() && s.env.is_empty());

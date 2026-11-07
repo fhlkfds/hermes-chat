@@ -84,10 +84,7 @@ async fn read_named(app: AppHandle, name: &'static str) -> Result<Option<String>
 
 async fn swap_named(app: AppHandle, name: &'static str, expected: Option<String>, next: String) -> Result<Swap, String> {
     let dir = dir(&app)?;
-    tokio::task::spawn_blocking(move || swap(&dir, name, expected.as_deref(), &next))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || swap(&dir, name, expected.as_deref(), &next)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

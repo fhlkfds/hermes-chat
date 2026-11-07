@@ -7,10 +7,11 @@ pub mod defaults_file;
 pub mod display;
 pub mod fonts;
 pub mod links;
-pub mod mcp;
 pub mod local_stt;
+pub mod mcp;
 pub mod media;
 pub mod notify;
+pub mod page_view;
 pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
@@ -18,13 +19,14 @@ pub mod screenshot;
 pub mod server_page;
 pub mod summon;
 pub mod terminal;
-pub mod tray;
 pub mod transport;
+pub mod tray;
 pub mod tunnel;
-pub mod page_view;
-pub mod web_page;
 pub mod update;
+pub mod web_page;
 
+use connect_steps::{Step, Steps};
+use saved_password::{Address, TokenEntry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeBody};
@@ -32,10 +34,8 @@ use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-use saved_password::{Address, TokenEntry};
 use transport::{Credential, Dashboard, ExtraHeader, LocalFile, LocalText, PickedFiles, Pipe, PipeEvent, ProbeFailure, SavedKey, SignIn, Stage};
 use tunnel::Tunnel;
-use connect_steps::{Step, Steps};
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
 /// and protocol generation").
@@ -101,7 +101,9 @@ impl SignInWith {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum Target {
-    Ssh { target: String },
+    Ssh {
+        target: String,
+    },
     /// `headers`: extra request headers for a gateway in front of the dashboard, such as Cloudflare Access (ADR 0006).
     /// Only a direct connection sends them; the SSH tunnel goes straight to the dashboard.
     Url {
@@ -177,7 +179,8 @@ const CONNECT_STOPPED: &str = "Connecting was stopped.";
 async fn open_target(target: Target, quick: bool, steps: &Steps) -> Result<(url::Url, Option<Tunnel>, Route, reqwest::header::HeaderMap), String> {
     Ok(match target {
         Target::Ssh { target } => {
-            let tunnel = steps.run(Step::Tunnel, tunnel::open_within(&target, DASHBOARD_PORT, quick.then_some(QUICK_REACH))).await.map_err(|e| e.to_string())?;
+            let tunnel =
+                steps.run(Step::Tunnel, tunnel::open_within(&target, DASHBOARD_PORT, quick.then_some(QUICK_REACH))).await.map_err(|e| e.to_string())?;
             let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
             (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned(), server: None }, Default::default())
         }
@@ -195,7 +198,11 @@ async fn open_target(target: Target, quick: bool, steps: &Steps) -> Result<(url:
 /// How long the status read before a sign-in may take: short on a connection with several routes, so a dead one
 /// gives way to the next soon.
 const fn reach_within(quick: bool) -> std::time::Duration {
-    if quick { QUICK_REACH } else { transport::PROBE_STEP_TIMEOUT }
+    if quick {
+        QUICK_REACH
+    } else {
+        transport::PROBE_STEP_TIMEOUT
+    }
 }
 
 /// Private screenshot storage and desktop requests waiting for a signed-in window.
@@ -218,6 +225,7 @@ impl Screenshots {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn hermes_connect(
     state: State<'_, AppState>,
     transfers: State<'_, Transfers>,
@@ -343,7 +351,8 @@ async fn hermes_probe(
         let (credential, _) = credential.credential(&target.address()).await.map_err(|e| ProbeFailure::new(Stage::SignIn, e))?;
         let (base, _tunnel, route, headers) = open_target(target, quick, &Steps::default()).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
         let sign_in = SignIn { credential, headers };
-        let probed = transport::probe_expecting(&base, &sign_in, &profile, transport::PROBE_STEP_TIMEOUT, reach_within(quick), expect_server.as_deref()).await?;
+        let probed =
+            transport::probe_expecting(&base, &sign_in, &profile, transport::PROBE_STEP_TIMEOUT, reach_within(quick), expect_server.as_deref()).await?;
         Ok(ProbeResult { route: route.with_server(probed.server.clone()), probed })
     });
     if let Some(before) = state.1.lock().unwrap().replace(task.abort_handle()) {
@@ -410,13 +419,7 @@ async fn hermes_send(state: State<'_, AppState>, frame: String) -> Result<(), St
 }
 
 #[tauri::command]
-async fn hermes_send_file(
-    state: State<'_, AppState>,
-    head: String,
-    path: String,
-    tail: String,
-    max_bytes: u64,
-) -> Result<(), String> {
+async fn hermes_send_file(state: State<'_, AppState>, head: String, path: String, tail: String, max_bytes: u64) -> Result<(), String> {
     // Reading a big file takes a while; don't hold the lock, so a Stop can still go out.
     let pipe = match &*state.0.lock().await {
         Some(conn) => conn.pipe.clone(),
@@ -505,12 +508,7 @@ async fn stage_clipboard_file(request: tauri::ipc::Request<'_>) -> Result<String
 }
 
 #[tauri::command]
-async fn hermes_request(
-    state: State<'_, AppState>,
-    method: String,
-    path: String,
-    body: Option<String>,
-) -> Result<String, String> {
+async fn hermes_request(state: State<'_, AppState>, method: String, path: String, body: Option<String>) -> Result<String, String> {
     // Don't hold the lock across the request, so frames keep flowing while it runs.
     let dashboard = match &*state.0.lock().await {
         Some(conn) => conn.dashboard.clone(),
@@ -682,7 +680,12 @@ impl Transfers {
     /// Runs `work` as transfer `id` until it ends or `files_cancel` or `stop_all` stops it, if no stop came since
     /// `epoch` (checked under the same lock `stop_all` takes, so a stop either reaches the work or keeps it from
     /// starting). Given an `id` still running, the older transfer is stopped; each run removes only its own entry.
-    async fn run<T: Send + 'static>(&self, id: u64, epoch: u64, work: impl std::future::Future<Output = Result<T, String>> + Send + 'static) -> Result<T, String> {
+    async fn run<T: Send + 'static>(
+        &self,
+        id: u64,
+        epoch: u64,
+        work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+    ) -> Result<T, String> {
         let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let task = {
             let mut tasks = self.tasks.lock().unwrap();
@@ -782,7 +785,10 @@ async fn files_download(
 /// Each is kept with the transfers' epoch it was picked in: a pick is good for one upload, over the connection that was
 /// current when it was picked.
 #[derive(Default)]
-struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, (std::path::PathBuf, u64)>)>);
+struct UploadPicks(std::sync::Mutex<(u64, std::collections::HashMap<u64, Pick>)>);
+
+/// A picked file: its local path and the transfers' epoch it was picked in.
+type Pick = (std::path::PathBuf, u64);
 
 /// A local file picked to upload: its token, name and size.
 #[derive(Serialize)]
@@ -831,6 +837,7 @@ fn files_discard_pick(picks: State<'_, UploadPicks>, token: u64) {
 /// Uploads the file picked as `token` to the server path `path` (`Dashboard::upload`, ADR 0023). `overwrite` false:
 /// Hermes refuses when a file is already there. Resolves to Hermes's answer, the written entry as JSON.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn files_upload(
     app: tauri::AppHandle,
     transfers: State<'_, Transfers>,
@@ -1224,7 +1231,9 @@ async fn terminal_open_local(
 fn display_event(e: display::DisplayEvent) -> tauri::ipc::InvokeResponseBody {
     match e {
         display::DisplayEvent::Data(bytes) => tauri::ipc::InvokeResponseBody::Raw(bytes),
-        display::DisplayEvent::Closed { code, reason } => tauri::ipc::InvokeResponseBody::Json(serde_json::json!({ "code": code, "reason": reason }).to_string()),
+        display::DisplayEvent::Closed { code, reason } => {
+            tauri::ipc::InvokeResponseBody::Json(serde_json::json!({ "code": code, "reason": reason }).to_string())
+        }
     }
 }
 
@@ -1497,10 +1506,22 @@ mod tests {
     async fn a_replaced_transfer_leaves_its_replacements_cancel_in_place() {
         let transfers = std::sync::Arc::new(Transfers::default());
         let t = transfers.clone();
-        let old = tokio::spawn(async move { t.run(7, 0, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        let old = tokio::spawn(async move {
+            t.run(7, 0, async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(())
+            })
+            .await
+        });
         tokio::time::sleep(Duration::from_millis(20)).await;
         let t = transfers.clone();
-        let new = tokio::spawn(async move { t.run(7, 0, async { tokio::time::sleep(Duration::from_secs(60)).await; Ok(()) }).await });
+        let new = tokio::spawn(async move {
+            t.run(7, 0, async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(())
+            })
+            .await
+        });
         assert_eq!(old.await.unwrap(), Err(super::TRANSFER_STOPPED.to_owned()));
         // The old run ended after the new one registered; the new one must still be reachable.
         assert!(transfers.tasks.lock().unwrap().contains_key(&7));
@@ -1512,7 +1533,12 @@ mod tests {
         // Asked for before that stop: it never starts.
         let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let s = started.clone();
-        let late = transfers.run(8, epoch, async move { s.store(true, std::sync::atomic::Ordering::SeqCst); Ok(()) }).await;
+        let late = transfers
+            .run(8, epoch, async move {
+                s.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
         assert_eq!(late, Err(super::TRANSFER_STOPPED.to_owned()));
         assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
     }
@@ -1570,7 +1596,8 @@ mod tests {
     async fn connect(base: &url::Url, credential: super::SignInWith) -> super::Connection {
         let target = super::Target::Url { url: base.to_string(), headers: Vec::new() };
         let on_event = tauri::ipc::Channel::new(|_| Ok(()));
-        let (connection, _) = super::open_connection(target, credential, "default".into(), on_event, None, false, None, super::Steps::default()).await.expect("connected");
+        let (connection, _) =
+            super::open_connection(target, credential, "default".into(), on_event, None, false, None, super::Steps::default()).await.expect("connected");
         connection
     }
 

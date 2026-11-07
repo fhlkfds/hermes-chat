@@ -164,10 +164,7 @@ impl ServerPage {
 pub fn server_page(raw: &str) -> Result<ServerPage, ServerPageError> {
     let url = Url::parse(raw.trim()).map_err(|_| ServerPageError::NotWeb("That isn't a web address.".into()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(ServerPageError::NotWeb(format!(
-            "Only http:// and https:// pages open in the preview, and {}: isn't one.",
-            url.scheme()
-        )));
+        return Err(ServerPageError::NotWeb(format!("Only http:// and https:// pages open in the preview, and {}: isn't one.", url.scheme())));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ServerPageError::NotWeb("Web addresses with a username or password in them don't open in the preview.".into()));
@@ -223,18 +220,30 @@ pub fn tcp_ssh_args(target: &str, port: u16, page: &ServerPage) -> Result<Vec<Os
 fn forward_args(target: &str, listen: &str, page: &ServerPage) -> Vec<OsString> {
     let forward = format!("{listen}:{}:{}", page.host.forward_host(), page.port);
     let mut args: Vec<OsString> = [
-        "-N", "-T",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=15",
-        "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=3",
-        "-o", "ControlMaster=no",
-        "-o", "ControlPath=none",
-        "-o", "ForkAfterAuthentication=no",
-        "-o", "PermitLocalCommand=no",
-        "-o", "ExitOnForwardFailure=no",
-        "-o", "StreamLocalBindMask=0177",
-        "-o", "StreamLocalBindUnlink=yes",
+        "-N",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ForkAfterAuthentication=no",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "ExitOnForwardFailure=no",
+        "-o",
+        "StreamLocalBindMask=0177",
+        "-o",
+        "StreamLocalBindUnlink=yes",
         "-L",
     ]
     .iter()
@@ -464,9 +473,7 @@ async fn spawn_ssh(program: &str, args: &[OsString]) -> Result<Child, ServerPage
             let _ = tx.send(command.spawn());
         }))
         .map_err(|_| ServerPageError::Spawn("the ssh spawner thread is gone".into()))?;
-    rx.await
-        .map_err(|_| ServerPageError::Spawn("the ssh spawner thread is gone".into()))?
-        .map_err(|e| ServerPageError::Spawn(e.to_string()))
+    rx.await.map_err(|_| ServerPageError::Spawn("the ssh spawner thread is gone".into()))?.map_err(|e| ServerPageError::Spawn(e.to_string()))
 }
 
 /// `ssh` with `args`: stdin closed, stdout dropped, stderr kept, and no console window. It is killed when dropped, and,
@@ -896,20 +903,34 @@ mod tests {
         assert_eq!(
             args,
             [
-                "-N", "-T",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=15",
-                "-o", "ServerAliveInterval=15",
-                "-o", "ServerAliveCountMax=3",
-                "-o", "ControlMaster=no",
-                "-o", "ControlPath=none",
-                "-o", "ForkAfterAuthentication=no",
-                "-o", "PermitLocalCommand=no",
-                "-o", "ExitOnForwardFailure=no",
-                "-o", "StreamLocalBindMask=0177",
-                "-o", "StreamLocalBindUnlink=yes",
-                "-L", "/run/user/1000/hermes-chat-page-1-1-a/s:localhost:3000",
-                "--", "liam@hermes",
+                "-N",
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=15",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
+                "-o",
+                "ForkAfterAuthentication=no",
+                "-o",
+                "PermitLocalCommand=no",
+                "-o",
+                "ExitOnForwardFailure=no",
+                "-o",
+                "StreamLocalBindMask=0177",
+                "-o",
+                "StreamLocalBindUnlink=yes",
+                "-L",
+                "/run/user/1000/hermes-chat-page-1-1-a/s:localhost:3000",
+                "--",
+                "liam@hermes",
             ]
         );
         let fwd = |raw: &str| {
@@ -1441,7 +1462,6 @@ while True:
         let e = open_page(&pages, &fake.program, "hermes", &format!("https://localhost:{closed}/"), |_| {}).await.unwrap_err();
         assert!(matches!(e, ServerPageError::PortClosed { .. }), "{e:?}");
     }
-
 
     /// Against real OpenSSH, when `HERMES_REAL_SSH` names an ssh program (a wrapper with its own `-F`) and
     /// `HERMES_REAL_SSH_TARGET` a target whose loopback serves a page on `localhost:5173` (IPv6 only, as Vite binds)

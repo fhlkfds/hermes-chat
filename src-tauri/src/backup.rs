@@ -105,7 +105,8 @@ pub fn read_zip(path: &Path) -> Result<Vec<Entry>, String> {
     if meta.len() > MAX_ARCHIVE_BYTES {
         return Err(format!("It's over {} MB, bigger than any backup Hermes Chat makes.", MAX_ARCHIVE_BYTES / 1024 / 1024));
     }
-    let mut zip = zip::ZipArchive::new(io::BufReader::new(file)).map_err(|e| format!("It isn't a readable zip archive ({e}). It may be damaged or cut short."))?;
+    let mut zip =
+        zip::ZipArchive::new(io::BufReader::new(file)).map_err(|e| format!("It isn't a readable zip archive ({e}). It may be damaged or cut short."))?;
     if zip.is_empty() || zip.len() > MAX_ENTRIES {
         return Err(format!("It has {} files; a backup has 1 to {MAX_ENTRIES}.", zip.len()));
     }
@@ -145,7 +146,12 @@ fn save_recovery(dir: &Path, entries: &[Entry], now_ms: u128) -> Result<PathBuf,
     let path = dir.join(format!("recovery-{now_ms}.zip"));
     write_zip(&path, entries)?;
     let mut old: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|r| r.flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("recovery-") && n.to_string_lossy().ends_with(".zip"))).collect())
+        .map(|r| {
+            r.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("recovery-") && n.to_string_lossy().ends_with(".zip")))
+                .collect()
+        })
         .unwrap_or_default();
     old.sort();
     for p in old.iter().take(old.len().saturating_sub(RECOVERY_KEPT)) {
@@ -165,7 +171,12 @@ pub async fn backup_export(app: AppHandle, entries: Vec<Entry>, file_name: Strin
         "hermes-chat-backup.zip".into()
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app.dialog().file().set_title("Export backup — it holds your drafts and other personal data").set_file_name(file_name).add_filter("Zip archive", &["zip"]);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Export backup — it holds your drafts and other personal data")
+        .set_file_name(file_name)
+        .add_filter("Zip archive", &["zip"]);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
     }

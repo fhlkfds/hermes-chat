@@ -87,18 +87,12 @@ pub enum Method {
 /// Picks the capture method from the session's environment and the tools on PATH.
 pub fn plan(env: impl Fn(&str) -> Option<String>, has: impl Fn(&str) -> bool) -> Method {
     let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
-    let desktop = env("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let desktop = env("XDG_CURRENT_DESKTOP").unwrap_or_default().to_ascii_lowercase();
     let desktops: Vec<&str> = desktop.split(':').collect();
     let wayland = set("WAYLAND_DISPLAY") || env("XDG_SESSION_TYPE").as_deref() == Some("wayland");
     let hyprland = set("HYPRLAND_INSTANCE_SIGNATURE") || desktops.contains(&"hyprland");
     let sway = set("SWAYSOCK") || desktops.contains(&"sway");
-    let wlroots = hyprland
-        || sway
-        || desktops
-            .iter()
-            .any(|d| matches!(*d, "river" | "labwc" | "wayfire" | "wlroots"));
+    let wlroots = hyprland || sway || desktops.iter().any(|d| matches!(*d, "river" | "labwc" | "wayfire" | "wlroots"));
     if !(wayland && wlroots) {
         return Method::Portal;
     }
@@ -120,8 +114,7 @@ pub fn on_path(tool: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|dir| {
             #[cfg(unix)]
-            return std::fs::metadata(dir.join(tool))
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+            return std::fs::metadata(dir.join(tool)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
             #[cfg(windows)]
             return std::fs::metadata(dir.join(format!("{tool}.exe"))).is_ok_and(|m| m.is_file());
         })
@@ -149,11 +142,9 @@ pub struct Support {
 
 const NO_PORTAL: &str = "No screenshot portal is running. Install xdg-desktop-portal and the backend for your desktop \
 (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr), or on Hyprland and Sway install slurp and grim.";
-const NEEDS_SLURP_AND_GRIM: &str =
-    "On Hyprland, Sway and other wlroots desktops, Hermes Chat picks a region or window \
+const NEEDS_SLURP_AND_GRIM: &str = "On Hyprland, Sway and other wlroots desktops, Hermes Chat picks a region or window \
 with slurp and grim. Install both (on Arch: sudo pacman -S slurp grim), then try again.";
-const PORTAL_TOO_OLD: &str =
-    "Your desktop's screenshot portal is too old to let you pick a region or window. Update \
+const PORTAL_TOO_OLD: &str = "Your desktop's screenshot portal is too old to let you pick a region or window. Update \
 xdg-desktop-portal and its backend for your desktop.";
 
 /// How screenshots are taken here, for Settings. Asks the portal for its version, so it can block briefly.
@@ -172,10 +163,9 @@ pub fn support() -> Support {
             Some(why) => Support { ok: false, summary: why },
         },
         Method::Portal => match portal::version() {
-            Ok(v) if v >= 2 => Support {
-                ok: true,
-                summary: "Screenshots use your desktop's screenshot portal, which asks you to pick a region or window.".into(),
-            },
+            Ok(v) if v >= 2 => {
+                Support { ok: true, summary: "Screenshots use your desktop's screenshot portal, which asks you to pick a region or window.".into() }
+            }
             Ok(_) => Support { ok: false, summary: PORTAL_TOO_OLD.into() },
             Err(e) => Support { ok: false, summary: e.to_string() },
         },
@@ -187,10 +177,7 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 struct Turn;
 impl Turn {
     fn take() -> Result<Turn, CaptureError> {
-        CAPTURING
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| Turn)
-            .map_err(|_| CaptureError::Busy)
+        CAPTURING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| Turn).map_err(|_| CaptureError::Busy)
     }
 }
 impl Drop for Turn {
@@ -205,18 +192,12 @@ pub async fn capture(captures: &Captures, name: &str) -> Result<Capture, Capture
     match current_method() {
         Method::GrimSlurp(windows) => {
             let path = grim_slurp(captures, windows, name).await?;
-            Ok(Capture {
-                path: path.to_string_lossy().into_owned(),
-                note: None,
-            })
+            Ok(Capture { path: path.to_string_lossy().into_owned(), note: None })
         }
         Method::NeedsSlurpAndGrim => Err(CaptureError::Unsupported(NEEDS_SLURP_AND_GRIM.into())),
         Method::Picker => {
             let path = picker::take(captures, name).await?;
-            Ok(Capture {
-                path: path.to_string_lossy().into_owned(),
-                note: None,
-            })
+            Ok(Capture { path: path.to_string_lossy().into_owned(), note: None })
         }
         Method::Portal => {
             let source = tokio::task::spawn_blocking(|| {
@@ -230,27 +211,15 @@ pub async fn capture(captures: &Captures, name: &str) -> Result<Capture, Capture
             .map_err(|e| failed("The screenshot stopped", e))??;
             let scratch = is_scratch(&source);
             let path = captures.adopt(&source, name, scratch)?;
-            let note = (!scratch && source.exists()).then(|| {
-                format!(
-                    "Your desktop also saved its own copy at {}.",
-                    source.display()
-                )
-            });
-            Ok(Capture {
-                path: path.to_string_lossy().into_owned(),
-                note,
-            })
+            let note = (!scratch && source.exists()).then(|| format!("Your desktop also saved its own copy at {}.", source.display()));
+            Ok(Capture { path: path.to_string_lossy().into_owned(), note })
         }
     }
 }
 
 // ---- slurp and grim ----
 
-async fn grim_slurp(
-    captures: &Captures,
-    windows: Windows,
-    name: &str,
-) -> Result<PathBuf, CaptureError> {
+async fn grim_slurp(captures: &Captures, windows: Windows, name: &str) -> Result<PathBuf, CaptureError> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
@@ -269,21 +238,12 @@ async fn grim_slurp(
     }
     let picked = tokio::time::timeout(PICK_TIMEOUT, slurp.wait_with_output())
         .await
-        .map_err(|_| {
-            CaptureError::Failed(
-                "Nothing was picked within 5 minutes, so the screenshot was cancelled.".into(),
-            )
-        })?
+        .map_err(|_| CaptureError::Failed("Nothing was picked within 5 minutes, so the screenshot was cancelled.".into()))?
         .map_err(|e| failed("slurp failed", e))?;
     let geometry = slurp_outcome(picked.status.success(), &picked.stdout, &picked.stderr)?;
 
     let path = captures.slot(&format!("{}.png", capture_stem(name)))?;
-    let grim = Command::new("grim")
-        .args(["-t", "png", "-g", &geometry])
-        .arg(&path)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
+    let grim = Command::new("grim").args(["-t", "png", "-g", &geometry]).arg(&path).stdin(Stdio::null()).kill_on_drop(true).output();
     let out = match tokio::time::timeout(TOOL_TIMEOUT, grim).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
@@ -292,17 +252,13 @@ async fn grim_slurp(
         }
         Err(_) => {
             captures.discard(&path);
-            return Err(CaptureError::Failed(
-                "grim didn't finish the screenshot.".into(),
-            ));
+            return Err(CaptureError::Failed("grim didn't finish the screenshot.".into()));
         }
     };
-    let checked = grim_outcome(out.status.success(), &out.stderr)
-        .and_then(|()| check_image(&path).map(|_| ()))
-        .and_then(|()| {
-            // grim writes with the umask; the folder is private already, the file is made so too.
-            private::restrict_file(&path).map_err(|e| failed("Couldn't save the screenshot", e))
-        });
+    let checked = grim_outcome(out.status.success(), &out.stderr).and_then(|()| check_image(&path).map(|_| ())).and_then(|()| {
+        // grim writes with the umask; the folder is private already, the file is made so too.
+        private::restrict_file(&path).map_err(|e| failed("Couldn't save the screenshot", e))
+    });
     if let Err(e) = checked {
         captures.discard(&path);
         return Err(e);
@@ -318,24 +274,13 @@ pub fn slurp_outcome(ok: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, C
             return Err(CaptureError::Cancelled);
         }
         if err.contains("layer") || err.contains("doesn't support") || err.contains("not support") {
-            return Err(CaptureError::Unsupported(format!(
-                "Your compositor doesn't let slurp pick a region: {err}"
-            )));
+            return Err(CaptureError::Unsupported(format!("Your compositor doesn't let slurp pick a region: {err}")));
         }
-        return Err(CaptureError::Failed(format!(
-            "slurp failed: {}",
-            if err.is_empty() {
-                "no reason given"
-            } else {
-                &err
-            }
-        )));
+        return Err(CaptureError::Failed(format!("slurp failed: {}", if err.is_empty() { "no reason given" } else { &err })));
     }
     let geometry = String::from_utf8_lossy(stdout).trim().to_owned();
     if !is_geometry(&geometry) {
-        return Err(CaptureError::Failed(format!(
-            "slurp answered something that isn't a region: {geometry:?}"
-        )));
+        return Err(CaptureError::Failed(format!("slurp answered something that isn't a region: {geometry:?}")));
     }
     Ok(geometry)
 }
@@ -351,10 +296,7 @@ fn is_geometry(g: &str) -> bool {
     let Some((w, h)) = size.split_once('x') else {
         return false;
     };
-    x.parse::<i64>().is_ok()
-        && y.parse::<i64>().is_ok()
-        && w.parse::<u32>().is_ok_and(|w| w > 0)
-        && h.parse::<u32>().is_ok_and(|h| h > 0)
+    x.parse::<i64>().is_ok() && y.parse::<i64>().is_ok() && w.parse::<u32>().is_ok_and(|w| w > 0) && h.parse::<u32>().is_ok_and(|h| h > 0)
 }
 
 pub fn grim_outcome(ok: bool, stderr: &[u8]) -> Result<(), CaptureError> {
@@ -362,46 +304,25 @@ pub fn grim_outcome(ok: bool, stderr: &[u8]) -> Result<(), CaptureError> {
         return Ok(());
     }
     let err = String::from_utf8_lossy(stderr).trim().to_owned();
-    if err.contains("screencopy") || err.contains("doesn't support") || err.contains("not support")
-    {
-        return Err(CaptureError::Unsupported(format!(
-            "Your compositor doesn't let grim capture the screen: {err}"
-        )));
+    if err.contains("screencopy") || err.contains("doesn't support") || err.contains("not support") {
+        return Err(CaptureError::Unsupported(format!("Your compositor doesn't let grim capture the screen: {err}")));
     }
-    Err(CaptureError::Failed(format!(
-        "grim failed: {}",
-        if err.is_empty() {
-            "no reason given"
-        } else {
-            &err
-        }
-    )))
+    Err(CaptureError::Failed(format!("grim failed: {}", if err.is_empty() { "no reason given" } else { &err })))
 }
 
 /// The visible windows, as slurp outlines (`x,y wxh`), so a click picks one. Empty if the compositor can't say.
 async fn window_boxes(windows: Windows) -> Vec<String> {
     async fn run(cmd: &str, args: &[&str]) -> Option<String> {
-        let out = tokio::process::Command::new(cmd)
-            .args(args)
-            .kill_on_drop(true)
-            .output();
+        let out = tokio::process::Command::new(cmd).args(args).kill_on_drop(true).output();
         let out = tokio::time::timeout(TOOL_TIMEOUT, out).await.ok()?.ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     }
     match windows {
-        Windows::Hyprland => match (
-            run("hyprctl", &["-j", "clients"]).await,
-            run("hyprctl", &["-j", "monitors"]).await,
-        ) {
+        Windows::Hyprland => match (run("hyprctl", &["-j", "clients"]).await, run("hyprctl", &["-j", "monitors"]).await) {
             (Some(c), Some(m)) => hyprland_boxes(&c, &m),
             _ => vec![],
         },
-        Windows::Sway => run("swaymsg", &["-t", "get_tree", "-r"])
-            .await
-            .map(|t| sway_boxes(&t))
-            .unwrap_or_default(),
+        Windows::Sway => run("swaymsg", &["-t", "get_tree", "-r"]).await.map(|t| sway_boxes(&t)).unwrap_or_default(),
         Windows::None => vec![],
     }
 }
@@ -409,34 +330,18 @@ async fn window_boxes(windows: Windows) -> Vec<String> {
 /// Hyprland's windows on the workspaces on screen, from `hyprctl -j clients` and `hyprctl -j monitors`.
 pub fn hyprland_boxes(clients: &str, monitors: &str) -> Vec<String> {
     use serde_json::Value;
-    let (Ok(Value::Array(clients)), Ok(Value::Array(monitors))) = (
-        serde_json::from_str(clients),
-        serde_json::from_str(monitors),
-    ) else {
+    let (Ok(Value::Array(clients)), Ok(Value::Array(monitors))) = (serde_json::from_str(clients), serde_json::from_str(monitors)) else {
         return vec![];
     };
-    let shown: Vec<i64> = monitors
-        .iter()
-        .flat_map(|m| [&m["activeWorkspace"]["id"], &m["specialWorkspace"]["id"]])
-        .filter_map(Value::as_i64)
-        .filter(|id| *id != 0)
-        .collect();
+    let shown: Vec<i64> =
+        monitors.iter().flat_map(|m| [&m["activeWorkspace"]["id"], &m["specialWorkspace"]["id"]]).filter_map(Value::as_i64).filter(|id| *id != 0).collect();
     let num = |v: &Value, i: usize| v.get(i).and_then(Value::as_i64);
     clients
         .iter()
         .filter(|c| c["mapped"].as_bool() != Some(false) && c["hidden"].as_bool() != Some(true))
-        .filter(|c| {
-            c["workspace"]["id"]
-                .as_i64()
-                .is_some_and(|id| shown.contains(&id))
-        })
+        .filter(|c| c["workspace"]["id"].as_i64().is_some_and(|id| shown.contains(&id)))
         .filter_map(|c| {
-            let (x, y, w, h) = (
-                num(&c["at"], 0)?,
-                num(&c["at"], 1)?,
-                num(&c["size"], 0)?,
-                num(&c["size"], 1)?,
-            );
+            let (x, y, w, h) = (num(&c["at"], 0)?, num(&c["at"], 1)?, num(&c["size"], 0)?, num(&c["size"], 1)?);
             (w > 0 && h > 0).then(|| format!("{x},{y} {w}x{h}"))
         })
         .collect()
@@ -446,16 +351,10 @@ pub fn hyprland_boxes(clients: &str, monitors: &str) -> Vec<String> {
 pub fn sway_boxes(tree: &str) -> Vec<String> {
     use serde_json::Value;
     fn walk(node: &Value, out: &mut Vec<String>) {
-        let window = node.get("pid").is_some_and(Value::is_number)
-            || node.get("app_id").is_some_and(Value::is_string);
+        let window = node.get("pid").is_some_and(Value::is_number) || node.get("app_id").is_some_and(Value::is_string);
         if window && node["visible"].as_bool() == Some(true) {
             let r = &node["rect"];
-            if let (Some(x), Some(y), Some(w), Some(h)) = (
-                r["x"].as_i64(),
-                r["y"].as_i64(),
-                r["width"].as_i64(),
-                r["height"].as_i64(),
-            ) {
+            if let (Some(x), Some(y), Some(w), Some(h)) = (r["x"].as_i64(), r["y"].as_i64(), r["width"].as_i64(), r["height"].as_i64()) {
                 if w > 0 && h > 0 {
                     out.push(format!("{x},{y} {w}x{h}"));
                 }
@@ -502,9 +401,9 @@ pub mod picker {
             Some(0) => Ok(()),
             Some(CANCELLED) => Err(CaptureError::Cancelled),
             // Constrained Language Mode, set by an administrator's application control, refuses to compile C#.
-            _ if err.contains("Cannot add type") || err.contains("language mode") => Err(CaptureError::Unsupported(format!(
-                "This computer's policy doesn't let PowerShell run the screenshot picker: {err}"
-            ))),
+            _ if err.contains("Cannot add type") || err.contains("language mode") => {
+                Err(CaptureError::Unsupported(format!("This computer's policy doesn't let PowerShell run the screenshot picker: {err}")))
+            }
             _ if !err.is_empty() => Err(CaptureError::Failed(format!("The screenshot picker failed: {err}"))),
             Some(c) => Err(CaptureError::Failed(format!("The screenshot picker failed: it exited with {c}."))),
             None => Err(CaptureError::Failed("The screenshot picker was stopped.".into())),
@@ -785,13 +684,15 @@ pub mod portal {
             "org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner" | "org.freedesktop.DBus.Error.FileNotFound" => {
                 CaptureError::Unsupported(super::NO_PORTAL.into())
             }
-            "org.freedesktop.DBus.Error.UnknownMethod" | "org.freedesktop.DBus.Error.UnknownInterface" | "org.freedesktop.DBus.Error.UnknownObject" | "org.freedesktop.DBus.Error.UnknownProperty" | "org.freedesktop.DBus.Error.InvalidArgs" => {
-                CaptureError::Unsupported(
-                    "Your desktop's portal doesn't offer screenshots. Install the portal backend for your desktop \
+            "org.freedesktop.DBus.Error.UnknownMethod"
+            | "org.freedesktop.DBus.Error.UnknownInterface"
+            | "org.freedesktop.DBus.Error.UnknownObject"
+            | "org.freedesktop.DBus.Error.UnknownProperty"
+            | "org.freedesktop.DBus.Error.InvalidArgs" => CaptureError::Unsupported(
+                "Your desktop's portal doesn't offer screenshots. Install the portal backend for your desktop \
                      (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr), or on Hyprland and Sway install slurp and grim."
-                        .into(),
-                )
-            }
+                    .into(),
+            ),
             "org.freedesktop.portal.Error.NotAllowed" | "org.freedesktop.DBus.Error.AccessDenied" => CaptureError::Denied(
                 "Your desktop didn't allow Hermes Chat to take a screenshot. Check the screenshot permission in its privacy settings.".into(),
             ),
@@ -801,10 +702,7 @@ pub mod portal {
 
     #[cfg(target_os = "linux")]
     fn dbus_error(e: dbus::Error) -> CaptureError {
-        explain(
-            e.name().unwrap_or(""),
-            e.message().unwrap_or("no reason given"),
-        )
+        explain(e.name().unwrap_or(""), e.message().unwrap_or("no reason given"))
     }
 
     /// The portal's `Response`: code 0 with the file's URI, 1 when the owner cancelled, 2 for anything else (a refused
@@ -831,9 +729,7 @@ pub mod portal {
     /// The Screenshot portal's version; an error when there is no portal, or it has no Screenshot interface.
     #[cfg(target_os = "linux")]
     pub fn version() -> Result<u32, CaptureError> {
-        let conn = Connection::new_session().map_err(|e| {
-            CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}"))
-        })?;
+        let conn = Connection::new_session().map_err(|e| CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}")))?;
         let proxy = conn.with_proxy(DEST, PATH, CALL_TIMEOUT);
         proxy.get::<u32>(IFACE, "version").map_err(dbus_error)
     }
@@ -845,29 +741,18 @@ pub mod portal {
     /// the portal saved.
     #[cfg(target_os = "linux")]
     pub fn screenshot(timeout: Duration) -> Result<PathBuf, CaptureError> {
-        let conn = Connection::new_session().map_err(|e| {
-            CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}"))
-        })?;
+        let conn = Connection::new_session().map_err(|e| CaptureError::Unsupported(format!("Couldn't reach the desktop's session bus: {e}")))?;
         // The request object's path is known ahead of the call, so the Response can't arrive before we listen for it.
-        let token = format!(
-            "hermes_chat_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        );
+        let token =
+            format!("hermes_chat_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
         let sender = conn.unique_name().trim_start_matches(':').replace('.', "_");
         let handle = format!("{PATH}/request/{sender}/{token}");
         let answer: PortalAnswer = Arc::default();
         let listen = |path: String| {
             let answer = answer.clone();
-            let rule =
-                MatchRule::new_signal("org.freedesktop.portal.Request", "Response").with_path(path);
+            let rule = MatchRule::new_signal("org.freedesktop.portal.Request", "Response").with_path(path);
             conn.add_match(rule, move |(code, results): (u32, PropMap), _, _| {
-                let uri = results
-                    .get("uri")
-                    .and_then(|v| v.0.as_str())
-                    .map(str::to_owned);
+                let uri = results.get("uri").and_then(|v| v.0.as_str()).map(str::to_owned);
                 *answer.lock().unwrap() = Some((code, uri));
                 false
             })
@@ -879,9 +764,7 @@ pub mod portal {
         options.insert("interactive".into(), Variant(Box::new(true)));
         options.insert("modal".into(), Variant(Box::new(true)));
         let proxy = conn.with_proxy(DEST, PATH, CALL_TIMEOUT);
-        let (request,): (dbus::Path<'static>,) = proxy
-            .method_call(IFACE, "Screenshot", ("", options))
-            .map_err(dbus_error)?;
+        let (request,): (dbus::Path<'static>,) = proxy.method_call(IFACE, "Screenshot", ("", options)).map_err(dbus_error)?;
         // Portals older than 0.9 pick their own request path.
         if &*request != handle.as_str() {
             listen(request.to_string()).map_err(dbus_error)?;
@@ -893,17 +776,10 @@ pub mod portal {
                 return response(code, uri.as_deref());
             }
             if Instant::now() >= deadline {
-                let _: Result<(), _> = conn.with_proxy(DEST, request, CALL_TIMEOUT).method_call(
-                    "org.freedesktop.portal.Request",
-                    "Close",
-                    (),
-                );
-                return Err(CaptureError::Failed(
-                    "Nothing was picked within 5 minutes, so the screenshot was cancelled.".into(),
-                ));
+                let _: Result<(), _> = conn.with_proxy(DEST, request, CALL_TIMEOUT).method_call("org.freedesktop.portal.Request", "Close", ());
+                return Err(CaptureError::Failed("Nothing was picked within 5 minutes, so the screenshot was cancelled.".into()));
             }
-            conn.process(Duration::from_millis(250))
-                .map_err(dbus_error)?;
+            conn.process(Duration::from_millis(250)).map_err(dbus_error)?;
         }
     }
 }
@@ -923,9 +799,9 @@ pub struct Captures {
 /// folder inherits: the captures root is in `%LOCALAPPDATA%`, which grants only this user, SYSTEM and Administrators,
 /// so nothing is set or checked beyond that, and a link in place of a folder is still refused.
 mod private {
-    use std::path::Path;
     #[cfg(unix)]
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
 
     #[cfg(unix)]
     fn my_uid() -> std::io::Result<u32> {
@@ -986,10 +862,7 @@ fn private_dir(dir: &Path) -> Result<(), CaptureError> {
     }
     let meta = std::fs::symlink_metadata(dir).map_err(io)?;
     if !meta.is_dir() || !private::closed(&meta).map_err(io)? {
-        return Err(CaptureError::Failed(format!(
-            "Couldn't save the screenshot: {} isn't a private folder.",
-            dir.display()
-        )));
+        return Err(CaptureError::Failed(format!("Couldn't save the screenshot: {} isn't a private folder.", dir.display())));
     }
     Ok(())
 }
@@ -1003,20 +876,14 @@ pub fn default_root() -> Result<PathBuf, CaptureError> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
     #[cfg(windows)]
     let cache = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).filter(|p| p.is_absolute());
-    let cache = cache
-        .ok_or_else(|| CaptureError::Failed("Couldn't find a folder for screenshots.".into()))?;
+    let cache = cache.ok_or_else(|| CaptureError::Failed("Couldn't find a folder for screenshots.".into()))?;
     std::fs::create_dir_all(&cache).map_err(|e| failed("Couldn't open the screenshot cache", e))?;
     Ok(cache.join("hermes-chat").join("captures"))
 }
 
 /// A capture's file name without its extension: the webview's `screenshot-<local time>`, if it is plain enough.
 pub fn capture_stem(name: &str) -> String {
-    let ok = !name.is_empty()
-        && name.len() <= 100
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let ok = !name.is_empty() && name.len() <= 100 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     if ok {
         name.trim_end_matches(".png").to_owned()
     } else {
@@ -1038,11 +905,8 @@ pub fn image_ext(head: &[u8]) -> Option<&'static str> {
 fn check_image(path: &Path) -> Result<&'static str, CaptureError> {
     use std::io::Read;
     let mut head = [0u8; 8];
-    let n = std::fs::File::open(path)
-        .and_then(|mut f| f.read(&mut head))
-        .map_err(|e| failed("Couldn't read the screenshot", e))?;
-    image_ext(&head[..n])
-        .ok_or_else(|| CaptureError::Failed("The screenshot isn't a PNG or JPEG image.".into()))
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).map_err(|e| failed("Couldn't read the screenshot", e))?;
+    image_ext(&head[..n]).ok_or_else(|| CaptureError::Failed("The screenshot isn't a PNG or JPEG image.".into()))
 }
 
 /// `path` is a regular file of this user's in a temporary folder (`$XDG_RUNTIME_DIR` or the system temp folder), where
@@ -1057,14 +921,8 @@ pub fn is_scratch(path: &Path) -> bool {
     let Ok(real) = path.canonicalize() else {
         return false;
     };
-    let temp = [
-        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
-        Some(std::env::temp_dir()),
-    ];
-    temp.into_iter()
-        .flatten()
-        .filter_map(|t| t.canonicalize().ok())
-        .any(|t| real.starts_with(t))
+    let temp = [std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), Some(std::env::temp_dir())];
+    temp.into_iter().flatten().filter_map(|t| t.canonicalize().ok()).any(|t| real.starts_with(t))
 }
 
 impl Captures {
@@ -1075,12 +933,7 @@ impl Captures {
         }
         private_dir(&root)?;
         let mine = root.join(std::process::id().to_string());
-        Ok(Captures {
-            root,
-            mine,
-            next: AtomicU64::new(0),
-            retained: Mutex::new(HashSet::new()),
-        })
+        Ok(Captures { root, mine, next: AtomicU64::new(0), retained: Mutex::new(HashSet::new()) })
     }
 
     /// This process's folder.
@@ -1092,9 +945,7 @@ impl Captures {
     pub fn slot(&self, file_name: &str) -> Result<PathBuf, CaptureError> {
         private_dir(&self.mine)?;
         loop {
-            let dir = self
-                .mine
-                .join(self.next.fetch_add(1, Ordering::Relaxed).to_string());
+            let dir = self.mine.join(self.next.fetch_add(1, Ordering::Relaxed).to_string());
             // A reused pid may still own a screenshot in a persisted outbox. Never overwrite an existing slot.
             match private::create_dir(&dir) {
                 Ok(()) => return Ok(dir.join(file_name)),
@@ -1106,12 +957,7 @@ impl Captures {
 
     /// Copies a capture the portal saved into a slot, as `<name>.png` (or `.jpg`), readable only by this user, and
     /// deletes `source` if `remove_source`, even when it couldn't be copied.
-    pub fn adopt(
-        &self,
-        source: &Path,
-        name: &str,
-        remove_source: bool,
-    ) -> Result<PathBuf, CaptureError> {
+    pub fn adopt(&self, source: &Path, name: &str, remove_source: bool) -> Result<PathBuf, CaptureError> {
         let adopted = self.copy_in(source, name);
         // A scratch copy goes whether or not it could be staged: nothing else would ever delete it.
         if remove_source {
@@ -1121,12 +967,9 @@ impl Captures {
     }
 
     fn copy_in(&self, source: &Path, name: &str) -> Result<PathBuf, CaptureError> {
-        let meta =
-            std::fs::metadata(source).map_err(|e| failed("Couldn't read the screenshot", e))?;
+        let meta = std::fs::metadata(source).map_err(|e| failed("Couldn't read the screenshot", e))?;
         if !meta.is_file() {
-            return Err(CaptureError::Failed(
-                "The screenshot portal didn't save a file.".into(),
-            ));
+            return Err(CaptureError::Failed("The screenshot portal didn't save a file.".into()));
         }
         let ext = check_image(source)?;
         let path = self.slot(&format!("{}.{ext}", capture_stem(name)))?;
@@ -1148,12 +991,7 @@ impl Captures {
     pub fn owns(&self, path: &Path) -> bool {
         path.is_absolute()
             && path.parent().and_then(Path::parent) == Some(self.mine.as_path())
-            && !path.components().any(|c| {
-                matches!(
-                    c,
-                    std::path::Component::ParentDir | std::path::Component::CurDir
-                )
-            })
+            && !path.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
     }
 
     /// Checks every storage ancestor before traversal or deletion. In particular, a pid folder supplied by the
@@ -1181,10 +1019,7 @@ impl Captures {
 
     /// Deletes a staged capture and its folder. Anything else is left alone; returns whether it was one.
     pub fn discard(&self, path: &Path) -> bool {
-        if !self.owns(path)
-            || !self.real_storage_dir(&self.mine)
-            || self.retained.lock().unwrap().contains(path)
-        {
+        if !self.owns(path) || !self.real_storage_dir(&self.mine) || self.retained.lock().unwrap().contains(path) {
             return false;
         }
         if let Some(dir) = path.parent().filter(|dir| self.real_storage_dir(dir)) {
@@ -1197,15 +1032,9 @@ impl Captures {
     pub fn retain_outbox(&self, paths: impl IntoIterator<Item = PathBuf>) {
         let valid = |p: &PathBuf| {
             p.is_absolute()
-                && p.parent().and_then(Path::parent).and_then(Path::parent)
-                    == Some(self.root.as_path())
+                && p.parent().and_then(Path::parent).and_then(Path::parent) == Some(self.root.as_path())
                 && p.parent().is_some_and(|slot| self.real_storage_dir(slot))
-                && !p.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir | std::path::Component::CurDir
-                    )
-                })
+                && !p.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
         };
         let next: HashSet<PathBuf> = paths.into_iter().filter(valid).collect();
         let mut retained = self.retained.lock().unwrap();
@@ -1228,10 +1057,7 @@ impl Captures {
             return;
         };
         for slot in slots.flatten() {
-            if !retained
-                .iter()
-                .any(|p| p.parent() == Some(slot.path().as_path()))
-            {
+            if !retained.iter().any(|p| p.parent() == Some(slot.path().as_path())) {
                 let _ = std::fs::remove_dir_all(slot.path());
             }
         }
@@ -1277,9 +1103,7 @@ pub fn instance_alive(pid: u32) -> bool {
         return false;
     };
     // The state follows the name in parentheses, which can itself hold spaces or parentheses.
-    let state = stat
-        .rsplit_once(") ")
-        .and_then(|(_, rest)| rest.chars().next());
+    let state = stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next());
     if matches!(state, None | Some('Z') | Some('X')) {
         return false;
     }
@@ -1292,7 +1116,9 @@ pub fn instance_alive(pid: u32) -> bool {
 #[cfg(windows)]
 pub fn instance_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     let Some(me) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_ascii_lowercase())) else {
         return false;
     };

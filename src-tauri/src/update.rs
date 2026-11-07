@@ -10,13 +10,13 @@
 // The webview checks GitHub for the pacman case itself (src/hermes/updates.ts).
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
 use tauri::utils::config::BundleType;
 use tauri::utils::platform::{bundle_type, current_exe};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, OnceCell};
 
 #[derive(Default)]
@@ -243,10 +243,7 @@ pub async fn app_restart(app: AppHandle, state: State<'_, Updates>, drafts: Stri
 /// (`--screenshot`, `--show`, `--toggle`, a chat link). Started with one, the new app would hand it to this one, which
 /// still owns the bus name as it exits, and quit (main.rs), leaving no app at all. The link was opened already.
 fn relaunch_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    args.into_iter()
-        .skip(1)
-        .filter(|a| a != "--screenshot" && a != "--show" && a != "--toggle" && !a.to_str().is_some_and(crate::links::candidate))
-        .collect()
+    args.into_iter().skip(1).filter(|a| a != "--screenshot" && a != "--show" && a != "--toggle" && !a.to_str().is_some_and(crate::links::candidate)).collect()
 }
 
 /// Starts the app again, if the owner asked to restart, from the binary it started from (or the AppImage, which the
@@ -272,9 +269,13 @@ pub fn relaunch(app: &AppHandle) {
 pub enum Saved {
     /// No restart, or its drafts are all back.
     None,
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// There, but not text: no draft can be read out of it. The webview sets it aside (`restart_drafts_set_aside`).
-    Unreadable { reason: String },
+    Unreadable {
+        reason: String,
+    },
 }
 
 fn read_saved(path: &std::path::Path) -> Result<Saved, String> {
@@ -447,10 +448,7 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         assert!(read_saved(&path).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(
-            serde_json::to_string(&Saved::Unreadable { reason: "x".into() }).unwrap(),
-            r#"{"kind":"unreadable","reason":"x"}"#
-        );
+        assert_eq!(serde_json::to_string(&Saved::Unreadable { reason: "x".into() }).unwrap(), r#"{"kind":"unreadable","reason":"x"}"#);
         assert_eq!(serde_json::to_string(&Saved::None).unwrap(), r#"{"kind":"none"}"#);
     }
 
@@ -479,10 +477,7 @@ mod tests {
     #[test]
     fn install_serializes_for_the_webview() {
         let i = Install::Pacman { package: "hermes-chat-git".into(), running: "r1.abc1234-1".into(), installed: None };
-        assert_eq!(
-            serde_json::to_string(&i).unwrap(),
-            r#"{"kind":"pacman","package":"hermes-chat-git","running":"r1.abc1234-1","installed":null}"#
-        );
+        assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"pacman","package":"hermes-chat-git","running":"r1.abc1234-1","installed":null}"#);
         let i = Install::AppImage { version: "0.1.0".into(), updater: false };
         assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"appImage","version":"0.1.0","updater":false}"#);
         let i = Install::Unmanaged { version: "0.1.0".into(), installer: None };

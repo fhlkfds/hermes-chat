@@ -1,0 +1,5 @@
+# The code is written at the width it is read at: the TS side has no formatter and runs long, and the Rust side was
+# written the same way. 160 keeps that shape under `cargo fmt --check` (ci.yml); the default 100 would rewrap most
+# of src-tauri. "Max" makes rustfmt use the whole width before it breaks a call or struct over lines.
+max_width = 160
+use_small_heuristics = "Max"

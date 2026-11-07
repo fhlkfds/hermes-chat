@@ -291,7 +291,9 @@ pub fn valid_language(language: &str) -> bool {
 /// the default sends recordings to Hermes, which the owner may have turned off.
 fn read_settings(path: &Path) -> Result<Settings, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str::<Settings>(&text).map(Settings::sanitized).map_err(|e| format!("The speech-to-text setting in {} can't be read: {e}", path.display())),
+        Ok(text) => serde_json::from_str::<Settings>(&text)
+            .map(Settings::sanitized)
+            .map_err(|e| format!("The speech-to-text setting in {} can't be read: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(e) => Err(format!("The speech-to-text setting in {} can't be read: {e}", path.display())),
     }
@@ -353,17 +355,9 @@ pub fn args(engine: &Engine, model: &Path, wav: &Path, out: &Path, language: &st
     match engine.kind {
         // `-l auto`: a multilingual model detects the language; an English-only one ignores it. `-np`: results only.
         Kind::WhisperCpp => vec![s("-m"), p(model), s("-f"), p(wav), s("-l"), s(language), s("-nt"), s("-np"), s("-otxt"), s("-of"), p(&out.join("audio"))],
-        Kind::FasterWhisper => lang(vec![
-            p(wav),
-            s("--model_directory"),
-            p(model),
-            s("--output_dir"),
-            p(out),
-            s("--output_format"),
-            s("txt"),
-            s("--verbose"),
-            s("False"),
-        ]),
+        Kind::FasterWhisper => {
+            lang(vec![p(wav), s("--model_directory"), p(model), s("--output_dir"), p(out), s("--output_format"), s("txt"), s("--verbose"), s("False")])
+        }
         Kind::OpenaiWhisper => lang(vec![
             p(wav),
             s("--model"),
@@ -675,7 +669,10 @@ pub async fn transcribe_routed<'a>(
 
 /// The transcriptions running, by the webview's id, and cancels that came before their transcription did (kept a
 /// minute, so a cancel sent just after the recording isn't lost to the order the two commands arrive in).
-static RUNS: Mutex<Vec<(String, watch::Sender<bool>, Instant, bool)>> = Mutex::new(Vec::new());
+static RUNS: Mutex<Vec<RunEntry>> = Mutex::new(Vec::new());
+/// One of `RUNS`: the webview's run id, the cancel its transcription watches, when it was entered, and whether the
+/// transcription has started (false while only a cancel has arrived).
+type RunEntry = (String, watch::Sender<bool>, Instant, bool);
 const EARLY_CANCEL_KEPT: Duration = Duration::from_secs(60);
 /// The most cancels kept waiting for their transcription; the oldest go first.
 const EARLY_CANCELS_MAX: usize = 64;
@@ -915,7 +912,12 @@ pub fn local_stt_models(app: AppHandle, downloads: Managed<'_, Downloads>) -> Re
 
 /// Downloads a model size into the models folder, reporting progress on `on_progress`. One download runs at a time.
 #[tauri::command]
-pub async fn local_stt_download(app: AppHandle, downloads: Managed<'_, Downloads>, name: String, on_progress: Channel<DownloadProgress>) -> Result<Models, String> {
+pub async fn local_stt_download(
+    app: AppHandle,
+    downloads: Managed<'_, Downloads>,
+    name: String,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<Models, String> {
     let info = model_info(&name).ok_or_else(|| format!("There's no Whisper model called {name}."))?;
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -1252,11 +1254,7 @@ mod tests {
         let got = on_path(&path);
         assert_eq!(
             got,
-            vec![
-                (Kind::WhisperCpp, a.join("whisper-cli")),
-                (Kind::OpenaiWhisper, a.join("whisper")),
-                (Kind::FasterWhisper, b.join("whisper-ctranslate2")),
-            ]
+            vec![(Kind::WhisperCpp, a.join("whisper-cli")), (Kind::OpenaiWhisper, a.join("whisper")), (Kind::FasterWhisper, b.join("whisper-ctranslate2")),]
         );
         // whisper.cpp's old `whisper` is a binary, not a script.
         file(&a.join("whisper"), "\x7fELF", 0o755);
@@ -1268,7 +1266,8 @@ mod tests {
     #[test]
     fn models_are_found_in_each_engines_usual_folders_and_this_apps_downloads() {
         let d = temp("models");
-        let places = Places { home: d.join("home"), data: d.join("data"), cache: d.join("cache"), hf: d.join("hf"), app_models: Some(d.join("app/whisper-models")) };
+        let places =
+            Places { home: d.join("home"), data: d.join("data"), cache: d.join("cache"), hf: d.join("hf"), app_models: Some(d.join("app/whisper-models")) };
         file(&d.join("data/whisper.cpp/ggml-base.en.bin"), "", 0o644);
         file(&d.join("data/whisper.cpp/models/ggml-tiny.bin"), "", 0o644);
         file(&d.join("data/whisper.cpp/models/notes.txt"), "", 0o644);
@@ -1284,7 +1283,9 @@ mod tests {
 
         let cpp = models(Kind::WhisperCpp, &places);
         assert_eq!(cpp[0], d.join("app/whisper-models/ggml-base.bin"), "this app's downloads come first");
-        for m in [d.join("data/whisper.cpp/ggml-base.en.bin"), d.join("data/whisper.cpp/models/ggml-tiny.bin"), d.join("home/whisper.cpp/models/ggml-small.bin")] {
+        for m in
+            [d.join("data/whisper.cpp/ggml-base.en.bin"), d.join("data/whisper.cpp/models/ggml-tiny.bin"), d.join("home/whisper.cpp/models/ggml-small.bin")]
+        {
             assert!(cpp.contains(&m), "{m:?} in {cpp:?}");
         }
         assert!(!cpp.iter().any(|m| m.ends_with("notes.txt") || name_of(m).ends_with(".part")));
@@ -1373,7 +1374,11 @@ mod tests {
         assert!(apply(&mut s, Change { timeout_seconds: Some(4), backup: Some(false), ..Change::default() }, &[]).is_err());
         assert!(apply(&mut s, Change { language: Some("en-US".into()), ..Change::default() }, &[]).is_err());
         // An engine that wasn't found is refused, and nothing else in that change is made.
-        let bad = Change { engine: Some(Engine { kind: Kind::WhisperCpp, binary: "/bin/rm".into(), model: None }), on_this_computer: Some(false), ..Change::default() };
+        let bad = Change {
+            engine: Some(Engine { kind: Kind::WhisperCpp, binary: "/bin/rm".into(), model: None }),
+            on_this_computer: Some(false),
+            ..Change::default()
+        };
         assert!(apply(&mut s, bad, &[]).is_err());
         assert_eq!((s.on_this_computer, s.backup, s.timeout_seconds, s.language.as_str()), (true, true, 60, "de"));
     }
@@ -1398,7 +1403,11 @@ mod tests {
     async fn a_run_reads_the_transcript_and_deletes_the_recording_whatever_happens() {
         let d = temp("run");
         // Writes what it was given, as whisper-cli does with `-of <out>`; records the folder's mode and the language.
-        let ok = fake_engine(&d, "ok", r#"l="$6"; while [ "$1" != "-of" ]; do shift; done; echo "$(stat -c %a "$(dirname "$2")") $l" > "$2.txt"; echo "[BLANK_AUDIO]" >> "$2.txt""#);
+        let ok = fake_engine(
+            &d,
+            "ok",
+            r#"l="$6"; while [ "$1" != "-of" ]; do shift; done; echo "$(stat -c %a "$(dirname "$2")") $l" > "$2.txt"; echo "[BLANK_AUDIO]" >> "$2.txt""#,
+        );
         let got = transcribe(&ok, b"RIFF....", Duration::from_secs(10), "es").await.unwrap();
         assert_eq!(got.text, "700 es", "the recording's folder is private, and the language is passed on");
         assert_eq!(got.provider.as_deref(), Some("whisper.cpp"));
@@ -1423,7 +1432,10 @@ mod tests {
     async fn a_failure_printed_only_on_stdout_is_still_said() {
         let d = temp("stdout");
         let e = fake_engine(&d, "stdout", "echo 'RuntimeError: Unable to open file model.bin'; exit 1");
-        assert_eq!(transcribe(&e, b"RIFF", Duration::from_secs(10), "auto").await.unwrap_err(), "whisper.cpp exited with 1: RuntimeError: Unable to open file model.bin");
+        assert_eq!(
+            transcribe(&e, b"RIFF", Duration::from_secs(10), "auto").await.unwrap_err(),
+            "whisper.cpp exited with 1: RuntimeError: Unable to open file model.bin"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1493,7 +1505,8 @@ mod tests {
 
         // Hermes first, failing: this computer gives the text, and says why Hermes didn't.
         write_settings(&path, &backed(false, ok.clone())).unwrap();
-        let got = transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Err("The speech-to-text provider failed"))).await.unwrap();
+        let got =
+            transcribe_routed_at(&path, "audio/wav", b"RIFF", None, not_cancelled(), hermes(&sent, Err("The speech-to-text provider failed"))).await.unwrap();
         assert_eq!((got.text.as_str(), got.ran), ("Check the NAS", Side::Local));
         assert_eq!(got.fell_back, Some(FellBack { from: Side::Server, why: "The speech-to-text provider failed".into() }));
 

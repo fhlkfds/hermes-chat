@@ -202,7 +202,10 @@ pub enum RepoError {
     BadTarget,
     Spawn(String),
     /// ssh couldn't get in: `why` is "ssh-auth", "ssh-host-key", "ssh-unreachable" or "ssh", and `detail` is what ssh said.
-    Ssh { why: &'static str, detail: String },
+    Ssh {
+        why: &'static str,
+        detail: String,
+    },
     /// The server can't run the helper (no python3).
     Unsupported(String),
     /// No answer in time. Whether a write happened isn't known, so the screen reads the repository again before
@@ -211,7 +214,11 @@ pub enum RepoError {
     /// Something answered, but not the helper.
     BadReply(String),
     /// The helper ran and refused, or git did: `kind` and `message` are the helper's.
-    Helper { kind: String, message: String, output: String },
+    Helper {
+        kind: String,
+        message: String,
+        output: String,
+    },
 }
 
 impl std::fmt::Display for RepoError {
@@ -219,14 +226,12 @@ impl std::fmt::Display for RepoError {
         match self {
             RepoError::BadTarget => write!(f, "Enter an SSH target such as liam@hermes or a host alias from ~/.ssh/config."),
             RepoError::Spawn(e) => write!(f, "Couldn't start ssh: {e}"),
-            RepoError::Ssh { why: "ssh-auth", .. } => write!(
-                f,
-                "ssh couldn't sign in to the server without asking. The key needs to be in your SSH agent, or unencrypted."
-            ),
-            RepoError::Ssh { why: "ssh-host-key", .. } => write!(
-                f,
-                "ssh doesn't know this server's host key yet. Connect once from the Terminal and accept it, then try again."
-            ),
+            RepoError::Ssh { why: "ssh-auth", .. } => {
+                write!(f, "ssh couldn't sign in to the server without asking. The key needs to be in your SSH agent, or unencrypted.")
+            }
+            RepoError::Ssh { why: "ssh-host-key", .. } => {
+                write!(f, "ssh doesn't know this server's host key yet. Connect once from the Terminal and accept it, then try again.")
+            }
             RepoError::Ssh { why: "ssh-unreachable", .. } => write!(f, "ssh couldn't reach the server."),
             RepoError::Ssh { .. } => write!(f, "ssh failed."),
             RepoError::Unsupported(e) => write!(f, "{e}"),
@@ -276,8 +281,7 @@ pub fn remote_command() -> String {
 
 /// The remote command when the helper comes on stdin: it reads one line, the packed helper, and runs it, which then
 /// reads the request from the rest of stdin.
-pub const STDIN_REMOTE_COMMAND: &str =
-    "exec python3 -I -c 'import base64,sys,zlib;exec(zlib.decompress(base64.b64decode(sys.stdin.buffer.readline())))'";
+pub const STDIN_REMOTE_COMMAND: &str = "exec python3 -I -c 'import base64,sys,zlib;exec(zlib.decompress(base64.b64decode(sys.stdin.buffer.readline())))'";
 
 /// How the helper program reaches the server's python3. Windows caps a whole command line at 32,767 characters
 /// (CreateProcess), which the packed helper alone is over, so there it goes on stdin, one line ahead of the request.
@@ -319,11 +323,15 @@ pub fn ssh_command(target: &str) -> Result<Command, RepoError> {
     let mut command = crate::tunnel::background_ssh();
     command.args([
         "-T",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=15",
-        "-o", "ServerAliveInterval=15",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=15",
         // A LocalForward in the owner's config would clash with the sign-in tunnel, and isn't needed here.
-        "-o", "ClearAllForwardings=yes",
+        "-o",
+        "ClearAllForwardings=yes",
         "--",
         target,
     ]);
@@ -449,9 +457,7 @@ pub async fn run_fed(
         let status = child.wait().await;
         (status, out, err)
     };
-    let (status, out, err) = tokio::time::timeout(limit, work)
-        .await
-        .map_err(|_| RepoError::Timeout(limit.as_secs()))?;
+    let (status, out, err) = tokio::time::timeout(limit, work).await.map_err(|_| RepoError::Timeout(limit.as_secs()))?;
     let status = status.map_err(|e| RepoError::Spawn(e.to_string()))?;
     let err = String::from_utf8_lossy(&err).trim().to_owned();
     if out.len() > MAX_REPLY {
@@ -468,8 +474,7 @@ pub async fn run_fed(
             _ => RepoError::BadReply(if err.is_empty() { "no answer.".into() } else { err }),
         });
     };
-    let reply: serde_json::Value =
-        serde_json::from_str(&out[at + MARK.len()..]).map_err(|e| RepoError::BadReply(e.to_string()))?;
+    let reply: serde_json::Value = serde_json::from_str(&out[at + MARK.len()..]).map_err(|e| RepoError::BadReply(e.to_string()))?;
     if reply.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         return Ok(reply.get("result").cloned().unwrap_or(serde_json::Value::Null));
     }
@@ -544,9 +549,17 @@ mod tests {
         assert!(!dropped_before_login(&RepoError::Timeout(60)));
         assert!(Request::Status { repo: "/r".into() }.reads_only());
         assert!(Request::PublishInfo { repo: "/r".into() }.reads_only());
-        let push = Request::Push { repo: "/r".into(), remote: "o".into(), push_url: "u".into(), branch: "b".into(), remote_branch: "b".into(), expect: HeadExpect { head: None } };
+        let push = Request::Push {
+            repo: "/r".into(),
+            remote: "o".into(),
+            push_url: "u".into(),
+            branch: "b".into(),
+            remote_branch: "b".into(),
+            expect: HeadExpect { head: None },
+        };
         assert!(!push.reads_only());
-        let commit = Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None, head_ref: None } };
+        let commit =
+            Request::Commit { repo: "/r".into(), message: "m".into(), expect: Expect { head: None, index: "i".into(), raw_sha: None, head_ref: None } };
         assert!(!commit.reads_only());
     }
 

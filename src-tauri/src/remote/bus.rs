@@ -95,10 +95,7 @@ fn serve_into(conn: Connection, queue: bool, inbox: &'static Inbox) {
                             inbox.dispatch(Request::OpenLink { link: link.to_owned(), token });
                             msg.method_return()
                         }
-                        _ => msg.error(
-                            &"org.freedesktop.DBus.Error.InvalidArgs".into(),
-                            &std::ffi::CString::new("That isn't a Hermes Chat link.").unwrap(),
-                        ),
+                        _ => msg.error(&"org.freedesktop.DBus.Error.InvalidArgs".into(), &std::ffi::CString::new("That isn't a Hermes Chat link.").unwrap()),
                     },
                     (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),
                     _ => msg.error(
@@ -212,10 +209,7 @@ mod tests {
         let g = got.clone();
         inbox.set_handler(move |r| g.lock().unwrap().push(r));
         send_on(&second, &Request::Screenshot).unwrap();
-        assert_eq!(
-            *got.lock().unwrap(),
-            vec![Request::Show { token: Some("tok".into()) }, Request::Toggle { token: None }, Request::Screenshot]
-        );
+        assert_eq!(*got.lock().unwrap(), vec![Request::Show { token: Some("tok".into()) }, Request::Toggle { token: None }, Request::Screenshot]);
     }
 
     #[test]

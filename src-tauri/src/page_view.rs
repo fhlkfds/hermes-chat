@@ -102,7 +102,8 @@ mod imp {
     use std::cell::{Cell, RefCell};
     use tauri::Manager;
     use webkit2gtk::{
-        FileChooserRequestExt, LoadEvent, NetworkError, PermissionRequestExt, PolicyError, ScriptDialogType, SettingsExt, URIRequestExt, WebContextExt, WebViewExt,
+        FileChooserRequestExt, LoadEvent, NetworkError, PermissionRequestExt, PolicyError, ScriptDialogType, SettingsExt, URIRequestExt, WebContextExt,
+        WebViewExt,
     };
 
     thread_local! {
