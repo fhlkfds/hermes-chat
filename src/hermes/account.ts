@@ -42,6 +42,8 @@ export type Account = {
   secrets: (c: SavedConnection) => Secrets;
   connect: (c: SavedConnection, d: SignInDetails, signal?: AbortSignal) => Promise<Hermes>;
   readSaved: (c: SavedConnection, d: SignInDetails, reason: string) => Hermes | undefined;
+  /** What this computer saved for `c`, shown while signing in to it starts at once (transport's `openSaved`). */
+  openSaved: (c: SavedConnection, d: SignInDetails) => { hermes: Hermes; firstTry: Promise<string | undefined> } | undefined;
 };
 
 /** What the Rust side says when the dashboard turns the password down (`TransportError::BadCredentials`). */
@@ -243,6 +245,26 @@ export async function launchSignIn(c: SavedConnection, d: SignInDetails, account
     if (!offline) throw e;
     return offline;
   }
+}
+
+/**
+ * Opens `c` at launch with its saved sign-in (ADR 0089). With a chat list saved for it, that shows at once, Connecting,
+ * while the first try to sign in runs; `turnedDown` resolves once that try has ended, to why the dashboard turned the
+ * password or token down (`turnedDown`), with the Hermes closed so the owner is asked, or to undefined, and any other
+ * failure is retried as Offline is. With none saved, it waits for signing in, as `launchSignIn`, and rejects as it does.
+ */
+export async function launchOpen(c: SavedConnection, d: SignInDetails, account: Account): Promise<{ hermes: Hermes; turnedDown?: Promise<string | undefined> }> {
+  const opened = account.openSaved(c, d);
+  if (!opened) return { hermes: await launchSignIn(c, d, account) };
+  const { hermes, firstTry } = opened;
+  return {
+    hermes,
+    turnedDown: firstTry.then(async (reason) => {
+      if (reason === undefined || !turnedDown(reason)) return undefined;
+      await hermes.close().catch(() => {});
+      return reason;
+    }),
+  };
 }
 
 /**

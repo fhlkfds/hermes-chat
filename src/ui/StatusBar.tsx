@@ -1,7 +1,7 @@
 // The status bar along the bottom of the chat pane: how full the chat's context window is, its model, and the
 // connection. Right-click picks what it shows, or hides it; Settings, Appearance shows it again. The choice is kept in
 // the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report. The approval mode is a
-// pill in the composer (ApprovalsPill.tsx, ADR 0089).
+// pill in the composer (ApprovalsPill.tsx, ADR 0091).
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";

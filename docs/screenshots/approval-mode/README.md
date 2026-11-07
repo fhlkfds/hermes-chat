@@ -20,7 +20,7 @@ layout's point, so this shot is the same React app rendered in headless Chromium
 - `5-yolo-warning.png`: picking YOLO shows the warning before anything is sent. It is shown every time YOLO is turned on.
 - `6-yolo-no-prompt.png`: YOLO on for this chat. Two dangerous commands ran with no Approval. The profile stays Manual.
 - `7-back-to-smart.png`: after picking Smart, the next dangerous command goes to the checker and runs with no Approval.
-  The pill stayed Smart through the 5 s checked. Hermes can send a stale `yolo: true` frame around this write (ADR 0089).
+  The pill stayed Smart through the 5 s checked. Hermes can send a stale `yolo: true` frame around this write (ADR 0091).
 - `8-all-chats.png`: the profile's mode set to `off` in `config.yaml`, then a reasoning change made Hermes re-send
   `session.info`. The pill reads "YOLO · all chats".
 - `9-narrow-820.png`: an 820 px window. The pill shows only its icon and chevron; its accessible name is still

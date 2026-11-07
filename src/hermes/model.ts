@@ -210,7 +210,7 @@ export type SideQuestion = { id: string; question: string; after?: string; taskI
  * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar"); its model is
  * `Chat.model`.
  * `context`: how full the context window is, only once Hermes has measured it. `approvals`: its approval mode as Hermes
- * last reported it (ADR 0089); undefined until Hermes does. `compactions`: how many times Hermes has compacted the chat
+ * last reported it (ADR 0091); undefined until Hermes does. `compactions`: how many times Hermes has compacted the chat
  * since its agent was built on the server (`usage.compressions`); undefined when Hermes reports no compactor for it.
  */
 export type SessionLive = { context?: ContextUse; approvals?: Approvals; compactions?: number };
@@ -228,7 +228,7 @@ export type Approvals = { mode: ApprovalMode; yolo: boolean };
 /** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
 export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
 
-export type ConnectionStatus = "connected" | "reconnecting" | "offline";
+export type ConnectionStatus = "connected" | "connecting" | "reconnecting" | "offline";
 
 /**
  * Unread chats in a profile the app isn't showing, as its latest check found them (`Hermes.checkOtherProfiles`).

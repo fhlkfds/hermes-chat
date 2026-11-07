@@ -215,6 +215,7 @@ kbd {
 .conn { display: flex; align-items: center; gap: 7px; font-size: calc(12.5rem / 14); color: var(--muted); min-width: 0; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .conn-dot.connected { background: var(--ok); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.12); }
+.conn-dot.connecting,
 .conn-dot.reconnecting { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
 .conn-dot.offline { background: var(--faint); }
 .conn-dot.unsecure { outline: 2px solid var(--warn); outline-offset: 3px; }
@@ -1600,6 +1601,7 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .status-meter.unmeasured { color: var(--muted); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .status-conn.connected .conn-dot { background: var(--ok); }
+.status-conn.connecting .conn-dot,
 .status-conn.reconnecting .conn-dot { background: var(--warn); }
 .status-popover {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: 280px; padding: 12px; background: var(--raised);

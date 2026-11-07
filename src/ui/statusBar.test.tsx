@@ -94,7 +94,7 @@ describe("What the status bar shows", () => {
     expect(screen.getAllByRole("menuitemcheckbox").filter((i) => i.getAttribute("aria-checked") === "true").map((i) => i.textContent)).toEqual(["Connection"]);
   });
 
-  it("has no YOLO item since the approval mode moved to the composer, and a bar saved with one still shows (ADR 0089)", async () => {
+  it("has no YOLO item since the approval mode moved to the composer, and a bar saved with one still shows (ADR 0091)", async () => {
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, statusBar: ["context", "yolo", "status"] }));
     await barFor();
     expect(screen.getByText("Context not measured")).toBeTruthy();

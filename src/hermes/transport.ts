@@ -518,6 +518,16 @@ export function readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, 
   return Hermes.readSaved(openPipe, reason, cache, notify);
 }
 
+/**
+ * At launch, before anything is reached: a Hermes showing what this computer saved for the profile shown last, as
+ * `readSaved` does, that starts connecting at once, its status Connecting (ADR 0089). `firstTry` resolves once that
+ * first try has ended: to undefined if it connected or the Hermes was closed meanwhile, or to why it failed. After a
+ * failure it keeps trying as after a drop. Undefined when no chat list is saved, so there is nothing to show.
+ */
+export function openSaved(openPipe: OpenPipe, cache: ChatCache, notify?: Notify): { hermes: Hermes; firstTry: Promise<string | undefined> } | undefined {
+  return Hermes.openSaved(openPipe, cache, notify);
+}
+
 export class Hermes {
   private pipe?: Pipe;
   /** The profile the pipe's `/api/ws` was opened for. */
@@ -834,6 +844,18 @@ export class Hermes {
     if (!hermes.snapshot.chats.length) return undefined;
     hermes.dropped(reason);
     return hermes;
+  }
+
+  /** See `openSaved`. */
+  static openSaved(openPipe: OpenPipe, cache: ChatCache, notify?: Notify): { hermes: Hermes; firstTry: Promise<string | undefined> } | undefined {
+    const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
+    if (!hermes.snapshot.chats.length) return undefined;
+    hermes.update({ status: "connecting" });
+    const firstTry = hermes.reconnect().then(() => {
+      const { status, closedReason } = hermes.snapshot;
+      return hermes.closing || status === "connected" ? undefined : closedReason;
+    });
+    return { hermes, firstTry };
   }
 
   /** Hermes's scheduled jobs, each call naming its profile (cronJobs.ts). Hermes runs them; this only manages them. */
@@ -2922,7 +2944,7 @@ export class Hermes {
   }
 
   /**
-   * Changes the chat's approval mode (ADR 0089). Smart and Manual set the profile's `approvals.mode`, for every session
+   * Changes the chat's approval mode (ADR 0091). Smart and Manual set the profile's `approvals.mode`, for every session
    * on the profile from Hermes's next command; YOLO sets this chat's own flag (`config.set yolo`, session scope).
    * Hermes sends `session.info` around each write, and one of those frames may be stale, so while the pick is under way
    * they leave `approvals` alone; afterwards it is Hermes's own formula over its answers, minus the `--yolo` launch flag
@@ -3553,7 +3575,9 @@ export class Hermes {
     this.redialing ??= (async () => {
       clearTimeout(this.retryTimer);
       const switching = this.snapshot.switching;
-      this.update({ status: "reconnecting", ...(switching && { switching: { from: switching.from } }) });
+      // The first try at launch stays Connecting until it has failed once (`openSaved`).
+      const status = this.snapshot.status === "connecting" ? "connecting" : "reconnecting";
+      this.update({ status, ...(switching && { switching: { from: switching.from } }) });
       try {
         await this.dial();
         this.failedTries = 0;
@@ -3564,7 +3588,7 @@ export class Hermes {
       } catch (e) {
         if (this.closing) return;
         this.failedTries++;
-        this.update({ closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
+        this.update({ status: "reconnecting", closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
         // A server that changed protocol won't change back on its own, nor will a token it turned down (ADR 0058).
         if (e instanceof ProtocolMismatchError || TOKEN_REFUSED.test((e as Error).message)) this.update({ status: "offline" });
         else this.retryLater();

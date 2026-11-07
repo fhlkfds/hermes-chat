@@ -553,7 +553,7 @@ export class FakeHermes {
   managedKeys = new Set<string>();
   /**
    * Around a `yolo` or `approvals.mode` write, also sends the written session a `session.info` from before the write,
-   * after the fresh one and before the answer, as the deployed `f0d94882` was seen to (ADR 0089).
+   * after the fresh one and before the answer, as the deployed `f0d94882` was seen to (ADR 0091).
    */
   staleInfoOnWrite = false;
   private yoloFlags = new Set<string>();

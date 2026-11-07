@@ -1,13 +1,13 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, X } from "lucide-react";
-import { CONNECT_STOPPED, RenameConflict, connect, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
+import { CONNECT_STOPPED, RenameConflict, connect, openSaved, readSaved, toSource, type Delivery, type Hermes } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
 import { STEER, type ServerCommandList } from "./hermes/commands";
 import type { SkillCall, SkillCommands } from "./hermes/skillCommands";
 import { CHECK_EVERY_MS } from "./hermes/otherProfiles";
-import { type Account, type Kept, type SavedSignIn, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
+import { type Account, type Kept, type SavedSignIn, launchOpen, launchSignIn, removeConnection, savedSignIn, signIn, signInForm, signOutToSignIn } from "./hermes/account";
 import { CONNECTIONS_KEY, Connections, type SavedConnection, addressLabel, defaultName, prefScope } from "./hermes/connections";
 import { forgetConnectionData } from "./hermes/forgetConnection";
 import { serial as makeSerial } from "./hermes/serial";
@@ -188,6 +188,7 @@ const account: Account = {
   secrets: systemSecrets,
   connect: (c, d, signal) => connect(pipeFor(c, d), undefined, localChatCache(c), desktopNotify, signal),
   readSaved: (c, d, reason) => readSaved(pipeFor(c, d), reason, localChatCache(c), desktopNotify),
+  openSaved: (c, d) => openSaved(pipeFor(c, d), localChatCache(c), desktopNotify),
 };
 
 /** The sign-in methods a connection's server offers, read without signing in (ADR 0058). */
@@ -229,7 +230,7 @@ const withKnownServer = (c: SavedConnection, d: SignInDetails): SignInDetails =>
  * `firstRun`: nothing is saved on this computer, so setup opens instead of the sign-in screen.
  */
 type Launch =
-  | { hermes: Hermes; connection: SavedConnection; details: SignInDetails }
+  | { hermes: Hermes; connection: SavedConnection; details: SignInDetails; turnedDown?: Promise<string | undefined> }
   | { connection?: SavedConnection; initial: SignInDetails; error?: string; firstRun?: boolean };
 
 /**
@@ -240,8 +241,10 @@ type Setup = { mode: SetupMode; initial: SignInDetails; target: SavedConnection;
 let launching: Promise<Launch> | undefined;
 
 /**
- * Signs in to the connection in use with its saved password, if there is one; if Hermes can't be reached, what this
- * computer saved for it opens to read. If that fails the sign-in screen has it filled in, so Connect tries again.
+ * Signs in to the connection in use with its saved password, if there is one. With a chat list saved for it, that
+ * shows at once while signing in runs, and `turnedDown` says if the password turns out wrong (ADR 0089). With none,
+ * signing in is waited for; if Hermes can't be reached, what this computer saved for it opens to read. If that fails
+ * the sign-in screen has it filled in, so Connect tries again.
  * With no password saved, the sign-in screen asks for it. With no connection in use, the sign-in screen offers the
  * saved ones and picks none, unless nothing is saved at all: then it's the first run, and setup opens. Runs once,
  * though StrictMode runs effects twice.
@@ -253,7 +256,7 @@ function launch(): Promise<Launch> {
     const saved = await savedSignIn(c, account);
     if (!saved) return { connection: c, initial: await signInForm(c, account) };
     try {
-      return { hermes: await launchSignIn(c, saved, account), connection: c, details: saved };
+      return { ...(await launchOpen(c, saved, account)), connection: c, details: saved };
     } catch (e) {
       return { connection: c, initial: saved, error: messageOf(e) };
     }
@@ -348,7 +351,14 @@ export default function App({ links = desktopLinks }: { links?: LinkInbox } = {}
       if ("hermes" in l) {
         signedInWith.current = l.details;
         setHeaders(headerNames(l.details));
-        return setHermes(l.hermes);
+        current.current = l.hermes;
+        setHermes(l.hermes);
+        // The saved password or token was turned down while the saved chats showed: the sign-in screen asks, as it
+        // would have without them, unless the owner has moved on meanwhile.
+        void l.turnedDown?.then((why) => {
+          if (why !== undefined && current.current === l.hermes) showSignIn(l.connection, l.details, why);
+        });
+        return;
       }
       setInitial(l.initial);
       setError(l.error);

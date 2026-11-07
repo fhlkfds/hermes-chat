@@ -199,7 +199,7 @@ export const StoredTime = ({ at }: { at?: number }) =>
     </time>
   );
 
-export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
+export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", connecting: "Connecting…", reconnecting: "Reconnecting…", offline: "Offline" };
 
 /** Where the connection goes, as the owner typed it. */
 export const routeLabel = (route?: Route) => (route?.kind === "ssh" ? `ssh://${route.target}` : route?.url);
