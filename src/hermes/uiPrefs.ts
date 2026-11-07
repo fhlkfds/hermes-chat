@@ -89,7 +89,7 @@ export const IDLE_COMPACT_MINUTES = [5, 10, 15, 30, 60, 120] as const;
 const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
 export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
 /** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
-export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
+export const STATUS_BAR_ITEMS = ["context", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",

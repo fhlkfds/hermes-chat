@@ -78,7 +78,6 @@ async function inspectorFor(server = new FakeHermes(), edit: (c: Chat) => Chat =
         <StatusBar
           chat={edit(chat())}
           status={hermes.getSnapshot().status}
-          onYolo={async () => {}}
           context={{ inspect: () => hermes.inspectContext("nas"), history: () => hermes.compactionHistory("nas"), compact: () => hermes.compact("nas"), cannotCompact: () => hermes.cannotCompact() }}
         />
       </ShowInChatContext.Provider>

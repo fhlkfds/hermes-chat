@@ -1,8 +1,9 @@
-// The status bar along the bottom of the chat pane: how full the chat's context window is, its YOLO switch, its model,
-// and the connection. Right-click picks what it shows, or hides it; Settings, Appearance shows it again. The choice is
-// kept in the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report.
+// The status bar along the bottom of the chat pane: how full the chat's context window is, its model, and the
+// connection. Right-click picks what it shows, or hides it; Settings, Appearance shows it again. The choice is kept in
+// the display preferences (uiPrefs.ts `statusBar`). Nothing is shown that Hermes didn't report. The approval mode is a
+// pill in the composer (ApprovalsPill.tsx, ADR 0089).
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Check, Zap } from "lucide-react";
+import { Check } from "lucide-react";
 import type { Chat, ConnectionStatus } from "../hermes/model";
 import { ContextInspector, type ContextApi } from "./ContextInspector";
 import { STATUS_BAR_ITEMS, getUIPrefs, setUIPrefs, subscribe } from "../hermes/uiPrefs";
@@ -11,7 +12,7 @@ import { STATUS_LABEL, useReturnFocus } from "./bits";
 import { SettingRow } from "./SettingRows";
 
 type StatusItem = (typeof STATUS_BAR_ITEMS)[number];
-const LABEL: Record<StatusItem, string> = { context: "Context", yolo: "YOLO", model: "Model", status: "Connection" };
+const LABEL: Record<StatusItem, string> = { context: "Context", model: "Model", status: "Connection" };
 
 /** The items the bar shows, in its order; ids a newer or older app kept that this one doesn't know are skipped. */
 const useShown = (): StatusItem[] => {
@@ -27,7 +28,7 @@ export function StatusBarSetting() {
     <SettingRow
       name="Status bar"
       nameId="status-bar-label"
-      hint="Context, YOLO, model and connection under the chat."
+      hint="Context, model and connection under the chat."
       hintId="status-bar-help"
       more={<p>Right-click the bar to pick what it shows, or to hide it. Turning it on here shows every item again.</p>}
       control={
@@ -146,81 +147,14 @@ function ContextMeter({ chat, status, api }: { chat: Chat; status: ConnectionSta
   );
 }
 
-/** Why the YOLO switch can't be used for this chat, or nothing when it can. */
-function yoloBlocked(chat: Chat, status: ConnectionStatus): string | undefined {
-  if (status !== "connected") return "Connect to Hermes to change YOLO for this chat.";
-  if (!chat.runtimeId) return "YOLO can be changed once this chat has started.";
-  if (chat.live?.yolo === undefined) return "Hermes hasn't reported YOLO for this chat yet, so it can't be changed from here.";
-  if (chat.live.yoloEverywhere) return "YOLO is on for every chat by Hermes's own settings or launch options, so it can't be turned off here.";
-}
-
-/**
- * This chat's YOLO switch. Turning it on asks first, since Hermes then runs dangerous commands without asking. Until
- * Hermes reports the state it reads "unknown", never "off": YOLO may well be on.
- */
-function YoloToggle({ chat, status, onYolo }: { chat: Chat; status: ConnectionStatus; onYolo: (on: boolean) => Promise<void> }) {
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const known = chat.live?.yolo !== undefined;
-  const on = !!chat.live?.yolo;
-  const blocked = yoloBlocked(chat, status);
-  const set = (next: boolean) => {
-    setConfirming(false);
-    setBusy(true);
-    setError(undefined);
-    onYolo(next)
-      .catch((e: unknown) => setError(`Couldn't change YOLO: ${e instanceof Error ? e.message : String(e)}`))
-      .finally(() => setBusy(false));
-  };
-  const title =
-    error ??
-    blocked ??
-    (on ? "YOLO is on: Hermes runs dangerous commands in this chat without asking. Click to turn it off." : "YOLO is off: Hermes asks before running dangerous commands in this chat.");
-  return (
-    <span className="status-anchor">
-      <button
-        className={`status-item status-yolo${on ? " on" : ""}${error ? " failed" : ""}`}
-        role={known ? "switch" : undefined}
-        aria-checked={known ? on : undefined}
-        aria-label={known ? "YOLO for this chat" : "YOLO for this chat: unknown"}
-        aria-description={title}
-        title={title}
-        disabled={!!blocked || busy}
-        onClick={() => (on ? set(false) : setConfirming(true))}
-      >
-        <Zap size={12} />
-        YOLO {!known ? "unknown" : on ? "on" : "off"}
-      </button>
-      {confirming && (
-        <Popover label="Turn on YOLO" onClose={() => setConfirming(false)}>
-          <div className="popover-title">Turn on YOLO for this chat?</div>
-          <p className="muted small">Hermes will run every command in this chat without asking, dangerous ones too. Other chats still ask.</p>
-          <div className="confirm-actions">
-            {/* Cancel takes focus, so a stray Enter doesn't turn it on. */}
-            <button className="btn" autoFocus onClick={() => setConfirming(false)}>
-              Cancel
-            </button>
-            <button className="btn danger" onClick={() => set(true)}>
-              Turn on
-            </button>
-          </div>
-        </Popover>
-      )}
-    </span>
-  );
-}
-
 /** The bar for the chat on screen. Right-click opens the menu of what it shows. */
 export function StatusBar({
   chat,
   status,
-  onYolo,
   context,
 }: {
   chat: Chat;
   status: ConnectionStatus;
-  onYolo: (on: boolean) => Promise<void>;
   context: ContextApi;
 }) {
   const items = useShown();
@@ -239,7 +173,6 @@ export function StatusBar({
     >
       {/* Keyed by the chat's session: a new one starts the inspector afresh, and an answer for the old one is dropped. */}
       {has("context") && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
-      {has("yolo") && <YoloToggle chat={chat} status={status} onYolo={onYolo} />}
       <span className="status-gap" />
       {has("model") && chat.model && (
         <span className="status-item" title="The model this chat uses">

@@ -3736,7 +3736,6 @@ function ChatView({
         <StatusBar
           chat={chat}
           status={status}
-          onYolo={(on) => hermes.setYolo(chat.id, on)}
           context={{
             inspect: () => hermes.inspectContext(chat.id),
             history: () => hermes.compactionHistory(chat.id),

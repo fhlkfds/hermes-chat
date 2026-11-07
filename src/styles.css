@@ -1578,8 +1578,6 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .status-meter.high .meter > span { background: var(--warn); }
 .status-meter.full .meter > span { background: var(--bad); }
 .status-meter.unmeasured { color: var(--muted); }
-.status-yolo.on { color: var(--warn); }
-.status-yolo.failed { color: var(--bad); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .status-conn.connected .conn-dot { background: var(--ok); }
 .status-conn.reconnecting .conn-dot { background: var(--warn); }
