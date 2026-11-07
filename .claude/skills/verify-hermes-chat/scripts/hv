@@ -24,7 +24,7 @@ DEB_PKGS="xvfb xdotool libxdo3 x11-apps x11-xkb-utils xkb-data xserver-common li
 die() { echo "hv: $*" >&2; exit 1; }
 # A tool from PATH, else from the private root.
 tool() { command -v "$1" 2>/dev/null || { [ -x "$ROOT/usr/bin/$1" ] && echo "$ROOT/usr/bin/$1"; } || true; }
-xenv() { export LD_LIBRARY_PATH="$ROOT/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$PATH:$ROOT/usr/bin"; }
+xenv() { export LD_LIBRARY_PATH="$ROOT/usr/lib/x86_64-linux-gnu:$ROOT/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PATH="$PATH:$ROOT/usr/bin"; }
 # What the app is built from: HEAD plus any uncommitted change to the app's sources.
 source_rev() {
   local paths=(src src-tauri/src src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/capabilities index.html package.json vite.config.ts)
@@ -106,7 +106,23 @@ cmd_bootstrap() {
       (cd "$HV_HOME/pkgs" && apt-get download $DEB_PKGS >/dev/null)
       for d in "$HV_HOME"/pkgs/*.deb; do dpkg -x "$d" "$ROOT"; done
     elif command -v pacman >/dev/null; then
-      die "missing ${missing[*]}: sudo pacman -S --needed xorg-server-xvfb xorg-xwd xdotool openbox webkit2gtk-4.1"
+      # Arch: xorg-server-xvfb and xdotool are ordinary packages; WebKitWebDriver ships in webkitgtk-6.0. The three that
+      # are often missing are fetched from the mirror pacman uses, checked against its sync database, and unpacked.
+      local name repo ver file sum mirror
+      for t in Xvfb xdotool; do [ -n "$(tool $t)" ] || die "missing $t: sudo pacman -S --needed xorg-server-xvfb xdotool"; done
+      mirror=$(sed -n 's/^Server *= *//p' /etc/pacman.d/mirrorlist | head -1)
+      [ -n "$mirror" ] || die "no mirror in /etc/pacman.d/mirrorlist; install webkitgtk-6.0 openbox xorg-xwd with pacman"
+      echo "hv: fetching webkitgtk-6.0 openbox xorg-xwd into $ROOT (no root needed)"
+      mkdir -p "$HV_HOME/pkgs" "$ROOT"
+      for name in webkitgtk-6.0 openbox xorg-xwd; do
+        repo=$(pacman -Si "$name" | sed -n 's/^Repository *: //p' | head -1)
+        ver=$(pacman -Si "$name" | sed -n 's/^Version *: //p' | head -1)
+        file=$(tar -xOf "/var/lib/pacman/sync/$repo.db" "$name-$ver/desc" | awk '/%FILENAME%/{getline; print}')
+        sum=$(tar -xOf "/var/lib/pacman/sync/$repo.db" "$name-$ver/desc" | awk '/%SHA256SUM%/{getline; print}')
+        curl -sSfLo "$HV_HOME/pkgs/$file" "$(echo "$mirror" | sed "s/\$repo/$repo/; s/\$arch/x86_64/")/$file" || die "couldn't fetch $file"
+        (cd "$HV_HOME/pkgs" && echo "$sum  $file" | sha256sum -c --quiet -) || die "$file doesn't match pacman's checksum"
+        tar --zstd -xf "$HV_HOME/pkgs/$file" -C "$ROOT" usr
+      done
     else
       die "missing ${missing[*]}; install them with the system package manager"
     fi

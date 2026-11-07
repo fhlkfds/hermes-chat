@@ -100,6 +100,19 @@ export function ArchiveButton({
 export const composing = (e: KeyboardEvent | ReactKeyboardEvent) =>
   ("nativeEvent" in e ? e.nativeEvent : e).isComposing || e.keyCode === 229;
 
+export function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: Event) => ref.current?.contains(e.target as Node) || close();
+    window.addEventListener("mousedown", away);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("mousedown", away);
+      window.removeEventListener("blur", close);
+    };
+  }, [open, close, ref]);
+}
+
 /**
  * For a popover: when it closes, focus goes back to what had it when the popover opened, unless the owner has
  * moved focus somewhere else meanwhile (clicked another control, or the popover's pick opened something that
@@ -186,7 +199,7 @@ export const StoredTime = ({ at }: { at?: number }) =>
     </time>
   );
 
-export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", reconnecting: "Reconnecting…", offline: "Offline" };
+export const STATUS_LABEL: Record<ConnectionStatus, string> = { connected: "Connected", connecting: "Connecting…", reconnecting: "Reconnecting…", offline: "Offline" };
 
 /** Where the connection goes, as the owner typed it. */
 export const routeLabel = (route?: Route) => (route?.kind === "ssh" ? `ssh://${route.target}` : route?.url);

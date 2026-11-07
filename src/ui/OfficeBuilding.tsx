@@ -1,333 +1,236 @@
-// The office as a building (ADR 0089): the floor of the profile shown, drawn by officeEngine.ts with three.js, and over
-// it, in HTML, a button on each character. A character's button is its name tag (shown on hover or focus), its "!"
-// while it waits for the owner, and what a screen reader and the keyboard reach, labelled as in List. Pressing one
-// opens its card. three.js and the engine load only when this first mounts, as their own chunk.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { RotateCcw, X } from "lucide-react";
-import { FLOOR_ROOM_NAME, floorLayout, type Desk, type FloorLayout, type FloorRoom, type Placement, type Room } from "../hermes/office";
-import type { EngineAgent, EngineOptions, OfficeEngine, ScreenPoint, ScreenSpot } from "./officeEngine";
-import { STATE_LABEL, deskLabel } from "./officeLabels";
-import { relTime } from "./bits";
+// The office as a 3D building (ADR 0089): the canvas three.js draws on, the agents' name tags over it, and the card of
+// the one picked. three.js loads with the scene (office3d/scene.ts) the first time this mounts, as its own chunk.
+// Where everyone stands is officeFloor's to say; the scene only draws it. The tags are real buttons named as List
+// names its rows, so the building and List read the same to a screen reader and the arrow keys move between them.
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
+import { RotateCcw } from "lucide-react";
+import type { Desk, Room } from "../hermes/office";
+import { TEAM_COLORS, officeFloor, type BuildingRoom, type Floor, type FloorMemory } from "../hermes/officeFloor";
+import type { OfficeScene, ScreenPoint } from "./office3d/scene";
+import { OfficeCard } from "./OfficeCard";
+import { deskLabel } from "./officeText";
+import { usePageHidden, useWindowFocused } from "./windowState";
 
-/** Makes the drawing, or says this computer can't (no WebGL). Tests pass a stand-in; the app loads three.js. */
-export type EngineLoad = () => Promise<((o: EngineOptions) => OfficeEngine) | undefined>;
+const ROOM_NAME: Record<BuildingRoom, string> = { workroom: "Workroom", waiting: "Waiting room", trouble: "Trouble room", lounge: "Lounge" };
 
-/** Whether this computer can draw the building at all. The context it opens to find out is let go at once. */
-export function canDrawWebGL(): boolean {
+/** Why this computer can't draw the building, or undefined when it can. Asked before three.js is fetched. */
+export function webglMissing(): string | undefined {
+  if (typeof WebGLRenderingContext === "undefined") return "This computer's web view has no WebGL, which the building needs.";
   try {
-    const c = document.createElement("canvas");
-    const gl = (c.getContext("webgl2") ?? c.getContext("webgl")) as WebGLRenderingContext | null;
-    gl?.getExtension("WEBGL_lose_context")?.loseContext();
-    return !!gl;
+    const gl = document.createElement("canvas").getContext("webgl2") ?? document.createElement("canvas").getContext("webgl");
+    if (!gl) return "This computer's graphics didn't offer WebGL, which the building needs.";
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return undefined;
   } catch {
-    return false;
+    return "This computer's graphics didn't offer WebGL, which the building needs.";
   }
 }
 
-export const loadEngine: EngineLoad = async () => (canDrawWebGL() ? (await import("./officeEngine")).createOfficeEngine : undefined);
-
-const subscribeFocus = (fn: () => void) => {
-  window.addEventListener("focus", fn);
-  window.addEventListener("blur", fn);
-  return () => {
-    window.removeEventListener("focus", fn);
-    window.removeEventListener("blur", fn);
-  };
+const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)");
+const subscribeMotion = (fn: () => void) => {
+  const q = reducedMotion();
+  q?.addEventListener?.("change", fn);
+  return () => q?.removeEventListener?.("change", fn);
 };
-/** Whether the window has the keyboard focus: the building draws nothing while it hasn't. */
-const useWindowFocused = () => useSyncExternalStore(subscribeFocus, () => document.hasFocus());
+const subscribeMode = (fn: () => void) => {
+  const watch = new MutationObserver(fn);
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-mode"] });
+  return () => watch.disconnect();
+};
+const modeNow = () => (document.documentElement.dataset.mode === "light" ? "light" : "dark");
 
-const modeNow = (): "light" | "dark" => (document.documentElement.dataset.mode === "light" ? "light" : "dark");
-const bgNow = () => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || undefined;
+/**
+ * What changes the picture: who stands where, how, in which color, and whether "+N more" is there (a frame places it).
+ * Text on the tags and the card changes no frame.
+ */
+const pictureOf = (f: Floor) => f.characters.map((c) => `${c.key}|${c.spot.x},${c.spot.z}|${c.pose}|${c.color}|${c.stale ? 1 : 0}`).join(";") + (f.more > 0 ? ";more" : "");
 
-const isWaiting = (d: Desk) => d.state === "approval" || d.state === "uncertain";
-
-/** How long an agent has run: its whole run once Hermes says it ended, else since it started while it still runs. */
-function ranFor(d: Desk, now: number): string | undefined {
-  const a = d.about;
-  const live = (d.state === "running" || d.state === "approval" || d.state === "uncertain") && !d.stale;
-  const secs = a?.durationS ?? (a?.startedAt && live ? (now - a.startedAt) / 1000 : undefined);
-  if (secs === undefined || secs < 0) return undefined;
-  if (secs < 60) return `${Math.round(secs)} s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)} min ${Math.round(secs % 60)} s`;
-  return `${Math.floor(secs / 3600)} h ${Math.floor((secs % 3600) / 60)} min`;
+/** A tag's size on screen, measured once per tag and text: reading it every frame would lay the page out each time. */
+const sizes = new WeakMap<HTMLElement, { text: string; w: number; h: number }>();
+function tagSize(el: HTMLElement | undefined): { w: number; h: number } {
+  if (!el) return { w: 0, h: 0 };
+  const known = sizes.get(el);
+  if (known && known.text === el.textContent) return known;
+  const size = { text: el.textContent ?? "", w: el.offsetWidth, h: el.offsetHeight };
+  sizes.set(el, size);
+  return size;
 }
 
-export function Building({
+/**
+ * Tags that would cover each other, as a team's at one group of desks do from afar, lifted until they don't. A tag
+ * sits centred above its point. The one lowest on screen, nearest the camera, stays where it is.
+ */
+export function unstacked(at: ReadonlyMap<string, ScreenPoint>, size: (key: string) => { w: number; h: number }): Map<string, ScreenPoint> {
+  const out = new Map<string, ScreenPoint>();
+  const taken: { x0: number; x1: number; y0: number; y1: number }[] = [];
+  for (const [key, p] of [...at].sort((a, b) => b[1].y - a[1].y)) {
+    if (p.off) {
+      out.set(key, p);
+      continue;
+    }
+    const { w, h } = size(key);
+    let y = p.y;
+    for (let hit = taken.find((r) => r.x0 < p.x + w / 2 && r.x1 > p.x - w / 2 && r.y0 < y && r.y1 > y - h); hit; hit = taken.find((r) => r.x0 < p.x + w / 2 && r.x1 > p.x - w / 2 && r.y0 < y && r.y1 > y - h)) y = hit.y0 - 1;
+    taken.push({ x0: p.x - w / 2, x1: p.x + w / 2, y0: y - h, y1: y });
+    out.set(key, { ...p, y });
+  }
+  return out;
+}
+
+/** A tag's text: a subagent's name; for a chat's reply, which all share one name, the chat's title. */
+const tagText = (room: Room, d: Desk) => (d.agent.kind === "reply" ? room.title : d.name);
+
+export function OfficeBuilding({
   rooms,
+  memory,
   profile,
-  motion,
-  load = loadEngine,
   onOpen,
-  onList,
-  onCannot,
+  onFallback,
+  onMore,
 }: {
-  rooms: Room[];
+  rooms: readonly Room[];
+  /** Who sits where, kept by the app: an agent keeps its desk while the building is unmounted and drawn again. */
+  memory: RefObject<FloorMemory>;
   profile: string;
-  motion: boolean;
-  load?: EngineLoad;
   onOpen: (room: Room, desk: Desk) => void;
-  /** Show List instead, as the "+N more" sign does. */
-  onList: () => void;
-  /** This computer can't draw the building, and why. */
-  onCannot: (why: string) => void;
+  /** The building can't be drawn here, and why: the office shows List instead. */
+  onFallback: (why: string) => void;
+  /** "+N more": show every agent, in List. */
+  onMore: () => void;
 }) {
-  const surface = useRef<HTMLDivElement>(null);
+  const floor = useMemo(() => {
+    const f = officeFloor(rooms, memory.current);
+    memory.current = f.memory;
+    return f;
+  }, [rooms, memory]);
+  const picture = pictureOf(floor);
+  const latest = useRef(floor);
+  latest.current = floor;
+
+  const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const engine = useRef<OfficeEngine>(undefined);
-  const [ready, setReady] = useState(false);
-  const buttons = useRef(new Map<string, HTMLElement>());
-  const labels = useRef(new Map<FloorRoom, HTMLElement>());
-  const door = useRef<HTMLButtonElement>(null);
-  const counter = useRef<HTMLSpanElement>(null);
-  const [showFrames, setShowFrames] = useState(false);
-  const [picked, setPicked] = useState<string>();
+  const tags = useRef(new Map<string, HTMLElement>());
+  const roomTags = useRef(new Map<BuildingRoom, HTMLElement>());
+  const more = useRef<HTMLButtonElement>(null);
+  const [scene, setScene] = useState<OfficeScene>();
+  const [selected, setSelected] = useState<string>();
+  const mode = useSyncExternalStore(subscribeMode, modeNow);
+  const moves = !useSyncExternalStore(subscribeMotion, () => !!reducedMotion()?.matches);
   const focused = useWindowFocused();
+  const pageHidden = usePageHidden();
+  const awake = focused && !pageHidden;
+  const fallback = useRef(onFallback);
+  fallback.current = onFallback;
 
-  // The layout keeps each working agent's desk and each team's color from the one before.
-  const last = useRef<FloorLayout>(undefined);
-  const layout = useMemo(() => (last.current = floorLayout(rooms, profile, last.current)), [rooms, profile]);
-  const agents: EngineAgent[] = useMemo(
-    () => layout.placed.map((p) => ({ key: p.desk.key, floorRoom: p.floorRoom, spot: p.spot, ...(p.door && { door: true }), team: p.team, state: p.desk.state, stale: !!p.desk.stale })),
-    [layout],
-  );
-
-  // Where the drawing says each character, room name and the door are, applied straight to the HTML over it: moving the
-  // camera re-renders nothing in React. Placed is `data-placed`, an attribute React never writes, so a re-render that
-  // changes a button's class (picking it, a new state) can't unplace it.
-  const project = (spots: ScreenSpot[], roomsAt: Record<FloorRoom, ScreenPoint>, doorAt: ScreenPoint) => {
-    for (const s of spots) {
-      const el = buttons.current.get(s.key);
-      if (!el) continue;
-      el.style.transform = `translate(${Math.round(s.x - s.w / 2)}px, ${Math.round(s.y)}px)`;
-      el.style.width = `${Math.round(s.w)}px`;
-      el.style.height = `${Math.round(s.h)}px`;
-      el.toggleAttribute("data-placed", !s.hidden);
-    }
-    for (const [k, p] of Object.entries(roomsAt) as [FloorRoom, ScreenPoint][]) {
-      const el = labels.current.get(k);
-      if (!el) continue;
-      el.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px) translate(-50%, -50%)`;
-      el.toggleAttribute("data-placed", !p.hidden);
-    }
-    if (door.current) {
-      door.current.style.transform = `translate(${Math.round(doorAt.x)}px, ${Math.round(doorAt.y)}px) translate(-50%, -50%)`;
-      door.current.toggleAttribute("data-placed", !doorAt.hidden);
-    }
-  };
-  const projectRef = useRef(project);
-  projectRef.current = project;
-
-  // Start the drawing once, and stop it for good when the office closes.
   useEffect(() => {
-    let gone = false;
-    let made: OfficeEngine | undefined;
-    load().then(
-      (create) => {
-        if (gone) return;
-        if (!create) return onCannot("This computer can't draw the building (no WebGL), so the office shows List.");
-        try {
-          made = create({
-            canvas: canvas.current!,
-            surface: surface.current!,
-            onProject: (a, r, d) => projectRef.current(a, r, d),
-            onFrame: (n) => {
-              surface.current?.setAttribute("data-frames", String(n));
-              if (counter.current) counter.current.dataset.total = String(n);
-            },
-          });
-        } catch (e) {
-          return onCannot(`The building couldn't be drawn (${e instanceof Error ? e.message : String(e)}), so the office shows List.`);
-        }
-        engine.current = made;
-        setReady(true);
-      },
-      (e) => !gone && onCannot(`The building couldn't load (${e instanceof Error ? e.message : String(e)}), so the office shows List.`),
-    );
-    return () => {
-      gone = true;
-      made?.dispose();
-      engine.current = undefined;
+    const why = webglMissing();
+    if (why) return fallback.current(why);
+    let live = true;
+    let made: OfficeScene | undefined;
+    // Written only when it moved: while agents type and the camera stays, a frame changes nothing on the page.
+    const place = (el: HTMLElement | null | undefined, p: ScreenPoint) => {
+      if (!el) return;
+      const at = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px)`;
+      if (el.style.transform !== at) el.style.transform = at;
+      if (el.hasAttribute("data-off") !== p.off) el.toggleAttribute("data-off", p.off);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    import("./office3d/scene")
+      .then(({ mountOfficeScene }) => {
+        if (!live || !canvas.current) return;
+        made = mountOfficeScene(
+          canvas.current,
+          {
+            onPick: setSelected,
+            onDrawn(at, rooms, door) {
+              for (const [key, p] of unstacked(at, (key) => tagSize(tags.current.get(key)))) place(tags.current.get(key), p);
+              for (const [r, p] of Object.entries(rooms) as [BuildingRoom, ScreenPoint][]) place(roomTags.current.get(r), p);
+              place(more.current, door);
+            },
+            // The frame counter, for proof that nothing draws while nothing moves. Written straight to the page.
+            onFrame: (n) => host.current?.setAttribute("data-frames", String(n)),
+            onLost: (why) => live && fallback.current(why),
+          },
+          { mode: modeNow(), moves: !reducedMotion()?.matches },
+        );
+        setScene(made);
+      })
+      .catch((e: unknown) => live && fallback.current(`The building couldn't be loaded: ${e instanceof Error ? e.message : String(e)}`));
+    return () => {
+      live = false;
+      made?.dispose();
+    };
   }, []);
 
-  useEffect(() => engine.current?.setActive(focused), [ready, focused]);
-  useEffect(() => engine.current?.setMotion(motion), [ready, motion]);
-  useEffect(() => engine.current?.setAgents(agents), [ready, agents]);
-  useEffect(() => {
-    if (!ready) return;
-    const apply = () => engine.current?.setTheme(modeNow(), bgNow());
-    apply();
-    const themed = new MutationObserver(apply);
-    themed.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-mode", "class"] });
-    return () => themed.disconnect();
-  }, [ready]);
+  useEffect(() => scene?.setFloor(latest.current), [scene, picture]);
+  useEffect(() => scene?.setMode(mode), [scene, mode]);
+  useEffect(() => scene?.setMotion(moves), [scene, moves]);
+  useEffect(() => scene?.setAwake(awake), [scene, awake]);
+  useEffect(() => scene?.setSelected(selected), [scene, selected]);
 
-  // The frame counter, for proving the budget: total frames, and how many in the last second, read once a second.
-  useEffect(() => {
-    if (!showFrames) return;
-    let before = engine.current?.frames ?? 0;
-    const tick = () => {
-      const now = engine.current?.frames ?? 0;
-      if (counter.current) counter.current.textContent = `${now} frames · ${now - before} in the last second`;
-      before = now;
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [showFrames, ready]);
-
-  const pick = (key: string) => {
-    if (engine.current?.dragged()) return;
-    setPicked(key);
+  const picked = floor.characters.find((c) => c.key === selected);
+  // An agent that leaves the floor takes its selection with it, so its card can't open again by itself if it comes back.
+  // Cleared during render: React draws again before the card mounts and takes focus.
+  if (selected !== undefined && !picked) setSelected(undefined);
+  const close = () => {
+    const key = selected;
+    setSelected(undefined);
+    if (key) tags.current.get(key)?.focus();
   };
-  const shown = picked ? layout.placed.find((p) => p.desk.key === picked) : undefined;
-  useEffect(() => {
-    if (picked && !shown) setPicked(undefined);
-  }, [picked, shown]);
-
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape" && picked) {
       e.stopPropagation();
-      const key = picked;
-      setPicked(undefined);
-      surface.current?.querySelector<HTMLElement>(`[data-desk="${CSS.escape(key)}"]`)?.focus();
-    } else if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) setShowFrames((s) => !s);
+      close();
+    }
   };
 
-  // Buttons in the order a screen reader reads the rooms: who needs the owner first.
-  const byRoom = (["waiting", "trouble", "workroom", "lounge"] as FloorRoom[]).map((k) => [k, layout.placed.filter((p) => p.floorRoom === k)] as const);
-
   return (
-    <div ref={surface} className="bld" data-frames="0" onKeyDown={onKeyDown}>
-      <canvas ref={canvas} className="bld-canvas" aria-hidden />
-      <div className="bld-labels" aria-hidden>
-        {(Object.keys(FLOOR_ROOM_NAME) as FloorRoom[]).map((k) => (
-          <span
-            key={k}
-            className={`bld-room-name room-${k}`}
-            ref={(el) => {
-              if (el) labels.current.set(k, el);
-              else labels.current.delete(k);
-            }}
-          >
-            {FLOOR_ROOM_NAME[k]}
-            {layout.counts[k] > 0 && <b>{layout.counts[k]}</b>}
+    <div ref={host} className="office-building" data-frames="0" onKeyDown={onKeyDown}>
+      {/* Focusable, so after a click on it the office's keys, Escape among them, still reach it. */}
+      <canvas ref={canvas} className="office-canvas" aria-hidden tabIndex={-1} />
+      {!scene ? (
+        <div className="office-note inbox-note">Opening the building…</div>
+      ) : (
+        floor.characters.length === 0 && floor.more === 0 && <div className="office-note inbox-note">No agent is at work. One shows here while a reply runs, waits for you or failed, and for each subagent it starts.</div>
+      )}
+      <div className="office-overlay">
+        {(Object.keys(ROOM_NAME) as BuildingRoom[]).map((r) => (
+          <span key={r} className="office-room-label" aria-hidden data-off ref={(el) => void (el ? roomTags.current.set(r, el) : roomTags.current.delete(r))}>
+            {ROOM_NAME[r]}
           </span>
         ))}
-      </div>
-      {byRoom.map(([k, placed]) =>
-        placed.length ? (
-          <ul key={k} className="bld-agents" aria-label={FLOOR_ROOM_NAME[k]}>
-            {placed.map((p) => (
-              <li key={p.desk.key}>
-                <AgentButton
-                  p={p}
-                  profile={profile}
-                  picked={picked === p.desk.key}
-                  onPick={pick}
-                  bind={(el) => {
-                    if (el) buttons.current.set(p.desk.key, el);
-                    else buttons.current.delete(p.desk.key);
-                  }}
-                />
-              </li>
-            ))}
-          </ul>
-        ) : null,
-      )}
-      {layout.more > 0 && (
-        <button ref={door} className="bld-more" onClick={onList} title="Show every agent in List">
-          +{layout.more} more
-        </button>
-      )}
-      <div className="bld-tools" data-camera-ignore>
-        {layout.elsewhere > 0 && (
-          <button className="btn bld-elsewhere" onClick={onList} title="Agents in other profiles show in List">
-            {layout.elsewhere} in other profiles
+        <div className="office-tags" role="group" aria-label="Agents in the building">
+          {floor.characters.map((c) => (
+            <button
+              key={c.key}
+              className={`office-tag state-${c.desk.state}${c.stale ? " is-stale" : ""}${c.key === selected ? " on" : ""}`}
+              style={{ borderColor: TEAM_COLORS[c.color] }}
+              data-desk={c.key}
+              data-off
+              aria-label={deskLabel(c.room, c.desk, profile)}
+              aria-haspopup="dialog"
+              ref={(el) => void (el ? tags.current.set(c.key, el) : tags.current.delete(c.key))}
+              onClick={() => setSelected(c.key)}
+            >
+              <span className="office-dot" aria-hidden />
+              <span className="office-tag-name">{tagText(c.room, c.desk)}</span>
+            </button>
+          ))}
+        </div>
+        {floor.more > 0 && (
+          <button ref={more} className="office-more" data-off onClick={onMore} aria-label={`${floor.more} more agents aren't drawn. Show them all in List.`}>
+            +{floor.more} more
           </button>
         )}
-        <button className="icon-btn bld-reset" title="Reset the view" aria-label="Reset the view" onClick={() => engine.current?.resetView()}>
-          <RotateCcw size={15} />
+      </div>
+      <div className="office-tools">
+        <span className="office-hint">Drag to turn · scroll to zoom · double-click a room</span>
+        <button className="btn" onClick={() => scene?.resetCamera()} disabled={!scene}>
+          <RotateCcw size={13} aria-hidden /> Reset view
         </button>
       </div>
-      {showFrames && <span ref={counter} className="bld-frames" role="status" />}
-      {layout.placed.length === 0 && <div className="bld-empty">No agent is on this floor. A character comes in while a reply runs, waits for you or failed, and for each subagent it starts.</div>}
-      {shown && <Card p={shown} profile={profile} onOpen={onOpen} onClose={() => setPicked(undefined)} />}
-    </div>
-  );
-}
-
-function AgentButton({ p, profile, picked, onPick, bind }: { p: Placement; profile: string; picked: boolean; onPick: (key: string) => void; bind: (el: HTMLElement | null) => void }) {
-  const d = p.desk;
-  return (
-    <button
-      ref={bind}
-      className={`bld-agent state-${d.state} team-${p.team}${d.stale ? " is-stale" : ""}${picked ? " is-picked" : ""}`}
-      data-desk={d.key}
-      aria-label={deskLabel(p.room, d, profile)}
-      aria-haspopup="dialog"
-      aria-expanded={picked}
-      onClick={() => onPick(d.key)}
-    >
-      <span className="bld-tag" aria-hidden>
-        <i className="bld-dot" />
-        <span className="bld-tag-name">{d.name}</span>
-        {d.stale && <span className="bld-tag-stale">as last seen</span>}
-      </span>
-      {isWaiting(d) && (
-        <span className="bld-bang" aria-hidden>
-          !
-        </span>
+      {picked && (
+        <OfficeCard room={picked.room} desk={picked.desk} profile={profile} color={TEAM_COLORS[picked.color]} onOpen={() => onOpen(picked.room, picked.desk)} onClose={close} />
       )}
-    </button>
-  );
-}
-
-/** A character's card: what the app knows about the agent, kept up to date while open, and Open chat. */
-function Card({ p, profile, onOpen, onClose }: { p: Placement; profile: string; onOpen: (room: Room, desk: Desk) => void; onClose: () => void }) {
-  const d = p.desk;
-  const running = !!d.about?.startedAt && d.about.durationS === undefined && !d.stale && (d.state === "running" || d.state === "approval" || d.state === "uncertain");
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-  const ran = ranFor(d, now);
-  const rows: [string, string | undefined][] = [
-    ["Chat", p.room.title],
-    ["Profile", p.room.profile],
-    ["State", `${STATE_LABEL[d.state]}${d.stale ? ", as last seen" : ""}`],
-    ["Goal", d.about?.goal],
-    ["Doing now", d.doing ? `${d.doing.text}${d.doing.at ? ` (${relTime(d.doing.at) === "now" ? "just now" : `${relTime(d.doing.at)} ago`})` : ""}` : undefined],
-    ["Model", d.about?.model],
-    ["Has run", ran],
-  ];
-  return (
-    <aside className={`bld-card team-${p.team}`} role="dialog" aria-label={d.name} data-camera-ignore>
-      <header className="bld-card-head">
-        <h3>{d.name}</h3>
-        <button className="icon-btn" aria-label="Close the card" title="Close (Escape)" onClick={onClose}>
-          <X size={14} />
-        </button>
-      </header>
-      <dl>
-        {rows
-          .filter((r): r is [string, string] => !!r[1])
-          .map(([k, val]) => (
-            <div key={k}>
-              <dt>{k}</dt>
-              <dd>{val}</dd>
-            </div>
-          ))}
-      </dl>
-      {d.stale && <p className="bld-card-note">{d.stale}</p>}
-      <button className="btn primary" autoFocus onClick={() => onOpen(p.room, d)}>
-        Open chat
-      </button>
-      {p.room.profile !== profile && <p className="bld-card-note">Opens in profile {p.room.profile}.</p>}
-    </aside>
+    </div>
   );
 }

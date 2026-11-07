@@ -1,5 +1,6 @@
-// Logs, in Settings → Diagnostics (ADR 0033, 0087): one source at a time, this app's own diagnostics or one of the
-// profile's Hermes logs, followed as lines arrive or paused to read. Filters, copy and export act on what's shown; the
+// Logs, in Settings → Diagnostics (ADR 0033, 0087): one source at a time, this app's own diagnostics, its record of
+// recent connection attempts (kept on disk, #270), or one of the profile's Hermes logs, followed as lines arrive or
+// paused to read. Filters, copy and export act on what's shown; the
 // support bundle gathers the sources read here into one file, after showing what goes in it and what was redacted.
 import { useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { CircleAlert, Copy, Download, LifeBuoy, Pause, Play } from "lucide-react";
@@ -23,12 +24,14 @@ import {
   type Snapshot,
   type TimeFormat,
 } from "../hermes/logs";
+import { KEEP } from "../hermes/attempts";
 import { useModal } from "./modal";
 import { Spinner } from "./bits";
 
-type Source = "app" | RemoteLog;
-const SOURCES: Source[] = ["app", ...(Object.keys(REMOTE_LOGS) as RemoteLog[])];
-const titleOf = (s: Source) => (s === "app" ? "This app" : `${REMOTE_LOGS[s].label} (${REMOTE_LOGS[s].file})`);
+type Source = "app" | "attempts" | RemoteLog;
+const SOURCES: Source[] = ["app", "attempts", ...(Object.keys(REMOTE_LOGS) as RemoteLog[])];
+const titleOf = (s: Source) => (s === "app" ? "This app" : s === "attempts" ? "Connection attempts" : `${REMOTE_LOGS[s].label} (${REMOTE_LOGS[s].file})`);
+const isRemote = (s: Source): s is RemoteLog => s in REMOTE_LOGS;
 const IDLE: ReadState = { kind: "idle" };
 const noSubscribe = () => () => {};
 const idle = () => IDLE;
@@ -44,6 +47,8 @@ export type LogsWiring = {
   save: (text: string, fileName: string) => Promise<string | null>;
   /** How often a shown Hermes log is read, in ms: every 2 s unless a test asks for less. */
   pollMs?: number;
+  /** The record of recent connection attempts (attempts.ts `AttemptLog`), read again from disk each time Logs opens. */
+  attempts?: { readonly capacity: number; load(): Promise<void>; getSnapshot(): Snapshot; subscribe(fn: () => void): () => void };
 };
 
 export function LogsPanel({
@@ -54,6 +59,7 @@ export function LogsPanel({
   save,
   app = appLog,
   pollMs,
+  attempts,
 }: LogsWiring & {
   profile: string;
   connected: boolean;
@@ -67,8 +73,11 @@ export function LogsPanel({
     if (!f) followers.current.set(s, (f = new LogFollower((n) => read(s, n), REMOTE_LOGS[s].label, { pollMs })));
     return f;
   };
-  const remote = source === "app" ? undefined : followerOf(source);
-  const buffer = remote?.buffer ?? app;
+  const sources = attempts ? SOURCES : SOURCES.filter((s) => s !== "attempts");
+  const remote = isRemote(source) ? followerOf(source) : undefined;
+  const buffer = remote?.buffer ?? (source === "attempts" && attempts ? attempts : app);
+  // Another launch, or another copy of the app, may have added attempts since: the file is read each time Logs opens.
+  useEffect(() => void attempts?.load(), [attempts]);
   const live = useSyncExternalStore(buffer.subscribe, buffer.getSnapshot);
   const state = useSyncExternalStore(remote?.subscribe ?? noSubscribe, remote?.getState ?? idle);
 
@@ -141,12 +150,17 @@ export function LogsPanel({
 
   const parts = (): (BundlePart & { id: Source })[] => [
     { id: "app", title: titleOf("app"), detail: "this computer, since the app started", snapshot: app.getSnapshot() },
+    ...(attempts && attempts.getSnapshot().lines
+      ? [{ id: "attempts" as const, title: titleOf("attempts"), detail: `this computer, the last ${KEEP}, kept between launches`, snapshot: attempts.getSnapshot() }]
+      : []),
     ...[...followers.current]
       .filter(([, f]) => f.buffer.getSnapshot().entries.length)
       .map(([id, f]) => ({ id, title: titleOf(id), detail: `Hermes, profile ${profile}`, snapshot: f.buffer.getSnapshot() })),
   ];
 
   const status = (() => {
+    if (source === "attempts")
+      return `The last ${KEEP} times Hermes Chat opened a connection, kept on this computer between launches: each route tried, by its kind and id, the steps it reached and how long each took, and the error, with secrets and addresses taken out.`;
     if (!remote) return "This app's own diagnostics since it started: connection changes, failures it showed, uncaught errors and console warnings. Kept in memory only.";
     if (!connected) return "Not connected to Hermes. Reading starts again once Hermes Chat reconnects.";
     switch (state.kind) {
@@ -165,7 +179,7 @@ export function LogsPanel({
         <label>
           <span>Source</span>
           <select value={source} onChange={(e) => pick(e.target.value as Source)}>
-            {SOURCES.map((s) => (
+            {sources.map((s) => (
               <option key={s} value={s}>
                 {titleOf(s)}
               </option>
@@ -386,7 +400,7 @@ function SupportBundle({
               </span>
             </label>
           ))}
-          {parts.length === 1 && <p className="muted small">To include a Hermes log, pick it as the source first so Logs reads it.</p>}
+          {!parts.some((p) => isRemote(p.id)) && <p className="muted small">To include a Hermes log, pick it as the source first so Logs reads it.</p>}
         </fieldset>
         <p>
           <strong>Redacted:</strong> {counts.length ? countsText(counts) : "nothing recognized as a secret"}.

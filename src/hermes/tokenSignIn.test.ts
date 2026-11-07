@@ -55,6 +55,7 @@ function account() {
       return connect(server.openPipe, "default");
     },
     readSaved: (_c, _d, reason) => readSaved(server.openPipe, reason, memoryCache()),
+    openSaved: () => undefined,
   };
   return { a, password, token, sent, c: connections.draft(lan) };
 }

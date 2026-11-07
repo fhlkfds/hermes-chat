@@ -20,14 +20,12 @@ export function OfficeSettings() {
         hint="Every reply and subagent at work, opened from the rail in place of the chats. Off hides the rail button."
         more={
           <p>
-            <b>Building</b> draws a 3D building with a room for each state: the Workroom for agents at work, the Waiting
-            room for those waiting for you, the Trouble room for failures, and the Lounge for the rest. Each agent is a
-            character in its chat's team color. Hover a character for its name; a "!" marks each one waiting for you.
-            Click one for its card. Drag to turn the view, scroll to zoom, double-click a room to look into it.{" "}
-            <b>List</b> shows the same agents as rows, and is what the office shows on a computer that can't draw 3D.
-            The office only shows what the Inbox and each chat's Subagents panel already know, and it never approves or
-            starts anything. It draws nothing while no one moves, while it is closed, or while the window is hidden or
-            not focused, and nothing moves when the system asks for reduced motion.
+            <b>Building</b> draws a low-poly office with a room for each kind of state: the Workroom for agents at work,
+            the Waiting room for those waiting for you, the Trouble room for failures and the Lounge for the rest. Each
+            chat's agents wear its team color. Click an agent for its card; drag to turn, scroll to zoom. <b>List</b> shows
+            the same agents as rows, and is what the office shows on a computer without WebGL. The office only shows what
+            the Inbox and each chat's Subagents panel already know, and it never approves or starts anything. It draws
+            nothing while nothing moves, while it is closed, or while the window is hidden or not focused.
           </p>
         }
         control={

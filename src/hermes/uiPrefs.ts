@@ -12,7 +12,7 @@ import type { TerminalKind } from "./terminal";
 
 export const UI_PREFS_KEY = "hermes-ui-prefs";
 /** The shape the document has now. Bump it, and add a step to UI_PREFS_MIGRATIONS, when a field changes meaning. */
-export const UI_PREFS_VERSION = 2;
+export const UI_PREFS_VERSION = 3;
 
 export type Theme = "light" | "dark" | "system";
 export const THEMES: readonly Theme[] = ["light", "dark", "system"];
@@ -68,8 +68,6 @@ export type UIPrefs = {
 
 export type OfficeView = "building" | "list" | "off";
 export const OFFICE_VIEWS: readonly OfficeView[] = ["building", "list", "off"];
-/** The views the building replaced (ADR 0077's Desks, ADR 0083's Scene): a saved one reads as the building. */
-const FORMER_OFFICE_VIEWS = new Set(["desks", "scene"]);
 
 export type FollowUp = "queue" | "steer";
 
@@ -91,7 +89,7 @@ export const IDLE_COMPACT_MINUTES = [5, 10, 15, 30, 60, 120] as const;
 const SHORTCUT = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?(?:Super\+)?(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|PrintScreen|Pause|ScrollLock|Insert)$/;
 export const isShortcut = (s: unknown): s is string => typeof s === "string" && SHORTCUT.test(s);
 /** Every status bar item, in the bar's order; all shown until the owner picks otherwise. */
-export const STATUS_BAR_ITEMS = ["context", "yolo", "model", "status"] as const;
+export const STATUS_BAR_ITEMS = ["context", "model", "status"] as const;
 
 export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   theme: "system",
@@ -109,8 +107,8 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   terminalKind: "server",
   followUp: "queue",
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
-  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
-  chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
+  chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "settled"] as SectionKey[],
+  chatSectionsCollapsed: ["snoozed", "archived", "settled"] as SectionKey[],
   agentOffice: "building",
   inboxAutoDismissDays: null,
 });
@@ -125,6 +123,8 @@ export const UI_PREFS_MIGRATIONS: UIPrefsMigrations = {
   0: (doc) => doc,
   // Pinned is new in version 2 (ADR 0085): a list of shown sections from before it shows Pinned too.
   1: (doc) => (toShown(doc.chatSectionsShown) ? { ...doc, chatSectionsShown: ["pinned", ...(doc.chatSectionsShown as unknown[])] } : doc),
+  // The building replaces the Desks and Scene views in version 3 (ADR 0089): whoever picked either sees the building.
+  2: (doc) => (doc.agentOffice === "desks" || doc.agentOffice === "scene" ? { ...doc, agentOffice: "building" } : doc),
 };
 
 const isDoc = (v: unknown): v is UIPrefsDoc => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -207,7 +207,10 @@ function toIdleCompact(v: unknown, d: IdleCompactPrefs): IdleCompactPrefs | unde
   };
 }
 
-/** Sections as stored, each once and in the list's order; undefined when it isn't a list. */
+/**
+ * Sections as stored, each once and in the list's order; undefined when it isn't a list. A key this version doesn't
+ * know is left out, as Unsettled is since ADR 0090.
+ */
 function toSections(v: unknown): SectionKey[] | undefined {
   if (!Array.isArray(v)) return undefined;
   return SECTION_KEYS.filter((k) => v.some((x) => isSectionKey(x) && x === k));
@@ -250,7 +253,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
     chatSectionsShown: toShown(doc.chatSectionsShown) ?? [...d.chatSectionsShown],
     chatSectionsCollapsed: toSections(doc.chatSectionsCollapsed) ?? [...d.chatSectionsCollapsed],
-    agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : FORMER_OFFICE_VIEWS.has(doc.agentOffice as string) ? "building" : d.agentOffice,
+    agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : d.agentOffice,
     inboxAutoDismissDays:
       doc.inboxAutoDismissDays === null || (typeof doc.inboxAutoDismissDays === "number" && Number.isFinite(doc.inboxAutoDismissDays) && doc.inboxAutoDismissDays > 0)
         ? doc.inboxAutoDismissDays

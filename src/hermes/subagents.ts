@@ -38,8 +38,6 @@ export type Subagent = {
   taskCount?: number;
   state: SubagentState;
   startedAt?: number;
-  /** When this app heard it start, for how long it has run while Hermes hasn't said `startedAt`. */
-  startHeardAt?: number;
   /**
    * When the app last heard of it doing something, and what. `seq`: how many tool calls Hermes had counted for it by
    * then (0 at its start), which orders what the events and the roster say however late each arrives.
@@ -129,7 +127,7 @@ function eventReport(type: string, payload: unknown, at: number): Report | undef
     case "subagent.spawn_requested":
       return { ...base, state: "queued", partial: false };
     case "subagent.start":
-      return { ...base, state: "running", partial: false, startHeardAt: at, lastActivity: { at, text: "Started", seq: 0 } };
+      return { ...base, state: "running", partial: false, startedAt: at, lastActivity: { at, text: "Started", seq: 0 } };
     // Batched tool names, which `subagent.tool` has already reported one by one.
     case "subagent.progress":
       return { ...base, state: "running" };
@@ -220,9 +218,9 @@ function merged(s: Subagent, r: Report): Subagent {
   return {
     ...s,
     ...fields,
+    // The first word of when it started stands: its start event as heard, or the roster's time, whichever came first.
+    ...(s.startedAt !== undefined && { startedAt: s.startedAt }),
     state: next,
-    // The first start heard stays: a repeated event doesn't move it.
-    ...((s.startHeardAt ?? fields.startHeardAt) !== undefined && { startHeardAt: s.startHeardAt ?? fields.startHeardAt }),
     toolCount: toolCount === undefined ? s.toolCount : Math.max(toolCount, s.toolCount ?? 0),
     lastActivity: lastActivity && (!s.lastActivity || fresh) ? lastActivity : s.lastActivity,
     activity: activity ? withActivity(log, activity) : log,
