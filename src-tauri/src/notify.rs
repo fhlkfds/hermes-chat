@@ -44,11 +44,7 @@ fn toast_xml(title: &str, body: &str) -> String {
             out
         })
     };
-    format!(
-        r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
-        text(title),
-        text(body)
-    )
+    format!(r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#, text(title), text(body))
 }
 
 #[cfg(target_os = "linux")]
@@ -112,11 +108,7 @@ mod desktop {
         let mut hints = PropMap::new();
         hints.insert("desktop-entry".into(), Variant(Box::new("hermes-chat".to_owned())));
         let proxy = conn.with_proxy(SERVICE, PATH, CALL_TIMEOUT);
-        let (id,): (u32,) = proxy.method_call(
-            SERVICE,
-            "Notify",
-            ("Hermes Chat", 0u32, "", title, body, vec!["default", "Open Hermes Chat"], hints, -1i32),
-        )?;
+        let (id,): (u32,) = proxy.method_call(SERVICE, "Notify", ("Hermes Chat", 0u32, "", title, body, vec!["default", "Open Hermes Chat"], hints, -1i32))?;
         Ok((conn, id))
     }
 }
@@ -129,9 +121,7 @@ mod desktop {
     use windows::core::{Ref, HSTRING};
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::Foundation::TypedEventHandler;
-    use windows::UI::Notifications::{
-        ToastDismissalReason, ToastDismissedEventArgs, ToastFailedEventArgs, ToastNotification, ToastNotificationManager,
-    };
+    use windows::UI::Notifications::{ToastDismissalReason, ToastDismissedEventArgs, ToastFailedEventArgs, ToastNotification, ToastNotificationManager};
 
     /// A development build has no Start menu shortcut of its own, so its toasts borrow PowerShell's, which every
     /// Windows has.
@@ -173,15 +163,13 @@ mod desktop {
             Ok(())
         }))?;
         let tx = events.clone();
-        toast.Dismissed(&TypedEventHandler::new(
-            move |_: Ref<ToastNotification>, args: Ref<ToastDismissedEventArgs>| {
-                // A toast that timed out moves to the notification centre, where a click still counts.
-                if args.ok().and_then(|a| a.Reason()).ok() != Some(ToastDismissalReason::TimedOut) {
-                    let _ = tx.send(Event::Gone);
-                }
-                Ok(())
-            },
-        ))?;
+        toast.Dismissed(&TypedEventHandler::new(move |_: Ref<ToastNotification>, args: Ref<ToastDismissedEventArgs>| {
+            // A toast that timed out moves to the notification centre, where a click still counts.
+            if args.ok().and_then(|a| a.Reason()).ok() != Some(ToastDismissalReason::TimedOut) {
+                let _ = tx.send(Event::Gone);
+            }
+            Ok(())
+        }))?;
         toast.Failed(&TypedEventHandler::new(move |_: Ref<ToastNotification>, _: Ref<ToastFailedEventArgs>| {
             let _ = events.send(Event::Gone);
             Ok(())

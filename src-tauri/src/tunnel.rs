@@ -49,12 +49,18 @@ pub async fn open_within(target: &str, remote_port: u16, quick: Option<Duration>
     let mut child = child
         .args([
             "-N",
-            "-o", "BatchMode=yes",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=15",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-L", &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
-            "--", target,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-L",
+            &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
+            "--",
+            target,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

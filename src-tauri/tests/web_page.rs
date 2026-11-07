@@ -42,10 +42,7 @@ async fn says_a_site_refuses_when_its_answer_does() {
 
     assert_eq!(check("/google").await.unwrap(), Framing::Refused { by: "X-Frame-Options: SAMEORIGIN".into() });
     assert_eq!(check("/to-google").await.unwrap(), Framing::Refused { by: "X-Frame-Options: SAMEORIGIN".into() });
-    assert_eq!(
-        check("/csp").await.unwrap(),
-        Framing::Refused { by: "Content-Security-Policy: frame-ancestors 'none'".into() }
-    );
+    assert_eq!(check("/csp").await.unwrap(), Framing::Refused { by: "Content-Security-Policy: frame-ancestors 'none'".into() });
     assert_eq!(check("/ok").await.unwrap(), Framing::NotRefused);
     // An error page still shows in the frame.
     assert_eq!(check("/gone").await.unwrap(), Framing::NotRefused);

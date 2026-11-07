@@ -101,7 +101,8 @@ mod tests {
     #[test]
     fn gdi_faces_become_families_without_vertical_forms() {
         let face = |name: &str, fixed_pitch| Face { name: name.into(), fixed_pitch };
-        let faces = [face("Segoe UI", false), face("Consolas", true), face("@MS Gothic", true), face("MS Gothic", true), face("Consolas", true), face("arial", false)];
+        let faces =
+            [face("Segoe UI", false), face("Consolas", true), face("@MS Gothic", true), face("MS Gothic", true), face("Consolas", true), face("arial", false)];
         let fonts = from_faces(&faces);
         assert_eq!(fonts.all, ["arial", "Consolas", "MS Gothic", "Segoe UI"]);
         assert_eq!(fonts.mono, ["Consolas", "MS Gothic"]);

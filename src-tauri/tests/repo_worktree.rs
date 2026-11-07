@@ -156,9 +156,7 @@ async fn a_new_branch_worktree_is_made_beside_the_repository_from_the_base_shown
 
     let lines = Arc::new(Mutex::new(Vec::<Value>::new()));
     let seen = lines.clone();
-    let made = repo_git::run_streaming(helper(&[]), &create_req(&app, ID, &p, false), &move |v| seen.lock().unwrap().push(v))
-        .await
-        .unwrap();
+    let made = repo_git::run_streaming(helper(&[]), &create_req(&app, ID, &p, false), &move |v| seen.lock().unwrap().push(v)).await.unwrap();
     assert_eq!(made["worktree"]["state"], "ready");
     assert!(lines.lock().unwrap().iter().any(|l| l["step"] == "create"), "progress came as it went");
 
@@ -240,7 +238,8 @@ async fn a_dirty_source_checkout_stays_where_it_is_and_setup_copies_only_what_wo
     let p = plan(&app, "main", "feature/env", true, "", true).await.unwrap();
     assert_eq!(p["sourceDirty"]["unstaged"], 1);
     assert_eq!(p["sourceDirty"]["untracked"], 1);
-    let actions: Vec<(String, String)> = p["setup"].as_array().unwrap().iter().map(|e| (e["entry"].as_str().unwrap().into(), e["action"].as_str().unwrap().into())).collect();
+    let actions: Vec<(String, String)> =
+        p["setup"].as_array().unwrap().iter().map(|e| (e["entry"].as_str().unwrap().into(), e["action"].as_str().unwrap().into())).collect();
     assert_eq!(
         actions,
         [(".env", "copy"), ("node_modules", "link"), ("README.md", "skip"), ("missing.txt", "skip"), ("../escape", "skip")]

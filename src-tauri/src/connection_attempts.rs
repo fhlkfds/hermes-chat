@@ -408,8 +408,24 @@ mod tests {
         let dir = tempdir();
         put(&dir, attempt(line(1, 1))).unwrap();
         const KEYS: [&str; 13] = ["v", "id", "run", "at", "ms", "outcome", "routes", "error", "kind", "steps", "step", "ms", "error"];
-        const TAGS: [&str; 16] =
-            ["unfinished", "connected", "failed", "stopped", "lan", "tailscale", "web", "ssh", "keyring", "resolve", "tunnel", "status", "sign-in", "ticket", "websocket", "ready"];
+        const TAGS: [&str; 16] = [
+            "unfinished",
+            "connected",
+            "failed",
+            "stopped",
+            "lan",
+            "tailscale",
+            "web",
+            "ssh",
+            "keyring",
+            "resolve",
+            "tunnel",
+            "status",
+            "sign-in",
+            "ticket",
+            "websocket",
+            "ready",
+        ];
         fn walk(v: &Value, key: &str) {
             match v {
                 Value::Object(m) => m.iter().for_each(|(k, v)| {
