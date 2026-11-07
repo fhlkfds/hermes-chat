@@ -51,6 +51,7 @@ function account(keyring = memoryKeyring(), headerKeyring = memoryKeyring()) {
       return connect(server.openPipe, "default");
     },
     readSaved: (_c, _d, reason) => readSaved(server.openPipe, reason, memoryCache()),
+    openSaved: () => undefined,
   };
   const c = connections.draft(details);
   return { server, keyring, headerKeyring, account: a, c, sent, saved: () => connections.get(c.id)! };
@@ -257,6 +258,7 @@ describe("Saved connections", () => {
         return connect(servers[d.url as keyof typeof servers].openPipe, "default");
       },
       readSaved: () => undefined,
+      openSaved: () => undefined,
     };
     const at = (url: string, password: string): SignInDetails => ({ mode: "url", sshTarget: "", url, username: "owner", password, headers: [] });
     return { servers, keyring, sent, a, at };

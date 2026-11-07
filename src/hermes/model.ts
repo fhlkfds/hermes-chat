@@ -219,7 +219,7 @@ export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere
 /** `used` of `max` tokens, `percent` full. `estimated`: Hermes counted part of it itself, not the provider. */
 export type ContextUse = { used: number; max: number; percent: number; estimated: boolean };
 
-export type ConnectionStatus = "connected" | "reconnecting" | "offline";
+export type ConnectionStatus = "connected" | "connecting" | "reconnecting" | "offline";
 
 /**
  * Unread chats in a profile the app isn't showing, as its latest check found them (`Hermes.checkOtherProfiles`).
