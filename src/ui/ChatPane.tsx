@@ -110,6 +110,7 @@ const JumpContext = createContext<JumpTarget | undefined>(undefined);
 
 const STATUS_NOTE: Record<ConnectionStatus, string | undefined> = {
   connected: undefined,
+  connecting: "Connecting to Hermes…",
   reconnecting: "Reconnecting to Hermes…",
   offline: "Offline. Click the status dot to reconnect.",
 };
@@ -719,7 +720,9 @@ export function ChatPane({
                   ? chat.loading
                     ? "Loading the latest from Hermes…"
                     : "It may be out of date."
-                  : "You're offline, so newer messages may be missing."}
+                  : status === "connecting"
+                    ? "Connecting to Hermes, so newer messages may be missing until it loads."
+                    : "You're offline, so newer messages may be missing."}
               </span>
             </div>
           )}

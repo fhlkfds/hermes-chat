@@ -176,6 +176,13 @@ describe("the rail", () => {
     expect(tip()?.textContent).toContain("Server went away · Click to reconnect");
   });
 
+  it("offers no reconnect while the first try at launch is connecting (ADR 0089)", async () => {
+    const { user } = rail({ status: "connecting" });
+    const conn = screen.getByRole("button", { name: /^Connecting…/ });
+    await user.hover(conn);
+    expect(tip()?.textContent).not.toContain("Click to reconnect");
+  });
+
   it("drops the native title, so no second, slower tooltip shows", () => {
     const { container } = rail();
     expect(container.querySelectorAll(".rail [title]")).toHaveLength(0);

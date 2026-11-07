@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Account, launchSignIn } from "./account";
+import { type Account, WRONG_PASSWORD, launchOpen, launchSignIn } from "./account";
 import { type SavedConnection, Connections } from "./connections";
 import { TRANSCRIPT_LIMIT_BYTES, localChatCache } from "./chatCache";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
@@ -8,7 +8,7 @@ import type { Item } from "./model";
 import type { OpenPipe } from "./pipe";
 import type { SignInDetails } from "./tauriPipe";
 import type { SavedSignIn } from "./account";
-import { type ChatCache, type Hermes, connect, readSaved } from "./transport";
+import { type ChatCache, type Hermes, connect, openSaved, readSaved } from "./transport";
 
 const history: TranscriptMessage[] = [
   { role: "user", text: "How full is the NAS?" },
@@ -215,6 +215,7 @@ describe("Signing in at launch", () => {
       secrets: () => ({ password: none, headers: none, token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }),
       connect: () => Promise.reject(new Error(refuse)),
       readSaved: (_c, _d, reason) => readSaved(server.openPipe, reason, cache),
+      openSaved: () => undefined,
     };
   }
 
@@ -234,6 +235,169 @@ describe("Signing in at launch", () => {
     await expect(launchSignIn(c, details, account(new FakeHermes(), memoryCache(), "SSH failed: Connection timed out"))).rejects.toThrow(
       "SSH failed",
     );
+  });
+});
+
+/** `server`'s pipe, opened only once `open()` is called: a connection that is slow to come up. */
+function slowPipe(server: FakeHermes) {
+  let open = () => {};
+  const gate = new Promise<void>((done) => (open = done));
+  let asked = 0;
+  const openPipe: OpenPipe = async (...args) => {
+    asked++;
+    await gate;
+    return server.openPipe(...args);
+  };
+  return { openPipe, open, asked: () => asked };
+}
+
+describe("Opening on the saved chats at launch (ADR 0089)", () => {
+  const details: SignInDetails = { mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam", password: "hunter2" };
+  const none = { load: async () => undefined, save: async () => {}, delete: async () => {} };
+  const c: SavedConnection = { id: "0b6f3c1e-2d4a-4f8b-9c7e-5a1d2e3f4a5b", name: "hermes", addedAt: 0, ...details };
+  /** An account that signs in and opens through `openPipe`, with `cache` as what this computer saved. */
+  function account(openPipe: OpenPipe, cache: ChatCache) {
+    const connect_ = vi.fn((_c: SavedConnection, _d: SignInDetails) => connect(openPipe, undefined, cache));
+    const a: Account = {
+      connections: new Connections({ getItem: () => null, setItem: () => {}, removeItem: () => {} }),
+      secrets: () => ({ password: none, headers: none, token: { saved: async () => undefined, keep: async () => {}, delete: async () => {} } }),
+      connect: connect_,
+      readSaved: (_c, _d, reason) => readSaved(openPipe, reason, cache),
+      openSaved: () => openSaved(openPipe, cache),
+    };
+    return { a, connect: connect_ };
+  }
+  /** What a first launch saved, with the server then closed, so the next launch starts from it. */
+  async function saved() {
+    const first = await firstLaunch();
+    await first.hermes.close();
+    return first;
+  }
+  const ids = (hermes: Hermes) => hermes.getSnapshot().chats.map((c) => c.id);
+
+  afterEach(() => void vi.useRealTimers());
+
+  it("shows the saved chats at once, Connecting, over a slow connection, and goes live by itself", async () => {
+    const { server, cache } = await saved();
+    const slow = slowPipe(server);
+    const { a, connect: signIn } = account(slow.openPipe, cache);
+
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    // Before the server has answered anything, the list is there and connecting has started, not waited a retry.
+    expect(ids(hermes)).toEqual(["nas", "other"]);
+    expect(hermes.getSnapshot().status).toBe("connecting");
+    expect(hermes.getSnapshot().closedReason).toBeUndefined();
+    expect(slow.asked()).toBe(1);
+    expect(signIn).not.toHaveBeenCalled();
+
+    slow.open();
+    await expect(turnedDown).resolves.toBeUndefined();
+    expect(hermes.getSnapshot().status).toBe("connected");
+    await vi.waitFor(() => expect(server.opened).toBe(2));
+    await hermes.close();
+  });
+
+  it("is turned down by a wrong saved password: closed, so the sign-in screen asks with its error", async () => {
+    vi.useFakeTimers();
+    const { server, cache } = await saved();
+    server.refuse = WRONG_PASSWORD;
+    let tries = 0;
+    const openPipe: OpenPipe = (...args) => (tries++, server.openPipe(...args));
+    const { a } = account(openPipe, cache);
+
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    expect(ids(hermes)).toEqual(["nas", "other"]);
+    await expect(turnedDown).resolves.toBe(WRONG_PASSWORD);
+    // Closed: it never tries the wrong password again on its own.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(tries).toBe(1);
+  });
+
+  it("is turned down by a refused saved token too", async () => {
+    const { server, cache } = await saved();
+    server.refuse = "Wrong token: the dashboard answered 401.";
+    const { a } = account(server.openPipe, cache);
+    await expect((await launchOpen(c, details, a)).turnedDown).resolves.toBe("Wrong token: the dashboard answered 401.");
+  });
+
+  it("keeps the saved chats and keeps trying when Hermes can't be reached, connecting once it can", async () => {
+    vi.useFakeTimers();
+    const { server, cache } = await saved();
+    server.refuse = "SSH failed: Connection timed out";
+    const { a } = account(server.openPipe, cache);
+
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    await expect(turnedDown).resolves.toBeUndefined();
+    expect(hermes.getSnapshot()).toMatchObject({ status: "reconnecting", closedReason: "SSH failed: Connection timed out" });
+    expect(ids(hermes)).toEqual(["nas", "other"]);
+
+    server.refuse = undefined;
+    // The first try counts as one failed try, so the next comes after the second retry delay.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(hermes.getSnapshot().status).toBe("connected");
+    await hermes.close();
+  });
+
+  it("keeps trying every 60 s once the quick tries are spent, as after a failed launch (#269)", async () => {
+    vi.useFakeTimers();
+    const { server, cache } = await saved();
+    server.refuse = "SSH failed: Connection timed out";
+    let tries = 0;
+    const openPipe: OpenPipe = (...args) => (tries++, server.openPipe(...args));
+    const { a } = account(openPipe, cache);
+
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    await expect(turnedDown).resolves.toBeUndefined();
+    // The first try, then the quick tries after 2, 4, 8 and 16 s.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(tries).toBe(5);
+    expect(hermes.getSnapshot().status).toBe("offline");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(tries).toBe(6);
+    expect(hermes.getSnapshot().status).toBe("offline");
+
+    server.refuse = undefined;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hermes.getSnapshot().status).toBe("connected");
+    await hermes.close();
+  });
+
+  it("says nothing was turned down when the app closes it during the first try", async () => {
+    const { server, cache } = await saved();
+    const slow = slowPipe(server);
+    const { a } = account(slow.openPipe, cache);
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    // This pipe ignores the stop, as Rust doesn't, so it has to open before the close can finish.
+    const closing = hermes.close();
+    slow.open();
+    await closing;
+    await expect(turnedDown).resolves.toBeUndefined();
+    expect(hermes.getSnapshot().status).not.toBe("connected");
+  });
+
+  describe("with no saved chats", () => {
+    it("waits for signing in, as before, over a slow connection", async () => {
+      const server = new FakeHermes();
+      const slow = slowPipe(server);
+      const { a, connect: signIn } = account(slow.openPipe, memoryCache());
+      let done = false;
+      const launching = launchOpen(c, details, a).then((l) => ((done = true), l));
+      await vi.waitFor(() => expect(slow.asked()).toBe(1));
+      expect(signIn).toHaveBeenCalledOnce();
+      expect(done).toBe(false);
+
+      slow.open();
+      const { hermes, turnedDown } = await launching;
+      expect(turnedDown).toBeUndefined();
+      expect(hermes.getSnapshot().status).toBe("connected");
+      await hermes.close();
+    });
+
+    it("rejects with a wrong password, so the sign-in screen asks", async () => {
+      const server = new FakeHermes();
+      server.refuse = WRONG_PASSWORD;
+      await expect(launchOpen(c, details, account(server.openPipe, memoryCache()).a)).rejects.toThrow(WRONG_PASSWORD);
+    });
   });
 });
 
