@@ -97,6 +97,13 @@ export function buildFigures(): Figures {
   group.add(ring);
 
   let shown: readonly Character[] = [];
+  /** The selected character, whose ring follows it to wherever the next floor puts it. */
+  let picked: string | undefined;
+  const ringOn = () => {
+    const i = shown.findIndex((c) => c.key === picked);
+    ring.visible = i >= 0;
+    if (i >= 0) ring.position.set(shown[i].spot.x, 0.02, shown[i].spot.z);
+  };
   const bases: Matrix4[] = [];
   const typing: number[] = [];
 
@@ -145,6 +152,7 @@ export function buildFigures(): Figures {
         // Picking tests instances against these bounds, so they follow where the characters now are.
         mesh.computeBoundingSphere();
       }
+      ringOn();
     },
     animate(t, moves) {
       if (!moves || typing.length === 0) return typing.length > 0 && moves;
@@ -162,9 +170,8 @@ export function buildFigures(): Figures {
       return true;
     },
     select(key) {
-      const i = shown.findIndex((c) => c.key === key);
-      ring.visible = i >= 0;
-      if (i >= 0) ring.position.set(shown[i].spot.x, 0.02, shown[i].spot.z);
+      picked = key;
+      ringOn();
     },
     keyAt: (instance) => shown[instance]?.key,
     tagAt(i, out) {

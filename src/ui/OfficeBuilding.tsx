@@ -2,10 +2,10 @@
 // the one picked. three.js loads with the scene (office3d/scene.ts) the first time this mounts, as its own chunk.
 // Where everyone stands is officeFloor's to say; the scene only draws it. The tags are real buttons named as List
 // names its rows, so the building and List read the same to a screen reader and the arrow keys move between them.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
 import { RotateCcw } from "lucide-react";
 import type { Desk, Room } from "../hermes/office";
-import { EMPTY_FLOOR_MEMORY, TEAM_COLORS, officeFloor, type BuildingRoom, type Floor } from "../hermes/officeFloor";
+import { TEAM_COLORS, officeFloor, type BuildingRoom, type Floor, type FloorMemory } from "../hermes/officeFloor";
 import type { OfficeScene, ScreenPoint } from "./office3d/scene";
 import { OfficeCard } from "./OfficeCard";
 import { deskLabel } from "./officeText";
@@ -39,8 +39,11 @@ const subscribeMode = (fn: () => void) => {
 };
 const modeNow = () => (document.documentElement.dataset.mode === "light" ? "light" : "dark");
 
-/** What changes the picture: who stands where, how, in which color. Text on the tags and the card changes no frame. */
-const pictureOf = (f: Floor) => f.characters.map((c) => `${c.key}|${c.spot.x},${c.spot.z}|${c.pose}|${c.color}|${c.stale ? 1 : 0}`).join(";");
+/**
+ * What changes the picture: who stands where, how, in which color, and whether "+N more" is there (a frame places it).
+ * Text on the tags and the card changes no frame.
+ */
+const pictureOf = (f: Floor) => f.characters.map((c) => `${c.key}|${c.spot.x},${c.spot.z}|${c.pose}|${c.color}|${c.stale ? 1 : 0}`).join(";") + (f.more > 0 ? ";more" : "");
 
 /** A tag's size on screen, measured once per tag and text: reading it every frame would lay the page out each time. */
 const sizes = new WeakMap<HTMLElement, { text: string; w: number; h: number }>();
@@ -79,12 +82,15 @@ const tagText = (room: Room, d: Desk) => (d.agent.kind === "reply" ? room.title 
 
 export function OfficeBuilding({
   rooms,
+  memory,
   profile,
   onOpen,
   onFallback,
   onMore,
 }: {
   rooms: readonly Room[];
+  /** Who sits where, kept by the app: an agent keeps its desk while the building is unmounted and drawn again. */
+  memory: RefObject<FloorMemory>;
   profile: string;
   onOpen: (room: Room, desk: Desk) => void;
   /** The building can't be drawn here, and why: the office shows List instead. */
@@ -92,12 +98,11 @@ export function OfficeBuilding({
   /** "+N more": show every agent, in List. */
   onMore: () => void;
 }) {
-  const memory = useRef(EMPTY_FLOOR_MEMORY);
   const floor = useMemo(() => {
     const f = officeFloor(rooms, memory.current);
     memory.current = f.memory;
     return f;
-  }, [rooms]);
+  }, [rooms, memory]);
   const picture = pictureOf(floor);
   const latest = useRef(floor);
   latest.current = floor;
