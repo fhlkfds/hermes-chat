@@ -97,6 +97,7 @@ import { tauriRepo } from "./ui/tauriRepo";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { StatusBar } from "./ui/StatusBar";
+import { ApprovalsPill } from "./ui/ApprovalsPill";
 import { systemFonts } from "./ui/tauriFonts";
 import { SignIn } from "./ui/SignIn";
 import { Onboarding, type SetupMode } from "./ui/Onboarding";
@@ -3753,7 +3754,12 @@ function ChatView({
           favorites={favorites}
           onPick={pickModel}
           onToggleFavorite={toggleModelFavorite}
-        />
+        >
+          {/* Not on the New chat pane: YOLO is per chat, and only a chat's session reports approvals. */}
+          {started && (
+            <ApprovalsPill approvals={chat.live?.approvals} connected={status === "connected"} profile={profile} onPick={(pick) => hermes.setApprovals(chat.id, pick)} />
+          )}
+        </ModelControls>
       }
     />
     {replayFrom && (
