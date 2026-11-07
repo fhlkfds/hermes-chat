@@ -1,13 +1,12 @@
-// How the agent office shows (ADR 0077, ADR 0083): as desks, as a list, as a scene, or not at all. Kept in the display preferences
+// How the agent office shows (ADR 0077, ADR 0089): as a 3D building, as a list, or not at all. Kept in the display preferences
 // (uiPrefs.ts), on this computer only. Drawn as a card of rows (ADR 0059).
 import { useSyncExternalStore } from "react";
 import { getUIPrefs, setUIPrefs, subscribe, type OfficeView } from "../hermes/uiPrefs";
 import { SettingRow, SettingsSection } from "./SettingRows";
 
 const CHOICES: { value: OfficeView; label: string }[] = [
-  { value: "desks", label: "Desks" },
+  { value: "building", label: "Building" },
   { value: "list", label: "List" },
-  { value: "scene", label: "Scene" },
   { value: "off", label: "Off" },
 ];
 
@@ -18,14 +17,15 @@ export function OfficeSettings() {
       <SettingRow
         name="Office"
         nameId="agent-office-label"
-        hint="Every reply and subagent at work as a desk, opened from the rail. Off hides the rail button."
+        hint="Every reply and subagent at work, opened from the rail in place of the chats. Off hides the rail button."
         more={
           <p>
-            <b>Desks</b> draws a room for each chat and a desk for each agent in it. <b>List</b> shows the same agents as rows,
-            with the same actions. <b>Scene</b> draws each agent as a character at a desk in one shared room, posed for
-            what it is doing, with each chat's subagents beside its reply. The office only shows what the Inbox and each chat's Subagents panel already know, and it
-            never approves or starts anything. Nothing moves while it is closed, the window is hidden, or the system asks
-            for reduced motion.
+            <b>Building</b> draws a low-poly office with a room for each kind of state: the Workroom for agents at work,
+            the Waiting room for those waiting for you, the Trouble room for failures and the Lounge for the rest. Each
+            chat's agents wear its team color. Click an agent for its card; drag to turn, scroll to zoom. <b>List</b> shows
+            the same agents as rows, and is what the office shows on a computer without WebGL. The office only shows what
+            the Inbox and each chat's Subagents panel already know, and it never approves or starts anything. It draws
+            nothing while nothing moves, while it is closed, or while the window is hidden or not focused.
           </p>
         }
         control={
