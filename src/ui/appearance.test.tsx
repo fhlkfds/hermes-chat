@@ -163,7 +163,7 @@ describe("Settings, Appearance as cards of rows (#174, ADR 0059)", () => {
     expect(help.hidden).toBe(true);
     expect(help.textContent).toMatch(/Right-click the bar to pick what it shows/);
     expect(screen.getByRole("switch", { name: "Status bar" }).getAttribute("aria-describedby")).toBe("status-bar-help");
-    expect(document.getElementById("status-bar-help")!.textContent).toBe("Context, YOLO, model and connection under the chat.");
+    expect(document.getElementById("status-bar-help")!.textContent).toBe("Context, model and connection under the chat.");
     await userEvent.click(about);
     expect(about.getAttribute("aria-expanded")).toBe("true");
     expect(help.hidden).toBe(false);

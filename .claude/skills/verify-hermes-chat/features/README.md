@@ -44,3 +44,4 @@ Each feature file starts with an H1 and one paragraph describing the behaviour t
 - [Rail inbox](rail-inbox.md): Check now, Clear done, and auto-dismissing old completed entries, with the `HV_INBOX=1` seed.
 - [Launch on the saved chats](launch.md): a relaunch over a slow stand-in shows the saved list at once, Connecting, and a wrong saved password goes back to Sign in. Needs a throwaway keyring.
 - [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.
+- [Approval mode](approval-mode.md): the composer's pill: Smart, Manual, YOLO with its warning, "YOLO · all chats", and the narrow face, against the real Hermes in `~/.cache/hermes-live-277`.

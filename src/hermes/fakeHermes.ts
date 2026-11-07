@@ -2,6 +2,7 @@
 // JSON-RPC frames and dashboard REST bodies (shapes from the deployed contracts, see the research doc).
 import type { LocalFile, OpenPipe, PipeEvent, RestMethod, Route, Speech, ToolsetGuards, VoiceSetup } from "./pipe";
 import type { SavedKey } from "./setup";
+import type { ApprovalMode } from "./model";
 import { FakeMemoryProviders } from "./fakeMemoryProviders";
 import { FakeMcp } from "./fakeMcp";
 import { FakeGateways } from "./fakeGateways";
@@ -543,6 +544,20 @@ export class FakeHermes {
    * that reports none of it, unless a test sets it. */
   sessionInfo: Record<string, unknown> = {};
   /**
+   * Each profile's `approvals.mode` (config.yaml), "smart" when a profile isn't here. Undefined: this server reports no
+   * approvals, and `config.set` knows neither `yolo` nor `approvals.mode`. Set: `session.info` carries `approval_mode`
+   * and `yolo` (the chat's flag, or the mode off), as the deployed `f0d94882` sends them once the session's agent is
+   * built (`reportApprovals`), never in the create or resume answer.
+   */
+  approvalModes?: Record<string, ApprovalMode>;
+  managedKeys = new Set<string>();
+  /**
+   * Around a `yolo` or `approvals.mode` write, also sends the written session a `session.info` from before the write,
+   * after the fresh one and before the answer, as the deployed `f0d94882` was seen to (ADR 0091).
+   */
+  staleInfoOnWrite = false;
+  private yoloFlags = new Set<string>();
+  /**
    * Each runtime session's working folder. As live at the deployed `bf0203a` (probed 2026-11-02 against a throwaway
    * HERMES_HOME): `session.create` takes a `cwd` that is a folder on the server, and quietly runs in Hermes's own
    * folder (`hermesHome`) when it isn't one.
@@ -968,6 +983,7 @@ export class FakeHermes {
     // hold is refused (4001). Without one they write the profile's config.
     "config.set": (r) => {
       const { key, value, session_id: sid } = r.params as { key: string; value: string; session_id?: string };
+      if (this.approvalModes && (key === "yolo" || key === "approvals.mode")) return this.setApprovals(r.id, key, value, sid, r.params.profile as string | undefined);
       if (!["model", "reasoning", "fast"].includes(key)) return this.fail(r.id, 4002, `unknown config key: ${key}`);
       const stored = sid ? this.runtime.get(sid) : undefined;
       if (sid && !stored) return this.fail(r.id, 4001, "session not found");
@@ -989,7 +1005,7 @@ export class FakeHermes {
           this.transcripts[stored] = this.transcripts[stored].filter((m) => m.display_kind !== "model_switch");
           this.storeMessage(stored, { role: "user", text: `[System: The active model for this chat has changed to ${info.model}.]`, display_kind: "model_switch" });
         }
-        this.event(sid!, "session.info", { ...info });
+        this.event(sid!, "session.info", { ...info, ...this.approvalInfo(sid!) });
       } else this.profileModel[profile] = info;
       this.respond(r.id, { key, value });
     },
@@ -2039,6 +2055,33 @@ export class FakeHermes {
 
   event(sessionId: string, type: string, payload: Record<string, unknown> = {}) {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+  }
+
+  approvalInfo(sid: string): Record<string, unknown> {
+    if (!this.approvalModes) return {};
+    const mode = this.approvalModes[this.runtimeProfile.get(sid) ?? "default"] ?? "smart";
+    return { approval_mode: mode, yolo: this.yoloFlags.has(sid) || mode === "off" };
+  }
+
+  reportApprovals(sid: string, approvals = this.approvalInfo(sid)) {
+    this.event(sid, "session.info", { ...this.sessionModel.get(this.runtime.get(sid) ?? ""), ...approvals });
+  }
+
+  private setApprovals(id: number, key: "yolo" | "approvals.mode", value: string, sid: string | undefined, profile = "default") {
+    if (this.managedKeys.has(key)) return this.fail(id, 4030, `${key} is managed by your administrator`);
+    if (key === "yolo" && (!sid || !this.runtime.has(sid))) return this.fail(id, 4001, "session not found");
+    if (key === "approvals.mode" && !["smart", "manual", "off"].includes(value)) return this.fail(id, 4002, `invalid approvals.mode: ${value}`);
+    const before = sid ? this.approvalInfo(sid) : undefined;
+    if (key === "yolo") {
+      if (value === "on") this.yoloFlags.add(sid!);
+      else this.yoloFlags.delete(sid!);
+      this.reportApprovals(sid!);
+    } else {
+      this.approvalModes![profile] = value as ApprovalMode;
+      for (const [rt, p] of this.runtimeProfile) if (p === profile) this.reportApprovals(rt);
+    }
+    if (this.staleInfoOnWrite && sid && before) this.reportApprovals(sid, before);
+    this.respond(id, key === "yolo" ? { key, value: this.yoloFlags.has(sid!) ? "1" : "0", scope: "session" } : { key, value });
   }
 
   private displayAnswer(id: number, profile: unknown) {

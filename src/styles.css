@@ -772,12 +772,32 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .model-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-fast-mark { color: var(--warn); flex: none; }
 .reasoning-pill { height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: calc(11.5rem / 14); font-weight: 500; }
+.approvals-pill:disabled { opacity: 0.5; cursor: default; }
+.approvals-pill:disabled:hover { background: none; color: var(--muted); }
+.approvals-pill.yolo { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.approvals-pill.yolo:hover, .approvals-pill.yolo.on { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.approvals-label { white-space: nowrap; }
+.approvals-scope { opacity: 0.8; font-weight: 400; }
 @container (max-width: 600px) {
   .composer-keys { display: none; }
   .model-controls { flex: 1; }
+  .approvals-label { display: none; }
+  .approvals-pill { padding: 0 6px; gap: 2px; }
 }
 /* `.menu` is fixed to the window; this one sits above its pill. */
 .menu.pill-menu { position: absolute; left: 0; top: auto; bottom: calc(100% + 8px); min-width: 150px; }
+.menu.approvals-menu, .status-popover.approvals-confirm { left: auto; right: 0; width: 320px; }
+.menu-item.approvals-option { display: grid; grid-template-columns: 16px auto 1fr auto; gap: 2px 9px; align-items: center; padding: 8px; }
+.approvals-option:disabled { opacity: 0.6; cursor: default; }
+.approvals-name { font-weight: 500; color: var(--text); }
+.approvals-check { display: inline-grid; color: var(--text); }
+.approvals-tag { font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; }
+.approvals-what { grid-column: 2 / -1; font-size: calc(12rem / 14); line-height: 1.45; color: var(--muted); }
+.approvals-option.yolo .approvals-name, .approvals-option.yolo .menu-icon { color: var(--warn); }
+.approvals-note { margin: 0; padding: 4px 8px 6px; font-size: calc(11.5rem / 14); line-height: 1.45; color: var(--muted); }
+.approvals-error { padding: 4px 8px; font-size: calc(12rem / 14); line-height: 1.4; color: var(--bad); }
+.approvals-confirm ul { margin: 0; padding-left: 18px; font-size: calc(12rem / 14); line-height: 1.5; color: var(--muted); }
+.approvals-confirm .approvals-error { padding: 0; }
 .model-popover {
   position: absolute; left: -6px; bottom: calc(100% + 10px); z-index: 30; width: 340px; max-height: min(440px, 60vh);
   display: flex; flex-direction: column; background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px;
@@ -1579,8 +1599,6 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .status-meter.high .meter > span { background: var(--warn); }
 .status-meter.full .meter > span { background: var(--bad); }
 .status-meter.unmeasured { color: var(--muted); }
-.status-yolo.on { color: var(--warn); }
-.status-yolo.failed { color: var(--bad); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .status-conn.connected .conn-dot { background: var(--ok); }
 .status-conn.connecting .conn-dot,
