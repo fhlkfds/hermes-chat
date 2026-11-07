@@ -1,6 +1,6 @@
 # The office is a 3D building with a floor per profile and a room per state
 
-> **Proposed** (#105). Not built yet. It is delivered in three stages, each its own issue under #105. When stage 1 lands, ADR 0077 and ADR 0083 get a "Partly superseded" note pointing here.
+> **Stage 1 built** (#281). Delivered in three stages, each its own issue under #105. Stage 1 (#281) built one floor, the four rooms, the characters, name tags, the card, the camera, the full view and List as the fallback; ADR 0077 and ADR 0083 carry a "Partly superseded" note pointing here. The tower of other floors, walking, going home and live other profiles are stage 2 (#282), and the Office quality setting is stage 3 (#283).
 
 The owner doesn't like how the agent office looks. The Desks view (ADR 0077) is a stack of cards, and the Scene (ADR 0083) puts small robots inside those same cards. Neither reads as an office the agents work in, and both sit in a narrow panel over the chat. The owner wants a 3D low-poly building seen from above, with the agents in it, and wants it to be a glanceable monitor that is also fun to watch. The owner asked twice for it to cost as little as possible: little CPU and GPU on this computer, and no new load on the server.
 

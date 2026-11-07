@@ -1,5 +1,7 @@
 # The agent office is desks drawn from the inbox and the subagent trees, read-only
 
+> **Partly superseded by [ADR 0089](0089-the-office-is-a-3d-building-with-a-floor-per-profile-and-a-room-per-state.md)** (#281). The office's Desks view was replaced by a 3D building with a room per state, and the office now opens in place of the chat panes rather than beside the rail. It no longer asks for the 30-second check of the other profiles while open: it asks Hermes for nothing of its own. Its rooms per chat (`officeRooms`), its states, List, "as last seen", Finished only on Hermes's word, and the office being read-only still hold. The rest of this ADR stands.
+
 Issue #105, its first delivery stage: a read-only office. The owner wants agent work shown as an optional visual office, with a practical list beside it, built on the attention inbox (ADR 0019, #67) and the subagent tree (ADR 0072, #95). Task assignment and decorative customization are later stages and aren't built here.
 
 ## Decisions

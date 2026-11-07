@@ -1038,7 +1038,7 @@ export function Main({
   /** The Bots view (Bots.tsx, ADR 0066), and a bot's chat to open once its profile is shown. */
   const [botsOpen, setBotsOpen] = useState(false);
   const [botGo, setBotGo] = useState<{ bot: Bot; then: "open" | "new"; nav: number }>();
-  /** The agent office (Office.tsx, ADR 0077), unless Settings turns it off. */
+  /** The agent office (Office.tsx, ADR 0077, ADR 0089), in place of the chat panes, unless Settings turns it off. */
   const [officeOpen, setOfficeOpen] = useState(false);
   const ackScope = inboxScope(connection);
   const acks = useMemo(() => inboxAcks(localStorage, ackScope), [ackScope]);
@@ -1360,6 +1360,8 @@ export function Main({
   ) => {
     const go = () => {
       navGen.current++;
+      // Picking a chat goes back from the office to the chats.
+      setOfficeOpen(false);
       setPanelHidden(true);
       if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
       patchPane(pane, { chatId: id, picked: undefined, jump: undefined, subagent: subagent && id ? { chatId: id, id: subagent, at: Date.now() } : undefined, worktree, ...(fresh && { draftError: undefined }) });
@@ -1971,10 +1973,16 @@ export function Main({
   const pageHidden = usePageHidden();
   // The office is drawn, and its rooms worked out, only while it can be seen: hidden to the tray or minimized, it isn't.
   const officeVisible = officeShown && !windowHidden && !pageHidden;
+  // The office stands in front of whatever the main area shows; opening another screen there goes back from it.
+  const screenOpened = settingsOpen || projectOpen || jobsOpen || automationsOpen || repoOpen || outputsOpen || usageOpen;
+  useEffect(() => {
+    if (screenOpened) setOfficeOpen(false);
+  }, [screenOpened]);
 
-  // The inbox, the Bots view and the office ask for fresh checks as they open, and keep asking while open: they show
-  // what is live.
-  const liveWatched = inboxOpen || botsOpen || officeVisible;
+  // The inbox and the Bots view ask for fresh checks as they open, and keep asking while open: they show what is live.
+  // The office asks for none of its own (ADR 0089): it shows what the app already has, and the REST read of the other
+  // profiles stays at CHECK_EVERY_MS while it is open.
+  const liveWatched = inboxOpen || botsOpen;
   useEffect(() => {
     if (!liveWatched) return;
     void hermes.checkOtherProfiles();
@@ -2647,19 +2655,6 @@ export function Main({
           onClose={() => setBotsOpen(false)}
         />
       )}
-      {officeVisible && (
-        <Office
-          rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
-          view={agentOffice}
-          onView={(view) => setUIPrefs({ agentOffice: view })}
-          server={where ?? "the server"}
-          profile={profile}
-          connected={status === "connected"}
-          leaving={leavingNote(profile, chats)}
-          onOpen={openDesk}
-          onClose={() => setOfficeOpen(false)}
-        />
-      )}
       {inboxOpen && (
         <Inbox
           entries={inboxShown}
@@ -2679,7 +2674,20 @@ export function Main({
         />
       )}
       <main className="main" ref={mainRef}>
-        <div className="main-chat" inert={previewCovers || undefined}>
+        {officeVisible && (
+          <Office
+            rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
+            view={agentOffice}
+            onView={(view) => setUIPrefs({ agentOffice: view })}
+            server={where ?? "the server"}
+            profile={profile}
+            connected={status === "connected"}
+            leaving={leavingNote(profile, chats)}
+            onOpen={openDesk}
+            onClose={() => setOfficeOpen(false)}
+          />
+        )}
+        <div className="main-chat" inert={previewCovers || officeVisible || undefined}>
             {automationsOpen && !settingsOpen ? (
               <CapabilityGate
                 store={hermes.capabilities}

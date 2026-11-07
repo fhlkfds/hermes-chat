@@ -1,5 +1,7 @@
 # The office scene seats each agent as a character, posed by its desk's state
 
+> **Partly superseded by [ADR 0089](0089-the-office-is-a-3d-building-with-a-floor-per-profile-and-a-room-per-state.md)** (#281). The Scene view and its SVG characters were removed: the building draws each agent as a 3D character, posed for its room. This ADR's rejection of a render loop with walking characters is answered by ADR 0089's frame budget. Characters that never act for the owner, and only a current, running one moving, still hold.
+
 Issue #257, a later stage of #105. The owner wants the agent office drawn as one room where each agent (a chat's reply and each subagent) is a character at a desk, so the picture reads as "these are my agents and this is what each one is doing". ADR 0077 built the office's rooms and its Desks and List views, and left characters for a later stage. This is that stage.
 
 ## Decisions

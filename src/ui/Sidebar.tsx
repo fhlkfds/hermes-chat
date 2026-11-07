@@ -182,7 +182,7 @@ export function Rail({
             aria-label="Office"
             aria-expanded={officeOpen}
             onClick={onOffice}
-            {...bind("office", { label: "Office", note: "Every agent at work, as desks or a list" })}
+            {...bind("office", { label: "Office", note: "Every agent at work, as a building or a list" })}
           >
             <Building2 size={18} />
           </button>

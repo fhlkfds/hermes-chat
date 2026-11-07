@@ -60,14 +60,16 @@ export type UIPrefs = {
   chatSectionsShown: SectionKey[];
   /** The chat list's sections the owner collapsed, kept across restarts (ADR 0063). */
   chatSectionsCollapsed: SectionKey[];
-  /** How the agent office shows the agents at work: as desks, as a list, as characters in one room (ADR 0083), or not at all, with no rail button (ADR 0077). */
+  /** How the agent office shows the agents at work: as a 3D building (ADR 0089), as a list, or not at all, with no rail button (ADR 0077). */
   agentOffice: OfficeView;
   /** How many days a finished entry stays in the inbox before it is dismissed on its own, as if by hand; null: never. */
   inboxAutoDismissDays: number | null;
 };
 
-export type OfficeView = "desks" | "list" | "scene" | "off";
-export const OFFICE_VIEWS: readonly OfficeView[] = ["desks", "list", "scene", "off"];
+export type OfficeView = "building" | "list" | "off";
+export const OFFICE_VIEWS: readonly OfficeView[] = ["building", "list", "off"];
+/** The views the building replaced (ADR 0077's Desks, ADR 0083's Scene): a saved one reads as the building. */
+const FORMER_OFFICE_VIEWS = new Set(["desks", "scene"]);
 
 export type FollowUp = "queue" | "steer";
 
@@ -109,7 +111,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   idleCompact: Object.freeze({ enabled: false, percent: 70, idleMinutes: 15 }),
   chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"] as SectionKey[],
   chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"] as SectionKey[],
-  agentOffice: "desks",
+  agentOffice: "building",
   inboxAutoDismissDays: null,
 });
 
@@ -248,7 +250,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
     idleCompact: toIdleCompact(doc.idleCompact, d.idleCompact) ?? { ...d.idleCompact },
     chatSectionsShown: toShown(doc.chatSectionsShown) ?? [...d.chatSectionsShown],
     chatSectionsCollapsed: toSections(doc.chatSectionsCollapsed) ?? [...d.chatSectionsCollapsed],
-    agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : d.agentOffice,
+    agentOffice: OFFICE_VIEWS.includes(doc.agentOffice as OfficeView) ? (doc.agentOffice as OfficeView) : FORMER_OFFICE_VIEWS.has(doc.agentOffice as string) ? "building" : d.agentOffice,
     inboxAutoDismissDays:
       doc.inboxAutoDismissDays === null || (typeof doc.inboxAutoDismissDays === "number" && Number.isFinite(doc.inboxAutoDismissDays) && doc.inboxAutoDismissDays > 0)
         ? doc.inboxAutoDismissDays

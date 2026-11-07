@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("reading", () => {
   it("is the defaults when nothing is stored", () => {
-    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "desks", inboxAutoDismissDays: null });
+    expect(getUIPrefs()).toEqual({ theme: "system", reopenLastChat: true, checkUpdatesOnLaunch: true, lastOpenChat: {}, reasoningBlocks: true, modelPicker: null, modelPicks: {}, modelFavorites: [], statusBar: ["context", "yolo", "model", "status"], previewWidth: null, screenshotShortcut: "Ctrl+Shift+S", templates: [], terminalKind: "server", followUp: "queue", idleCompact: { enabled: false, percent: 70, idleMinutes: 15 }, chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "unsettled", "settled"], chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"], agentOffice: "building", inboxAutoDismissDays: null });
     expect(getUIPrefs()).toEqual(DEFAULT_UI_PREFS);
   });
 
@@ -91,9 +91,18 @@ describe("reading", () => {
       // A version 1 list gains Pinned, new in version 2.
       chatSectionsShown: ["pinned", "inbox", "settled"],
       chatSectionsCollapsed: ["snoozed", "unsettled", "settled", "archived"],
-      agentOffice: "desks",
+      agentOffice: "building",
       inboxAutoDismissDays: null,
     });
+  });
+
+  it("reads a saved Desks or Scene office, the views the building replaced, as the building (ADR 0089)", () => {
+    for (const was of ["desks", "scene"]) {
+      writeFromOtherWindow(JSON.stringify({ v: 2, agentOffice: was }));
+      expect(getUIPrefs().agentOffice).toBe("building");
+    }
+    writeFromOtherWindow(JSON.stringify({ v: 2, agentOffice: "list" }));
+    expect(getUIPrefs().agentOffice).toBe("list");
   });
 
   it("keeps message templates, checked, and says when the change couldn't be stored", () => {
