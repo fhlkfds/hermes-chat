@@ -27,6 +27,12 @@ export type ChatTags = { list: Tag[]; of: readonly string[]; onToggle: (tagId: s
  */
 export type ChatSnooze = { until?: number; onSnooze: (until: number) => void; onCustom: () => void; onWake: () => void };
 
+/**
+ * Settling the chat, or unsettling it (ADR 0002). Settling is also how a chat is cleared from the Inbox (ADR 0090);
+ * unsettling puts it back in the Inbox.
+ */
+export type ChatSettle = { settled: boolean; onSettle: (settled: boolean) => void };
+
 /** Pinning the chat to the top of the list, or unpinning it (snooze.ts `PinStore`, ADR 0085). */
 export type ChatPin = { pinned: boolean; onPin: (pinned: boolean) => void };
 
@@ -53,8 +59,8 @@ export function PinItem({ pin, onClose }: { pin: ChatPin; onClose: () => void })
 /**
  * The right-click menu for one chat, at the pointer, kept inside the window. `onRename` and `onRegenTitle` hand back
  * to the row. `onOpenIn` opens the chat in the left (0) or right (1) pane; with one pane (`split` false) the menu offers
- * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). `onSettle` settles the chat, the way it
- * leaves the Inbox, or unsettles it (ADR 0090). `onDelete` asks before deleting the chat; it's left out while a reply runs. The arrow keys move between its items.
+ * to open it in a second pane. `onCopyLink` copies the chat's link (chatLinks.ts). `onDelete` asks before deleting the
+ * chat; it's left out while a reply runs. The arrow keys move between its items.
  */
 export function ChatMenu({
   chat,
@@ -69,8 +75,8 @@ export function ChatMenu({
   projects,
   tags,
   snooze,
+  settle,
   pin,
-  onSettle,
   onDelete,
   onClose,
 }: {
@@ -87,8 +93,8 @@ export function ChatMenu({
   projects?: ChatProjects;
   tags?: ChatTags;
   snooze?: ChatSnooze;
+  settle?: ChatSettle;
   pin?: ChatPin;
-  onSettle?: (settled: boolean) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -175,17 +181,18 @@ export function ChatMenu({
           </button>
         ))}
       {pin && <PinItem pin={pin} onClose={onClose} />}
-      {onSettle && (
+      {settle && (
         <button
           role="menuitem"
           className="menu-item"
+          title={settle.settled ? "Move this chat back to the Inbox" : "Clear this chat from the Inbox into Settled"}
           onClick={() => {
             onClose();
-            onSettle(!chat.settled);
+            settle.onSettle(!settle.settled);
           }}
         >
-          <span className="menu-icon">{chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />}</span>
-          <span className="menu-label">{chat.settled ? "Unsettle" : "Settle"}</span>
+          <span className="menu-icon">{settle.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />}</span>
+          <span className="menu-label">{settle.settled ? "Unsettle" : "Settle"}</span>
         </button>
       )}
       {snooze && (

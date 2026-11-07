@@ -22,12 +22,12 @@ Preconditions:
 
 - `HV_LIST=24 $S/hv up`, so `default` has 24 Active chats (`list1` … `list24`) and its Inbox is longer than the panel. Then sign in per [sign-in.md](sign-in.md).
 
-- **Header at the foot.** `$S/wd.mjs wait '[data-drawer=settled]'`. `$S/wd.mjs count '.sb-scroll [data-drawer]'` prints `0`. The header `[data-section-head=settled]` reads `Settled4` with `aria-expanded="false"`, and its bottom is the panel's bottom (`eval` the two `getBoundingClientRect()`s). Run `$S/wd.mjs shot 01-drawer-closed`.
+- **Header at the foot.** `$S/wd.mjs wait .settled-drawer`. `$S/wd.mjs count '.sb-scroll .settled-drawer'` prints `0`. The header `[data-section-head=settled]` reads `Settled4` with `aria-expanded="false"`, and its bottom is the panel's bottom (`eval` the two `getBoundingClientRect()`s). Run `$S/wd.mjs shot 01-drawer-closed`.
 - **Settle from the menu.** For each of `list1`, `list3`, `list4`, `list6`, `list7`, `list8`, run `$S/wd.mjs rightclick '.row-open[data-chat=<id>]'`, then `$S/wd.mjs click '[role=menuitem]' Settle`. The header reads `Settled10`. `$S/hv state` shows each with `"pinned": false`.
 - **Open.** `$S/wd.mjs click '[data-section-head=settled]'`, then `$S/wd.mjs wait .settled-list`, then `$S/wd.mjs shot 02-drawer-open`. The drawer's height is half the panel's at most, and `.settled-list` has `scrollHeight > clientHeight`.
 - **Own scroll.** `$S/hv x mousemove 190 700`, then `$S/hv x click 5` a few times. `.settled-list` `scrollTop` grows and `.sb-scroll` `scrollTop` stays `0`.
 - **Unsettle.** `$S/wd.mjs rightclick '.settled-list .row-open' "Swap usage spikes"`, then `$S/wd.mjs click '[role=menuitem]' Unsettle`. The row is back in `.sb-scroll`, and `$S/hv state` shows `list7` with `"pinned": true`.
-- **Keys.** Find the last scroll row (`eval` the last `.sb-scroll .row-open`'s `data-chat`). Click it twice: the first click opens the chat and focuses the composer, the second leaves focus on the row. `$S/wd.mjs press ArrowDown` moves focus into `[data-drawer]`; `ArrowUp` moves it back.
+- **Keys.** Find the last scroll row (`eval` the last `.sb-scroll .row-open`'s `data-chat`). Click it twice: the first click opens the chat and focuses the composer, the second leaves focus on the row. `$S/wd.mjs press ArrowDown` moves focus into `.settled-drawer`; `ArrowUp` moves it back.
 - **Opened elsewhere.** Close the drawer, then `$S/wd.mjs press Control+k`, `$S/wd.mjs keys "Why is the VPN"`, `$S/wd.mjs click .hit-row "Why is the VPN slow"`. The header has `aria-expanded="true"` and `.settled-list .row-open[data-chat=vpn]` counts `1`.
 - **Remembered.** Close the drawer, then `$S/wd.mjs close`, `$S/wd.mjs open` and sign in again. The header still has `aria-expanded="false"`.
 - **Archived.** Settings → Chats, then `$S/wd.mjs click '[role=switch][aria-labelledby=chat-section-archived]'` and Escape. `.sb-scroll [data-section-head]` ends with `Archived0`, and the drawer still holds only Settled.

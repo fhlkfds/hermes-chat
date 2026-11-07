@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The chat list's sections (the Inbox, Working, Snoozed, Unsettled, Settled) and snoozing from a chat's menu: the list
+// The chat list's sections (the Inbox, Working, Snoozed, Settled) and snoozing from a chat's menu: the list
 // on its own with chats in each state, then the whole app against a fake Hermes.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

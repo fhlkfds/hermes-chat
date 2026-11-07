@@ -152,15 +152,15 @@ kbd {
 .section-toggle .dot { margin-left: 6px; width: 6px; height: 6px; }
 .chev { transition: transform 0.15s; flex: none; }
 .chev.open { transform: rotate(90deg); }
-/* Every section but Settled is in the list's scroll (ADR 0063, ADR 0090); the ones out of the way are quieter. */
+/* The sections are in the list's scroll (ADR 0063), but Settled, a drawer at its foot (ADR 0090); the ones out of the
+   way are quieter. */
 .section-toggle:first-child { padding-top: 6px; }
+.settled-drawer { flex: none; display: flex; flex-direction: column; max-height: 50%; padding: 0 10px 8px; border-top: 1px solid var(--line); }
+.settled-drawer > .section-toggle { padding-top: 10px; }
+.settled-list { overflow-y: auto; min-height: 0; }
 .row[data-section="snoozed"] .row-title,
 .row[data-section="settled"] .row-title,
 .row[data-section="archived"] .row-title { color: var(--muted); }
-/* Settled is the one drawer (ADR 0090): pinned to the foot, opening upward to half the panel with its own scroll. */
-.settled-drawer { flex: none; display: flex; flex-direction: column; max-height: 50%; padding: 0 10px 8px; border-top: 1px solid var(--line); }
-.settled-drawer .section-toggle { padding-top: 8px; padding-bottom: 6px; }
-.settled-list { overflow-y: auto; min-height: 0; }
 /* A collapsed section's rows stay mounted, hidden; .row's own display would otherwise show them. */
 .row[hidden] { display: none; }
 .row-pin { flex: none; display: inline-flex; color: var(--faint); }
@@ -775,12 +775,32 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .model-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-fast-mark { color: var(--warn); flex: none; }
 .reasoning-pill { height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: calc(11.5rem / 14); font-weight: 500; }
+.approvals-pill:disabled { opacity: 0.5; cursor: default; }
+.approvals-pill:disabled:hover { background: none; color: var(--muted); }
+.approvals-pill.yolo { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.approvals-pill.yolo:hover, .approvals-pill.yolo.on { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.approvals-label { white-space: nowrap; }
+.approvals-scope { opacity: 0.8; font-weight: 400; }
 @container (max-width: 600px) {
   .composer-keys { display: none; }
   .model-controls { flex: 1; }
+  .approvals-label { display: none; }
+  .approvals-pill { padding: 0 6px; gap: 2px; }
 }
 /* `.menu` is fixed to the window; this one sits above its pill. */
 .menu.pill-menu { position: absolute; left: 0; top: auto; bottom: calc(100% + 8px); min-width: 150px; }
+.menu.approvals-menu, .status-popover.approvals-confirm { left: auto; right: 0; width: 320px; }
+.menu-item.approvals-option { display: grid; grid-template-columns: 16px auto 1fr auto; gap: 2px 9px; align-items: center; padding: 8px; }
+.approvals-option:disabled { opacity: 0.6; cursor: default; }
+.approvals-name { font-weight: 500; color: var(--text); }
+.approvals-check { display: inline-grid; color: var(--text); }
+.approvals-tag { font-size: calc(11rem / 14); color: var(--muted); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; }
+.approvals-what { grid-column: 2 / -1; font-size: calc(12rem / 14); line-height: 1.45; color: var(--muted); }
+.approvals-option.yolo .approvals-name, .approvals-option.yolo .menu-icon { color: var(--warn); }
+.approvals-note { margin: 0; padding: 4px 8px 6px; font-size: calc(11.5rem / 14); line-height: 1.45; color: var(--muted); }
+.approvals-error { padding: 4px 8px; font-size: calc(12rem / 14); line-height: 1.4; color: var(--bad); }
+.approvals-confirm ul { margin: 0; padding-left: 18px; font-size: calc(12rem / 14); line-height: 1.5; color: var(--muted); }
+.approvals-confirm .approvals-error { padding: 0; }
 .model-popover {
   position: absolute; left: -6px; bottom: calc(100% + 10px); z-index: 30; width: 340px; max-height: min(440px, 60vh);
   display: flex; flex-direction: column; background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px;
@@ -1582,8 +1602,6 @@ button.status-item:disabled { opacity: 0.5; cursor: default; }
 .status-meter.high .meter > span { background: var(--warn); }
 .status-meter.full .meter > span { background: var(--bad); }
 .status-meter.unmeasured { color: var(--muted); }
-.status-yolo.on { color: var(--warn); }
-.status-yolo.failed { color: var(--bad); }
 .status-conn .conn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .status-conn.connected .conn-dot { background: var(--ok); }
 .status-conn.connecting .conn-dot,
@@ -2284,125 +2302,76 @@ label.memory-pick { cursor: pointer; }
   .inbox { width: calc(100vw - 60px); }
 }
 
-/* The agent office (Office.tsx, ADR 0077): a room per chat, a desk per agent. A desk is a monitor on a desk top; the
-   monitor's screen carries the state as an icon and a tint, and the words under it say the same. A desk as last seen is
-   dashed and its screen greyed and hatched, so it never looks current. */
-.inbox.office { width: 660px; }
-.office-views { margin-right: 4px; }
+/* The agent office (Office.tsx, ADR 0077, ADR 0089): a full view in place of the chat panes, the building or a list. */
+.office { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.office-head { display: flex; align-items: center; gap: 10px; padding: 12px 10px 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.office-head .inbox-heading { flex: none; }
+.office-fresh { flex: 1; min-width: 0; display: flex; gap: 10px; flex-wrap: wrap; }
 .office-views button { display: inline-flex; align-items: center; gap: 4px; }
-.office-floor { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-.office-room { flex: none; border: 1px solid var(--line-2); border-radius: 10px; padding: 8px 10px 10px; background: var(--bg); }
-.office-room-name { margin: 0 0 8px; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: calc(12.5rem / 14); font-weight: 600; color: var(--text); }
-.office-room-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.office-room-profile { flex: none; font-weight: 400; color: var(--faint); font-size: calc(11.5rem / 14); }
-.office-desks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 8px; }
-.desk {
-  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px;
-  border-radius: 8px; border: 1px solid var(--line-2); background: var(--raised); text-align: left;
-}
-.desk:hover { background: var(--raised-2); border-color: var(--line-3); }
-.desk-screen {
-  position: relative; height: 38px; margin: 0 10px; border-radius: 5px; display: grid; place-items: center;
-  border: 2px solid var(--line-3); background: var(--raised-3); color: var(--muted);
-}
-.desk-top { height: 4px; margin: 3px 0 5px; border-radius: 2px; background: var(--line-3); }
-.desk.is-reply .desk-top { background: var(--accent); opacity: 0.6; }
-.desk-name {
-  color: var(--text); font-size: calc(12.5rem / 14); line-height: 1.35; overflow: hidden;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-}
-.desk-state { color: var(--muted); font-size: calc(11.5rem / 14); font-weight: 500; }
-.desk-under { color: var(--faint); font-size: calc(11rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.desk.state-running .desk-screen { color: var(--accent); background: var(--accent-soft); }
-.desk.state-running .desk-state { color: var(--accent); }
-.desk.state-approval .desk-screen, .desk.state-uncertain .desk-screen { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.desk.state-approval .desk-state, .desk.state-uncertain .desk-state { color: var(--warn); }
-.desk.state-failed .desk-screen { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
-.desk.state-failed .desk-state { color: var(--bad); }
-.desk.state-completed .desk-screen { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.desk.state-completed .desk-state { color: var(--ok); }
-.desk.state-unread .desk-screen { color: var(--accent); }
-.desk.state-stopped .desk-screen, .desk.state-ended .desk-screen, .desk.state-idle .desk-screen, .desk.state-unknown .desk-screen { background: var(--sidebar); color: var(--faint); }
-.desk.is-stale { border-style: dashed; border-color: var(--line-3); }
-.desk.is-stale .desk-screen {
-  color: var(--faint); border-style: dashed;
-  background: repeating-linear-gradient(45deg, var(--sidebar) 0 5px, var(--raised-2) 5px 7px);
-}
-.desk.is-stale .desk-state { color: var(--muted); font-style: italic; }
-.desk-typing { position: absolute; right: 6px; bottom: 4px; display: flex; gap: 2px; }
-.desk-typing i { width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.45; }
-.office-floor[data-motion="on"] .desk-typing i { animation: desk-typing 1.4s ease-in-out infinite; }
-.office-floor[data-motion="on"] .desk-typing i:nth-child(2) { animation-delay: 0.2s; }
-.office-floor[data-motion="on"] .desk-typing i:nth-child(3) { animation-delay: 0.4s; }
-@keyframes desk-typing { 30% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .office-floor .desk-typing i { animation: none; }
-}
-/* The office as a scene (Office.tsx, ADR 0083): one shared room, each chat's team on its own rug, each agent a small
-   robot at a desk. Its pose says what it does, the state's tint lights its eyes, antenna and laptop, and the words under
-   it say the same. The robots keep their own colors in either theme; the room, rugs and desks follow the theme. A
-   character as last seen is greyed, its seat dashed, and it never moves. */
-.office-scene {
-  flex: 1; min-height: 0; overflow-y: auto; margin: 0 12px 12px; padding: 12px; border-radius: 10px;
-  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 12px;
-  border: 1px solid var(--line-2);
-  background: repeating-linear-gradient(0deg, transparent 0 35px, var(--line) 35px 36px), var(--sidebar);
-}
-.scene-team { flex: none; max-width: 100%; padding: 8px 10px 10px; border-radius: 14px; background: var(--raised); box-shadow: 0 1px 0 var(--line-2); }
-.scene-team .office-room-name { margin-bottom: 4px; }
-.scene-seats { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.seat {
-  --seat-tint: var(--faint);
-  --seat-body: var(--muted);
-  width: 140px; height: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 4px 6px 6px;
-  border-radius: 10px; border: 1px solid transparent; background: none; text-align: left;
-}
-.seat:hover { background: var(--raised-2); border-color: var(--line-3); }
-.seat.is-reply { --seat-body: var(--accent); }
-.seat.state-running, .seat.state-unread { --seat-tint: var(--accent); }
-.seat.state-approval, .seat.state-uncertain { --seat-tint: var(--warn); }
-.seat.state-failed { --seat-tint: var(--bad); }
-.seat.state-completed { --seat-tint: var(--ok); }
-.seat-stage { position: relative; display: block; }
-.seat-figure { display: block; width: 100%; height: auto; }
-.seat-badge {
-  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
-  color: var(--seat-tint); background: var(--bg); border: 1px solid var(--line-2);
-}
-.seat .desk-state { color: var(--seat-tint); }
-.seat.state-stopped .desk-state, .seat.state-ended .desk-state, .seat.state-idle .desk-state, .seat.state-unknown .desk-state, .seat.state-queued .desk-state { color: var(--muted); }
-.sc-chair { fill: var(--raised-3); }
-.sc-body { fill: var(--seat-body); }
-.sc-arm { fill: none; stroke: var(--seat-body); stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
-.sc-head { fill: #cdd2db; stroke: #7d8492; stroke-width: 0.8; }
-.sc-visor { fill: #262a33; }
-.sc-antenna { stroke: #7d8492; stroke-width: 1.4; stroke-linecap: round; }
-.sc-mouth { fill: none; stroke: #4b515d; stroke-width: 1.2; stroke-linecap: round; }
-.sc-light { fill: var(--seat-tint); }
-.sc-cross { fill: none; stroke: var(--seat-tint); stroke-width: 1; stroke-linecap: round; }
-.sc-lid { fill: #4b515d; }
-.sc-desk { fill: color-mix(in srgb, var(--text) 30%, var(--raised)); }
-.sc-desk-front { fill: color-mix(in srgb, var(--text) 16%, var(--raised)); }
-.seat.is-stale { border-style: dashed; border-color: var(--line-3); --seat-tint: var(--faint); }
-.seat.is-stale .seat-figure { filter: grayscale(1); opacity: 0.5; }
-.seat.is-stale .desk-state { color: var(--muted); font-style: italic; }
-.seat[data-moving] .sc-hand { animation: seat-typing 0.45s ease-in-out infinite alternate; }
-.seat[data-moving] .sc-hand + .sc-hand { animation-delay: -0.22s; }
-@keyframes seat-typing { to { transform: translateY(-1.6px); } }
-@media (prefers-reduced-motion: reduce) {
-  .seat[data-moving] .sc-hand { animation: none; }
-}
+.office-fallback { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); color: var(--warn); }
+.office .inbox-list { padding-top: 8px; }
 .office-list-room { list-style: none; }
 .office-list-room > ul { list-style: none; margin: 0; padding: 0; }
-.office-list-room .office-room-name { margin: 0; padding: 10px 8px 2px; }
+.office-room-name { margin: 0; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: calc(12.5rem / 14); font-weight: 600; color: var(--text); }
+.office-list-room .office-room-name { padding: 10px 8px 2px; }
+.office-room-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-room-profile { flex: none; font-weight: 400; color: var(--faint); font-size: calc(11.5rem / 14); }
 .office-row.state-running .inbox-kind { color: var(--accent); }
 .office-row.state-approval .inbox-kind, .office-row.state-uncertain .inbox-kind { color: var(--warn); }
 .office-row.state-failed .inbox-kind { color: var(--bad); }
 .office-row.state-completed .inbox-kind { color: var(--ok); }
 .office-row.is-stale .inbox-kind { color: var(--muted); font-style: italic; }
 .office-foot { margin: 0; padding: 6px 16px 10px; border-top: 1px solid var(--line); }
-@media (max-width: 760px) {
-  .inbox.office { width: calc(100vw - 60px); }
+
+/* The building: the canvas fills the view; tags, room names and "+N more" sit over it where the scene last drew them. */
+.office-building { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.office-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+.office-overlay { position: absolute; inset: 0; pointer-events: none; }
+.office-room-label, .office-tag, .office-more { position: absolute; left: 0; top: 0; }
+.office-overlay [data-off] { opacity: 0; pointer-events: none !important; }
+.office-room-label {
+  translate: -50% -50%; color: var(--faint); font-size: calc(11rem / 14); font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; white-space: nowrap; user-select: none;
+}
+.office-tag {
+  translate: -50% -100%; pointer-events: auto; display: inline-flex; align-items: center; gap: 5px; max-width: 160px;
+  padding: 2px 7px 2px 5px; border: 1px solid var(--line-2); border-left: 3px solid; border-radius: 4px;
+  background: color-mix(in srgb, var(--raised) 88%, transparent); color: var(--text); font-size: calc(11rem / 14);
+  line-height: 16px; white-space: nowrap;
+}
+.office-tag:hover, .office-tag.on { background: var(--raised-2); }
+.office-tag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.office-tag-name { overflow: hidden; text-overflow: ellipsis; }
+.office-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.office-tag.state-running .office-dot, .office-tag.state-queued .office-dot { background: var(--accent); }
+.office-tag.state-approval .office-dot, .office-tag.state-uncertain .office-dot { background: var(--warn); }
+.office-tag.state-failed .office-dot { background: var(--bad); }
+.office-tag.state-completed .office-dot { background: var(--ok); }
+.office-tag.state-unread .office-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.office-tag.is-stale { color: var(--muted); font-style: italic; border-left-color: var(--line-3) !important; }
+.office-tag.is-stale .office-dot { background: var(--faint); box-shadow: none; }
+.office-more { translate: -50% -100%; pointer-events: auto; padding: 4px 10px; border: 1px solid var(--line-3); border-radius: 4px; background: var(--raised); color: var(--text); font-size: calc(12rem / 14); font-weight: 600; }
+.office-more:hover { background: var(--raised-2); }
+.office-tools { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 10px; }
+.office-tools .btn { display: inline-flex; align-items: center; gap: 5px; }
+.office-hint { color: var(--faint); font-size: calc(11.5rem / 14); }
+.office-note { position: absolute; left: 16px; top: 12px; max-width: 420px; }
+
+/* An agent's card: square and flat, as a modal box is (ADR 0084), its top edge in the agent's team color. */
+.office-card {
+  position: absolute; top: 12px; right: 12px; width: 300px; max-width: calc(100% - 24px); max-height: calc(100% - 64px); overflow-y: auto;
+  padding: 12px 14px 14px; background: var(--raised); border: 1px solid var(--line-2); border-top: 3px solid; display: flex; flex-direction: column; gap: 10px;
+}
+.office-card-head { display: flex; align-items: flex-start; gap: 8px; }
+.office-card-head h3 { flex: 1; min-width: 0; margin: 0; font-size: calc(14rem / 14); font-weight: 600; overflow-wrap: anywhere; }
+.office-card-stale { margin: 0; color: var(--warn); font-size: calc(12rem / 14); }
+.office-card-facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: calc(12.5rem / 14); }
+.office-card-facts > div { display: contents; }
+.office-card-facts dt { color: var(--faint); }
+.office-card-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.office-card .btn.primary { align-self: flex-start; }
+@media (max-width: 640px) {
+  .office-hint { display: none; }
 }
 
 /* Settings → Toolsets (ToolsetSettings.tsx): one row per toolset, its switch, and what a change came to. */

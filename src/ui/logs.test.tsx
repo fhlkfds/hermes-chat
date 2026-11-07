@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes } from "../hermes/fakeHermes";
 import { LogBuffer, note, type RemoteLog } from "../hermes/logs";
+import { AttemptLog, type Attempt } from "../hermes/attempts";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { LogsPanel, type LogsWiring } from "./Logs";
@@ -149,6 +150,36 @@ describe("Logs screen", () => {
     expect(text).toContain("key [redacted key] loaded");
     expect(text).not.toContain("AbCdEfGhIjKlMnOpQrStUv");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("shows the connection attempts kept on disk, read when Logs opens, and puts them in the bundle when ticked", async () => {
+    // What an earlier launch left: an attempt the app was closed during, then one that failed at sign-in.
+    const run = "00000000-0000-4000-8000-0000000000aa";
+    const file: Attempt[] = [
+      { v: 1, id: "00000000-0000-4000-8000-000000000001", run, at: 1, outcome: "unfinished", routes: [{ id: "k3x9q2ab", kind: "lan", steps: [{ step: "keyring", ms: 3 }, { step: "resolve", ms: 11 }, { step: "status" }] }] },
+      { v: 1, id: "00000000-0000-4000-8000-000000000002", run, at: 2, ms: 900, outcome: "failed", routes: [{ id: "main", kind: "ssh", steps: [{ step: "keyring", ms: 2 }, { step: "tunnel", ms: 300 }, { step: "status", ms: 90 }, { step: "sign-in", ms: 500 }], error: "Wrong username or password." }] },
+    ];
+    const read = vi.fn(async () => ({ attempts: file, unreadable: 0 }));
+    const attempts = new AttemptLog({ read, put: async () => {} });
+    screenWith(logs(), { attempts, connected: false });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "attempts");
+    await waitFor(() =>
+      expect(rows()).toEqual([
+        "Didn't finish: Hermes Chat was closed while it was connecting, at status. LAN route k3x9q2ab: keyring 3 ms, resolve 11 ms, status.",
+        "Failed after 900 ms. SSH route main: keyring 2 ms, tunnel 300 ms, status 90 ms, sign-in 500 ms; stopped at sign-in: Wrong username or password.",
+      ]),
+    );
+    expect(screen.getByText(/kept on this computer between launches/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /Support bundle/ }));
+    const dialog = screen.getByRole("dialog", { name: "Support bundle" });
+    const box = within(dialog).getByLabelText(/Connection attempts: 2 lines/);
+    expect(within(dialog).getByLabelText("The file's text").textContent).toContain("===== Connection attempts =====");
+    await userEvent.click(box);
+    expect(within(dialog).getByLabelText("The file's text").textContent).not.toContain("===== Connection attempts =====");
+    await userEvent.click(box);
+    await userEvent.click(within(dialog).getByRole("button", { name: /Save/ }));
   });
 
   it("keeps the bundle to the moment it opened, while lines keep coming", async () => {

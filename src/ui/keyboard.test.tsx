@@ -452,6 +452,7 @@ describe("Chat list by keyboard", () => {
   it("reaches Settle, Archive and Delete with Tab; Escape or Cancel keeps the chat with focus back on Delete", async () => {
     const s = await signedIn();
     rowButton("Nightly backup").focus();
+    // Settle is how a chat is cleared from the Inbox (ADR 0090); there is no separate Clear.
     await s.user.tab();
     expect(focused()).toBe(screen.getAllByRole("button", { name: "Settle" })[0]);
     await s.user.tab();

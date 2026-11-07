@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The status bar: what it shows is kept, the context meter reads Hermes's own usage frames, and YOLO is only offered
-// when Hermes reports it for the chat. Driven against a fake Hermes speaking the deployed wire shapes.
+// The status bar: what it shows is kept, and the context meter reads Hermes's own usage frames. Driven against a fake
+// Hermes speaking the deployed wire shapes.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,7 +9,7 @@ import { connect, type Hermes } from "../hermes/transport";
 import { UI_PREFS_KEY, getUIPrefs } from "../hermes/uiPrefs";
 import { StatusBar, StatusBarSetting } from "./StatusBar";
 
-const ALL = ["context", "yolo", "model", "status"];
+const ALL = ["context", "model", "status"];
 const kept = () => JSON.parse(localStorage.getItem(UI_PREFS_KEY)!);
 
 /** A `session.usage` event payload as the deployed `_start_usage_ticker` sends it (`server._get_usage`). */
@@ -42,7 +42,6 @@ async function barFor(server = new FakeHermes()) {
     <StatusBar
       chat={chat()}
       status={hermes.getSnapshot().status}
-      onYolo={(on) => hermes.setYolo(id, on)}
       context={{ inspect: () => hermes.inspectContext(id), history: () => hermes.compactionHistory(id), compact: () => hermes.compact(id), cannotCompact: () => hermes.cannotCompact() }}
     />
   );
@@ -66,7 +65,7 @@ describe("What the status bar shows", () => {
 
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.getByRole("menuitemcheckbox", { name: "Connection" }).getAttribute("aria-checked")).toBe("false");
-    expect(kept()).toMatchObject({ theme: "dark", statusBar: ["context", "yolo", "model"] });
+    expect(kept()).toMatchObject({ theme: "dark", statusBar: ["context", "model"] });
     // Ticking it again puts it back in its place.
     await userEvent.click(screen.getByRole("menuitemcheckbox", { name: "Connection" }));
     expect(kept().statusBar).toEqual(ALL);
@@ -93,6 +92,16 @@ describe("What the status bar shows", () => {
     await barFor();
     fireEvent.contextMenu(screen.getByRole("contentinfo", { name: "Status bar" }));
     expect(screen.getAllByRole("menuitemcheckbox").filter((i) => i.getAttribute("aria-checked") === "true").map((i) => i.textContent)).toEqual(["Connection"]);
+  });
+
+  it("has no YOLO item since the approval mode moved to the composer, and a bar saved with one still shows (ADR 0091)", async () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 1, statusBar: ["context", "yolo", "status"] }));
+    await barFor();
+    expect(screen.getByText("Context not measured")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByText(/YOLO/)).toBeNull();
+    fireEvent.contextMenu(screen.getByRole("contentinfo", { name: "Status bar" }));
+    expect(screen.getAllByRole("menuitemcheckbox").map((i) => i.textContent)).toEqual(["Context", "Model", "Connection"]);
   });
 });
 
@@ -140,107 +149,10 @@ describe("A chat's live session", () => {
     await hermes.sync();
     await hermes.open("nas");
     const nas = () => hermes.getSnapshot().chats.find((c) => c.id === "nas")!;
-    expect(nas().live).toEqual({ yolo: true, yoloEverywhere: false, context: { used: 46_000, max: 200_000, percent: 23, estimated: false } });
+    expect(nas().live).toEqual({ approvals: { mode: "manual", yolo: true }, context: { used: 46_000, max: 200_000, percent: 23, estimated: false } });
     expect(nas().model?.model).toBe("m");
 
     server.drop();
     expect(nas().live).toBeUndefined();
-  });
-});
-
-describe("YOLO for this chat", () => {
-  const yolo = () => screen.getByRole("switch", { name: "YOLO for this chat" }) as HTMLButtonElement;
-  const unknownYolo = () => screen.getByRole("button", { name: "YOLO for this chat: unknown" }) as HTMLButtonElement;
-
-  /**
-   * config.set as the deployed `_set_yolo` answers it: the chat's flag goes on or off, `session.info` reports the
-   * effective state (the flag, or `wider`: the process `--yolo` launch flag), then the answer carries the flag alone.
-   * `agent: false`: the session's agent isn't built yet, so no session.info goes out.
-   */
-  function yoloServer({ wider = false, agent = true } = {}) {
-    const server = new FakeHermes();
-    server.handlers["config.set"] = (r) => {
-      const flag = r.params.value === "on";
-      if (agent) server.event(String(r.params.session_id), "session.info", { model: "m", yolo: flag || wider, approval_mode: "manual" });
-      server.respond(r.id, { key: "yolo", value: flag ? "1" : "0", scope: "session" });
-    };
-    return server;
-  }
-
-  it("reads unknown, never off, and is disabled with the reason, when Hermes doesn't report YOLO for the chat", async () => {
-    // The fake's session.create answers with an empty `info`, as Hermes does before the session's agent is built.
-    const { server } = await barFor();
-    expect(screen.queryByRole("switch")).toBeNull();
-    expect(unknownYolo().disabled).toBe(true);
-    expect(unknownYolo().textContent).toBe("YOLO unknown");
-    expect(unknownYolo().title).toBe("Hermes hasn't reported YOLO for this chat yet, so it can't be changed from here.");
-    expect(server.last("config.set")).toBeUndefined();
-  });
-
-  it("is disabled when Hermes's own settings turn it on for every chat", async () => {
-    const { server, runtime } = await barFor();
-    act(() => server.event(runtime, "session.info", { model: "m", yolo: true, approval_mode: "off" }));
-    expect(yolo().disabled).toBe(true);
-    expect(yolo().getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("turns on for this chat only after the owner confirms, and off again", async () => {
-    const { server, hermes, runtime, chat } = await barFor(yoloServer());
-    act(() => server.event(runtime, "session.info", { model: "m", yolo: false, approval_mode: "manual" }));
-    expect(yolo().disabled).toBe(false);
-
-    await userEvent.click(yolo());
-    // Cancel has focus, so a stray Enter backs out.
-    await userEvent.keyboard("{Enter}");
-    expect(server.last("config.set")).toBeUndefined();
-
-    await userEvent.click(yolo());
-    await userEvent.click(screen.getByRole("button", { name: "Turn on" }));
-    await settle(hermes);
-    expect(server.last("config.set")!.params).toEqual({ session_id: runtime, profile: "default", key: "yolo", value: "on" });
-    expect(chat().live?.yolo).toBe(true);
-    expect(yolo().getAttribute("aria-checked")).toBe("true");
-
-    await userEvent.click(yolo());
-    await settle(hermes);
-    expect(server.last("config.set")!.params.value).toBe("off");
-    expect(yolo().getAttribute("aria-checked")).toBe("false");
-  });
-
-  it("stays on, and can't be turned off here, when Hermes's launch flag keeps it on after the chat's flag goes off", async () => {
-    const server = yoloServer({ wider: true });
-    const { hermes, runtime } = await barFor(server);
-    act(() => server.event(runtime, "session.info", { model: "m", yolo: true, approval_mode: "manual" }));
-    expect(yolo().disabled).toBe(false);
-
-    await userEvent.click(yolo());
-    await settle(hermes);
-    expect(server.last("config.set")!.params.value).toBe("off");
-    // Hermes answered "0" for the chat's flag, but still auto-approves.
-    expect(yolo().getAttribute("aria-checked")).toBe("true");
-    expect(yolo().disabled).toBe(true);
-    expect(yolo().title).toBe("YOLO is on for every chat by Hermes's own settings or launch options, so it can't be turned off here.");
-  });
-
-  it("reads unknown after turning off when Hermes doesn't report the effective state", async () => {
-    const server = yoloServer({ agent: false });
-    const { hermes, runtime, chat } = await barFor(server);
-    act(() => server.event(runtime, "session.info", { model: "m", yolo: true, approval_mode: "manual" }));
-    await userEvent.click(yolo());
-    await settle(hermes);
-    expect(chat().live?.yolo).toBeUndefined();
-    expect(unknownYolo().textContent).toBe("YOLO unknown");
-  });
-
-  it("shows why when Hermes refuses the change", async () => {
-    const server = new FakeHermes();
-    server.handlers["config.set"] = (r) => server.fail(r.id, 4002, "unknown config key: yolo");
-    const { hermes, runtime } = await barFor(server);
-    act(() => server.event(runtime, "session.info", { yolo: false }));
-    await userEvent.click(yolo());
-    await userEvent.click(screen.getByRole("button", { name: "Turn on" }));
-    await settle(hermes);
-    expect(yolo().title).toBe("Couldn't change YOLO: unknown config key: yolo");
-    expect(yolo().getAttribute("aria-checked")).toBe("false");
   });
 });

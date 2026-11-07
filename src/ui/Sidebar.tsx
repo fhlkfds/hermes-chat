@@ -183,7 +183,7 @@ export function Rail({
             aria-label="Office"
             aria-expanded={officeOpen}
             onClick={onOffice}
-            {...bind("office", { label: "Office", note: "Every agent at work, as desks or a list" })}
+            {...bind("office", { label: "Office", note: "Every agent at work, in the building or a list" })}
           >
             <Building2 size={18} />
           </button>
@@ -546,8 +546,8 @@ function ChatRow({
           y={menu.y}
           split={split}
           snooze={snooze}
+          settle={chat.archived ? undefined : { settled: chat.settled, onSettle }}
           pin={pin}
-          onSettle={chat.archived ? undefined : onSettle}
           onOpenIn={onOpenIn}
           onOpenTab={onOpenTab}
           onRename={() => setRenaming(true)}
@@ -916,13 +916,13 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
 
 /**
  * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): Pinned, the chats the owner pinned (ADR 0085); the
- * Inbox, the chats that need the owner or are done;
- * Working, the chats Hermes is replying in; Snoozed; and Archived, in the scroll, and Settled, a drawer
- * pinned to the foot of the list (ADR 0090). Settings → General picks the sections shown (uiPrefs.ts
- * `chatSectionsShown`), and each one's header collapses it, remembered across restarts. The scroll's sections are one
- * list of rows and headers, so a row that moves between them, as a reply starts or ends, keeps its menu, rename box
- * and focus; a collapsed section keeps its Active rows, hidden, for the same reason. A row that moves to or from the
- * drawer is drawn again. The Custom snooze dialog belongs to the list, not a row, for the same reason too.
+ * Inbox, the chats that need the owner or are done; Working, the chats Hermes is replying in; Snoozed; and Archived, in
+ * the list's scroll. Settled is a drawer at the list's foot, outside the scroll (ADR 0090): its header stays at the
+ * bottom, and opens the drawer upward with its own scroll. Settling a chat is how it is cleared from the Inbox.
+ * Settings → General picks the sections shown (uiPrefs.ts `chatSectionsShown`), and each one's header collapses it,
+ * remembered across restarts. The scroll's sections are one list of rows and headers, so a row that moves between
+ * them, as a reply starts or ends, keeps its menu, rename box and focus; a collapsed section keeps its Active rows,
+ * hidden, for the same reason. The Custom snooze dialog belongs to the list, not a row, for the same reason too.
  * Archived chats are in `chats` only while the Archived section is shown (App.tsx lists them then).
  * `projectSwitcher` sits under the profile's name; `chats` are only the shown project's when one is picked there.
  * `projectsOf`: the projects a chat's menu offers to put it in or take it out of.
@@ -1071,10 +1071,12 @@ export function ChatList({
       pin={onPin && !c.archived ? { pinned: pins[c.id] !== undefined, onPin: (on) => onPin(c.id, on) } : undefined}
     />
   );
-  // Archived, like the Settled drawer, can hold every chat the profile has ever had, so collapsed it draws no rows.
+  // Archived can hold every chat the profile has ever had, so a collapsed one draws no rows (Settled, the drawer, neither).
   const keepsHidden = (k: SectionKey) => k !== "archived";
-  const header = (k: SectionKey, open: boolean) => {
-    const list = sections[k];
+  // Pinned, Working and Snoozed come and go with what the owner and Hermes do; the others keep their header when empty.
+  const drawnEmpty = (k: SectionKey) => k !== "pinned" && k !== "working" && k !== "snoozed";
+  const busy = sections.working.length + sections.snoozed.length > 0;
+  const header = (k: SectionKey, list: Chat[], open: boolean) => {
     const unread = list.filter((c) => c.unread).length;
     return (
       <button key={`section-${k}`} className="section-toggle" data-section-head={k} aria-expanded={open} onClick={() => setCollapsed(k, open)}>
@@ -1085,15 +1087,7 @@ export function ChatList({
       </button>
     );
   };
-  const emptyHint = (k: SectionKey) => (
-    <div key={`empty-${k}`} className="empty-hint">
-      {k === "inbox" ? (busy ? "Nothing needs you right now." : "Nothing needs you. Start a new chat.") : `No ${SECTION_LABEL[k].toLowerCase()} chats.`}
-    </div>
-  );
   const settledOpen = !collapsed.includes("settled");
-  // Pinned, Working and Snoozed come and go with what the owner and Hermes do; the others keep their header when empty.
-  const drawnEmpty = (k: SectionKey) => k !== "pinned" && k !== "working" && k !== "snoozed";
-  const busy = sections.working.length + sections.snoozed.length > 0;
   return (
     <aside className="sidebar" onKeyDown={moveBetweenChats} onContextMenu={menuForFocusedRow}>
       <div className="sb-head">
@@ -1144,17 +1138,27 @@ export function ChatList({
             if (!list.length && !drawnEmpty(k)) return [];
             const open = !collapsed.includes(k);
             return [
-              header(k, open),
+              header(k, list, open),
               ...(open || keepsHidden(k) ? list.map((c) => row(c, k, !open)) : []),
-              open && !list.length && emptyHint(k),
+              open && !list.length && (
+                <div key={`empty-${k}`} className="empty-hint">
+                  {k === "inbox" ? (busy ? "Nothing needs you right now." : "Nothing needs you. Start a new chat.") : `No ${SECTION_LABEL[k].toLowerCase()} chats.`}
+                </div>
+              ),
             ];
           })
         }
       </div>
       {shown.includes("settled") && (
-        <div className={`settled-drawer ${settledOpen ? "open" : ""}`} data-drawer="settled">
-          {header("settled", settledOpen)}
-          {settledOpen && <div className="settled-list">{sections.settled.length ? sections.settled.map((c) => row(c, "settled")) : emptyHint("settled")}</div>}
+        // The drawer at the list's foot (ADR 0090): its header stays at the bottom however long the scroll above is.
+        <div className={`settled-drawer ${settledOpen ? "open" : ""}`}>
+          {header("settled", sections.settled, settledOpen)}
+          {settledOpen && (
+            <div className="settled-list">
+              {sections.settled.map((c) => row(c, "settled"))}
+              {!sections.settled.length && <div className="empty-hint">No settled chats.</div>}
+            </div>
+          )}
         </div>
       )}
       {customFor && !customGone && (

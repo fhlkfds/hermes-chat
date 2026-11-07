@@ -2,7 +2,8 @@
 // Hermes has nowhere to keep a snooze, and its own pin flag already holds Active (ADR 0002), so each is kept on this
 // computer only, in its own versioned localStorage document, separately for each connection and profile (the scope
 // projectLinks.ts `projectScope` gives), and never sent to Hermes. A snooze is the time the chat wakes, in Unix ms; a
-// pin is when the chat was pinned.
+// pin is when the chat was pinned. Clears from the Inbox were kept the same way until ADR 0090 made clearing a chat
+// settle it; `ClearedStore` only reads the ones left, so `heldClears` can settle them once.
 //
 // The list shows each chat in one section only, worked out from what the app already reads:
 //   1. Archived: Hermes has it archived, whatever else holds.
@@ -31,10 +32,12 @@ const MORNING = 9;
 const SCOPE_LIMIT = 200;
 const CHATS_PER_SCOPE = 5_000;
 
-/** One connection and profile's times, one per chat, Unix ms: when each snoozed chat wakes, or when each chat was pinned. */
+/** One connection and profile's times, one per chat, Unix ms: when each snoozed chat wakes, or each pin or clear was made. */
 export type ChatTimes = Readonly<Record<string, number>>;
 /** One connection and profile's snoozes: when each chat wakes, Unix ms. */
 export type Snoozes = ChatTimes;
+/** One connection and profile's clears from before ADR 0090: when each chat was last active as the owner cleared it, Unix ms. */
+export type Cleared = ChatTimes;
 export type SnoozeStorage = Pick<Storage, "getItem" | "setItem">;
 
 const EMPTY: ChatTimes = Object.freeze({});
@@ -117,7 +120,7 @@ class ChatTimesStore {
     return true;
   }
 
-  private change(fn: (s: Record<string, number>) => Record<string, number>) {
+  protected change(fn: (s: Record<string, number>) => Record<string, number>) {
     this.read();
     const next = toTimes(this.prune(fn({ ...this.snap }), this.now()));
     if (JSON.stringify(next) === JSON.stringify(this.snap)) return;
@@ -161,6 +164,26 @@ export class SnoozeStore extends ChatTimesStore {
 
   /** Whether the chat is snoozed and hasn't woken yet. */
   isSnoozed = (chatId: string) => (this.getSnapshot()[chatId] ?? 0) > this.now();
+}
+
+export const CLEARED_KEY = "hermes-chat.cleared";
+export const CLEARED_VERSION = 1;
+const CLEARED_MIGRATIONS: UIPrefsMigrations = { 0: (doc) => doc };
+
+/**
+ * The chats the owner cleared from the Inbox before ADR 0090, for one connection and profile, kept in `storage`. Each
+ * is kept with `lastActive` as it was then. Nothing adds to it any more: the app settles the clears that still hold
+ * (`heldClears`) once Hermes has listed the profile's chats, then drops them all.
+ */
+export class ClearedStore extends ChatTimesStore {
+  constructor(storage: SnoozeStorage, scope: string, now: () => number = Date.now) {
+    super(storage, scope, now, CLEARED_KEY, CLEARED_VERSION, CLEARED_MIGRATIONS);
+  }
+
+  /** Forgets every clear this connection and profile had. */
+  dropAll() {
+    if (Object.keys(this.getSnapshot()).length) this.change(() => ({}));
+  }
 }
 
 export const PINS_KEY = "hermes-chat.pins";
@@ -290,9 +313,32 @@ export function lastActive(c: Chat, snoozes: Snoozes, now: number, since: Readon
 }
 
 /**
+ * The chats a clear from before ADR 0090 still holds for: the ones the list showed in its old Unsettled section. Each is
+ * Active, not pinned, snoozed, archived or working, read, Hermes isn't waiting on the owner in it, and nothing has
+ * happened in it since it was cleared. Clearing a chat now settles it, so these are settled once.
+ */
+export function heldClears(chats: Chat[], snoozes: Snoozes, now: number, since: Readonly<Record<string, number>>, cleared: Cleared, pins: Pins = {}): string[] {
+  return chats
+    .filter(
+      (c) =>
+        cleared[c.id] !== undefined &&
+        pins[c.id] === undefined &&
+        !c.settled &&
+        !c.archived &&
+        !c.unread &&
+        !c.running &&
+        !c.items.some(isWaiting) &&
+        (snoozes[c.id] ?? 0) <= now &&
+        lastActive(c, snoozes, now, since) <= cleared[c.id],
+    )
+    .map((c) => c.id);
+}
+
+/**
  * Where each chat shows in the list, in the order shown. A pinned chat (`pins`) is in Pinned, in the order it was
  * pinned, whatever happens in it, unless it is Archived. The Inbox is newest first, a chat counting as new when it woke
- * from a snooze or stopped working (`lastActive`). Working and Settled are newest first; Snoozed wakes soonest first.
+ * from a snooze or stopped working (`lastActive`). Working, Settled and Archived are newest first; Snoozed wakes
+ * soonest first.
  */
 export function chatSections(
   chats: Chat[],

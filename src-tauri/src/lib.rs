@@ -1,6 +1,8 @@
 pub mod backup;
 #[cfg(target_os = "linux")]
 pub mod browser;
+pub mod connect_steps;
+pub mod connection_attempts;
 pub mod defaults_file;
 pub mod display;
 pub mod fonts;
@@ -33,6 +35,7 @@ use tokio::sync::Mutex;
 use saved_password::{Address, TokenEntry};
 use transport::{Credential, Dashboard, ExtraHeader, LocalFile, LocalText, PickedFiles, Pipe, PipeEvent, ProbeFailure, SavedKey, SignIn, Stage};
 use tunnel::Tunnel;
+use connect_steps::{Step, Steps};
 
 /// The owner's `hermes dashboard` port on the server's loopback (research doc, "SSH tunnel, Host header
 /// and protocol generation").
@@ -170,16 +173,18 @@ const CONNECT_STOPPED: &str = "Connecting was stopped.";
 /// request headers to send (URL only, ADR 0006). Failures are the owner's address, headers or SSH (`Stage::Address`).
 /// `quick`: give up on an SSH route that doesn't connect within `QUICK_REACH`, for a connection with several routes.
 /// A plain http:// URL is refused unless it stays on this computer, a LAN or Tailscale (ADR 0056).
-async fn open_target(target: Target, quick: bool) -> Result<(url::Url, Option<Tunnel>, Route, reqwest::header::HeaderMap), String> {
+/// `steps`: where opening the connection reports the tunnel or DNS step (`connect_steps`).
+async fn open_target(target: Target, quick: bool, steps: &Steps) -> Result<(url::Url, Option<Tunnel>, Route, reqwest::header::HeaderMap), String> {
     Ok(match target {
         Target::Ssh { target } => {
-            let tunnel = tunnel::open_within(&target, DASHBOARD_PORT, quick.then_some(QUICK_REACH)).await.map_err(|e| e.to_string())?;
+            let tunnel = steps.run(Step::Tunnel, tunnel::open_within(&target, DASHBOARD_PORT, quick.then_some(QUICK_REACH))).await.map_err(|e| e.to_string())?;
             let base = url::Url::parse(&format!("http://127.0.0.1:{}/", tunnel.local_port)).expect("valid URL");
             (base, Some(tunnel), Route::Ssh { target: target.trim().to_owned(), server: None }, Default::default())
         }
         Target::Url { url, headers } => {
             let headers = transport::extra_headers(&headers).map_err(|e| e.to_string())?;
-            let direct = transport::resolve_direct(&url).await.map_err(|e| e.to_string())?;
+            let lookup = transport::StepLimits::of(quick).map(|l| l.lookup);
+            let direct = steps.run(Step::Resolve, transport::resolve_direct_within(&url, lookup)).await.map_err(|e| e.to_string())?;
             transport::check_plain_http(&direct).map_err(|e| e.to_string())?;
             let addresses = direct.addresses.iter().map(ToString::to_string).collect();
             (direct.base, None, Route::Url { url: url.trim().to_owned(), addresses, server: None }, headers)
@@ -226,6 +231,7 @@ async fn hermes_connect(
     expect_server: Option<String>,
     quick: Option<bool>,
     ssh_route: Option<String>,
+    on_step: Channel<connect_steps::Started>,
 ) -> Result<Route, String> {
     let mut slot = state.0.lock().await;
     *slot = None;
@@ -239,7 +245,9 @@ async fn hermes_connect(
             return Err(CONNECT_STOPPED.into());
         }
         let task = tokio::spawn(async move {
-            let opening = open_connection(target, credential, profile, on_event, expect_server, quick.unwrap_or(false), ssh_route);
+            // Which step it is on, for the record of connection attempts (#270).
+            let steps = Steps::reporting(move |s| drop(on_step.send(s)));
+            let opening = open_connection(target, credential, profile, on_event, expect_server, quick.unwrap_or(false), ssh_route, steps);
             tokio::time::timeout(CONNECT_TIMEOUT, opening)
                 .await
                 .unwrap_or_else(|_| Err(format!("Hermes didn't finish connecting within {}s.", CONNECT_TIMEOUT.as_secs())))
@@ -267,7 +275,7 @@ async fn hermes_connect(
 
 /// Opens the tunnel or resolves the URL, checks the dashboard there is Hermes, and the one `expect_server` names, then
 /// signs in and opens `/api/ws`, for `hermes_connect`. `ssh_route`: the connection's SSH target when this route isn't
-/// SSH, for the Preview's server pages (ADR 0056).
+/// SSH, for the Preview's server pages (ADR 0056). Each step runs through `steps`, which says when it starts.
 #[allow(clippy::too_many_arguments)]
 async fn open_connection(
     target: Target,
@@ -277,22 +285,19 @@ async fn open_connection(
     expect_server: Option<String>,
     quick: bool,
     ssh_route: Option<String>,
+    steps: Steps,
 ) -> Result<(Connection, Route), String> {
     let address = target.address();
-    let (credential, typed_token) = credential.credential(&address).await?;
-    let (base, tunnel, route, headers) = open_target(target, quick).await?;
-    // Before the password or token goes anywhere.
-    let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick)).await.map_err(|e| e.to_string())?;
-    let route = route.with_server(seen.server);
+    let (credential, typed_token) = steps.run(Step::Keyring, credential.credential(&address)).await?;
+    let (base, tunnel, route, headers) = open_target(target, quick, &steps).await?;
     let sign_in = SignIn { credential, headers };
-    transport::offered(&sign_in, seen.status.as_deref()).map_err(|e| e.to_string())?;
-    let dashboard = Dashboard::sign_in(&base, &sign_in).await.map_err(|e| e.to_string())?;
-    let pipe = dashboard
-        .open_pipe(&profile, move |e| {
-            let _ = on_event.send(e);
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let limits = transport::StepLimits::of(quick);
+    let (dashboard, pipe, seen) = transport::open_route(&base, &sign_in, &profile, expect_server.as_deref(), reach_within(quick), limits, &steps, move |e| {
+        let _ = on_event.send(e);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let route = route.with_server(seen.server);
     let ssh_target = match &route {
         Route::Ssh { target, .. } => Some(target.clone()),
         Route::Url { .. } => ssh_route.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && !t.starts_with('-')),
@@ -336,7 +341,7 @@ async fn hermes_probe(
     let quick = quick.unwrap_or(false);
     let task = tokio::spawn(async move {
         let (credential, _) = credential.credential(&target.address()).await.map_err(|e| ProbeFailure::new(Stage::SignIn, e))?;
-        let (base, _tunnel, route, headers) = open_target(target, quick).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
+        let (base, _tunnel, route, headers) = open_target(target, quick, &Steps::default()).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
         let sign_in = SignIn { credential, headers };
         let probed = transport::probe_expecting(&base, &sign_in, &profile, transport::PROBE_STEP_TIMEOUT, reach_within(quick), expect_server.as_deref()).await?;
         Ok(ProbeResult { route: route.with_server(probed.server.clone()), probed })
@@ -366,7 +371,7 @@ struct Reached {
 #[tauri::command]
 async fn hermes_reach(target: Target, expect_server: Option<String>, quick: Option<bool>, methods: Option<bool>) -> Result<Reached, ProbeFailure> {
     let quick = quick.unwrap_or(false);
-    let (base, _tunnel, route, headers) = open_target(target, quick).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
+    let (base, _tunnel, route, headers) = open_target(target, quick, &Steps::default()).await.map_err(|e| ProbeFailure::new(Stage::Address, e))?;
     let seen = transport::read_server(&base, &headers, expect_server.as_deref(), reach_within(quick))
         .await
         .map_err(|e| ProbeFailure::new(Stage::Reach, e.to_string()))?;
@@ -1439,6 +1444,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
             backup::backup_export,
             backup::backup_pick,
             backup::backup_save_recovery,
+            connection_attempts::connection_attempts_put,
+            connection_attempts::connection_attempts_read,
             defaults_file::project_defaults_read,
             defaults_file::project_defaults_swap,
             defaults_file::tags_read,

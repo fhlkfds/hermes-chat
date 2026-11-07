@@ -25,6 +25,8 @@ export type Desk = {
   doing?: { text: string; at: number };
   /** Why its state may not be current: shown as last heard. None when it is current. */
   stale?: string;
+  /** What the office's card says beyond its state (ADR 0089): its goal, its model, and how long it ran, when known. */
+  detail?: { goal?: string; model?: string; startedAt?: number; durationS?: number };
 };
 
 export type Room = { key: string; profile: string; chatId: string; title: string; desks: Desk[] };
@@ -77,6 +79,7 @@ function subagentDesk(s: Subagent, chatKey: string, stale: string | undefined): 
     state: SUBAGENT_STATE[s.state],
     ...(s.lastActivity && { doing: { text: s.lastActivity.text, at: s.lastActivity.at } }),
     ...(stale && { stale }),
+    detail: { ...(s.goal && { goal: s.goal }), ...(s.model && { model: s.model }), ...(s.startedAt && { startedAt: s.startedAt }), ...(s.durationS !== undefined && { durationS: s.durationS }) },
   };
 }
 
@@ -111,6 +114,7 @@ export function officeRooms({
   return [...rooms.entries()].map(([key, r]) => {
     const entry = REPLY_ORDER.map((k) => r.entries.find((e) => e.kind === k)).find((e) => !!e);
     const stale = !connected ? NOT_CONNECTED : entry?.stale ? "As last seen: Hermes couldn't be checked." : undefined;
+    const chat = r.profile === profile ? chats.find((c) => c.id === r.chatId) : undefined;
     const reply: Desk = {
       key: `${key} reply`,
       agent: { kind: "reply", ...(entry && { entry }) },
@@ -119,8 +123,9 @@ export function officeRooms({
       state: entry ? REPLY_STATE[entry.kind] : connected ? "idle" : "unknown",
       ...(entry && { doing: { text: entry.summary, at: entry.at || entry.noticedAt || 0 } }),
       ...(stale && { stale }),
+      ...(chat?.model && { detail: { model: chat.model.model } }),
     };
-    const tree = r.profile === profile ? chats.find((c) => c.id === r.chatId)?.subagents : undefined;
+    const tree = chat?.subagents;
     return {
       key,
       profile: r.profile,

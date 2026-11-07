@@ -31,6 +31,7 @@ import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
+import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
@@ -52,6 +53,7 @@ import type { OpenPipe, Pipe, PipeEvent, RestMethod, Route, Speech, Transcript, 
 import { RemoteFilesError, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, SESSION_GONE, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { TOKEN_REFUSED } from "./routes";
+import { WRONG_PASSWORD } from "./account";
 import { providerKeys, readyProviders, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
@@ -99,6 +101,9 @@ const SCREEN_RELEASE_MS = 1_500;
 /** Waits before each try to reconnect a dropped connection. When the last try fails the app is Offline until the
  * owner asks to reconnect, so a wrong password isn't retried for ever. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
+/** After a launch that couldn't connect, once those tries are spent, how often the app tries again while it is open,
+ * Offline in between, until it connects or Hermes turns the password down (#269). */
+const LAUNCH_RETRY_MS = 60_000;
 /** A `gateway.ping` goes out this often. A connection that has sent nothing for longer than the official client's
  * heartbeat deadline is dropped. */
 const PING_EVERY_MS = 15_000;
@@ -548,6 +553,9 @@ export class Hermes {
   private droppedClosing?: Promise<void>;
   private redialing?: Promise<void>;
   private failedTries = 0;
+  /** Opened by a launch on what this computer saved (`readSaved`, `openSaved`), and not connected since: once its quick
+   * tries are spent it keeps trying (`LAUNCH_RETRY_MS`). */
+  private launchFailed = false;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private heartbeat?: ReturnType<typeof setInterval>;
   private lastHeard = 0;
@@ -616,9 +624,13 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
-  /** How many `session.info` events each runtime session has sent on this connection, so `setYolo` can tell
-   * whether Hermes reported the effective state before answering. */
-  private infoCount = new Map<string, number>();
+  /**
+   * Approval mode picks run one at a time on the connection: each starts from what the one before settled, and Smart
+   * and Manual write the profile every chat on it shares (`setApprovals`).
+   */
+  private approvalPicks: Promise<unknown> = Promise.resolve();
+  /** The runtime session whose pick is under way. */
+  private approvalPickFor?: string;
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -837,6 +849,7 @@ export class Hermes {
   static readSaved(openPipe: OpenPipe, reason: string, cache: ChatCache, notify?: Notify): Hermes | undefined {
     const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
+    hermes.launchFailed = true;
     hermes.dropped(reason);
     return hermes;
   }
@@ -845,6 +858,7 @@ export class Hermes {
   static openSaved(openPipe: OpenPipe, cache: ChatCache, notify?: Notify): { hermes: Hermes; firstTry: Promise<string | undefined> } | undefined {
     const hermes = new Hermes(openPipe, cache.lastProfile() ?? "default", cache, notify);
     if (!hermes.snapshot.chats.length) return undefined;
+    hermes.launchFailed = true;
     hermes.update({ status: "connecting" });
     const firstTry = hermes.reconnect().then(() => {
       const { status, closedReason } = hermes.snapshot;
@@ -1039,6 +1053,7 @@ export class Hermes {
         if (e.kind === "closed" && !up) this.abortDial?.(new Error(`The connection closed before Hermes was ready: ${e.reason}`));
         else this.handle(e);
       }, profile, stop.signal);
+      pipe.attempt?.ready();
       const payload = await Promise.race([
         ready,
         failed,
@@ -1049,7 +1064,11 @@ export class Hermes {
       if (failure) throw failure;
       if (payload.session_authority) throw new ProtocolMismatchError();
       readyPayload = payload;
+      pipe.attempt?.connected();
     } catch (e) {
+      // `close()` gives up a dial on purpose: a stop, not a failure.
+      if (this.closing) pipe?.attempt?.stopped();
+      else pipe?.attempt?.failed(e);
       this.generation++;
       await pipe?.close().catch(() => {});
       throw e;
@@ -2939,28 +2958,41 @@ export class Hermes {
   }
 
   /**
-   * Turns YOLO on or off for this chat only: Hermes then runs commands it counts as dangerous without asking
-   * (`config.set yolo`, session scope; research doc "Status bar"). Hermes keeps it with the chat. Rejects if the
-   * chat isn't open on this connection or Hermes refuses.
+   * Changes the chat's approval mode (ADR 0091). Smart and Manual set the profile's `approvals.mode`, for every session
+   * on the profile from Hermes's next command; YOLO sets this chat's own flag (`config.set yolo`, session scope).
+   * Hermes sends `session.info` around each write, and one of those frames may be stale, so while the pick is under way
+   * they leave `approvals` alone; afterwards it is Hermes's own formula over its answers, minus the `--yolo` launch flag
+   * no answer reveals. A refused write rejects with Hermes's message, after settling from the writes it did answer.
+   * Rejects if the chat isn't open on Hermes or Hermes hasn't reported its approvals yet.
    */
-  async setYolo(chatId: string, on: boolean): Promise<void> {
-    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+  setApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
+    const run = this.approvalPicks.then(() => this.pickApprovals(chatId, pick));
+    this.approvalPicks = run.catch(() => {});
+    return run;
+  }
+
+  private async pickApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const runtimeId = chat?.runtimeId;
     if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
-    const infos = this.infoCount.get(runtimeId) ?? 0;
-    const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: "yolo", value: on ? "on" : "off" })) as { value?: unknown };
-    // `value` is only the chat's own flag. Whether Hermes auto-approves also depends on its launch flag and
-    // approvals.mode, which only `session.info` reports; Hermes sends that just before this answer, when the session's
-    // agent exists (`methods_config_set.py` `_set_yolo`).
-    const reported = (this.infoCount.get(runtimeId) ?? 0) > infos;
-    this.patchChat(chatId, (c) => {
-      if (c.runtimeId !== runtimeId) return c;
-      // The chat's flag is on, so YOLO is on whatever else holds.
-      if (res.value === "1") return { ...c, live: { ...c.live, yolo: true } };
-      // Off for the chat, yet still on: something wider than this chat turns it on.
-      if (reported) return c.live?.yolo ? { ...c, live: { ...c.live, yoloEverywhere: true } } : c;
-      // Not reported: unknown until Hermes says, never assumed off.
-      return { ...c, live: { ...c.live, yolo: undefined, yoloEverywhere: undefined } };
-    });
+    const before = chat.live?.approvals;
+    if (!before) throw new Error("Hermes hasn't reported approvals for this chat yet.");
+    let answered = false;
+    let flag = false;
+    let mode = before.mode;
+    this.approvalPickFor = runtimeId;
+    try {
+      for (const w of writesFor(pick, before)) {
+        const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: w.key, value: w.value })) as { value?: unknown };
+        answered = true;
+        if (w.key === "yolo") flag = res.value === "1";
+        else mode = isApprovalMode(res.value) ? res.value : w.value;
+      }
+    } finally {
+      this.approvalPickFor = undefined;
+      const approvals = { mode, yolo: flag || mode === "off" };
+      if (answered) this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, approvals } } : c));
+    }
   }
 
   /**
@@ -3277,9 +3309,12 @@ export class Hermes {
     if (type === "btw.complete") return this.sideAnswered(chat, String(payload.task_id ?? ""), payload.text);
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
-      this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
       const model = pickFromInfo(payload);
-      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload) }));
+      const picking = this.approvalPickFor === session_id;
+      this.patchChat(chat.id, (c) => {
+        const live = withLive(c.live, payload);
+        return { ...c, ...(model && { model }), live: picking && live ? { ...live, approvals: c.live?.approvals } : live };
+      });
       // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
       const counters = countersOf(payload.usage);
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
@@ -3508,7 +3543,6 @@ export class Hermes {
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
     for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
-    this.infoCount.clear();
     this.earlyRequests.clear();
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
@@ -3546,8 +3580,11 @@ export class Hermes {
 
   private retryLater() {
     const wait = RETRY_DELAYS_MS[this.failedTries];
-    if (wait === undefined) return this.update({ status: "offline" });
-    this.retryTimer = setTimeout(() => void this.redial(), wait);
+    if (wait !== undefined) this.retryTimer = setTimeout(() => void this.redial(), wait);
+    else {
+      this.update({ status: "offline" });
+      if (this.launchFailed) this.retryTimer = setTimeout(() => void this.redial(), LAUNCH_RETRY_MS);
+    }
   }
 
   private redial(): Promise<void> {
@@ -3561,6 +3598,7 @@ export class Hermes {
       try {
         await this.dial();
         this.failedTries = 0;
+        this.launchFailed = false;
         this.resumeBusyChats();
         void this.sync();
         // What was live before may have ended meanwhile, so it is asked again at once.
@@ -3571,7 +3609,11 @@ export class Hermes {
         this.update({ status: "reconnecting", closedReason: (e as Error).message, ...this.switchFailed(e as Error) });
         // A server that changed protocol won't change back on its own, nor will a token it turned down (ADR 0058).
         if (e instanceof ProtocolMismatchError || TOKEN_REFUSED.test((e as Error).message)) this.update({ status: "offline" });
-        else this.retryLater();
+        else {
+          // Retrying a password Hermes turned down would only spend sign-in attempts.
+          if ((e as Error).message === WRONG_PASSWORD) this.launchFailed = false;
+          this.retryLater();
+        }
       } finally {
         this.redialing = undefined;
       }
@@ -4781,14 +4823,15 @@ const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (
 /**
  * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
  * The model is `Chat.model` (`pickFromInfo`).
- * Context fullness only as Hermes measured it: none until it has. YOLO only when Hermes reports it.
+ * Context fullness only as Hermes measured it: none until it has.
  */
 function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
   const i = obj(info);
   const u = obj(usage) ?? obj(i?.usage);
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
-  if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
+  const approvals = approvalsOf(i);
+  if (approvals) live.approvals = approvals;
   if (u) {
     live.context = contextUse(u);
     live.compactions = typeof u.compressions === "number" && u.compressions >= 0 ? u.compressions : undefined;

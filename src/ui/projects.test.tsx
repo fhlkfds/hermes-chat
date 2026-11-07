@@ -181,7 +181,7 @@ describe("a chat's menu", () => {
       "Open in a second pane",
       // Pin (ADR 0085), with its key
       "PinP",
-      // Settle, the way a chat leaves the Inbox (ADR 0090)
+      // Settle, which clears it from the Inbox (ADR 0090)
       "Settle",
       // Snooze (ADR 0036)
       "1 hour",

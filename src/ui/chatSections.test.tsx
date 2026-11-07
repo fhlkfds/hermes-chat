@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 // The chat list's sections as the side panel shows them (ADR 0063): each one collapsible, remembered across a restart;
-// Settings → General picking which show, never none; and Settled as a drawer at the foot of the list (ADR 0090). The
-// list on its own first, then the whole app against a fake Hermes.
+// Settings → General picking which show, never none; Settled as the drawer at the list's foot, and clearing a chat from
+// the Inbox by settling it (ADR 0090). The list on its own first, then the whole app against a fake Hermes.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import type { Chat } from "../hermes/model";
-import { CLEARED_KEY } from "../hermes/clearsToSettle";
-import { PINS_KEY, type Pins } from "../hermes/snooze";
+import { CLEARED_KEY, PINS_KEY, type Pins } from "../hermes/snooze";
 import { UI_PREFS_KEY, getUIPrefs, setUIPrefs } from "../hermes/uiPrefs";
 import { connect, type Hermes } from "../hermes/transport";
 import { projectScope } from "../hermes/projectLinks";
@@ -36,11 +35,13 @@ const chat = (id: string, extra: Partial<Chat> = {}): Chat => ({ id, title: id, 
 
 function List({
   chats,
+  onSettle = () => {},
   pins,
   onPin,
   selectedId = null,
 }: {
   chats: Chat[];
+  onSettle?: (id: string, settled: boolean) => void;
   pins?: Pins;
   onPin?: (id: string, on: boolean) => void;
   selectedId?: string | null;
@@ -55,7 +56,7 @@ function List({
       chats={chats}
       selectedId={selectedId}
       onOpen={() => {}}
-      onSettle={() => {}}
+      onSettle={onSettle}
       onArchive={() => {}}
       onDelete={() => {}}
       onRename={async () => {}}
@@ -86,20 +87,15 @@ const mix = [
 ];
 
 describe("The side panel's sections", () => {
-  it("shows the Inbox and Working, with the Settled drawer after them; Archived is off until Settings turns it on", () => {
+  it("shows the Inbox, Working and Settled with counts, and no Unsettled; Archived is off until Settings turns it on", () => {
     render(<List chats={mix} />);
     expect(heads()).toEqual(["Inbox3", "Working1", "Settled1"]);
     expect(titles("inbox")).toEqual(["new", "read", "quiet"]);
     expect(titles("working")).toEqual(["busy"]);
+    expect(screen.queryByRole("button", { name: /^Unsettled/ })).toBeNull();
+    // Settled starts collapsed.
     expect(head("Settled").getAttribute("aria-expanded")).toBe("false");
     expect(titles("settled")).toEqual([]);
-  });
-
-  it("has no Unsettled section", () => {
-    setUIPrefs({ chatSectionsCollapsed: [] });
-    render(<List chats={mix} />);
-    expect(heads().some((h) => /unsettled/i.test(h ?? ""))).toBe(false);
-    expect(document.querySelector('[data-section-head="unsettled"], [data-section="unsettled"]')).toBeNull();
   });
 
   it("collapses and expands each section from its header, remembered across a restart", async () => {
@@ -110,7 +106,7 @@ describe("The side panel's sections", () => {
     expect(titles("inbox")).toEqual([]);
     await user.click(head("Settled"));
     expect(titles("settled")).toEqual(["old"]);
-    expect(getUIPrefs().chatSectionsCollapsed).toEqual(["inbox", "snoozed", "archived"]);
+    expect(JSON.parse(localStorage.getItem(UI_PREFS_KEY)!).chatSectionsCollapsed).toEqual(["inbox", "snoozed", "archived"]);
 
     // A restart: the prefs are read again from storage.
     first.unmount();
@@ -131,6 +127,14 @@ describe("The side panel's sections", () => {
     expect(head("Inbox").querySelector(".dot")?.getAttribute("title")).toBe("1 unread");
   });
 
+  it("opens the section of a chat opened from elsewhere, such as a search", () => {
+    const { rerender } = render(<List chats={mix} />);
+    expect(head("Settled").getAttribute("aria-expanded")).toBe("false");
+    rerender(<List chats={mix} selectedId="old" />);
+    expect(head("Settled").getAttribute("aria-expanded")).toBe("true");
+    expect(titles("settled")).toEqual(["old"]);
+  });
+
   it("shows only the sections Settings picks, in the list's own order, and Archived lists archived chats", () => {
     setUIPrefs({ chatSectionsShown: ["archived", "inbox"], chatSectionsCollapsed: [] });
     render(<List chats={mix} />);
@@ -146,131 +150,63 @@ describe("The side panel's sections", () => {
     const hints = [...document.querySelectorAll(".empty-hint")].map((h) => h.textContent);
     expect(hints).toEqual(["Nothing needs you right now.", "No settled chats."]);
   });
-
-  it("draws Archived, when shown, in the scroll after the other sections", () => {
-    setUIPrefs({ chatSectionsShown: ["pinned", "inbox", "working", "snoozed", "archived", "settled"], chatSectionsCollapsed: [] });
-    render(<List chats={mix} pins={{ read: NOW }} />);
-    const scrollHeads = [...document.querySelectorAll<HTMLElement>(".sb-scroll .section-toggle")].map((b) => b.dataset.sectionHead);
-    expect(scrollHeads).toEqual(["pinned", "inbox", "working", "archived"]);
-    expect(document.querySelector('[data-drawer="settled"] [data-section-head="archived"]')).toBeNull();
-    expect(titles("archived")).toEqual(["gone"]);
-  });
 });
 
-describe("The Settled drawer", () => {
-  const settledMix = [...mix, chat("older", { settled: true, updatedAt: NOW - 7_200_000 })];
-  const drawer = () => document.querySelector<HTMLElement>('[data-drawer="settled"]')!;
+describe("The Settled drawer, in the list", () => {
+  const scroll = () => document.querySelector<HTMLElement>(".sb-scroll")!;
+  const drawer = () => document.querySelector<HTMLElement>(".settled-drawer");
 
-  it("keeps its header at the foot, outside the scroll, even with nothing settled", () => {
-    render(<List chats={[chat("read")]} />);
-    const settledHead = document.querySelector<HTMLElement>('[data-section-head="settled"]')!;
-    expect(settledHead.textContent).toBe("Settled0");
-    expect(settledHead.closest(".sb-scroll")).toBeNull();
-    expect(settledHead.closest('[data-drawer="settled"]')).toBe(drawer());
-    const scroll = document.querySelector<HTMLElement>(".sb-scroll")!;
-    expect(scroll.compareDocumentPosition(drawer()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(scroll.parentElement).toBe(drawer().parentElement);
-  });
-
-  it("opens to its own list of rows on a click and closes, drawing no rows, on the next, remembered in the prefs", async () => {
+  it("sits at the list's foot, outside its scroll, after Archived, and opens and closes from its header", async () => {
     const user = userEvent.setup();
-    render(<List chats={settledMix} />);
-    expect(drawer().classList.contains("open")).toBe(false);
-    expect(drawer().querySelector(".settled-list")).toBeNull();
-    expect(document.querySelectorAll('.row[data-section="settled"]')).toHaveLength(0);
-
+    setUIPrefs({ chatSectionsShown: ["inbox", "archived", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={mix} />);
+    expect(heads()).toEqual(["Inbox3", "Archived1", "Settled1"]);
+    expect(within(scroll()).queryByRole("button", { name: /^Settled/ })).toBeNull();
+    expect(within(drawer()!).getByRole("button", { name: /^Settled/ })).toBe(head("Settled"));
+    expect(scroll().nextElementSibling).toBe(drawer());
+    // Open: its rows are in the drawer's own scroll.
+    expect(drawer()!.classList.contains("open")).toBe(true);
+    expect(drawer()!.querySelector(".settled-list .row-open")?.getAttribute("data-chat")).toBe("old");
+    // Closed: the header stays at the foot, and the settled chats are hidden.
     await user.click(head("Settled"));
-    expect(getUIPrefs().chatSectionsCollapsed).not.toContain("settled");
-    expect(head("Settled").getAttribute("aria-expanded")).toBe("true");
-    expect(drawer().classList.contains("open")).toBe(true);
-    const list = drawer().querySelector<HTMLElement>(".settled-list")!;
-    expect([...list.querySelectorAll(".row-title")].map((t) => t.textContent)).toEqual(["old", "older"]);
-    expect(list.closest(".sb-scroll")).toBeNull();
-
-    await user.click(head("Settled"));
-    expect(getUIPrefs().chatSectionsCollapsed).toContain("settled");
-    expect(drawer().querySelector(".settled-list")).toBeNull();
-    expect(document.querySelectorAll('.row[data-section="settled"]')).toHaveLength(0);
-  });
-
-  it("says when it is open and empty, and marks its closed header when a settled chat is unread", async () => {
-    const user = userEvent.setup();
-    const { rerender } = render(<List chats={[chat("read"), chat("old", { settled: true, unread: true })]} />);
-    expect(head("Settled").querySelector(".dot")?.getAttribute("title")).toBe("1 unread");
-    await user.click(head("Settled"));
-    expect(head("Settled").querySelector(".dot")).toBeNull();
-    rerender(<List chats={[chat("read")]} />);
-    expect(drawer().querySelector(".settled-list")?.textContent).toBe("No settled chats.");
-  });
-
-  it("is gone when Settings hides Settled", () => {
-    setUIPrefs({ chatSectionsShown: ["inbox", "working"] });
-    render(<List chats={settledMix} />);
-    expect(drawer()).toBeNull();
-    expect(heads()).toEqual(["Inbox3", "Working1"]);
-  });
-
-  it("opens for a settled chat opened from elsewhere, such as a search", () => {
-    const { rerender } = render(<List chats={mix} />);
+    expect(drawer()!.classList.contains("open")).toBe(false);
+    expect(drawer()!.querySelector(".settled-list")).toBeNull();
     expect(head("Settled").getAttribute("aria-expanded")).toBe("false");
-    rerender(<List chats={mix} selectedId="old" />);
-    expect(head("Settled").getAttribute("aria-expanded")).toBe("true");
-    expect(drawer().querySelector(".settled-list")).not.toBeNull();
-    expect(titles("settled")).toEqual(["old"]);
   });
 
-  it("is walked into and out of with the arrow keys, after the last row of the scroll", async () => {
-    const user = userEvent.setup();
-    setUIPrefs({ chatSectionsCollapsed: ["snoozed", "archived"] });
-    render(<List chats={settledMix} />);
-    rowOf("busy").focus();
-    await user.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(rowOf("old"));
-    await user.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(rowOf("older"));
-    await user.keyboard("{ArrowUp}{ArrowUp}");
-    expect(document.activeElement).toBe(rowOf("busy"));
+  it("isn't drawn while Settings hides Settled", () => {
+    setUIPrefs({ chatSectionsShown: ["inbox"] });
+    render(<List chats={mix} />);
+    expect(drawer()).toBeNull();
   });
 
-  it("settles from the Inbox row and unsettles from its own, with no Clear anywhere", async () => {
+  it("clears a chat from the Inbox by settling it, from the row or its menu, and Unsettle puts one back; there is no Clear", async () => {
     const user = userEvent.setup();
-    const settles: [string, boolean][] = [];
+    const calls: [string, boolean][] = [];
     setUIPrefs({ chatSectionsCollapsed: [] });
-    render(
-      <ChatList
-        profile="default"
-        status="connected"
-        others={{ byName: {} }}
-        chats={settledMix}
-        selectedId={null}
-        onOpen={() => {}}
-        onSettle={(id, on) => settles.push([id, on])}
-        onArchive={() => {}}
-        onDelete={() => {}}
-        onRename={async () => {}}
-        onRegenTitle={async () => {}}
-        onListProfiles={async () => ["default"]}
-        onCheckOthers={() => {}}
-        onSwitchProfile={() => {}}
-        onRetrySwitch={() => {}}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: /Clear from the Inbox|Back to the Inbox/ })).toBeNull();
-    await user.click(within(rowOf("read").parentElement!).getByRole("button", { name: "Settle" }));
+    render(<List chats={mix} onSettle={(id, on) => calls.push([id, on])} />);
+    expect(screen.queryByRole("button", { name: "Clear from the Inbox" })).toBeNull();
+    await user.click(within(rowOf("quiet").parentElement!).getByRole("button", { name: "Settle" }));
+    fireEvent.contextMenu(rowOf("read"));
+    expect(screen.queryByRole("menuitem", { name: "Clear from the Inbox" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Settle" }));
     await user.click(within(rowOf("old").parentElement!).getByRole("button", { name: "Unsettle" }));
-    expect(settles).toEqual([
+    fireEvent.contextMenu(rowOf("old"));
+    expect(screen.queryByRole("menuitem", { name: "Back to the Inbox" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Unsettle" }));
+    expect(calls).toEqual([
+      ["quiet", true],
       ["read", true],
       ["old", false],
-    ]);
-    for (const id of ["read", "old"]) {
-      fireEvent.contextMenu(rowOf(id));
-      expect(screen.queryByRole("menuitem", { name: /Clear from the Inbox|Back to the Inbox/ })).toBeNull();
-      await user.click(screen.getByRole("menuitem", { name: id === "read" ? "Settle" : "Unsettle" }));
-    }
-    expect(settles.slice(2)).toEqual([
-      ["read", true],
       ["old", false],
     ]);
+  });
+
+  it("offers no Settle on an archived chat's menu", () => {
+    setUIPrefs({ chatSectionsShown: ["inbox", "archived"], chatSectionsCollapsed: [] });
+    render(<List chats={mix} />);
+    fireEvent.contextMenu(rowOf("gone"));
+    expect(screen.queryByRole("menuitem", { name: /^(Settle|Unsettle)$/ })).toBeNull();
   });
 });
 
@@ -337,6 +273,7 @@ describe("Settings → General: chat list sections", () => {
     const user = userEvent.setup();
     render(<ChatSectionSettings />);
     const sw = (name: string) => screen.getByRole("switch", { name });
+    expect(screen.queryByRole("switch", { name: "Unsettled" })).toBeNull();
     expect(["Pinned", "Inbox", "Working", "Snoozed", "Archived", "Settled"].map((n) => sw(n).getAttribute("aria-checked"))).toEqual([
       "true",
       "true",
@@ -345,7 +282,6 @@ describe("Settings → General: chat list sections", () => {
       "false",
       "true",
     ]);
-    expect(screen.queryByRole("switch", { name: "Unsettled" })).toBeNull();
     await user.click(sw("Archived"));
     await user.click(sw("Working"));
     expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "snoozed", "archived", "settled"]);
@@ -369,56 +305,75 @@ describe("Settings → General: chat list sections", () => {
     setUIPrefs({ chatSectionsShown: [] });
     expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "working", "snoozed", "settled"]);
   });
+
+  it("drops Unsettled from preferences stored before ADR 0090, and a list of only Unsettled shows the defaults", () => {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, chatSectionsShown: ["inbox", "unsettled", "settled"], chatSectionsCollapsed: ["unsettled", "settled"] }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(["inbox", "settled"]);
+    expect(getUIPrefs().chatSectionsCollapsed).toEqual(["settled"]);
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ v: 2, chatSectionsShown: ["unsettled"] }));
+    expect(getUIPrefs().chatSectionsShown).toEqual(["pinned", "inbox", "working", "snoozed", "settled"]);
+  });
 });
 
-describe("Settled chats and the old clears, in the app", () => {
+describe("Clearing from the Inbox, in the app", () => {
   const connection = { mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam" };
-  async function signedIn(server: FakeHermes) {
+  async function signedIn(server = new FakeHermes()) {
+    if (!server.sessions.length) server.sessions = [row("a", 1, { pinned: true, title: "Deploy notes" }), row("b", 2, { pinned: true, title: "Groceries" })];
     const hermes = await connect(server.openPipe);
     running.push(hermes);
     const user = userEvent.setup();
     render(<Main hermes={hermes} connection={connection} onSignOut={async () => {}} />);
+    // Groceries stays in the Inbox in every test here; Deploy notes may be settled as the app starts.
     await screen.findByRole("button", { name: /Groceries/ });
     await act(async () => void (await hermes.idle()));
-    return { hermes, user };
+    return { server, hermes, user };
   }
-  const sessions = () => [
-    row("held", 1, { pinned: true, title: "Deploy notes" }),
-    row("stale", 2, { pinned: true, title: "Groceries" }),
-    row("uncleared", 3, { pinned: true, title: "Taxes" }),
-  ];
+  /** Every `pinned` the app has written, by chat, in order. */
+  const pinnedWrites = (server: FakeHermes) =>
+    server.restRequests.filter((r) => r.method === "PATCH" && r.body && "pinned" in r.body).map((r) => [r.path.split("/").pop(), r.body!.pinned]);
 
-  it("settles the chats whose clear still held, once, and drops the old store", async () => {
-    const server = new FakeHermes();
-    server.sessions = sessions();
-    localStorage.setItem(CLEARED_KEY, JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { held: Date.now(), stale: 1 } } }));
-    const { hermes } = await signedIn(server);
-    await waitFor(() => expect(server.sessions.find((s) => s.id === "held")!.pinned).toBe(false));
+  it("settles the chat on Hermes, into the Settled drawer, and Undo brings it back to the Inbox", async () => {
+    const { server, hermes, user } = await signedIn();
+    const rowFor = (title: string) => screen.getByRole("button", { name: new RegExp(title) }).parentElement!;
+    await user.click(within(rowFor("Deploy notes")).getByRole("button", { name: "Settle" }));
     await act(async () => void (await hermes.idle()));
-    expect(server.sessions.find((s) => s.id === "stale")!.pinned).toBe(true);
-    expect(server.sessions.find((s) => s.id === "uncleared")!.pinned).toBe(true);
-    expect(titles("inbox")).toEqual(["Groceries", "Taxes"]);
+    expect(screen.getByRole("status").textContent).toContain("Settled: Deploy notes");
+    expect(titles("inbox")).toEqual(["Groceries"]);
     expect(head("Settled").textContent).toBe("Settled1");
-    expect(localStorage.getItem(CLEARED_KEY)).toBeNull();
-    expect(server.restRequests.filter((r) => r.method === "PATCH" && r.body && "pinned" in r.body)).toHaveLength(1);
+    expect(server.sessions.find((s) => s.id === "a")!.pinned).toBe(false);
+
+    await user.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" }));
+    await act(async () => void (await hermes.idle()));
+    await waitFor(() => expect(titles("inbox")).toEqual(["Deploy notes", "Groceries"]));
+    expect(server.sessions.find((s) => s.id === "a")!.pinned).toBe(true);
   });
 
-  it("leaves another connection's clears for when it loads", async () => {
+  it("settles once the chats an older version kept cleared, then forgets every clear", async () => {
     const server = new FakeHermes();
-    server.sessions = sessions();
-    localStorage.setItem(
-      CLEARED_KEY,
-      JSON.stringify({ v: 1, scopes: { [projectScope(connection, "default")]: { held: Date.now() }, "elsewhere\u0000default": { x: Date.now() } } }),
-    );
-    await signedIn(server);
-    await waitFor(() => expect(server.sessions.find((s) => s.id === "held")!.pinned).toBe(false));
-    expect(Object.keys(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes)).toEqual(["elsewhere\u0000default"]);
+    server.sessions = [
+      row("a", 1, { pinned: true, title: "Deploy notes" }),
+      row("b", 2, { pinned: true, title: "Groceries" }),
+      row("c", 3, { pinned: true, title: "Taxes" }),
+    ];
+    const marks = Object.fromEntries(server.sessions.map((s) => [s.id, s.last_active! * 1000]));
+    // "a" was cleared and nothing has happened since; "b" has had a message since its clear; "c" was never cleared.
+    const scope = projectScope(connection, "default");
+    localStorage.setItem(CLEARED_KEY, JSON.stringify({ v: 1, scopes: { [scope]: { a: marks.a, b: marks.b - 60_000 }, other: { x: 1 } } }));
+    const { hermes } = await signedIn(server);
+    await act(async () => void (await hermes.idle()));
+    await waitFor(() => expect(pinnedWrites(server)).toEqual([["a", false]]));
+    expect(server.sessions.map((s) => [s.id, s.pinned])).toEqual([
+      ["a", false],
+      ["b", true],
+      ["c", true],
+    ]);
+    await waitFor(() => expect(titles("inbox")).toEqual(["Groceries", "Taxes"]));
+    // This connection and profile's clears are gone; another's are left as they were.
+    expect(JSON.parse(localStorage.getItem(CLEARED_KEY)!).scopes).toEqual({ other: { x: 1 } });
   });
 
   it("lists archived chats only while the Archived section is shown", async () => {
-    const server = new FakeHermes();
-    server.sessions = sessions();
-    const { hermes } = await signedIn(server);
+    const { server, hermes } = await signedIn();
     server.sessions.push(row("z", 3, { archived: true, title: "Old plan" }));
     await act(async () => {
       await hermes.sync();
