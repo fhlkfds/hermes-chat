@@ -348,6 +348,20 @@ describe("The building", () => {
     expect(onOpen.mock.calls[0][1]).toMatchObject({ agent: { kind: "subagent", id: "a" } });
   });
 
+  it("drops the selection when its agent leaves the floor, so the card doesn't open by itself when it comes back", async () => {
+    const { user, rerender } = office("building");
+    await user.click(screen.getByRole("button", { name: /^Read the auth code, Running/ }));
+    await waitFor(() => expect(drawn.scene?.selected).toBe("default audit a"));
+    const gone = sample();
+    gone[1].desks.splice(1, 1);
+    rerender({ rooms: gone });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(drawn.scene?.selected).toBeUndefined());
+    rerender({ rooms: sample() });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(drawn.scene?.selected).toBeUndefined();
+  });
+
   it("closes the card with Escape, back on the agent's tag, before Escape leaves the office", async () => {
     const { onClose, user } = office("building");
     await user.click(screen.getByRole("button", { name: /^Check expiry, Finished/ }));
