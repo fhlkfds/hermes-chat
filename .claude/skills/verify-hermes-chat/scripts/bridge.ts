@@ -13,6 +13,7 @@
 //   Hermes does, so a reply that runs on (a "delegate" prompt's) can be stopped.
 //   `POST /__subagent?id=<subagent id>&status=completed|failed` ends one as Hermes reports it (a test's control).
 // HV_INBOX=1 gives the `work` profile two Unread chats for the Rail inbox: one last active 3 days ago, one an hour ago.
+// HV_LIST=<n> adds n Active, read chats to `default`, one an hour apart, so its Inbox is longer than the list panel.
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
 // Read-only check of what the server holds (the side-effect proof): `GET /__state` returns sessions and transcripts.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
@@ -45,6 +46,15 @@ server.storeMessage("vpn", { role: "user", text: "Why is the VPN slow tonight?" 
 server.storeMessage("vpn", { role: "assistant", text: "MTU 1500 on a 1420 tunnel: packets fragment. Set `MTU = 1380`." });
 server.storeMessage("trip", { role: "user", text: "Plan a weekend in Lisbon." });
 server.storeMessage("trip", { role: "assistant", text: "Day 1: Alfama and the castle. Day 2: Belém and the LX Factory." });
+
+const TOPICS = ["Disk usage on /var", "Renew the TLS certificate", "Postgres vacuum schedule", "Grafana alert noise", "Rotate the API keys", "Cron job drift", "Swap usage spikes", "DNS TTL for the blog", "Upgrade Node on the build box", "Docker image cleanup", "Fail2ban bans", "Restic retention policy"];
+for (let i = 0; i < Number(process.env.HV_LIST ?? 0); i++) {
+  const at = (i + 1) / 24;
+  const title = `${TOPICS[i % TOPICS.length]}${i >= TOPICS.length ? ` (${Math.floor(i / TOPICS.length) + 1})` : ""}`;
+  server.sessions.push(row(`list${i + 1}`, at, { title, pinned: true }));
+  server.storeMessage(`list${i + 1}`, { role: "user", text: `${title}?` });
+  server.storeMessage(`list${i + 1}`, { role: "assistant", text: "Checked. Nothing to do for now." });
+}
 
 // Settings → MCP servers (ADR 0068): a second profile, servers of each kind, one from a plugin, Test results and a catalog.
 server.otherProfiles = { work: [] };
