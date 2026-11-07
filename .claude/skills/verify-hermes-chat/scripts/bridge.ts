@@ -9,6 +9,8 @@
 //   with HV_LONG_REPLY=<n>, a prompt that starts with `long` gets n paragraphs of markdown (code, a list, a table),
 //   three words every 40 ms, so a reply keeps streaming for minutes.
 //   `subagent.interrupt` (Stop in the Subagents panel) ends that subagent as `interrupted`, as Hermes reports it.
+//   `session.interrupt` (the composer's Stop) ends the reply's turn with `message.complete` status `interrupted`, as
+//   Hermes does, so a reply that runs on (a "delegate" prompt's) can be stopped.
 //   `POST /__subagent?id=<subagent id>&status=completed|failed` ends one as Hermes reports it (a test's control).
 // HV_INBOX=1 gives the `work` profile two Unread chats for the Rail inbox: one last active 3 days ago, one an hour ago.
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
@@ -244,6 +246,8 @@ http.on("upgrade", async (req, sock: Socket) => {
       }
       const stop = msg.method === "subagent.interrupt" ? delegated.get(String(msg.params?.subagent_id)) : undefined;
       if (stop && stop.sid === msg.params?.session_id) setTimeout(() => endSubagent(String(msg.params!.subagent_id), "interrupted"), 50);
+      if (msg.method === "session.interrupt" && server.runtime.has(String(msg.params?.session_id)))
+        setTimeout(() => server.event(String(msg.params!.session_id), "message.complete", { status: "interrupted", text: "" }), 50);
     } catch {
       // Not JSON: FakeHermes answers it as it would.
     }
