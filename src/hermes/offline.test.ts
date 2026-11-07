@@ -5,9 +5,9 @@ import { TRANSCRIPT_LIMIT_BYTES, localChatCache } from "./chatCache";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { type MemoryCache, memoryCache } from "./memoryCache";
 import type { Item } from "./model";
+import type { OpenPipe } from "./pipe";
 import type { SignInDetails } from "./tauriPipe";
 import type { SavedSignIn } from "./account";
-import type { OpenPipe } from "./pipe";
 import { type ChatCache, type Hermes, connect, openSaved, readSaved } from "./transport";
 
 const history: TranscriptMessage[] = [
@@ -126,6 +126,59 @@ describe("Reading offline after a restart", () => {
       await hermes.open("nas");
       expect(chat(hermes, "nas").items).toEqual([...historyItems, { kind: "user", id: "h-3", text: "Sent from Telegram" }]);
       expect(chat(hermes, "nas").savedAt).toBeUndefined();
+      await hermes.close();
+    });
+  });
+
+  describe("after a failed launch whose quick tries ran out (#269)", () => {
+    beforeEach(() => void vi.useFakeTimers());
+    afterEach(() => void vi.useRealTimers());
+
+    /** A launch that couldn't connect, counting every try to. */
+    async function failedLaunch() {
+      const first = await firstLaunch();
+      await first.hermes.close();
+      const { server } = first;
+      server.refuse = "Can't reach the Hermes dashboard: the sign-in didn't answer within 10s.";
+      let tries = 0;
+      const openPipe: OpenPipe = (...a) => (tries++, server.openPipe(...a));
+      const hermes = readSaved(openPipe, server.refuse, first.cache)!;
+      // The quick tries: after 1, 2, 4, 8 and 16 s.
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(hermes.getSnapshot().status).toBe("offline");
+      expect(tries).toBe(5);
+      return { server, hermes, tries: () => tries };
+    }
+
+    it("keeps trying every 60 s, staying Offline between tries", async () => {
+      const { hermes, tries } = await failedLaunch();
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(tries()).toBe(5);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(tries()).toBe(6);
+      expect(hermes.getSnapshot().status).toBe("offline");
+      await vi.advanceTimersByTimeAsync(60_000 * 3);
+      expect(tries()).toBe(9);
+      await hermes.close();
+    });
+
+    it("connects by itself once the server can be reached", async () => {
+      const { server, hermes } = await failedLaunch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      server.refuse = undefined;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(hermes.getSnapshot().status).toBe("connected");
+      await hermes.close();
+    });
+
+    it("stops when Hermes turns the password down", async () => {
+      const { server, hermes, tries } = await failedLaunch();
+      server.refuse = "Wrong username or password.";
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(tries()).toBe(6);
+      await vi.advanceTimersByTimeAsync(60_000 * 5);
+      expect(tries()).toBe(6);
+      expect(hermes.getSnapshot()).toMatchObject({ status: "offline", closedReason: "Wrong username or password." });
       await hermes.close();
     });
   });
@@ -281,6 +334,30 @@ describe("Opening on the saved chats at launch (ADR 0089)", () => {
     server.refuse = undefined;
     // The first try counts as one failed try, so the next comes after the second retry delay.
     await vi.advanceTimersByTimeAsync(2_000);
+    expect(hermes.getSnapshot().status).toBe("connected");
+    await hermes.close();
+  });
+
+  it("keeps trying every 60 s once the quick tries are spent, as after a failed launch (#269)", async () => {
+    vi.useFakeTimers();
+    const { server, cache } = await saved();
+    server.refuse = "SSH failed: Connection timed out";
+    let tries = 0;
+    const openPipe: OpenPipe = (...args) => (tries++, server.openPipe(...args));
+    const { a } = account(openPipe, cache);
+
+    const { hermes, turnedDown } = await launchOpen(c, details, a);
+    await expect(turnedDown).resolves.toBeUndefined();
+    // The first try, then the quick tries after 2, 4, 8 and 16 s.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(tries).toBe(5);
+    expect(hermes.getSnapshot().status).toBe("offline");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(tries).toBe(6);
+    expect(hermes.getSnapshot().status).toBe("offline");
+
+    server.refuse = undefined;
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(hermes.getSnapshot().status).toBe("connected");
     await hermes.close();
   });

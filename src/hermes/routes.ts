@@ -221,21 +221,32 @@ export class RoutesFailedError extends Error {
 }
 
 /**
- * How each route did lately, for this run of the app. A route that failed in the last `coolMs` is tried after the ones
- * that haven't, so reconnecting after a drop doesn't wait on a route known to be down every time; it is still tried,
- * last. A success, or a preferred route answering again (`PreferredRoutes`), clears it.
+ * How each route did lately. A route that failed in the last `coolMs` is tried after the ones that haven't, so
+ * reconnecting after a drop doesn't wait on a route known to be down every time; it is still tried, last. A success, or
+ * a preferred route answering again (`PreferredRoutes`), clears it. With `kept`, it starts from the failure times the
+ * connection kept, and keeps each change, so the next launch tries a route that just failed last too (#269).
  */
+/** Each route's last failure time, by route id, as the connection keeps it, and how to keep a change. */
+export type KeptHealth = { failedAt?: Record<string, number>; save: (failedAt: Record<string, number>) => void };
+
 export class RouteHealth {
   private failedAt = new Map<string, number>();
   constructor(
     private now: () => number = Date.now,
     readonly coolMs = 120_000,
-  ) {}
+    private kept?: KeptHealth,
+  ) {
+    for (const [id, at] of Object.entries(kept?.failedAt ?? {})) this.failedAt.set(id, at);
+  }
   failed(id: string) {
     this.failedAt.set(id, this.now());
+    this.keep();
   }
   ok(id: string) {
-    this.failedAt.delete(id);
+    if (this.failedAt.delete(id)) this.keep();
+  }
+  private keep() {
+    this.kept?.save(Object.fromEntries(this.failedAt));
   }
   /** Whether `id` failed within the cool-down. */
   down(id: string): boolean {
