@@ -607,7 +607,13 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
-  private approvalPicksInFlight = new Map<string, number>();
+  /**
+   * Approval mode picks run one at a time on the connection: each starts from what the one before settled, and Smart
+   * and Manual write the profile every chat on it shares (`setApprovals`).
+   */
+  private approvalPicks: Promise<unknown> = Promise.resolve();
+  /** The runtime session whose pick is under way. */
+  private approvalPickFor?: string;
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -2923,7 +2929,13 @@ export class Hermes {
    * no answer reveals. A refused write rejects with Hermes's message, after settling from the writes it did answer.
    * Rejects if the chat isn't open on Hermes or Hermes hasn't reported its approvals yet.
    */
-  async setApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
+  setApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
+    const run = this.approvalPicks.then(() => this.pickApprovals(chatId, pick));
+    this.approvalPicks = run.catch(() => {});
+    return run;
+  }
+
+  private async pickApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const runtimeId = chat?.runtimeId;
     if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
@@ -2932,7 +2944,7 @@ export class Hermes {
     let answered = false;
     let flag = false;
     let mode = before.mode;
-    this.approvalPicksInFlight.set(runtimeId, (this.approvalPicksInFlight.get(runtimeId) ?? 0) + 1);
+    this.approvalPickFor = runtimeId;
     try {
       for (const w of writesFor(pick, before)) {
         const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: w.key, value: w.value })) as { value?: unknown };
@@ -2941,9 +2953,7 @@ export class Hermes {
         else mode = isApprovalMode(res.value) ? res.value : w.value;
       }
     } finally {
-      const n = this.approvalPicksInFlight.get(runtimeId)! - 1;
-      if (n) this.approvalPicksInFlight.set(runtimeId, n);
-      else this.approvalPicksInFlight.delete(runtimeId);
+      this.approvalPickFor = undefined;
       const approvals = { mode, yolo: flag || mode === "off" };
       if (answered) this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, approvals } } : c));
     }
@@ -3264,7 +3274,7 @@ export class Hermes {
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
       const model = pickFromInfo(payload);
-      const picking = this.approvalPicksInFlight.has(session_id!);
+      const picking = this.approvalPickFor === session_id;
       this.patchChat(chat.id, (c) => {
         const live = withLive(c.live, payload);
         return { ...c, ...(model && { model }), live: picking && live ? { ...live, approvals: c.live?.approvals } : live };

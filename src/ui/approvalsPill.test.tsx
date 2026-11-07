@@ -148,11 +148,36 @@ describe("The approval mode pill", () => {
     expect(pill()!.textContent).toBe("YOLO · all chats");
     await user.click(pill()!);
     expect(within(menu()).getAllByRole("menuitemradio").map((o) => o.getAttribute("aria-label"))).toEqual(["Smart", "Manual", "YOLO"]);
-    await user.keyboard("{Escape}");
+    await user.click(option("YOLO"));
+    expect(warning()).toBeNull();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(writes(server)).toEqual([]);
 
     await pick("Smart");
     expect(writes(server)).toEqual([["yolo", "off"], ["approvals.mode", "smart"]]);
     expect(face()).toBe("Approval mode: Smart");
+  });
+
+  it("keeps the menu until Hermes answers, so nothing dismisses it or starts another pick meanwhile", async () => {
+    let answer: (() => void) | undefined;
+    const { server, hermes, open, user } = await signedIn("smart", (s) => {
+      const real = s.handlers["config.set"];
+      s.handlers["config.set"] = (r) => void (answer = () => real(r));
+    });
+    await open("Nightly backup", "backup");
+    await user.click(pill()!);
+    await user.click(option("Manual"));
+    await user.keyboard("{Escape}");
+    await user.click(document.body);
+    await user.click(pill()!);
+    expect(menu().getAttribute("aria-busy")).toBe("true");
+    expect((option("Smart") as HTMLButtonElement).disabled).toBe(true);
+    expect(writes(server)).toEqual([["approvals.mode", "manual"]]);
+
+    act(() => answer!());
+    await settle(hermes);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(face()).toBe("Approval mode: Manual");
   });
 
   it("shows Hermes's refusal in the menu and leaves the mode as Hermes reports it", async () => {

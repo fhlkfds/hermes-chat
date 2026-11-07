@@ -3756,7 +3756,7 @@ function ChatView({
           onToggleFavorite={toggleModelFavorite}
         >
           {started && (
-            <ApprovalsPill approvals={chat.live?.approvals} connected={status === "connected"} profile={profile} onPick={(pick) => hermes.setApprovals(chat.id, pick)} />
+            <ApprovalsPill key={chat.id} approvals={chat.live?.approvals} connected={status === "connected"} profile={profile} onPick={(pick) => hermes.setApprovals(chat.id, pick)} />
           )}
         </ModelControls>
       }

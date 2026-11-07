@@ -27,9 +27,26 @@ const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function ApprovalsPill({ approvals, connected, profile, onPick }: ApprovalsPillProps) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   const wrap = useRef<HTMLDivElement>(null);
-  const close = () => setOpen(false);
+  // A sent write can't be taken back, so the menu stays until Hermes answers it.
+  const close = () => busy || setOpen(false);
   useDismiss(wrap, open, close);
+  const send = (pick: ApprovalPick) => {
+    setBusy(true);
+    setError(undefined);
+    onPick(pick).then(
+      () => {
+        setBusy(false);
+        setOpen(false);
+      },
+      (e: unknown) => {
+        setBusy(false);
+        setError(reasonOf(e));
+      },
+    );
+  };
   const badge = badgeOf(approvals);
   const { Icon, label, scope, full } = faceOf(badge);
   const blocked = !connected
@@ -48,7 +65,11 @@ export function ApprovalsPill({ approvals, connected, profile, onPick }: Approva
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={!!blocked}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (busy) return;
+          setError(undefined);
+          setOpen((o) => !o);
+        }}
       >
         <Icon size={12} aria-hidden />
         <span className="approvals-label">
@@ -57,25 +78,17 @@ export function ApprovalsPill({ approvals, connected, profile, onPick }: Approva
         </span>
         <ChevronDown size={12} aria-hidden />
       </button>
-      {open && !blocked && <ApprovalsMenu badge={badge} profile={profile} onPick={onPick} onClose={close} />}
+      {open && !blocked && <ApprovalsMenu badge={badge} profile={profile} busy={busy} error={error} send={send} onClose={close} />}
     </div>
   );
 }
 
-function ApprovalsMenu({ badge, profile, onPick, onClose }: { badge: ApprovalsBadge; profile: string; onPick: (pick: ApprovalPick) => Promise<void>; onClose: () => void }) {
+type MenuProps = { badge: ApprovalsBadge; profile: string; busy: boolean; error?: string; send: (pick: ApprovalPick) => void; onClose: () => void };
+
+function ApprovalsMenu({ badge, profile, busy, error, send, onClose }: MenuProps) {
   useReturnFocus();
   const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
   const ticked = tickedOf(badge);
-  const send = (pick: ApprovalPick) => {
-    setBusy(true);
-    setError(undefined);
-    onPick(pick).then(onClose, (e: unknown) => {
-      setError(reasonOf(e));
-      setBusy(false);
-    });
-  };
   const escape = (e: React.KeyboardEvent) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -125,7 +138,7 @@ function ApprovalsMenu({ badge, profile, onPick, onClose }: { badge: ApprovalsBa
               disabled={busy}
               onClick={() => {
                 if (pick !== "yolo") send(pick);
-                else if (badge.kind === "yolo" && badge.scope === "chat") onClose();
+                else if (badge.kind === "yolo") onClose();
                 else setConfirming(true);
               }}
             >

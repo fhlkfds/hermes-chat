@@ -131,6 +131,28 @@ describe("setApprovals", () => {
     expect(approvals()).toEqual({ mode: "smart", yolo: false });
   });
 
+  it("runs a pick sent before the last one was answered after it, from what that one settled", async () => {
+    const { server, hermes, id, runtime, approvals, writes } = await chatOn("smart");
+    server.reportApprovals(runtime);
+    await Promise.all([hermes.setApprovals(id, "yolo"), hermes.setApprovals(id, "smart")]);
+    expect(writes()).toEqual([["yolo", "on"], ["yolo", "off"], ["approvals.mode", "smart"]]);
+    expect(server.approvalInfo(runtime)).toEqual({ approval_mode: "smart", yolo: false });
+    expect(approvals()).toEqual({ mode: "smart", yolo: false });
+  });
+
+  it("leaves two chats on the profile at the mode written last when their picks overlap", async () => {
+    const { server, hermes, id, runtime, approvals } = await chatOn("smart");
+    const other = await hermes.newChat();
+    const otherRuntime = server.runtimeIdOf(other)!;
+    server.reportApprovals(runtime);
+    server.reportApprovals(otherRuntime);
+    await Promise.all([hermes.setApprovals(id, "manual"), hermes.setApprovals(other, "smart")]);
+    await hermes.idle();
+    expect(server.approvalInfo(runtime)).toEqual({ approval_mode: "smart", yolo: false });
+    expect(approvals()).toEqual({ mode: "smart", yolo: false });
+    expect(hermes.getSnapshot().chats.find((c) => c.id === other)!.live?.approvals).toEqual({ mode: "smart", yolo: false });
+  });
+
   it("rejects for a chat not open on Hermes", async () => {
     const server = new FakeHermes();
     server.approvalModes = {};
