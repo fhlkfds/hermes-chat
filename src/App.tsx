@@ -1222,7 +1222,7 @@ export function Main({
   };
   const openSettings = () => {
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1379,7 +1379,7 @@ export function Main({
       setReopening(undefined);
       if (!keepSettings) setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -1400,6 +1400,7 @@ export function Main({
       setUsageOpen(false);
       setRepoOpen(false);
       setAutomationsOpen(false);
+      setOfficeOpen(false);
       setJobsAt((a) => ({ id, n: (a?.n ?? 0) + 1 }));
       setJobsOpen(true);
     });
@@ -1433,7 +1434,7 @@ export function Main({
     guard(() => {
       setProjectOpen(false);
       setSettingsOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
       setRepoAt((was) => ({ ...at, n: (was?.n ?? 0) + 1 }));
@@ -1450,7 +1451,7 @@ export function Main({
     setSearchOpen(false);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1471,7 +1472,7 @@ export function Main({
     setReopening(undefined);
     setSettingsOpen(false);
     setProjectOpen(false);
-    setJobsOpen(false); setAutomationsOpen(false);
+    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
     setRepoOpen(false);
     setOutputsOpen(false);
     setUsageOpen(false);
@@ -1501,7 +1502,7 @@ export function Main({
     flushSync(() => {
       setSettingsOpen(false);
       setProjectOpen(false);
-      setJobsOpen(false); setAutomationsOpen(false);
+      setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
       setRepoOpen(false);
       setOutputsOpen(false);
       setUsageOpen(false);
@@ -2265,7 +2266,7 @@ export function Main({
   // Settings covers the chat, and the side panel with it; so do the project screen, Scheduled jobs, Automations, Usage
   // and the Repository screen. Outputs covers the chat panes but keeps the side panel beside it, since its files
   // open there.
-  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || repoOpen;
+  const screenCovering = settingsOpen || projectScreenOpen || jobsOpen || automationsOpen || usageOpen || repoOpen || officeVisible;
   const covering = screenCovering || outputsOpen;
   const previewShown = panelOpen && !screenCovering && (previewFits || !panelHidden);
   const previewCovers = previewShown && !previewFits;
@@ -2364,7 +2365,7 @@ export function Main({
             hermes.memory
               ? () => {
                   setProjectOpen(false);
-                  setJobsOpen(false); setAutomationsOpen(false);
+                  setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                   setRepoOpen(false);
                   setOutputsOpen(false);
                   setUsageOpen(false);
@@ -2434,7 +2435,7 @@ export function Main({
           guard(() => {
             setSettingsOpen(false);
             setProjectOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setUsageOpen(false);
             setOutputsOpen((o) => !o);
@@ -2466,10 +2467,16 @@ export function Main({
             : () => {
                 setInboxOpen(false);
                 setBotsOpen(false);
-                setOfficeOpen((o) => !o);
+                // Over Settings, it opens in Settings' place, as the rail's other screens do; otherwise it toggles.
+                if (settingsOpen)
+                  guard(() => {
+                    setSettingsOpen(false);
+                    setOfficeOpen(true);
+                  });
+                else setOfficeOpen((o) => !o);
               }
         }
-        officeOpen={officeShown}
+        officeOpen={officeShown && !settingsOpen}
         onSettings={openSettings}
         settingsOpen={settingsOpen}
         onJobs={() =>
@@ -2493,6 +2500,7 @@ export function Main({
             setUsageOpen(false);
             setRepoOpen(false);
             setJobsOpen(false);
+            setOfficeOpen(false);
             setAutomationsOpen(true);
           })
         }
@@ -2501,7 +2509,7 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
             setRepoAt(undefined);
@@ -2513,7 +2521,7 @@ export function Main({
           guard(() => {
             setProjectOpen(false);
             setSettingsOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen((o) => !o);
@@ -2554,7 +2562,7 @@ export function Main({
                   await projects.create(name);
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false); setAutomationsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -2564,7 +2572,7 @@ export function Main({
                 onManage={() =>
                   guard(() => {
                     setSettingsOpen(false);
-                    setJobsOpen(false); setAutomationsOpen(false);
+                    setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
                     setRepoOpen(false);
                     setOutputsOpen(false);
                     setUsageOpen(false);
@@ -2624,7 +2632,7 @@ export function Main({
           onCopyLink={copyChatLink}
           onTextGenerationSettings={() => {
             setProjectOpen(false);
-            setJobsOpen(false); setAutomationsOpen(false);
+            setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
             setRepoOpen(false);
             setOutputsOpen(false);
             setUsageOpen(false);
@@ -2658,19 +2666,6 @@ export function Main({
           onClose={() => setBotsOpen(false)}
         />
       )}
-      {officeVisible && (
-        <Office
-          rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
-          view={agentOffice}
-          onView={(view) => setUIPrefs({ agentOffice: view })}
-          server={where ?? "the server"}
-          profile={profile}
-          connected={status === "connected"}
-          leaving={leavingNote(profile, chats)}
-          onOpen={openDesk}
-          onClose={() => setOfficeOpen(false)}
-        />
-      )}
       {inboxOpen && (
         <Inbox
           entries={inboxShown}
@@ -2691,7 +2686,22 @@ export function Main({
       )}
       <main className="main" ref={mainRef}>
         <div className="main-chat" inert={previewCovers || undefined}>
-            {automationsOpen && !settingsOpen ? (
+            {officeVisible && !settingsOpen ? (
+              <Office
+                rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
+                view={agentOffice === "list" ? "list" : "building"}
+                onView={(view) => setUIPrefs({ agentOffice: view })}
+                server={where ?? "the server"}
+                profile={profile}
+                connected={status === "connected"}
+                leaving={leavingNote(profile, chats)}
+                onOpen={openDesk}
+                onClose={() => {
+                  flushSync(() => setOfficeOpen(false));
+                  focusPane(active.key);
+                }}
+              />
+            ) : automationsOpen && !settingsOpen ? (
               <CapabilityGate
                 store={hermes.capabilities}
                 id="automations"
