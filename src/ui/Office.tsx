@@ -3,9 +3,10 @@
 // what it stands for: the chat's reply opens the chat, at its Approval card or failure, and a subagent opens in the
 // chat's Subagents panel. Nothing here answers, approves, retries or starts anything. App mounts it only while it is
 // open and the window can be seen.
-import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent, type RefObject } from "react";
 import { Building2, CircleAlert, CircleCheck, CircleDashed, CircleDot, CircleHelp, CircleStop, Clock, Coffee, List, Loader, ShieldAlert, X } from "lucide-react";
 import { officeTally, type Desk, type DeskState, type Room } from "../hermes/office";
+import type { FloorMemory } from "../hermes/officeFloor";
 import type { OfficeView } from "../hermes/uiPrefs";
 import { composing, relTime } from "./bits";
 import { OfficeBuilding } from "./OfficeBuilding";
@@ -31,6 +32,7 @@ const STATE_ICON: Record<DeskState, typeof X> = {
  */
 export function Office({
   rooms,
+  floorMemory,
   view,
   onView,
   server,
@@ -41,6 +43,8 @@ export function Office({
   onClose,
 }: {
   rooms: Room[];
+  /** Who sits where in the building, kept by the app across the office's closes and minimizes. */
+  floorMemory: RefObject<FloorMemory>;
   view: Exclude<OfficeView, "off">;
   onView: (view: Exclude<OfficeView, "off">) => void;
   server: string;
@@ -161,7 +165,7 @@ export function Office({
         </div>
       )}
       {shows === "building" ? (
-        <OfficeBuilding rooms={rooms} profile={profile} onOpen={open} onFallback={setNoBuilding} onMore={() => setListFor(true)} />
+        <OfficeBuilding rooms={rooms} memory={floorMemory} profile={profile} onOpen={open} onFallback={setNoBuilding} onMore={() => setListFor(true)} />
       ) : rooms.length === 0 ? (
         <div className="empty-hint inbox-empty">No agent is at work. One shows here while a reply runs, waits for you or failed, and for each subagent it starts.</div>
       ) : (

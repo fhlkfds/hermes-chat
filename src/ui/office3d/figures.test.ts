@@ -1,7 +1,7 @@
 // The characters' meshes, without a renderer: each agent is drawn at the seat the floor gave it, and only typing arms
 // move between frames.
 import { describe, expect, it } from "vitest";
-import { Matrix4, Vector3 } from "three";
+import { InstancedMesh, Matrix4, Mesh, Vector3 } from "three";
 import type { Desk, DeskState, Room } from "../../hermes/office";
 import { EMPTY_FLOOR_MEMORY, officeFloor } from "../../hermes/officeFloor";
 import { buildFigures } from "./figures";
@@ -47,5 +47,25 @@ describe("The office's characters", () => {
     expect(figures.animate(0, true)).toBe(true);
     figures.set(stale.characters);
     expect(figures.animate(0, true)).toBe(false);
+  });
+
+  it("keeps the selection ring under the selected agent when the floor moves it, and drops it when the agent goes", () => {
+    const queued = officeFloor([team("a", "running", "queued")], EMPTY_FLOOR_MEMORY);
+    const started = officeFloor([team("a", "running", "running")], queued.memory);
+    const figures = buildFigures();
+    const ring = figures.group.children.find((o): o is Mesh => o instanceof Mesh && !(o instanceof InstancedMesh))!;
+    figures.set(queued.characters);
+    figures.select("a 1");
+    expect(ring.visible).toBe(true);
+    const door = queued.characters.find((c) => c.key === "a 1")!.spot;
+    expect([ring.position.x, ring.position.z]).toEqual([door.x, door.z]);
+
+    figures.set(started.characters);
+    const desk = started.characters.find((c) => c.key === "a 1")!.spot;
+    expect(desk).not.toEqual(door);
+    expect([ring.position.x, ring.position.z]).toEqual([desk.x, desk.z]);
+
+    figures.set(officeFloor([team("a", "running")], started.memory).characters);
+    expect(ring.visible).toBe(false);
   });
 });

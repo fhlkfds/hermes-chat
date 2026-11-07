@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { inboxEntries } from "../hermes/inbox";
 import { officeRooms, type Room } from "../hermes/office";
-import type { Floor } from "../hermes/officeFloor";
+import { EMPTY_FLOOR_MEMORY, type Floor } from "../hermes/officeFloor";
 import { SUBAGENTS_MAX, onSubagentEvent, type SubagentTree } from "../hermes/subagents";
 import { connect, type Hermes } from "../hermes/transport";
 import { setUIPrefs } from "../hermes/uiPrefs";
@@ -43,6 +43,9 @@ vi.mock("./office3d/scene", () => ({
     };
   },
 }));
+
+/** The floor memory the app keeps for the office, new. */
+const fresh = () => ({ current: EMPTY_FLOOR_MEMORY });
 
 /** This computer has WebGL, as far as the office's check can tell. */
 function withWebGL() {
@@ -94,7 +97,7 @@ const agents = () => Array.from(document.querySelectorAll<HTMLButtonElement>("[d
 function seen({ rooms, connected }: { rooms: Room[]; connected: boolean }, view: View) {
   if (view === "building") withWebGL();
   const onOpen = vi.fn();
-  const { unmount } = render(<Office rooms={rooms} view={view} onView={() => {}} server="hermes" profile="default" connected={connected} onOpen={onOpen} onClose={() => {}} />);
+  const { unmount } = render(<Office floorMemory={fresh()} rooms={rooms} view={view} onView={() => {}} server="hermes" profile="default" connected={connected} onOpen={onOpen} onClose={() => {}} />);
   const labels = agents().map((d) => d.getAttribute("aria-label")!);
   for (const d of agents()) {
     fireEvent.click(d);
@@ -154,7 +157,7 @@ describe("The building and the list", () => {
       "Read the tests, Failed, as last seen",
     ]);
     withWebGL();
-    render(<Office {...roomsOf(hermes)} view="building" onView={() => {}} server="hermes" profile="default" onOpen={() => {}} onClose={() => {}} />);
+    render(<Office floorMemory={fresh()} {...roomsOf(hermes)} view="building" onView={() => {}} server="hermes" profile="default" onOpen={() => {}} onClose={() => {}} />);
     expect(document.querySelectorAll(".office-tag.is-stale")).toHaveLength(4);
     expect(screen.getByRole("region", { name: "Office" }).textContent).toMatch(/Not connected to Hermes: every agent is as last seen\./);
     cleanup();
@@ -189,7 +192,7 @@ describe("The building and the list", () => {
 
     withWebGL();
     const user = userEvent.setup();
-    render(<Office rooms={rooms} view="building" onView={() => {}} server="hermes" profile="default" connected onOpen={() => {}} onClose={() => {}} />);
+    render(<Office floorMemory={fresh()} rooms={rooms} view="building" onView={() => {}} server="hermes" profile="default" connected onOpen={() => {}} onClose={() => {}} />);
     const tags = agents().map((d) => d.getAttribute("aria-label")!);
     expect(tags).toHaveLength(40);
     expect(tags.every((t) => list.labels.includes(t))).toBe(true);
@@ -247,7 +250,7 @@ function office(view: View, over: Partial<Parameters<typeof Office>[0]> = {}) {
   const onOpen = vi.fn();
   const onClose = vi.fn();
   const onView = vi.fn();
-  const props = { rooms: sample(), view, onView, server: "hermes", profile: "default", connected: true, onOpen, onClose, ...over };
+  const props = { rooms: sample(), floorMemory: fresh(), view, onView, server: "hermes", profile: "default", connected: true, onOpen, onClose, ...over };
   const { rerender } = render(<Office {...props} />);
   return { onOpen, onClose, onView, desks: agents, user: userEvent.setup(), rerender: (more: Partial<typeof props>) => rerender(<Office {...props} {...more} />) };
 }
@@ -359,7 +362,7 @@ describe("The building", () => {
   });
 
   it("shows the list on a computer without WebGL, says why, and never loads the scene", async () => {
-    render(<Office rooms={sample()} view="building" onView={() => {}} server="hermes" profile="default" connected onOpen={() => {}} onClose={() => {}} />);
+    render(<Office floorMemory={fresh()} rooms={sample()} view="building" onView={() => {}} server="hermes" profile="default" connected onOpen={() => {}} onClose={() => {}} />);
     expect(document.querySelector(".office-fallback")!.textContent).toBe("Showing the list: This computer's web view has no WebGL, which the building needs.");
     expect(document.querySelector(".office-list")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Building" })).toHaveProperty("disabled", true);
@@ -399,6 +402,35 @@ describe("The building", () => {
     rooms[1].desks[1] = { ...rooms[1].desks[1], state: "approval" };
     rerender({ rooms: [...rooms] });
     expect(drawn.scene!.floor).not.toBe(first);
+  });
+
+  it("draws a frame for \"+N more\" when it first shows, though no one drawn moved", async () => {
+    /** A chat with `n` finished subagents: each sits on a Lounge couch, and the Lounge seats 16. */
+    const finished = (n: number): Room[] => [
+      { ...sample()[1], desks: Array.from({ length: n }, (_, i) => ({ key: `done ${i}`, agent: { kind: "subagent", id: `d${i}` as never, depth: 0 }, name: `Done ${i}`, state: "completed" as const })) },
+    ];
+    const { rerender } = office("building", { rooms: finished(16) });
+    await waitFor(() => expect(drawn.scene?.floor).toBeTruthy());
+    expect(drawn.scene!.floor!.more).toBe(0);
+    rerender({ rooms: finished(17) });
+    expect(drawn.scene!.floor!.characters.map((c) => c.key)).toEqual(finished(16)[0].desks.map((d) => d.key));
+    expect(drawn.scene!.floor!.more).toBe(1);
+    expect(screen.getByRole("button", { name: "1 more agents aren't drawn. Show them all in List." })).toBeTruthy();
+  });
+
+  it("seats each agent where it sat before when the building is drawn again, from the floor memory the app keeps", async () => {
+    const team = (chatId: string): Room => ({ ...sample()[1], key: `default ${chatId}`, chatId, title: chatId, desks: [{ key: `default ${chatId} reply`, agent: { kind: "reply" }, name: "The chat's reply", state: "running" }] });
+    const spotOf = (key: string) => drawn.scene!.floor!.characters.find((c) => c.key === key)!.spot;
+    const floorMemory = fresh();
+    office("building", { rooms: [team("b")], floorMemory });
+    await waitFor(() => expect(drawn.scene?.floor).toBeTruthy());
+    const b = spotOf("default b reply");
+    cleanup();
+    // Drawn again, as after a minimize, with a team listed ahead of it: it stays at its desk.
+    office("building", { rooms: [team("a"), team("b")], floorMemory });
+    await waitFor(() => expect(drawn.scene?.floor?.characters).toHaveLength(2));
+    expect(spotOf("default b reply")).toEqual(b);
+    expect(spotOf("default a reply")).not.toEqual(b);
   });
 
   it("lifts tags that would cover each other until none do, leaving the nearest where it is", () => {

@@ -224,6 +224,9 @@ export function mountOfficeScene(canvas: HTMLCanvasElement, events: SceneEvents,
       building.dispose();
       figures.dispose();
       renderer.dispose();
+      // dispose() keeps the WebGL context, and WebKit holds each one until it is lost: free it, so opening the office
+      // again and again never runs into the browser's limit on contexts. No lost-listener is left to ask it back.
+      renderer.forceContextLoss();
     },
   };
 }

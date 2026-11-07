@@ -17,6 +17,7 @@ import { PersonaStore, personaKey } from "./hermes/personaStore";
 import { sending, unsaved, type Sending } from "./hermes/unsaved";
 import { connOf, restoreBlocked, savedBackupEnv } from "./hermes/backup";
 import { chatToReopen, forgetOpenChat, rememberOpenChat } from "./hermes/uiPrefs";
+import { EMPTY_FLOOR_MEMORY } from "./hermes/officeFloor";
 import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
@@ -1063,6 +1064,9 @@ export function Main({
   // own model. A chat on screen shows the model it runs on, and a pick there switches that chat alone.
   const { modelPicker, modelPicks, modelFavorites, previewWidth, screenshotShortcut, agentOffice, inboxAutoDismissDays } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
   const officeShown = officeOpen && agentOffice !== "off";
+  // Who sits where in the building. It outlives the building's view, so hidden to the tray, minimized, behind Settings
+  // or switched to List and back, each agent comes back to the desk it had.
+  const officeFloorMemory = useRef(EMPTY_FLOOR_MEMORY);
   const catalog = models?.profile === profile ? models : undefined;
   const sticky: ModelPick | undefined = modelPicks[pref] ?? (modelPicker?.profile === pref ? withoutProfile(modelPicker) : catalog?.defaultPick);
 
@@ -2689,6 +2693,7 @@ export function Main({
             {officeVisible && !settingsOpen ? (
               <Office
                 rooms={officeRooms({ entries: inbox.entries, shown: (e) => !acks.isDismissed(e, dismissed), chats, profile, connected: status === "connected" })}
+                floorMemory={officeFloorMemory}
                 view={agentOffice === "list" ? "list" : "building"}
                 onView={(view) => setUIPrefs({ agentOffice: view })}
                 server={where ?? "the server"}
