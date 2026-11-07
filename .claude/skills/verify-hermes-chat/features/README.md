@@ -43,3 +43,4 @@ Each feature file starts with an H1 and one paragraph describing the behaviour t
 - [Search chats](search.md): Ctrl+K or the rail opens search, a body-text match opens its chat, and a miss shows No matches.
 - [Rail inbox](rail-inbox.md): Check now, Clear done, and auto-dismissing old completed entries, with the `HV_INBOX=1` seed.
 - [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.
+- [Approval mode](approval-mode.md): the composer's pill: Smart, Manual, YOLO with its warning, "YOLO · all chats", and the narrow face, against the real Hermes in `~/.cache/hermes-live-277`.
