@@ -149,7 +149,7 @@ describe("A chat's live session", () => {
     await hermes.sync();
     await hermes.open("nas");
     const nas = () => hermes.getSnapshot().chats.find((c) => c.id === "nas")!;
-    expect(nas().live).toEqual({ yolo: true, yoloEverywhere: false, context: { used: 46_000, max: 200_000, percent: 23, estimated: false } });
+    expect(nas().live).toEqual({ approvals: { mode: "manual", yolo: true }, context: { used: 46_000, max: 200_000, percent: 23, estimated: false } });
     expect(nas().model?.model).toBe("m");
 
     server.drop();

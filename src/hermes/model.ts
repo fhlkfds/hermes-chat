@@ -209,12 +209,11 @@ export type SideQuestion = { id: string; question: string; after?: string; taskI
 /**
  * A chat's live session as Hermes reports it (`session.info`, `session.usage`, research doc "Status bar"); its model is
  * `Chat.model`.
- * `context`: how full the context window is, only once Hermes has measured it. `yolo`: Hermes runs commands it counts
- * as dangerous without asking; undefined when Hermes doesn't report it. `yoloEverywhere`: on for every chat by Hermes's
- * own settings, so this chat can't turn it off. `compactions`: how many times Hermes has compacted the chat since its
- * agent was built on the server (`usage.compressions`); undefined when Hermes reports no compactor for it.
+ * `context`: how full the context window is, only once Hermes has measured it. `approvals`: its approval mode as Hermes
+ * last reported it (ADR 0089); undefined until Hermes does. `compactions`: how many times Hermes has compacted the chat
+ * since its agent was built on the server (`usage.compressions`); undefined when Hermes reports no compactor for it.
  */
-export type SessionLive = { context?: ContextUse; yolo?: boolean; yoloEverywhere?: boolean; compactions?: number };
+export type SessionLive = { context?: ContextUse; approvals?: Approvals; compactions?: number };
 
 /** The profile's `approvals.mode` (GLOSSARY "Approval mode"). The app shows "off" but never offers it. */
 export type ApprovalMode = "smart" | "manual" | "off";

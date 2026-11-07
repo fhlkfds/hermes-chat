@@ -31,6 +31,7 @@ import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isWaiting, offeredChoices, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
+import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { noOthers, OtherProfilesCheck } from "./otherProfiles";
 import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
@@ -606,9 +607,8 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
-  /** How many `session.info` events each runtime session has sent on this connection, so `setYolo` can tell
-   * whether Hermes reported the effective state before answering. */
-  private infoCount = new Map<string, number>();
+  /** How many approval mode picks are under way for each runtime session (`setApprovals`). */
+  private settling = new Map<string, number>();
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -2917,28 +2917,38 @@ export class Hermes {
   }
 
   /**
-   * Turns YOLO on or off for this chat only: Hermes then runs commands it counts as dangerous without asking
-   * (`config.set yolo`, session scope; research doc "Status bar"). Hermes keeps it with the chat. Rejects if the
-   * chat isn't open on this connection or Hermes refuses.
+   * Changes the chat's approval mode (ADR 0089). Smart and Manual set the profile's `approvals.mode`, for every session
+   * on the profile from Hermes's next command; YOLO sets this chat's own flag (`config.set yolo`, session scope). The
+   * chat's flag beats the mode, so Smart or Manual turns it off first when Hermes reports YOLO (`writesFor`).
+   * Hermes sends `session.info` around each write, and one of those frames may be stale, so while the pick is under way
+   * they leave `approvals` alone; afterwards it is Hermes's own formula over its answers, minus the `--yolo` launch flag
+   * no answer reveals. A refused write rejects with Hermes's message, after settling from the writes it did answer.
+   * Rejects if the chat isn't open on Hermes or Hermes hasn't reported its approvals yet.
    */
-  async setYolo(chatId: string, on: boolean): Promise<void> {
-    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+  async setApprovals(chatId: string, pick: ApprovalPick): Promise<void> {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const runtimeId = chat?.runtimeId;
     if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
-    const infos = this.infoCount.get(runtimeId) ?? 0;
-    const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: "yolo", value: on ? "on" : "off" })) as { value?: unknown };
-    // `value` is only the chat's own flag. Whether Hermes auto-approves also depends on its launch flag and
-    // approvals.mode, which only `session.info` reports; Hermes sends that just before this answer, when the session's
-    // agent exists (`methods_config_set.py` `_set_yolo`).
-    const reported = (this.infoCount.get(runtimeId) ?? 0) > infos;
-    this.patchChat(chatId, (c) => {
-      if (c.runtimeId !== runtimeId) return c;
-      // The chat's flag is on, so YOLO is on whatever else holds.
-      if (res.value === "1") return { ...c, live: { ...c.live, yolo: true } };
-      // Off for the chat, yet still on: something wider than this chat turns it on.
-      if (reported) return c.live?.yolo ? { ...c, live: { ...c.live, yoloEverywhere: true } } : c;
-      // Not reported: unknown until Hermes says, never assumed off.
-      return { ...c, live: { ...c.live, yolo: undefined, yoloEverywhere: undefined } };
-    });
+    const before = chat.live?.approvals;
+    if (!before) throw new Error("Hermes hasn't reported approvals for this chat yet.");
+    let answered = false;
+    let flag = false;
+    let mode = before.mode;
+    this.settling.set(runtimeId, (this.settling.get(runtimeId) ?? 0) + 1);
+    try {
+      for (const w of writesFor(pick, before)) {
+        const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: w.key, value: w.value })) as { value?: unknown };
+        answered = true;
+        if (w.key === "yolo") flag = res.value === "1";
+        else mode = isApprovalMode(res.value) ? res.value : w.value;
+      }
+    } finally {
+      const n = this.settling.get(runtimeId)! - 1;
+      if (n) this.settling.set(runtimeId, n);
+      else this.settling.delete(runtimeId);
+      const approvals = { mode, yolo: flag || mode === "off" };
+      if (answered) this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, approvals } } : c));
+    }
   }
 
   /**
@@ -3255,9 +3265,9 @@ export class Hermes {
     if (type === "btw.complete") return this.sideAnswered(chat, String(payload.task_id ?? ""), payload.text);
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
-      this.infoCount.set(chat.runtimeId!, (this.infoCount.get(chat.runtimeId!) ?? 0) + 1);
       const model = pickFromInfo(payload);
-      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload) }));
+      const settling = this.settling.has(session_id!);
+      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload, undefined, settling) }));
       // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
       const counters = countersOf(payload.usage);
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
@@ -3486,7 +3496,6 @@ export class Hermes {
     if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
     for (const p of this.pending.values()) p.reject(new ConnectionLostError(`Connection closed: ${reason}`));
     this.pending.clear();
-    this.infoCount.clear();
     this.earlyRequests.clear();
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
@@ -4757,14 +4766,16 @@ const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (
 /**
  * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
  * The model is `Chat.model` (`pickFromInfo`).
- * Context fullness only as Hermes measured it: none until it has. YOLO only when Hermes reports it.
+ * Context fullness only as Hermes measured it: none until it has. Approvals only when Hermes reports them, and not
+ * while `settling`: a pick is under way, whose answers set them (`setApprovals`).
  */
-function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
+function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown, settling = false): SessionLive | undefined {
   const i = obj(info);
   const u = obj(usage) ?? obj(i?.usage);
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
-  if (typeof i?.yolo === "boolean") Object.assign(live, { yolo: i.yolo, yoloEverywhere: i.approval_mode === "off" });
+  const approvals = approvalsOf(i);
+  if (approvals && !settling) live.approvals = approvals;
   if (u) {
     live.context = contextUse(u);
     live.compactions = typeof u.compressions === "number" && u.compressions >= 0 ? u.compressions : undefined;
