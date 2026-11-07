@@ -79,4 +79,9 @@ describe("The office's rooms", () => {
     const order = rs[0].desks.slice(1).map((d) => (d.agent.kind === "subagent" ? d.agent.id : ""));
     expect(order.slice(0, 11)).toEqual(["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"]);
   });
+  it("gives the card a subagent's goal, model and start, and the reply's model when the chat is on this connection", () => {
+    const tree = started(undefined, "a", { model: "sub-model" });
+    const [room] = rooms([chat("c", { running: true, model: { provider: "p", model: "chat-model" }, subagents: tree })]);
+    expect(room.desks.map((d) => d.detail)).toEqual([{ model: "chat-model" }, { goal: "Goal a", model: "sub-model", startedAt: 2_000 }]);
+  });
 });
