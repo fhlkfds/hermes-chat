@@ -100,11 +100,6 @@ export function ArchiveButton({
 export const composing = (e: KeyboardEvent | ReactKeyboardEvent) =>
   ("nativeEvent" in e ? e.nativeEvent : e).isComposing || e.keyCode === 229;
 
-/**
- * For a popover: when it closes, focus goes back to what had it when the popover opened, unless the owner has
- * moved focus somewhere else meanwhile (clicked another control, or the popover's pick opened something that
- * focuses itself).
- */
 /** Closes a popover on a click outside `ref`, or when the window loses focus. */
 export function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
   useEffect(() => {
@@ -119,6 +114,11 @@ export function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boole
   }, [open, close, ref]);
 }
 
+/**
+ * For a popover: when it closes, focus goes back to what had it when the popover opened, unless the owner has
+ * moved focus somewhere else meanwhile (clicked another control, or the popover's pick opened something that
+ * focuses itself).
+ */
 export function useReturnFocus() {
   // Read while rendering, before the popover's own autoFocus moves focus into it.
   const [opener] = useState(() => document.activeElement);
