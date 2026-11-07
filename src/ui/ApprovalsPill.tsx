@@ -1,6 +1,3 @@
-// The composer's approval mode pill (GLOSSARY "Approval mode", ADR 0089), after the reasoning pill. Its face is what
-// Hermes last reported for the chat, never what was clicked. Smart and Manual set the profile's mode; YOLO sets this
-// chat's flag, after a warning shown every time it is turned on.
 import { Fragment, useRef, useState } from "react";
 import { Check, ChevronDown, Shield, ShieldCheck, ShieldQuestionMark, Zap } from "lucide-react";
 import { PICK_COPY, badgeOf, type ApprovalPick, type ApprovalsBadge } from "../hermes/approvals";
@@ -17,7 +14,6 @@ const PICKS: ApprovalPick[] = ["smart", "manual", "yolo"];
 
 const ICON = { smart: ShieldCheck, manual: ShieldQuestionMark, yolo: Zap };
 
-/** The face's icon, its label and the scope after it, and the full text its accessible name carries. */
 function faceOf(b: ApprovalsBadge) {
   if (b.kind === "unknown") return { Icon: Shield, label: "Approvals", scope: "", full: "unknown" };
   if (b.kind === "mode") return { Icon: ICON[b.mode], label: PICK_COPY[b.mode].name, scope: "", full: PICK_COPY[b.mode].name };
@@ -66,10 +62,6 @@ export function ApprovalsPill({ approvals, connected, profile, onPick }: Approva
   );
 }
 
-/**
- * The menu, or the YOLO warning in its place. A pick stays open until Hermes answers: closed when it has, or showing
- * Hermes's reason when it refused.
- */
 function ApprovalsMenu({ badge, profile, onPick, onClose }: { badge: ApprovalsBadge; profile: string; onPick: (pick: ApprovalPick) => Promise<void>; onClose: () => void }) {
   useReturnFocus();
   const [confirming, setConfirming] = useState(false);
@@ -105,7 +97,6 @@ function ApprovalsMenu({ badge, profile, onPick, onClose }: { badge: ApprovalsBa
         </ul>
         {alert}
         <div className="confirm-actions">
-          {/* Cancel takes focus, so a stray Enter doesn't turn it on. */}
           <button className="btn" autoFocus disabled={busy} onClick={onClose}>
             Cancel
           </button>

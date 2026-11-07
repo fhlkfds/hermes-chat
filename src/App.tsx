@@ -3755,7 +3755,6 @@ function ChatView({
           onPick={pickModel}
           onToggleFavorite={toggleModelFavorite}
         >
-          {/* Not on the New chat pane: YOLO is per chat, and only a chat's session reports approvals. */}
           {started && (
             <ApprovalsPill approvals={chat.live?.approvals} connected={status === "connected"} profile={profile} onPick={(pick) => hermes.setApprovals(chat.id, pick)} />
           )}

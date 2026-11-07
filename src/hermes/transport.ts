@@ -607,8 +607,7 @@ export class Hermes {
   private closedApprovals = new Map<string, ApprovalItem>();
   /** Approvals Hermes has been told are on screen (`approval.received`), by request id. */
   private shownApprovals = new Set<string>();
-  /** How many approval mode picks are under way for each runtime session (`setApprovals`). */
-  private settling = new Map<string, number>();
+  private approvalPicksInFlight = new Map<string, number>();
   /** Hermes answered that it has no `approval.received`. */
   private noApprovalReceived = false;
   /** Messages Hermes hasn't accepted yet, so a Stop waits for the turn it stops. */
@@ -2918,8 +2917,7 @@ export class Hermes {
 
   /**
    * Changes the chat's approval mode (ADR 0089). Smart and Manual set the profile's `approvals.mode`, for every session
-   * on the profile from Hermes's next command; YOLO sets this chat's own flag (`config.set yolo`, session scope). The
-   * chat's flag beats the mode, so Smart or Manual turns it off first when Hermes reports YOLO (`writesFor`).
+   * on the profile from Hermes's next command; YOLO sets this chat's own flag (`config.set yolo`, session scope).
    * Hermes sends `session.info` around each write, and one of those frames may be stale, so while the pick is under way
    * they leave `approvals` alone; afterwards it is Hermes's own formula over its answers, minus the `--yolo` launch flag
    * no answer reveals. A refused write rejects with Hermes's message, after settling from the writes it did answer.
@@ -2934,7 +2932,7 @@ export class Hermes {
     let answered = false;
     let flag = false;
     let mode = before.mode;
-    this.settling.set(runtimeId, (this.settling.get(runtimeId) ?? 0) + 1);
+    this.approvalPicksInFlight.set(runtimeId, (this.approvalPicksInFlight.get(runtimeId) ?? 0) + 1);
     try {
       for (const w of writesFor(pick, before)) {
         const res = (await this.request("config.set", { session_id: runtimeId, profile: this.profile, key: w.key, value: w.value })) as { value?: unknown };
@@ -2943,9 +2941,9 @@ export class Hermes {
         else mode = isApprovalMode(res.value) ? res.value : w.value;
       }
     } finally {
-      const n = this.settling.get(runtimeId)! - 1;
-      if (n) this.settling.set(runtimeId, n);
-      else this.settling.delete(runtimeId);
+      const n = this.approvalPicksInFlight.get(runtimeId)! - 1;
+      if (n) this.approvalPicksInFlight.set(runtimeId, n);
+      else this.approvalPicksInFlight.delete(runtimeId);
       const approvals = { mode, yolo: flag || mode === "off" };
       if (answered) this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, live: { ...c.live, approvals } } : c));
     }
@@ -3266,8 +3264,11 @@ export class Hermes {
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.
     if (type === "session.info") {
       const model = pickFromInfo(payload);
-      const settling = this.settling.has(session_id!);
-      this.patchChat(chat.id, (c) => ({ ...c, ...(model && { model }), live: withLive(c.live, payload, undefined, settling) }));
+      const picking = this.approvalPicksInFlight.has(session_id!);
+      this.patchChat(chat.id, (c) => {
+        const live = withLive(c.live, payload);
+        return { ...c, ...(model && { model }), live: picking && live ? { ...live, approvals: c.live?.approvals } : live };
+      });
       // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
       const counters = countersOf(payload.usage);
       if (counters && !chat.running) this.usageFrom.set(session_id!, counters);
@@ -4766,16 +4767,15 @@ const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (
 /**
  * `prev` updated from a session's `info` (`server._session_info`) and `usage` (`server._get_usage`, or `info.usage`).
  * The model is `Chat.model` (`pickFromInfo`).
- * Context fullness only as Hermes measured it: none until it has. Approvals only when Hermes reports them, and not
- * while `settling`: a pick is under way, whose answers set them (`setApprovals`).
+ * Context fullness only as Hermes measured it: none until it has.
  */
-function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown, settling = false): SessionLive | undefined {
+function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
   const i = obj(info);
   const u = obj(usage) ?? obj(i?.usage);
   if (!i && !u) return prev;
   const live: SessionLive = { ...prev };
   const approvals = approvalsOf(i);
-  if (approvals && !settling) live.approvals = approvals;
+  if (approvals) live.approvals = approvals;
   if (u) {
     live.context = contextUse(u);
     live.compactions = typeof u.compressions === "number" && u.compressions >= 0 ? u.compressions : undefined;

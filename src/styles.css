@@ -771,7 +771,6 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .model-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-fast-mark { color: var(--warn); flex: none; }
 .reasoning-pill { height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: calc(11.5rem / 14); font-weight: 500; }
-/* approval mode pill (ApprovalsPill.tsx), after the reasoning pill */
 .approvals-pill:disabled { opacity: 0.5; cursor: default; }
 .approvals-pill:disabled:hover { background: none; color: var(--muted); }
 .approvals-pill.yolo { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -786,7 +785,6 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 }
 /* `.menu` is fixed to the window; this one sits above its pill. */
 .menu.pill-menu { position: absolute; left: 0; top: auto; bottom: calc(100% + 8px); min-width: 150px; }
-/* Its right edge on the pill's, so it opens into the composer rather than past the pane's edge. */
 .menu.approvals-menu, .status-popover.approvals-confirm { left: auto; right: 0; width: 320px; }
 .menu-item.approvals-option { display: grid; grid-template-columns: 16px auto 1fr auto; gap: 2px 9px; align-items: center; padding: 8px; }
 .approvals-option:disabled { opacity: 0.6; cursor: default; }

@@ -550,14 +550,12 @@ export class FakeHermes {
    * built (`reportApprovals`), never in the create or resume answer.
    */
   approvalModes?: Record<string, ApprovalMode>;
-  /** Config keys an administrator pinned: `config.set` refuses them (4030) and writes nothing. */
   managedKeys = new Set<string>();
   /**
    * Around a `yolo` or `approvals.mode` write, also sends the written session a `session.info` from before the write,
    * after the fresh one and before the answer, as the deployed `f0d94882` was seen to (ADR 0089).
    */
   staleInfoOnWrite = false;
-  /** The runtime sessions whose own YOLO flag is on (`config.set yolo`, session scope). */
   private yoloFlags = new Set<string>();
   /**
    * Each runtime session's working folder. As live at the deployed `bf0203a` (probed 2026-11-02 against a throwaway
@@ -2059,23 +2057,16 @@ export class FakeHermes {
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
   }
 
-  /** A runtime session's `approval_mode` and `yolo` as `session.info` reports them; none unless `approvalModes` is set. */
   approvalInfo(sid: string): Record<string, unknown> {
     if (!this.approvalModes) return {};
     const mode = this.approvalModes[this.runtimeProfile.get(sid) ?? "default"] ?? "smart";
     return { approval_mode: mode, yolo: this.yoloFlags.has(sid) || mode === "off" };
   }
 
-  /** The `session.info` Hermes sends once a session's agent is built, a second or two after it is created or resumed. */
   reportApprovals(sid: string, approvals = this.approvalInfo(sid)) {
     this.event(sid, "session.info", { ...this.sessionModel.get(this.runtime.get(sid) ?? ""), ...approvals });
   }
 
-  /**
-   * `config.set` of `yolo` (the session's own flag; answers "1" or "0") and `approvals.mode` (the profile's, re-sent to
-   * every live session on it), each reported in `session.info` before the answer (`methods_config_set.py` at the
-   * deployed `f0d94882`).
-   */
   private setApprovals(id: number, key: "yolo" | "approvals.mode", value: string, sid: string | undefined, profile = "default") {
     if (this.managedKeys.has(key)) return this.fail(id, 4030, `${key} is managed by your administrator`);
     if (key === "yolo" && (!sid || !this.runtime.has(sid))) return this.fail(id, 4001, "session not found");

@@ -215,7 +215,7 @@ export type SideQuestion = { id: string; question: string; after?: string; taskI
  */
 export type SessionLive = { context?: ContextUse; approvals?: Approvals; compactions?: number };
 
-/** The profile's `approvals.mode` (GLOSSARY "Approval mode"). The app shows "off" but never offers it. */
+/** The profile's `approvals.mode` (GLOSSARY "Approval mode"). */
 export type ApprovalMode = "smart" | "manual" | "off";
 
 /**

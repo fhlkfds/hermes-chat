@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-// The composer's approval mode pill (ADR 0089), driven through the signed-in app against a fake Hermes that reports
-// approvals as the deployed f0d94882 does. Each test checks what reached Hermes and what the pill shows.
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -32,7 +30,6 @@ const warning = () => screen.queryByRole("dialog", { name: "Turn on YOLO for thi
 const writes = (server: FakeHermes) => server.requests.filter((r) => r.method === "config.set").map((r) => [r.params.key, r.params.value]);
 const settle = (hermes: Hermes) => act(async () => void (await hermes.idle()));
 
-/** Signed in with two chats on a profile whose mode is `mode`, the New chat pane on screen. */
 async function signedIn(mode: ApprovalMode = "smart", tweak: (s: FakeHermes) => void = () => {}) {
   const server = new FakeHermes();
   server.approvalModes = { default: mode };
@@ -43,14 +40,12 @@ async function signedIn(mode: ApprovalMode = "smart", tweak: (s: FakeHermes) => 
   render(<Main hermes={hermes} connection={connection} onSignOut={async () => {}} />);
   await screen.findByRole("button", { name: /Nightly backup/ });
   await settle(hermes);
-  /** Opens a chat and, unless `reported` is false, lets Hermes report its approvals as it does once its agent is built. */
   const open = async (title: string, stored: string, reported = true) => {
     await user.click(screen.getByRole("button", { name: new RegExp(title) }));
     await settle(hermes);
     if (reported) act(() => server.reportApprovals(server.runtimeIdOf(stored)!));
     await settle(hermes);
   };
-  /** Picks from the pill's menu, and for YOLO confirms the warning. */
   const pick = async (name: string) => {
     await user.click(pill()!);
     await user.click(option(name));

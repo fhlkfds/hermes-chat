@@ -1,5 +1,3 @@
-// The approval mode (ADR 0089): the pure tables in approvals.ts, and `setApprovals` against a fake Hermes speaking the
-// deployed f0d94882 wire, stale session.info frames included.
 import { describe, expect, it } from "vitest";
 import { approvalsOf, badgeOf, writesFor } from "./approvals";
 import { FakeHermes } from "./fakeHermes";
@@ -45,7 +43,6 @@ describe("writesFor", () => {
   ] as const)("%s from %j sends %j", (pick, a, writes) => expect(writesFor(pick, a)).toEqual(writes));
 });
 
-/** A new chat on a fake Hermes that reports approvals, its profile's mode `mode`, before its agent reports them. */
 async function chatOn(mode: ApprovalMode = "smart", tweak: (s: FakeHermes) => void = () => {}) {
   const server = new FakeHermes();
   server.approvalModes = { default: mode };
@@ -124,7 +121,6 @@ describe("setApprovals", () => {
     await hermes.setApprovals(id, "yolo");
 
     await expect(hermes.setApprovals(id, "smart")).rejects.toThrow("approvals.mode is managed by your administrator");
-    // The flag went off before the mode was refused, so the profile's Manual governs the chat now.
     expect(approvals()).toEqual({ mode: "manual", yolo: false });
   });
 

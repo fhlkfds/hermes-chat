@@ -100,7 +100,6 @@ export function ArchiveButton({
 export const composing = (e: KeyboardEvent | ReactKeyboardEvent) =>
   ("nativeEvent" in e ? e.nativeEvent : e).isComposing || e.keyCode === 229;
 
-/** Closes a popover on a click outside `ref`, or when the window loses focus. */
 export function useDismiss(ref: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
   useEffect(() => {
     if (!open) return;

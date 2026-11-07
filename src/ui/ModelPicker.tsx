@@ -34,8 +34,7 @@ const EFFORT_NAME: Record<Effort, string> = {
 /**
  * `catalog`: the models to list; undefined while it is read. `current`: the model in use, for the chat on screen or for
  * the next new chat. `defaultEffort`: the profile's effort, shown when `current` leaves effort as the profile has it.
- * `favorites`: starred models as `provider/model`. `children`: more pills after the reasoning pill (the chat pane's
- * approval mode pill).
+ * `favorites`: starred models as `provider/model`.
  */
 export type ModelControlsProps = {
   catalog?: ModelCatalog;
