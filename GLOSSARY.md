@@ -9,15 +9,15 @@ One Hermes conversation as this app shows it, with its full message history.
 _Avoid_: session (Hermes's word for the same thing; keep it for server-side talk), conversation, thread
 
 **Active**:
-The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows in the Inbox when it needs the owner or is done, in Working while Hermes replies in it, in Snoozed while it is snoozed, and in Unsettled once the owner clears it from the Inbox (ADR 0036, ADR 0063). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
+The state of a chat the owner is currently working in: any chat that isn't Settled. The list doesn't label it. An Active chat shows in the Inbox when it needs the owner or is done, in Working while Hermes replies in it, and in Snoozed while it is snoozed (ADR 0036, ADR 0063). A chat becomes Active when the owner starts it in this app, or when the owner sends a message in it from this app.
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in the list's Settled section, collapsed until the owner opens it. Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
-The owner's manual actions that move a chat from Active to Settled, and back. Both are the same icon-only button, named when hovered. Settling a snoozed chat forgets the snooze.
+The owner's manual actions, from a chat's row or its right-click menu, that move a chat from Active to Settled, and back to the Inbox. On the row both are the same icon-only button, named when hovered. Settling is how a chat is cleared from the Inbox (ADR 0090). Settling a snoozed chat forgets the snooze.
 
 **Working**:
 Where the list shows an Active chat while Hermes is writing a reply in it and isn't waiting on the owner. Nobody puts a chat there: it moves there when a reply starts, and back to the Inbox once Hermes asks the owner something (an Approval) or the reply ends. A Settled or snoozed chat stays where it is while Hermes works in it.
@@ -28,23 +28,19 @@ An Active chat the owner has put out of the way until a time they chose. It sits
 _Avoid_: hidden, deferred, reminder
 
 **Inbox**:
-The first section of the chat list: the Active chats in the profile shown that need the owner or have finished, newest first: an Approval waiting, a failure, a reply done, something new. A chat stays there until the owner opens it and clears it, settles it or snoozes it, or a reply starts in it (ADR 0063).
+The first section of the chat list: the Active chats in the profile shown that need the owner or have finished, newest first: an Approval waiting, a failure, a reply done, something new. A chat stays there until the owner settles it (clearing it from the Inbox) or snoozes it, or a reply starts in it (ADR 0063, ADR 0090).
 _Avoid_: top of the list (its name before ADR 0063), feed
 
-**Unsettled**:
-The section of the chat list holding the Active chats the owner cleared from the Inbox, newest first. It is a place in the list, not a state: an Unsettled chat is still Active, and settling it moves it to Settled (ADR 0063).
-_Avoid_: closed, hidden, read
-
-**Clear** / **Back to the Inbox**:
-The owner's actions, from a chat's row or its right-click menu, that move a read, quiet Active chat from the Inbox to Unsettled, and back. A chat can be cleared only when it isn't Unread, no reply is running in it and Hermes isn't waiting on the owner. It is back in the Inbox on its own as soon as anything newer happens in it: a message from any platform, a reply that ends, a snooze that wakes. Nothing is deleted or sent to Hermes: a clear is kept on this computer only, for each connection and profile. Settling, unsettling, archiving or deleting the chat forgets it (ADR 0063).
-_Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), done
+**Clear from the Inbox**:
+What settling a chat in the Inbox does: it goes to the Settled drawer (ADR 0090). Until then a clear was kept on this computer only and put the chat in an Unsettled section, which is gone; the clears an older version kept were settled once.
+_Avoid_: close (Close closes tabs and panes, and "closed" is kept away from Settled), dismiss (the Rail inbox's word), Unsettled (the section that is gone)
 
 **Pinned** / **Pin** / **Unpin**:
 The owner's actions, from a chat's right-click menu or its header's More menu (P in either), that keep a chat in the Pinned section at the top of the chat list, and put it back in its place. Pinned lists the chats in the order they were pinned, whatever happens in them; only Archived takes a chat out of it. Pins are kept on this computer only, for each connection and profile, since Hermes's own pin flag holds Active (ADR 0002, ADR 0085).
 _Avoid_: favourite, star (starred models are the model picker's), sticky
 
 **Chat list section**:
-One of the chat list's groups, in this order: Pinned, Inbox, Working, Snoozed, Unsettled, Settled, Archived. Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
+One of the chat list's groups: Pinned, Inbox, Working, Snoozed and Archived in the list's scroll, in that order, then Settled, a drawer at the list's foot that opens upward with its own scroll (ADR 0090). Each chat is in exactly one. Each has a header with its count that collapses or expands it; which are collapsed is kept on this computer across restarts. Settings → General picks which sections show, any mix but never none; a chat in a hidden section is still found by Search (ADR 0063).
 _Avoid_: group, folder, tab
 
 **Snooze** / **Unsnooze**:
@@ -120,11 +116,15 @@ A bot's one chat that always continues: the profile's chat titled exactly "Bot C
 _Avoid_: forever chat, canonical chat, DM, main chat
 
 **Connection**:
-A Hermes server this computer can sign in to, saved with a name, its Routes, its dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, and when that one is removed, the sign-in screen offers the others and waits (ADR 0049).
+A Hermes server this computer can sign in to, saved with a name, its Routes, its dashboard username, and when it was last used. Each keeps its own password and Extra request headers in the system keyring, and its own Drafts, Queued messages, Failed messages, Saved copies, profile shown, Model pick and chat to reopen on this computer, so the same profile name on two servers never shares them. One is in use at a time. Switching to another asks first when a reply is running or an Approval waiting; Hermes keeps the reply going, and switching back brings both back. Removing one deletes only what this computer keeps for it, after saying what that is; its chats stay on the server. Nothing picks a connection by its name, or on its own: launch signs in to the one in use, showing its saved chat list meanwhile, Connecting, when there is one (ADR 0089), and when that one is removed, the sign-in screen offers the others and waits (ADR 0049).
 _Avoid_: server (the machine itself), account, sign-in (the act of signing in), profile (an agent setup on the server)
 
+**Connection attempt**:
+One time the app opens a Connection, at launch or to reconnect: the Routes it tried, each by its kind and id, the connect steps each reached (keyring, DNS or SSH tunnel, status, sign-in, ticket, WebSocket, ready) and how long each took, and how it ended, with the error after redaction and with every address taken out. The newest 50 are kept on this computer between launches, never uploaded, and shown in Logs → Connection attempts; one the app was closed during reads as unfinished at the step it was on (ADR 0033).
+_Avoid_: connection log, sign-in log
+
 **Route**:
-One way to reach a Connection's server: a LAN address, a Tailscale address, a web address (https://), or an SSH target. A Connection has one or more, in the owner's order; connecting tries the ones turned on in that order and uses the first that reaches Hermes and signs in, and a connection that drops comes back over whichever works then. The password belongs to the Connection, Extra request headers to the route that needs them. Before the password goes over a route, the app checks that the route reaches the same Hermes the Connection signed in to before; a route that reaches anything else is the **wrong server** and is skipped. Plain http:// routes only go to this computer, a LAN or Tailscale. While on a later route, the earlier ones are checked now and then, and the connection moves back once one answers and nothing is running (ADR 0056).
+One way to reach a Connection's server: a LAN address, a Tailscale address, a web address (https://), or an SSH target. A Connection has one or more, in the owner's order; connecting tries the ones turned on in that order and uses the first that reaches Hermes and signs in, and a connection that drops comes back over whichever works then. The password belongs to the Connection, Extra request headers to the route that needs them. Before the password goes over a route, the app checks that the route reaches the same Hermes the Connection signed in to before; a route that reaches anything else is the **wrong server** and is skipped. Plain http:// routes only go to this computer, a LAN or Tailscale. With several routes, each step of a route (looking up its name, the status, the sign-in, the chat connection) has a short limit, so one that stalls gives way to the next within seconds. A route that failed lately is tried last, even after a restart. While on a later route, the earlier ones are checked now and then, and the connection moves back once one answers and nothing is running (ADR 0056).
 _Avoid_: path, endpoint, address (one part of a route), connection (all of a server's routes together)
 
 **Sign-in method**:
@@ -244,15 +244,18 @@ An agent Hermes started from a chat's reply to do part of its work (Hermes's `de
 _Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in Settings → Model pick models, not running work
 
 **Office** / **Desk**:
-The agent office, opened from the rail: every agent at work on the connection as a **Desk**, in a room per chat. A chat's room has a desk for its reply, in the state the Rail inbox gives it, and one for each of its Subagents. A desk opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. **List** shows the same desks as rows, and **Scene** draws each desk's agent as a character in one shared room, posed for its state (ADR 0083). A desk that can't be checked shows "as last seen", and only Hermes's word that a subagent completed makes a desk Finished (ADR 0077).
-_Avoid_: dashboard, agents view, workers
+The agent office, opened from the rail in place of the chat panes: every agent at work on the connection, one for each chat's reply, in the state the Rail inbox gives it, and one for each of its Subagents. **Building** (the default) draws them as faceless low-poly people in a 3D building with four rooms by state: the **Workroom** (running, and queued at its door), the **Waiting room** (waiting for an Approval, or a message that may not have sent), the **Trouble room** (failed) and the **Lounge** (everything else). Each chat's agents are a **team**, in one team color, and a team keeps its group of Workroom desks while any of its agents works. Clicking an agent opens its **card**, whose only action is Open chat. **List** shows the same agents as rows, and is what a computer without WebGL gets (ADR 0089). An agent opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. One that can't be checked shows "as last seen", and only Hermes's word that a subagent completed makes it Finished (ADR 0077). A **Desk** is one agent's entry in `officeRooms`, the data both views draw.
 
 **Approval**:
 Hermes asking the owner before it runs a command it counts as dangerous. It shows as a card in the chat, and the reply waits until the owner approves or denies it, Hermes stops waiting, or the reply is stopped. The card offers only the answers Hermes offers: once, for the rest of the chat, always, or deny. The two broader grants ask the owner to confirm first.
 _Avoid_: permission, confirmation, prompt
 
+**Approval mode**:
+How Hermes decides, in a chat, whether to ask for an Approval before a command it counts as dangerous, as Hermes reports it for the chat. The pill in the composer shows it and changes it. **Smart**: Hermes's checker lets safe-looking commands run and asks about the rest. **Manual**: Hermes asks before every command it flags as dangerous. Smart and Manual are the profile's setting, so a change reaches every chat on the profile, CLI and messaging ones too, from Hermes's next command. **YOLO**, shown "YOLO · this chat": Hermes runs every command in the chat without asking. It is the chat's own, other chats still ask, and the app warns every time it is turned on. Writes to AGENTS.md, CLAUDE.md and SOUL.md still ask, and Hermes's blocklist still blocks. Picking Smart or Manual in a YOLO chat turns its YOLO off. **YOLO · all chats**: the profile's mode is off, set outside this app, so no chat on it asks; the app shows it but doesn't offer it. A Hermes launched with `--yolo` reads as YOLO in every chat (ADR 0091).
+_Avoid_: permission mode, auto-approve, safe mode
+
 **Toolset**:
-A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts, or opens again, afterwards. A chat Hermes already has open, and a reply running in it, keeps the tools it started with, on its next turns too. Settings → Toolsets says a change is saved only once Hermes reads it back that way. It also shows, apart from the profile's setting, what the open chat has, as Hermes reads it for that chat. The profile's list is **inherited** while the profile hasn't saved one of its own: it is Hermes's default. A toolset is **forced off** when `agent.disabled_toolsets` turns it off on every platform, whatever the list says. A toolset being on doesn't let Hermes run anything it would otherwise ask about: Approvals and YOLO decide that.
+A named group of tools Hermes can offer the model, such as Web Search or Terminal. Which toolsets are on is a setting of the profile, kept by Hermes on the server: the list new chats in the profile start with, in every Hermes client, unless the server pins its own or the profile's coding focus mode picks one in a code workspace. A change reaches chats Hermes starts, or opens again, afterwards. A chat Hermes already has open, and a reply running in it, keeps the tools it started with, on its next turns too. Settings → Toolsets says a change is saved only once Hermes reads it back that way. It also shows, apart from the profile's setting, what the open chat has, as Hermes reads it for that chat. The profile's list is **inherited** while the profile hasn't saved one of its own: it is Hermes's default. A toolset is **forced off** when `agent.disabled_toolsets` turns it off on every platform, whatever the list says. A toolset being on doesn't let Hermes run anything it would otherwise ask about: the Approval mode decides that.
 _Avoid_: tool permissions, capabilities, plugins (a plugin can bring a toolset, but isn't one)
 
 **MCP server**:
@@ -496,7 +499,7 @@ _Avoid_: signing key (ambiguous with Git commit signing)
 ## Relationships
 
 - Every **Chat** is either **Active** or **Settled**, never both. An **Archived** chat keeps that state for when it is restored.
-- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, **Unsettled** if the owner cleared it and nothing newer has happened in it, otherwise the **Inbox**.
+- An **Active** chat shows in one place in the list: **Snoozed** if it is snoozed, **Working** if Hermes is replying in it, otherwise the **Inbox**.
 - Every **Chat** has exactly one **Source**.
 - Every **Chat** belongs to exactly one **Profile**; Active and Settled are kept per profile.
 - An **Imported chat** becomes **Active** only when the owner sends a message in it from this app.
@@ -511,8 +514,7 @@ _Avoid_: signing key (ambiguous with Git commit signing)
 - **Screen** vs a web page in the **Preview**: both can show a site, but the Screen's browser runs on the server and is the agent's, with its sign-ins; the Preview loads the page on this computer, isolated from the app, and is the owner's alone.
 - **Artifact** vs **Edit** (of a Server file): both edit a text file's text with the same checked save, but an Artifact is an Output, edited beside the chat on the machine its tool wrote it on, with Hermes's proposed edits and kept versions. A Server file edit is made in the Files tab and only reaches the dashboard's machine.
 - **Output** vs a path in a reply: Outputs counts only what a tool's own result says it wrote. A reply that says "saved to /srv/x.pdf", or a `terminal` command that creates a file, makes no Output, though the owner can add that file by its path.
-- **Inbox** vs **Rail inbox**: the Inbox is the chat list's first section, one profile's Active chats; the Rail inbox, opened from the rail's Inbox button, lists what needs the owner across every profile on the server, chats in any state included. Clearing a chat from the Inbox doesn't dismiss its Rail inbox entry, and dismissing an entry doesn't clear the chat (ADR 0063).
-- **Unsettled** vs **Settled**: an Unsettled chat is Active, cleared from the Inbox until something newer happens in it, on this computer only. A Settled chat stays out of the way whatever happens in it, in every Hermes Chat on the server.
+- **Inbox** vs **Rail inbox**: the Inbox is the chat list's first section, one profile's Active chats; the Rail inbox, opened from the rail's Inbox button, lists what needs the owner across every profile on the server, chats in any state included. Settling a chat doesn't dismiss its Rail inbox entry, and dismissing an entry doesn't settle the chat (ADR 0063).
 - **Settled** vs **Archived**: they are different things. Archiving sets Hermes's own "archived" flag and hides a chat in every Hermes client; settling is this app's view of the owner's attention, stored as the "pinned" flag. Neither touches the other (ADR 0005).
 - **Queued message** vs **Draft** vs **Failed message**: a Draft hasn't been sent or queued; a Queued message waits in the chat's queue to be sent by this app; a Failed message was sent, and Hermes didn't take it or may not have. A queued message that goes leaves the queue, and becomes a Failed message only if Hermes doesn't take it.
 - **Imported chat** vs pulling older history: the list holds the past month's chats until the owner pulls older history in Settings, after which it holds all of the profile's chats. Pulled chats come in Settled unless pinned, but they are Imported chats only if their Source isn't this app.
@@ -520,7 +522,8 @@ _Avoid_: signing key (ambiguous with Git commit signing)
 - **Restore** (an Archived chat) vs **Restore a backup**: the first is Hermes's, for one chat; the second writes this computer's own data from a Backup file, and changes nothing on the server.
 - **Import** vs **Export** and **Upload**: Export saves one chat as a file on this computer; Import makes chats in Hermes from such a file; Upload puts a file on the server's disk, not in a chat.
 - **Draft** vs the New chat pane: the code also calls the pane for a chat not started yet "the draft". In this glossary a Draft is only the composer's unsent text.
-- **Toolset** vs **Approval** and YOLO: a toolset decides which tools the model is offered at all; an Approval, and YOLO, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
+- **Approval** vs **Approval mode**: an Approval is one question Hermes asks, as a card in the chat; the Approval mode decides which commands Hermes asks about at all.
+- **Toolset** vs **Approval** and the **Approval mode**: a toolset decides which tools the model is offered at all; the Approval mode, and the Approvals it leads to, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
 - **Dictation**, **Read aloud** and **Voice conversation** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation and a Voice conversation record on this computer, and all three use the server only to transcribe and to make the audio. A Voice conversation borrows only voice mode's turn settings (`voice.silence_*`, `voice.max_recording_seconds`).
 - **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
 - **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Hermes Chat shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.

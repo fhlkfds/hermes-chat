@@ -7,7 +7,7 @@ This folder is the maintained source for verifying what the owner sees and does 
 - Start from a fresh run: `hv up` (stand-in dashboard), then `wd.mjs open`. The app has empty `HOME` and `XDG_*` dirs, a private D-Bus with no keyring, and its own display.
 - `hv doctor` shows `ok` on every line, including `build … matches the source`.
 - Unless a recipe says otherwise, sign in first by following [sign-in.md](sign-in.md) to its signed-in end state.
-- The stand-in serves profile `default` with four seeded chats, all in the Settled section, a SOUL.md and six own skills such as `restic-unlock` (for Clone a profile), and an empty second profile `work` (both with synthetic MCP servers, see [mcp-servers.md](mcp-servers.md)):
+- The stand-in serves profile `default` with four seeded chats, all Settled (in the drawer at the list's foot), a SOUL.md and six own skills such as `restic-unlock` (for Clone a profile), and an empty second profile `work` (both with synthetic MCP servers, see [mcp-servers.md](mcp-servers.md)):
   - `backup`, "Nightly backup failing". The reply mentions `restic unlock`.
   - `nginx`, "Rotate nginx logs".
   - `vpn`, "Why is the VPN slow". The reply mentions `MTU = 1380`.
@@ -41,5 +41,9 @@ Each feature file starts with an H1 and one paragraph describing the behaviour t
 - [MCP servers](mcp-servers.md): Settings → MCP servers: list, test, add, edit with write-only secrets, remove, switch, OAuth sign-in, catalog, another profile.
 - [Gateways](gateways.md): Settings → Gateways: Telegram and Discord state, token replace and remove with read-back, the switch, a turned-down token, a missing library, a change on the server meanwhile, Check status.
 - [Search chats](search.md): Ctrl+K or the rail opens search, a body-text match opens its chat, and a miss shows No matches.
+- [Chat list](chat-list.md): the Settled drawer at the foot (open, close, its own scroll, kept across a relaunch), Settle and Unsettle from the menu, Up and Down into the drawer, and Archived in the scroll, with the `HV_LIST=24` seed.
 - [Rail inbox](rail-inbox.md): Check now, Clear done, and auto-dismissing old completed entries, with the `HV_INBOX=1` seed.
+- [Launch on the saved chats](launch.md): a relaunch over a slow stand-in shows the saved list at once, Connecting, and a wrong saved password goes back to Sign in. Needs a throwaway keyring.
 - [Connections](connections.md): Settings → General → Connection, Test a saved connection, and Sign out.
+- [Approval mode](approval-mode.md): the composer's pill: Smart, Manual, YOLO with its warning, "YOLO · all chats", and the narrow face, against the real Hermes in `~/.cache/hermes-live-277`.
+- [Office](office.md): the building and List, three agents typing, the card, the frame counter, unfocused and at-rest frames, CPU, and the List a computer without WebGL gets.

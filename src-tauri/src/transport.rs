@@ -17,6 +17,7 @@
 //! a Hermes dashboard, and the same one the connection signed in to before (ADR 0056).
 
 use base64::Engine;
+use crate::connect_steps::{Step, Steps};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
@@ -385,6 +386,20 @@ pub struct DirectUrl {
 /// prefix, then resolves its host name. A URL with a username or password in it is refused, since the app saves
 /// and shows the URL.
 pub async fn resolve_direct(raw: &str) -> Result<DirectUrl, TransportError> {
+    resolve_direct_within(raw, None).await
+}
+
+/// `resolve_direct`, whose name lookup gives up after `limit`, for one of several routes (`StepLimits::lookup`).
+pub async fn resolve_direct_within(raw: &str, limit: Option<Duration>) -> Result<DirectUrl, TransportError> {
+    resolve_direct_using(raw, limit, |name, port| async move { tokio::net::lookup_host((name.as_str(), port)).await.map(Iterator::collect) }).await
+}
+
+/// `resolve_direct_within` with `lookup` resolving a host name and port, so a lookup that never answers can be tested.
+pub async fn resolve_direct_using<F, Fut>(raw: &str, limit: Option<Duration>, lookup: F) -> Result<DirectUrl, TransportError>
+where
+    F: FnOnce(String, u16) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<Vec<std::net::SocketAddr>>>,
+{
     let mut base = Url::parse(raw.trim()).map_err(|_| TransportError::BadUrl)?;
     if !base.username().is_empty() || base.password().is_some() {
         return Err(TransportError::BadUrl);
@@ -400,9 +415,12 @@ pub async fn resolve_direct(raw: &str) -> Result<DirectUrl, TransportError> {
     let addresses = match base.host() {
         Some(url::Host::Domain(name)) => {
             let port = base.port_or_known_default().expect("http(s) has a default port");
-            let mut found: Vec<IpAddr> = tokio::net::lookup_host((name, port))
-                .await
-                .map_err(|e| TransportError::Unreachable(format!("couldn't look up {name}: {e}")))?
+            let looked_up = within(limit, async { lookup(name.to_owned(), port).await.map_err(|e| TransportError::Unreachable(format!("couldn't look up {name}: {e}"))) }, |s| {
+                TransportError::Unreachable(format!("looking up {name} didn't finish within {s}s."))
+            });
+            let mut found: Vec<IpAddr> = looked_up
+                .await?
+                .into_iter()
                 .map(|a| a.ip())
                 .collect();
             found.sort();
@@ -515,6 +533,68 @@ pub async fn read_server(http: &reqwest::Client, base: &Url, headers: &HeaderMap
         .map_err(|_| TransportError::Unreachable(format!("the dashboard didn't answer within {}s.", wait.as_secs())))??;
     let server = identify(status.as_deref(), expect)?;
     Ok(ServerSeen { status, server })
+}
+
+/// How long each step of opening one of several routes may take before the next route is tried (ADR 0056). A
+/// connection with one route has none: only the whole attempt's limit, as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepLimits {
+    /// Looking up a web address's host name.
+    pub lookup: Duration,
+    /// The password sign-in, or the token's `GET /api/auth/me`.
+    pub sign_in: Duration,
+    /// `POST /api/auth/ws-ticket`.
+    pub ticket: Duration,
+    /// The `/api/ws` connect.
+    pub socket: Duration,
+}
+
+impl StepLimits {
+    pub const ROUTES: StepLimits = StepLimits { lookup: Duration::from_secs(5), sign_in: Duration::from_secs(10), ticket: Duration::from_secs(10), socket: Duration::from_secs(10) };
+
+    /// The limits for a connection with several routes on (`quick`), none for one.
+    pub fn of(quick: bool) -> Option<StepLimits> {
+        quick.then_some(StepLimits::ROUTES)
+    }
+}
+
+/// Runs `step`, giving up after `limit` if there is one with the error `timed_out` makes of its seconds.
+async fn within<T>(
+    limit: Option<Duration>,
+    step: impl std::future::Future<Output = Result<T, TransportError>>,
+    timed_out: impl FnOnce(u64) -> TransportError,
+) -> Result<T, TransportError> {
+    match limit {
+        None => step.await,
+        Some(limit) => tokio::time::timeout(limit, step).await.unwrap_or_else(|_| Err(timed_out(limit.as_secs()))),
+    }
+}
+
+/// Opens one route at `base`: reads `/api/status` within `reach` and checks it is the Hermes `expect` names (before
+/// the password or token goes anywhere), signs in, and opens `/api/ws` for `profile`, each step within `limits` when
+/// given and reported to `steps`. Every frame goes to `on_event`.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_route(
+    base: &Url,
+    sign_in: &SignIn,
+    profile: &str,
+    expect: Option<&str>,
+    reach: Duration,
+    limits: Option<StepLimits>,
+    steps: &Steps,
+    on_event: impl Fn(PipeEvent) + Send + 'static,
+) -> Result<(Dashboard, Pipe, ServerSeen), TransportError> {
+    // One client for this route attempt: the sign-in and its ticket reuse the connection the status read opened
+    // (#271). It carries no credential, and the status check still passes before one is sent.
+    let http = client(&sign_in.headers)?;
+    let seen = steps.run(Step::Status, read_server(&http, base, &sign_in.headers, expect, reach)).await?;
+    offered(sign_in, seen.status.as_deref())?;
+    let signing_in = within(limits.map(|l| l.sign_in), Dashboard::sign_in(http, base, sign_in), |s| {
+        TransportError::Unreachable(format!("the sign-in didn't answer within {s}s."))
+    });
+    let dashboard = steps.run(Step::SignIn, signing_in).await?;
+    let pipe = dashboard.open_pipe_within(profile, on_event, limits, steps).await?;
+    Ok((dashboard, pipe, seen))
 }
 
 /// A way to sign in that a dashboard offers and Hermes Chat supports (ADR 0058). `Password`: a provider's username
@@ -1054,28 +1134,31 @@ impl Dashboard {
     /// Mint a WS ticket and open `/api/ws` for `profile`. Every frame the server sends, starting with
     /// `gateway.ready`, goes to `on_event`.
     pub async fn open_pipe(&self, profile: &str, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Pipe, TransportError> {
-        let ticket = self
-            .signed(Method::POST, endpoint(&self.base, "api/auth/ws-ticket"))
-            .send()
-            .await
-            .map_err(unreachable)?;
-        self.keep_cookies(&ticket);
-        if !ticket.status().is_success() {
-            return Err(unexpected(ticket, &self.hide).await);
-        }
-        let ticket: serde_json::Value = ticket
-            .json()
-            .await
-            .map_err(unreachable)?;
-        let ticket = ticket["ticket"].as_str().ok_or_else(|| TransportError::Unexpected {
-            status: 200,
-            body: "ws-ticket response has no ticket".into(),
-        })?;
+        self.open_pipe_within(profile, on_event, None, &Steps::default()).await
+    }
 
-        let handshake = self.ws_handshake("api/ws", &[("ticket", ticket), ("profile", profile)])?;
-        let (ws, _) = tokio_tungstenite::connect_async(handshake)
-            .await
-            .map_err(|e| TransportError::WebSocket(e.to_string()))?;
+    /// `open_pipe`, the ticket and the socket's connect each within `limits` when given (one of several routes), and
+    /// each a step of `steps`.
+    pub async fn open_pipe_within(
+        &self,
+        profile: &str,
+        on_event: impl Fn(PipeEvent) + Send + 'static,
+        limits: Option<StepLimits>,
+        steps: &Steps,
+    ) -> Result<Pipe, TransportError> {
+        let ticket = steps
+            .run(
+                Step::Ticket,
+                within(limits.map(|l| l.ticket), self.ws_ticket(), |s| {
+                    TransportError::Unreachable(format!("the chat connection's ticket didn't answer within {s}s."))
+                }),
+            )
+            .await?;
+        let handshake = self.ws_handshake("api/ws", &[("ticket", &ticket), ("profile", profile)])?;
+        let connecting = async { tokio_tungstenite::connect_async(handshake).await.map_err(|e| TransportError::WebSocket(e.to_string())) };
+        let (ws, _) = steps
+            .run(Step::WebSocket, within(limits.map(|l| l.socket), connecting, |s| TransportError::WebSocket(format!("it didn't open within {s}s."))))
+            .await?;
 
         let (outgoing, mut to_server) = mpsc::unbounded_channel::<String>();
         let headers = self.hide.clone();
@@ -1118,6 +1201,21 @@ impl Dashboard {
         });
 
         Ok(Pipe { outgoing, task })
+    }
+
+    /// A single-use ticket for `/api/ws`.
+    async fn ws_ticket(&self) -> Result<String, TransportError> {
+        let ticket = self
+            .signed(Method::POST, endpoint(&self.base, "api/auth/ws-ticket"))
+            .send()
+            .await
+            .map_err(unreachable)?;
+        self.keep_cookies(&ticket);
+        if !ticket.status().is_success() {
+            return Err(unexpected(ticket, &self.hide).await);
+        }
+        let ticket: serde_json::Value = ticket.json().await.map_err(unreachable)?;
+        ticket["ticket"].as_str().map(str::to_owned).ok_or_else(|| TransportError::Unexpected { status: 200, body: "ws-ticket response has no ticket".into() })
     }
 
     /// The WebSocket handshake for `path` under the dashboard, with `query` and the owner's extra request headers. No
@@ -2255,8 +2353,8 @@ pub struct Probed {
     pub server: Option<String>,
 }
 
-/// How long each step of a connection test may take. The app's own sign-in has no limit, but a test the owner is
-/// watching should say where it stuck.
+/// How long each step of a connection test may take. The app's own sign-in over a single route has no limit but the
+/// whole attempt's (one of several has `StepLimits`), but a test the owner is watching should say where it stuck.
 pub const PROBE_STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Tests a sign-in at `base` the way `Dashboard::sign_in` and `open_pipe` do it, without keeping anything: reads

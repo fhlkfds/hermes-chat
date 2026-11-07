@@ -7,6 +7,7 @@ import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { Probe, Probed, ProbeFailure, SavedKey } from "./setup";
 import { routedPipe, type ReachRoute, type RouteDetails, type RoutedHooks } from "./routes";
 import type { SignInWay } from "./connections";
+import type { Step } from "./attempts";
 
 // A failed command rejects with the Rust error's text, not an Error.
 export const asError = (e: unknown) => Promise.reject(new Error(String(e)));
@@ -102,12 +103,15 @@ export function tauriPipe(d: SignInDetails, hooks?: RoutedHooks): OpenPipe {
   return routedPipe(d, (one, opts) => routePipe(one, opts), hooks);
 }
 
-/** One route's pipe. `expectServer`, `quick` and `sshRoute`: see routes.ts `OpenRoute`. */
-function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string }): OpenPipe {
+/** One route's pipe. `expectServer`, `quick`, `sshRoute` and `onStep`: see routes.ts `OpenRoute`. */
+function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boolean; sshRoute?: string; onStep?: (s: Step, at?: number) => void }): OpenPipe {
   const target = targetOf(d);
   return async (onEvent, profile, signal) => {
     const channel = new Channel<PipeEvent>();
     channel.onmessage = onEvent;
+    // src-tauri connect_steps.rs `Started`.
+    const steps = new Channel<{ step: Step; at: number }>();
+    steps.onmessage = (s) => opts.onStep?.(s.step, s.at);
     // Names this opening, so stopping it can't stop a later one (src-tauri `hermes_connect_cancel`).
     const attempt = crypto.randomUUID();
     const stop = () => void invoke("hermes_connect_cancel", { attempt }).catch(() => {});
@@ -122,6 +126,7 @@ function routePipe(d: SignInDetails, opts: { expectServer?: string; quick: boole
       expectServer: opts.expectServer ?? null,
       quick: opts.quick,
       sshRoute: opts.sshRoute ?? null,
+      onStep: steps,
     })
       .catch(asError)
       .finally(() => signal?.removeEventListener("abort", stop));

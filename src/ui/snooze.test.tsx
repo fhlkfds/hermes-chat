@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The chat list's sections (the Inbox, Working, Snoozed, Unsettled, Settled) and snoozing from a chat's menu: the list
+// The chat list's sections (the Inbox, Working, Snoozed, Settled) and snoozing from a chat's menu: the list
 // on its own with chats in each state, then the whole app against a fake Hermes.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -107,7 +107,7 @@ function ListSince({ chats, since }: { chats: Chat[]; since: Record<string, numb
 
 /** The button that opens chat `id` in the list. */
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`.row-open[data-chat="${id}"]`)!;
-/** The titles of the chats the list shows in `section` ("inbox", "working", "snoozed", "unsettled" or "settled"), in order. */
+/** The titles of the chats the list shows in `section` ("inbox", "working", "snoozed" or "settled"), in order. */
 const titles = (section: string) =>
   [...document.querySelectorAll(`.row[data-section="${section}"]:not([hidden]) .row-open .row-title`)].map((t) => t.textContent);
 

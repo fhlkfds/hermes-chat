@@ -11,7 +11,7 @@
 // keeps the storage scope and keyring entries it already had (`legacy`), so its drafts, queues and saved password
 // stay where they are and nothing has to move.
 import type { ExtraHeader, SignInDetails } from "./tauriPipe";
-import { ROUTES_MAX, ROUTE_KINDS, isRouteId, routeAddress, routesOf, type RouteKind, type SavedRoute } from "./routes";
+import { ROUTES_MAX, ROUTE_KINDS, RouteHealth, isRouteId, routeAddress, routesOf, type RouteKind, type SavedRoute } from "./routes";
 
 export const CONNECTIONS_KEY = "hermes-chat.connections";
 /** Where the one sign-in was kept before there were saved connections. Read once, for the migration. */
@@ -59,6 +59,8 @@ export type SavedConnection = Address & SignInWay & {
    * only on a connection with several routes; one with a single route connects as it always did.
    */
   server?: string;
+  /** When each route last failed, by route id: nothing secret. Only on a connection with routes (`RouteHealth`). */
+  routeFailedAt?: Record<string, number>;
 };
 
 type Doc = { connections: SavedConnection[]; current?: string };
@@ -102,6 +104,13 @@ function toRoutes(v: unknown): SavedRoute[] | undefined {
     .filter((r): r is SavedRoute => !!r)
     .slice(0, ROUTES_MAX);
   return routes.length ? routes : undefined;
+}
+
+/** The failure times kept for `routes`: one per route it still has, a time and nothing else. */
+function toFailedAt(v: unknown, routes: SavedRoute[] | undefined): Record<string, number> | undefined {
+  if (!isObj(v) || !routes) return undefined;
+  const kept = Object.entries(v).filter((e): e is [string, number] => routes.some((r) => r.id === e[0]) && typeof e[1] === "number" && Number.isFinite(e[1]) && e[1] >= 0);
+  return kept.length ? Object.fromEntries(kept) : undefined;
 }
 
 /** `c` with its address made its first route's, when it has a list of routes. */
@@ -169,6 +178,7 @@ function toConnection(v: unknown): SavedConnection | undefined {
     : undefined;
   const routes = toRoutes(v.routes);
   const server = typeof v.server === "string" && SERVER_ID.test(v.server) ? v.server : undefined;
+  const routeFailedAt = toFailedAt(v.routeFailedAt, routes);
   return withFirstRoute({
     id: v.id,
     name: name.trim() || defaultName(a),
@@ -178,6 +188,7 @@ function toConnection(v: unknown): SavedConnection | undefined {
     ...(legacy && { legacy }),
     ...(routes && { routes }),
     ...(server && { server }),
+    ...(routeFailedAt && { routeFailedAt }),
     ...wayOf({ method: v.method === "token" ? "token" : undefined, provider: str(v.provider, 64) }),
   });
 }
@@ -328,6 +339,15 @@ export class Connections {
     if (c && !c.server && SERVER_ID.test(server)) this.save({ ...c, server });
   }
 
+  /** Keeps when each of `id`'s routes last failed (`RouteHealth`, #269). Only a connection with routes keeps any. */
+  setRouteFailedAt(id: string, failedAt: Record<string, number>) {
+    const c = this.get(id);
+    if (!c?.routes) return;
+    const { routeFailedAt: before, ...rest } = c;
+    const kept = toFailedAt(failedAt, c.routes);
+    if (JSON.stringify(kept) !== JSON.stringify(before)) this.save({ ...rest, ...(kept && { routeFailedAt: kept }) });
+  }
+
   rename(id: string, name: string) {
     const c = this.get(id);
     if (c) this.save({ ...c, name: cleanName(name, c) });
@@ -355,4 +375,9 @@ export class Connections {
       }
     }
   }
+}
+
+/** How `id`'s routes did lately, kept with the connection, so a route that failed is tried last after a restart too. */
+export function keptRouteHealth(connections: Connections, id: string, now: () => number = Date.now): RouteHealth {
+  return new RouteHealth(now, undefined, { failedAt: connections.get(id)?.routeFailedAt, save: (failedAt) => connections.setRouteFailedAt(id, failedAt) });
 }

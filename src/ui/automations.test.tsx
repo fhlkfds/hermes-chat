@@ -59,27 +59,32 @@ describe("the Automations screen", () => {
   it("previews an example event and the rendered task, escaping its text, before creating the automation paused", async () => {
     const { user, s } = await launch();
     await user.click(screen.getByRole("button", { name: /New automation/ }));
-    await user.type(screen.getByRole("textbox", { name: /Name/ }), "triage-bugs");
-    const prompt = screen.getByRole("textbox", { name: /Prompt template/ });
-    await user.clear(prompt);
-    await user.type(prompt, "Look at {{issue.title} by {{issue.user.login}");
+    // Whole strings go in as one paste: this test checks the preview of what was entered, not each keystroke, and a full suite
+    // starves it of CPU, so per-key renders took it past the timeout (#252). Fields are looked up in the form, not the whole app.
+    const form = within(document.querySelector<HTMLElement>(".automation-form")!);
+    const enter = async (field: HTMLElement, text: string) => {
+      await user.clear(field);
+      await user.paste(text);
+    };
+    await enter(form.getByRole("textbox", { name: /Name/ }), "triage-bugs");
+    const prompt = form.getByRole("textbox", { name: /Prompt template/ });
+    await enter(prompt, "Look at {issue.title} by {issue.user.login}");
     // The example issue's title is shown as text, never as markup.
     const rendered = document.querySelector(".automation-rendered")!;
     expect(rendered.textContent).toBe("Look at [fixture] Crash when the list is empty by octo-fixture");
-    expect(screen.getByText(/Hermes would start a task with this prompt/)).toBeTruthy();
+    expect(form.getByText(/Hermes would start a task with this prompt/)).toBeTruthy();
     // A filter that this event fails: the preview says so.
-    await user.click(screen.getByRole("button", { name: /Add a filter/ }));
-    await user.type(screen.getByRole("combobox", { name: "Filter 1 field" }), "action");
-    await user.type(screen.getByRole("textbox", { name: "Filter 1 value" }), "closed");
-    expect(screen.getByText(/would record it as filtered out/)).toBeTruthy();
+    await user.click(form.getByRole("button", { name: /Add a filter/ }));
+    await enter(form.getByRole("combobox", { name: "Filter 1 field" }), "action");
+    const value = form.getByRole("textbox", { name: "Filter 1 value" });
+    await enter(value, "closed");
+    expect(form.getByText(/would record it as filtered out/)).toBeTruthy();
     expect(document.querySelector(".automation-rendered")).toBeNull();
     // The comment example carries markup: it stays text.
-    await user.clear(screen.getByRole("textbox", { name: "Filter 1 value" }));
-    await user.type(screen.getByRole("textbox", { name: "Filter 1 value" }), "created");
-    await user.click(screen.getByRole("checkbox", { name: /issue_comment/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Example event" }), "issue_comment");
-    await user.clear(prompt);
-    await user.type(prompt, "{{comment.body}");
+    await enter(value, "created");
+    await user.click(form.getByRole("checkbox", { name: /issue_comment/ }));
+    await user.selectOptions(form.getByRole("combobox", { name: "Example event" }), "issue_comment");
+    await enter(prompt, "{comment.body}");
     expect(document.querySelector(".automation-rendered")!.innerHTML).toContain("&lt;script&gt;");
     await user.click(screen.getByRole("button", { name: "Create paused" }));
     await waitFor(() => expect(screen.getByRole("alert", { name: /new secret/ })).toBeTruthy());
