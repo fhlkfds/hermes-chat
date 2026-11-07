@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Redirect;
+use hermes_chat::connect_steps::{Step, Steps};
 use hermes_chat::display;
 use hermes_chat::transport::{self, Credential, Dashboard, ExtraHeader, LocalFile, PipeEvent, SignIn, StepLimits, TransportError};
 use std::sync::{Arc, Mutex};
@@ -2701,7 +2702,28 @@ async fn stalling_at(path: &'static str) -> Url {
 type Opened = (Dashboard, transport::Pipe, transport::ServerSeen);
 
 async fn open_route(base: &Url, limits: Option<StepLimits>, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Opened, TransportError> {
-    transport::open_route(base, &sign_in("hunter2"), "default", None, Duration::from_secs(5), limits, on_event).await
+    open_route_reporting(base, limits, &Steps::default(), on_event).await
+}
+
+async fn open_route_reporting(base: &Url, limits: Option<StepLimits>, steps: &Steps, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Opened, TransportError> {
+    transport::open_route(base, &sign_in("hunter2"), "default", None, Duration::from_secs(5), limits, steps, on_event).await
+}
+
+/// The steps `open_route` said it started at `base`, in order, and whether it opened.
+async fn steps_said(base: &Url) -> (Vec<Step>, bool) {
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let to = said.clone();
+    let steps = Steps::reporting(move |s| to.lock().unwrap().push(s.step));
+    let opened = tokio::time::timeout(GIVE_UP, open_route_reporting(base, Some(SHORT), &steps, |_| {})).await.expect("gave up in time").is_ok();
+    let said = said.lock().unwrap().clone();
+    (said, opened)
+}
+
+#[tokio::test]
+async fn opening_a_route_says_each_step_as_it_starts() {
+    // The record of connection attempts (#270) shows how far a route got and how long each step took.
+    assert_eq!(steps_said(&stub().await).await, (vec![Step::Status, Step::SignIn, Step::Ticket, Step::WebSocket], true));
+    assert_eq!(steps_said(&stalling_at("/api/auth/ws-ticket").await).await, (vec![Step::Status, Step::SignIn, Step::Ticket], false));
 }
 
 /// Opens the route at `base` with the `SHORT` limits: its failure, which must come within `GIVE_UP`.

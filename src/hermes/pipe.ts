@@ -1,6 +1,7 @@
 // The pipe under the frontend Hermes transport: JSON-RPC text frames in and out of `/api/ws`, plus
 // signed-in dashboard REST calls, the local files the owner attaches, and the dashboard's audio routes for Dictation
 // and Read aloud. In the app it is the Rust side (tauriPipe.ts); in tests it is FakeHermes.
+import type { AttemptTrace } from "./attempts";
 import type { McpEdit } from "./mcp";
 import type { Downloaded, PickedUpload, TransferProgress } from "./remoteFiles";
 import type { SavedKey } from "./setup";
@@ -76,6 +77,8 @@ export type RestMethod = "GET" | "PATCH" | "DELETE" | "POST" | "PUT";
 
 export interface Pipe {
   readonly route: Route;
+  /** The record of this connection attempt (attempts.ts, #270), when one is kept: `dial()` adds the wait for `gateway.ready` and how it ended. */
+  readonly attempt?: AttemptTrace;
   send(frame: string): Promise<void>;
   /**
    * One dashboard REST call with the sign-in cookies, e.g. `request("GET", "api/sessions?order=recent")`.

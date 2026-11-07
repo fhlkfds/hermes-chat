@@ -1053,6 +1053,7 @@ export class Hermes {
         if (e.kind === "closed" && !up) this.abortDial?.(new Error(`The connection closed before Hermes was ready: ${e.reason}`));
         else this.handle(e);
       }, profile, stop.signal);
+      pipe.attempt?.ready();
       const payload = await Promise.race([
         ready,
         failed,
@@ -1063,7 +1064,11 @@ export class Hermes {
       if (failure) throw failure;
       if (payload.session_authority) throw new ProtocolMismatchError();
       readyPayload = payload;
+      pipe.attempt?.connected();
     } catch (e) {
+      // `close()` gives up a dial on purpose: a stop, not a failure.
+      if (this.closing) pipe?.attempt?.stopped();
+      else pipe?.attempt?.failed(e);
       this.generation++;
       await pipe?.close().catch(() => {});
       throw e;

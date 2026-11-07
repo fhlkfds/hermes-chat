@@ -17,6 +17,7 @@
 //! a Hermes dashboard, and the same one the connection signed in to before (ADR 0056).
 
 use base64::Engine;
+use crate::connect_steps::{Step, Steps};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{header, redirect, Method, StatusCode};
@@ -569,7 +570,7 @@ async fn within<T>(
 
 /// Opens one route at `base`: reads `/api/status` within `reach` and checks it is the Hermes `expect` names (before
 /// the password or token goes anywhere), signs in, and opens `/api/ws` for `profile`, each step within `limits` when
-/// given. Every frame goes to `on_event`.
+/// given and reported to `steps`. Every frame goes to `on_event`.
 #[allow(clippy::too_many_arguments)]
 pub async fn open_route(
     base: &Url,
@@ -578,15 +579,16 @@ pub async fn open_route(
     expect: Option<&str>,
     reach: Duration,
     limits: Option<StepLimits>,
+    steps: &Steps,
     on_event: impl Fn(PipeEvent) + Send + 'static,
 ) -> Result<(Dashboard, Pipe, ServerSeen), TransportError> {
-    let seen = read_server(base, &sign_in.headers, expect, reach).await?;
+    let seen = steps.run(Step::Status, read_server(base, &sign_in.headers, expect, reach)).await?;
     offered(sign_in, seen.status.as_deref())?;
-    let dashboard = within(limits.map(|l| l.sign_in), Dashboard::sign_in(base, sign_in), |s| {
+    let signing_in = within(limits.map(|l| l.sign_in), Dashboard::sign_in(base, sign_in), |s| {
         TransportError::Unreachable(format!("the sign-in didn't answer within {s}s."))
-    })
-    .await?;
-    let pipe = dashboard.open_pipe_within(profile, on_event, limits).await?;
+    });
+    let dashboard = steps.run(Step::SignIn, signing_in).await?;
+    let pipe = dashboard.open_pipe_within(profile, on_event, limits, steps).await?;
     Ok((dashboard, pipe, seen))
 }
 
@@ -1126,18 +1128,31 @@ impl Dashboard {
     /// Mint a WS ticket and open `/api/ws` for `profile`. Every frame the server sends, starting with
     /// `gateway.ready`, goes to `on_event`.
     pub async fn open_pipe(&self, profile: &str, on_event: impl Fn(PipeEvent) + Send + 'static) -> Result<Pipe, TransportError> {
-        self.open_pipe_within(profile, on_event, None).await
+        self.open_pipe_within(profile, on_event, None, &Steps::default()).await
     }
 
-    /// `open_pipe`, the ticket and the socket's connect each within `limits` when given (one of several routes).
-    pub async fn open_pipe_within(&self, profile: &str, on_event: impl Fn(PipeEvent) + Send + 'static, limits: Option<StepLimits>) -> Result<Pipe, TransportError> {
-        let ticket = within(limits.map(|l| l.ticket), self.ws_ticket(), |s| {
-            TransportError::Unreachable(format!("the chat connection's ticket didn't answer within {s}s."))
-        })
-        .await?;
+    /// `open_pipe`, the ticket and the socket's connect each within `limits` when given (one of several routes), and
+    /// each a step of `steps`.
+    pub async fn open_pipe_within(
+        &self,
+        profile: &str,
+        on_event: impl Fn(PipeEvent) + Send + 'static,
+        limits: Option<StepLimits>,
+        steps: &Steps,
+    ) -> Result<Pipe, TransportError> {
+        let ticket = steps
+            .run(
+                Step::Ticket,
+                within(limits.map(|l| l.ticket), self.ws_ticket(), |s| {
+                    TransportError::Unreachable(format!("the chat connection's ticket didn't answer within {s}s."))
+                }),
+            )
+            .await?;
         let handshake = self.ws_handshake("api/ws", &[("ticket", &ticket), ("profile", profile)])?;
         let connecting = async { tokio_tungstenite::connect_async(handshake).await.map_err(|e| TransportError::WebSocket(e.to_string())) };
-        let (ws, _) = within(limits.map(|l| l.socket), connecting, |s| TransportError::WebSocket(format!("it didn't open within {s}s."))).await?;
+        let (ws, _) = steps
+            .run(Step::WebSocket, within(limits.map(|l| l.socket), connecting, |s| TransportError::WebSocket(format!("it didn't open within {s}s."))))
+            .await?;
 
         let (outgoing, mut to_server) = mpsc::unbounded_channel::<String>();
         let headers = self.hide.clone();
