@@ -98,10 +98,10 @@ export function addressFree(text: string): boolean {
 }
 
 /**
- * How error texts are cleaned for the file, for one sign-in: terminal codes out, `redact()`'s secret shapes, line breaks
- * to spaces, then this
- * URLs, then this connection's own addresses, username, password, token and header values, then any other address's shape, then
- * control characters written out, then cut to `TEXT_MAX`. A text that still looks like it holds an address is withheld.
+ * How error texts are cleaned for the file, for one sign-in: terminal codes out, `redact()`'s secret shapes, control
+ * characters written out and line breaks made spaces; then whole URLs, then this connection's own addresses, username,
+ * password, token and header values, then any other address's shape; then cut to `TEXT_MAX`. A text that still looks
+ * like it holds an address is withheld.
  */
 export function scrubberFor(d: SignInDetails): (text: string) => string {
   const addresses = new Set<string>();
