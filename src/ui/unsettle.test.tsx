@@ -45,7 +45,7 @@ async function signedIn() {
 describe("Unsettle", () => {
   it("is the same icon-only button as Settle on a Settled chat in its section, named on hover, and unsettles with Undo", async () => {
     const { server, hermes, user } = await signedIn();
-    const drawer = document.querySelector<HTMLElement>(".sb-scroll")!;
+    const drawer = document.querySelector<HTMLElement>(".settled-drawer")!;
     const unsettle = within(drawer).getByRole("button", { name: "Unsettle" });
     // No words in the button: just the icon, with its name in the tooltip, like Settle.
     expect(unsettle.textContent).toBe("");
