@@ -71,6 +71,21 @@ for (const d of [
   { delivery_id: "4f1c2a90-0000-4000-8000-000000000006", received_at: ago(2), state: "running", session_id: "hook-41", action: "edited", excerpt: issue(43, "[fixture] Dark mode contrast") },
 ])
   server.webhooks.addDelivery("default", "triage-issues", { updated_at: d.received_at, ...d });
+// The Work page (ADR 0171): a board of bot work in every column the dispatcher and the owner use (synthetic).
+for (const t of [
+  { title: "Sort the issue backlog", status: "triage", body: "Label every open issue on example/fixture and close the duplicates." },
+  { title: "Draft the release notes", status: "todo", assignee: "writer", priority: 1, body: "From the merged pull requests since v0.9." },
+  { title: "Compare three NAS backup tools", status: "ready", assignee: "researcher", priority: 2, body: "restic, borg and kopia: speed, dedup and restore on tank." },
+  { title: "Rotate the Caddy certificates", status: "running", assignee: "ops", tenant: "homelab", body: "Renew and reload; check every vhost answers over TLS." },
+  { title: "Upgrade Postgres to 17", status: "blocked", assignee: "ops", latest_summary: "Needs a maintenance window: the photo library is mid-import." },
+  { title: "Summarize the SMART report", status: "review", assignee: "researcher", body: "Every disk in tank, with what changed since last month." },
+  { title: "Clean up old snapshots", status: "done", assignee: "ops", latest_summary: "Freed 412 GB on tank/media." },
+])
+  server.kanban.add("default", t);
+server.kanban.boards.default.tasks[2].comments = [
+  { id: 1, author: "researcher", body: "Started with restic: first backup of tank/media took 3 h 10 min.", created_at: ago(90) },
+  { id: 2, author: "dashboard", body: "Include restore times for a single file too.", created_at: ago(30) },
+];
 // Settings → Persona (ADR 0014, 0117): `?profiles=1` adds two more profiles, each with its own SOUL.md (synthetic).
 server.souls = {
   default: "# Persona\n\nYou are Hermes, a terse home-lab assistant. Answer in plain words, and say what you changed.\n",
@@ -111,7 +126,14 @@ if (relay) {
 }
 
 const hermes = await connect(server.openPipe);
-(window as unknown as { shots: unknown }).shots = { server, hermes };
+// `openInbox()` is the tray's Open Inbox; `summon(s)` is `hermes-chat --show`, with `selection` as what Rust reads from
+// the selection and the clipboard (ADR 0172).
+const shots: { server: FakeHermes; hermes: typeof hermes; openInbox?: () => void; summon?: (s: { fromElsewhere: boolean }) => void; selection: object } = {
+  server,
+  hermes,
+  selection: {},
+};
+(window as unknown as { shots: unknown }).shots = shots;
 // Settings → General's desktop parts, as the desktop app wires them: two saved connections, the tray and screenshots. The
 // tray and screenshot answers are made up, as Rust would give them on a desktop that shows tray icons.
 const current = { id: "conn-home-0001", name: "Home server", mode: "ssh" as const, sshTarget: "liam@hermes", url: "", username: "liam", addedAt: 0, lastUsedAt: Date.now() - 60e3 };
@@ -122,7 +144,7 @@ const trayWiring = {
   setCloseToTray: async (on: boolean) => (tray = { ...tray, closeToTray: on }),
   onStatus: () => () => {},
   onNewChat: () => () => {},
-  onOpenInbox: () => () => {},
+  onOpenInbox: (fn: () => void) => ((shots.openInbox = fn), () => {}),
   reportInbox: () => {},
 };
 const screenshots = {
@@ -139,6 +161,7 @@ createRoot(document.getElementById("root")!).render(
     onSwitchConnection={() => {}}
     onTestConnection={async () => ({ ok: true, route: { kind: "ssh", target: "liam@hermes", local: "127.0.0.1:9119" }, version: "0.22.6", unsecure: false }) as never}
     tray={trayWiring as never}
+    summon={{ onSummoned: (fn: (s: { fromElsewhere: boolean }) => void) => ((shots.summon = fn), () => {}), readSelection: async () => shots.selection } as never}
     screenshots={screenshots}
     onSignOut={async () => {}}
   />,

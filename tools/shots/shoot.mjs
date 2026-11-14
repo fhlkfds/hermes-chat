@@ -140,6 +140,8 @@ const scenes = {
   },
   "new-chat": { query: "", steps: [] },
   chat: { query: "", steps: [click("button", "Nightly backup")] },
+  // A code block and inline code in the default code font, at 1280 × 800.
+  "code-font": { query: "", width: 1280, height: 800, steps: [click("button", "Nightly backup")] },
   "chat-light": { query: "?mode=light", steps: [click("button", "Nightly backup")] },
   "new-chat-light": { query: "?mode=light", steps: [] },
   search: { query: "", steps: [click("button", "Nightly backup"), key("k", { ctrlKey: true })] },
@@ -172,6 +174,9 @@ const scenes = {
   },
   // Automations (ADR 0108). Tall pages: the screenshot covers the whole screen, scrolled to the part named.
   automations: { query: "", steps: [click("button[aria-label='Automations']")] },
+  work: { query: "", ...hd, steps: [click("button[aria-label='Work']")] },
+  "work-task": { query: "", steps: [click("button[aria-label='Work']"), click(".work-card", "Compare three NAS backup tools")] },
+  "work-new": { query: "", steps: [click("button[aria-label='Work']"), click(".btn", "New task")] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
   "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
@@ -313,6 +318,32 @@ Object.assign(scenes, {
     query: "",
     ...wsb,
     steps: [openSettings, sub("Chats"), unfocus, `[...document.querySelectorAll("section")].find((s) => s.textContent.startsWith("Sending while Hermes replies")).scrollIntoView({ block: "start" })`],
+  },
+});
+
+// The improvement report's Workstream C at 1280 × 800 (ADR 0173, 0172): a waiting Approval's inbox entry, the Launch
+// settings, and the composer after `hermes-chat --show` from an app with a line of a log selected.
+const report = { width: 1280, height: 800 };
+const approvalWaiting = `(async () => {
+  const { hermes: h, server: s } = window.shots;
+  await h.send("backup", "Prune the snapshots older than a week");
+  s.askApproval(s.runtimeIdOf("backup"), { command: "restic forget --keep-daily 7 --prune", description: "delete snapshots older than 7 days" });
+})()`;
+const pause = (ms) => `new Promise((r) => setTimeout(r, ${ms}))`;
+Object.assign(scenes, {
+  "c-inbox-approval": { query: "", ...report, steps: [approvalWaiting, click("button", "NAS disk usage"), "window.shots.openInbox()"] },
+  "c-launch-settings": { query: "", ...report, steps: [openSettings, sub("Launch")] },
+  "c-summoned-selection": {
+    query: "",
+    ...report,
+    steps: [
+      click("button", "Nightly backup"),
+      typeIn("What does this mean, and is the backup at risk?"),
+      `window.shots.selection = { primary: "Fatal: unable to create lock in backend: repository is already locked by PID 4127\\n  lock was created at 2026-11-13 02:00:04 (6h ago)" }`,
+      "document.activeElement.blur()",
+      "window.shots.summon({ fromElsewhere: true })",
+      pause(2000),
+    ],
   },
 });
 const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(scenes);

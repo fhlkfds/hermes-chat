@@ -43,6 +43,8 @@ Results are kept in memory for the current sign-in only. They are never written 
 
 The app needs the dashboard's **legacy** session protocol on `/api/ws`. If `gateway.ready` reports `session_authority` (the canonical protocol), the app doesn't connect, and the sign-in screen says that it doesn't support that protocol yet. The app keeps refusing the canonical protocol until a tested adapter exists.
 
+Which protocol a server speaks depends on which Hermes process answers, not only on its version (checked at `f0d94882`). A standalone `hermes dashboard` or `hermes serve` (port 9119 by default) speaks the legacy one. A gateway's own address, the one `hermes gateway run` serves the Webapp at when `webapp.enabled` is on (port 9120 by default), speaks the canonical one. If the app says it can't talk to the server yet, sign in to the dashboard's address. ADR 0174 has what an adapter needs and the plan for it.
+
 The app signs in only with the dashboard's username and password (the `basic` provider). Token, OAuth, and OIDC sign-in aren't supported.
 
 ## Approvals
@@ -150,6 +152,10 @@ Needs the webhook routes under `/api/webhooks`. Checked with `GET /api/webhooks`
 ## Outputs
 
 Needs `GET /api/fs/list`, and `GET /api/sessions/{id}/messages` with tool rows. Checked with `GET /api/fs/list`. The Outputs screen is gone (ADR 0170). The capability stays because extensions can name `outputs` in `needs` (ADR 0126): without `fs/list`, such an extension shows what is missing instead of running.
+
+## Work
+
+Needs the dashboard's kanban plugin (`plugins/kanban/dashboard/plugin_api.py`), under `/api/plugins/kanban`. Checked with `GET /api/plugins/kanban/boards`. The Work page reads `GET board` and `GET workflow` for the current board, and `GET tasks/{id}` for a task's sheet. It changes the board with `PATCH tasks/{id}` (an edit or a move), `POST tasks` (a new task, with an `idempotency_key`) and `POST tasks/{id}/comments`. Without the plugin, the Work button doesn't show, and a board read that answers 404 shows a note asking for the plugin to be turned on. The same plugin tells the chat list which tasks a chat dispatched.
 
 ## Sign-in methods
 

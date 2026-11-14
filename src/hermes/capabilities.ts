@@ -22,6 +22,7 @@
 import { redactSecrets } from "./secrets";
 import { RestError, type RestMethod } from "./pipe";
 import { errorText, isObj } from "./values";
+import type { AppMethod } from "./canonicalVerbs";
 
 /** The features whose server support is tracked. */
 export type CapabilityId =
@@ -41,6 +42,7 @@ export type CapabilityId =
   | "scheduledJobs"
   | "automations"
   | "outputs"
+  | "kanban"
   | "botMode"
   | "subagents"
   | "subagentRoster";
@@ -75,7 +77,7 @@ export type CapabilityAction = { name: string; method: RestMethod; route: RegExp
  */
 type Probe =
   | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean; lacks?: (body: unknown) => string | undefined }
-  | { kind: "rpc"; method: string; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean; lacks?: (result: unknown) => string | undefined };
+  | { kind: "rpc"; method: AppMethod; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean; lacks?: (result: unknown) => string | undefined };
 
 /**
  * A check for a capability no read can settle: one request shaped like a write, for something that can't exist, so
@@ -366,6 +368,17 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     routes: [/^api\/fs\/list$/],
   },
   {
+    id: "kanban",
+    label: "Work",
+    usedBy: "The Work page, and the tasks shown under the chats that dispatched them",
+    needs: "The dashboard's kanban plugin, under /api/plugins/kanban.",
+    without: "The Work button doesn't show, and chats don't show the tasks they dispatched.",
+    anchor: "work",
+    probe: { kind: "rest", path: () => "api/plugins/kanban/boards", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.boards) },
+    routes: [/^api\/plugins\/kanban\/boards$/],
+    writeRoutes: [/^api\/plugins\/kanban\//],
+  },
+  {
     id: "botMode",
     label: "Bot Mode",
     usedBy: "The Bots view",
@@ -603,7 +616,7 @@ export function approvalsFailed(e: unknown): Pick<Capability, "state" | "why"> {
 /** How the store reaches Hermes. Each call fails as the transport words it. */
 export type CapabilityIO = {
   get(pathAndQuery: string, maxBytes?: number): Promise<string>;
-  rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
+  rpc(method: AppMethod, params: Record<string, unknown>): Promise<unknown>;
   /** A dashboard `PUT`, for a write check only (`WriteCheck`). */
   put(pathAndQuery: string, body: unknown): Promise<string>;
 };
