@@ -361,6 +361,7 @@ export function RepositoryScreen({
         >
           <label htmlFor={`${pathId}-target`}>SSH target</label>
           <input
+            spellCheck={false}
             id={`${pathId}-target`}
             className="mono"
             placeholder="liam@hermes or a host alias from ~/.ssh/config"
@@ -404,6 +405,7 @@ export function RepositoryScreen({
           <FolderGit2 size={15} aria-hidden /> Folder on the server
         </label>
         <input
+          spellCheck={false}
           id={pathId}
           className="repo-path mono"
           placeholder="~/projects/app"
@@ -923,8 +925,8 @@ function CommitDialog({
             {p.truncated && <p className="repo-notice warn">The staged diff is over 2 MB, so only its start is shown. The file list above is complete.</p>}
             {p.lossy && <p className="repo-notice warn">Some of the diff isn't UTF-8, so a few characters are shown as �.</p>}
             <div className="repo-review-diff">
-              {files.map((f, i) => (
-                <PatchFile key={i} diff={f.diff} />
+              {files.map((f) => (
+                <PatchFile key={f.header} diff={f.diff} />
               ))}
             </div>
           </div>

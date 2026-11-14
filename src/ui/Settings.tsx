@@ -50,10 +50,12 @@ import { PersonaPage, type PersonaDirty, type PersonaWhere } from "./PersonaSett
 import type { PersonaApi } from "../hermes/persona";
 import type { PersonaStore } from "../hermes/personaStore";
 import { StartupSettings } from "./StartupSettings";
+import { SummonSettings } from "./SummonSettings";
 import { ChatSectionSettings } from "./ChatSectionSettings";
 import { InboxSettings } from "./InboxSettings";
 import { OfficeSettings } from "./OfficeSettings";
 import { FollowUpSettings } from "./FollowUpSettings";
+import { SpellCheckSettings } from "./SpellCheckSettings";
 import { VoiceSettings, useVoiceChanges } from "./Voice";
 import type { VoiceSetup } from "../hermes/pipe";
 import type { VoiceSettingsApi } from "../hermes/voiceSettings";
@@ -124,7 +126,7 @@ const GW_GROUPS: SectionItem[] = [
 /** What each section is for, under its title. */
 const SECTION_INTRO: Record<string, string> = {
   connection: "Sign in to a Hermes server, switch to another, or sign out.",
-  chats: "What the chat list shows, what Enter does while Hermes replies, and the Office.",
+  chats: "What the chat list shows, what Enter does while Hermes replies, spell checking, and the Office.",
   launch: "What happens when the app starts and closes, and how it updates.",
   screenshots: "Attach a screenshot of a region or a window to the message you're writing.",
   storage: "This computer's cache, older history, imported transcripts and backups.",
@@ -760,6 +762,7 @@ export function SettingsScreen({
       <>
         <ChatSectionSettings />
         <FollowUpSettings />
+        <SpellCheckSettings />
         <OfficeSettings />
         <InboxSettings />
       </>
@@ -767,6 +770,7 @@ export function SettingsScreen({
     launch: (
       <>
         <StartupSettings />
+        <SummonSettings />
         <TraySettings tray={tray} />
         <UpdateSettings />
       </>

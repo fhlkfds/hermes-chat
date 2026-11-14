@@ -462,6 +462,26 @@ describe("Settings → Memory", () => {
     expect(s.memory.default.memory).toEqual(["Agent changed D", "Agent changed B"]);
   });
 
+  it("discarding one kept edit by keyboard leaves focus off the next one's Discard", async () => {
+    const { s, user } = await shown();
+    await user.click(entry(SHORT));
+    await user.clear(editor());
+    await user.type(editor(), "Edit A");
+    s.memory.default.memory[1] = "Agent changed B";
+    await user.click(button("Save"));
+    await screen.findByRole("textbox", { name: "Your kept edit" });
+    await user.click(entry(FALCON));
+    await user.clear(editor());
+    await user.type(editor(), "Edit C");
+    s.memory.default.memory[0] = "Agent changed D";
+    await user.click(button("Save"));
+    await screen.findByRole("textbox", { name: "Your kept edit 2" });
+    button("Discard your kept edit 1").focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Your kept edit" }).value).toBe("Edit C");
+    expect(document.activeElement).not.toBe(button("Discard your kept edit"));
+  });
+
   it("holds the open entry and file still while a save is under way", async () => {
     const s = server();
     let release!: () => void;
@@ -862,9 +882,9 @@ describe("An unsaved memory edit in the app", () => {
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
   });
 
-  it("asks before Outputs and Scheduled jobs, which cover Settings", async () => {
+  it("asks before Usage and Scheduled jobs, which cover Settings", async () => {
     const { user } = await launchApp();
-    await user.click(screen.getByRole("button", { name: "Outputs" }));
+    await user.click(screen.getByRole("button", { name: "Usage" }));
     await user.click(within(leaveDialog()).getByRole("button", { name: "Keep editing" }));
     expect(editor().value).toBe(`${SHORT} Unsaved words.`);
     await user.click(screen.getByRole("button", { name: "Scheduled jobs" }));

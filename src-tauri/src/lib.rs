@@ -32,8 +32,12 @@ pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
 pub mod screenshot;
+#[cfg(target_os = "linux")]
+pub mod selection;
 pub mod server_page;
 pub mod snapshot;
+#[cfg(target_os = "linux")]
+mod spell_check;
 mod ssh_guard;
 pub mod summon;
 pub mod terminal;
@@ -632,6 +636,20 @@ async fn attach_picked_files(app: tauri::AppHandle, attachable: State<'_, Attach
     }
     attachable.add(paths.clone());
     Ok(paths)
+}
+
+/// The text selected and copied in other apps, for the message `hermes-chat --show` or `--toggle` can start (ADR
+/// 0172). Elsewhere than Linux there is none to read, and the window only comes forward.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+async fn read_selection(app: tauri::AppHandle) -> Result<selection::Selections, String> {
+    selection::read(&app).await
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+async fn read_selection() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({}))
 }
 
 /// Attaches the files the owner copied in a file manager and pasted into the composer, by path, as a drop does (ADR
@@ -1713,9 +1731,10 @@ async fn preview_annotate_stage(
     Ok(screenshot::Capture { path, note: None })
 }
 
+/// `tag`: the webview's name for a notification about a waiting card; `deny`: it offers Deny (ADR 0173).
 #[tauri::command]
-async fn notify_desktop(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    notify::show(app, title, body).await
+async fn notify_desktop(app: tauri::AppHandle, title: String, body: String, tag: Option<String>, deny: Option<bool>) -> Result<(), String> {
+    notify::show(app, title, body, tag, deny.unwrap_or(false)).await
 }
 
 /// The installed font families, for the Appearance settings.
@@ -1744,16 +1763,18 @@ fn permission<R: tauri::Runtime>(webview: &tauri::Webview<R>, kind: PermissionKi
 }
 
 /// Opens a terminal on the server: `ssh` to `target` (the sign-in's SSH target, or one the owner gave the terminal),
-/// `cols` × `rows`, its output and end sent to `on_event` (terminal.rs, ADR 0022).
+/// `cols` × `rows`, its output and end sent to `on_event` (terminal.rs, ADR 0022). `folder`: a folder on the server
+/// its shell starts in, a path a reply named (ADR 0167).
 #[tauri::command]
 async fn terminal_open(
     terminals: State<'_, terminal::Terminals>,
     target: String,
     cols: u16,
     rows: u16,
+    folder: Option<String>,
     on_event: Channel<terminal::TerminalEvent>,
 ) -> Result<u64, terminal::TerminalError> {
-    let command = terminal::ssh_command(&target)?;
+    let command = terminal::ssh_command(&target, folder.as_deref())?;
     terminals.open(command, cols, rows, move |e| {
         let _ = on_event.send(e);
     })
@@ -1776,16 +1797,17 @@ fn terminal_close(terminals: State<'_, terminal::Terminals>, id: u64) {
     terminals.close(id);
 }
 
-/// Opens a terminal on this computer: the owner's own login shell, in their home folder (ADR 0039). The webview picks
-/// neither the program nor its arguments.
+/// Opens a terminal on this computer: the owner's own login shell, in their home folder (ADR 0039), or in `folder`
+/// (ADR 0167). The webview picks neither the program nor its arguments.
 #[tauri::command]
 async fn terminal_open_local(
     terminals: State<'_, terminal::Terminals>,
     cols: u16,
     rows: u16,
+    folder: Option<String>,
     on_event: Channel<terminal::TerminalEvent>,
 ) -> Result<u64, terminal::TerminalError> {
-    terminals.open(terminal::local_shell_command(), cols, rows, move |e| {
+    terminals.open(terminal::local_shell_command(folder.as_deref())?, cols, rows, move |e| {
         let _ = on_event.send(e);
     })
 }
@@ -1900,14 +1922,18 @@ pub fn run(screenshot: bool, link: Option<String>) {
             if let Some(window) = app.get_webview_window("main") {
                 touch_keyboard::start(window);
             }
-            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on. WebView2 has it, and asks
-            // `permission` for the microphone.
+            // WebKitGTK leaves `navigator.mediaDevices` out unless media capture is turned on, and checks no spelling
+            // until told to. WebView2 has both, and asks `permission` for the microphone.
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
                     use webkit2gtk::{SettingsExt, WebViewExt};
-                    if let Some(settings) = webview.inner().settings() {
+                    let view = webview.inner();
+                    if let Some(settings) = view.settings() {
                         settings.set_enable_media_stream(true);
+                    }
+                    if let Some(context) = view.context() {
+                        spell_check::start(&context);
                     }
                 })?;
             }
@@ -1928,13 +1954,13 @@ pub fn run(screenshot: bool, link: Option<String>) {
                     let _ = handle.emit(remote::EVENT, ());
                 }
                 // A second launch or `--show` brings back this window, hidden to the tray or not (ADR 0034).
-                remote::Request::Show { token } => summon::activate(&handle, false, token),
-                remote::Request::Toggle { token } => summon::activate(&handle, true, token),
+                remote::Request::Show { token } => summon::activate(&handle, false, true, token),
+                remote::Request::Toggle { token } => summon::activate(&handle, true, true, token),
                 // A chat link opened while the app runs: kept for the window, which comes forward to show it.
                 remote::Request::OpenLink { link, token } => {
                     if handle.state::<links::Links>().put(link) {
                         let _ = handle.emit(links::EVENT, ());
-                        summon::activate(&handle, false, token);
+                        summon::activate(&handle, false, false, token);
                     }
                 }
             });
@@ -1958,6 +1984,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             hermes_read_preview,
             attach_picked_files,
             attach_copied_files,
+            read_selection,
             stage_clipboard_file,
             hermes_request,
             hermes_transcribe,

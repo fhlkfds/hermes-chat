@@ -13,6 +13,7 @@ import {
   Laptop,
   LockOpen,
   MoreHorizontal,
+  Pencil,
   RotateCw,
   Server,
   Wrench,
@@ -37,8 +38,10 @@ import {
   type ViewUrl,
   type WebTarget,
 } from "../hermes/preview";
+import { folderOf, resolvePath } from "../hermes/paths";
 import { Markdown } from "./Markdown";
 import { HIGHLIGHT_MAX_CHARS } from "./markdownPipeline";
+import { PathsIn } from "./previewContext";
 import { Spinner } from "./bits";
 import { Menu } from "./ChatMenu";
 import {
@@ -54,7 +57,7 @@ import {
 } from "./tauriPreview";
 import { usePlacement } from "./pagePlacement";
 import { canGoBack, canGoForward, type HistoryStep, type PreviewHistory } from "./previewHistory";
-import type { ArtifactStore } from "../hermes/artifacts";
+import type { ArtifactRef, ArtifactStore } from "../hermes/artifacts";
 import { ArtifactEditor } from "./ArtifactEditor";
 import { errorText, formatBytes } from "../hermes/values";
 import { ExtensionView } from "./ExtensionView";
@@ -97,6 +100,7 @@ export function PreviewPane({
   web,
   serverPages,
   artifacts,
+  artifactScope,
   connected = true,
   desk,
 }: {
@@ -110,6 +114,11 @@ export function PreviewPane({
   serverPages: ServerPages;
   /** Where an artifact's draft lives (artifacts.ts): editing it in the pane, and away from it, share one store. */
   artifacts?: ArtifactStore;
+  /**
+   * The connection and profile a Server file is edited in, as an artifact (ADR 0029, ADR 0170), and the chat on screen,
+   * whose model "Ask Hermes to edit" borrows. None offers no Edit.
+   */
+  artifactScope?: Pick<ArtifactRef, "scope" | "profile" | "chatId">;
   connected?: boolean;
   /** Where annotations are staged (the composer on screen), and who hears that the page moved. */
   desk?: AnnotationDesk & { pageMoved(): void };
@@ -197,6 +206,18 @@ export function PreviewPane({
             <Crosshair size={15} />
           </button>
         )}
+        {here?.kind === "server" && artifacts && artifactScope && (
+          <button
+            className="icon-btn"
+            title="Edit beside the chat"
+            aria-label="Edit"
+            onClick={() =>
+              open({ kind: "artifact", ref: { ...artifactScope, path: here.path, host: !!here.host, ...(here.session && { session: here.session }) } })
+            }
+          >
+            <Pencil size={15} />
+          </button>
+        )}
         <MoreMenu address={here && addressOf(here)} framed={!web.native} picking={picking} onCopy={copy} onPick={() => void pick()} />
       </div>
       {note && (
@@ -236,11 +257,9 @@ export function PreviewPane({
             />
           ) : null
         ) : here.kind === "server" ? (
-          <FileBody
-            key={`server:${here.host ? "host" : ""}:${here.session ?? ""}:${here.path}:${history.reloadSeq}`}
-            name={here.path}
-            load={() => readServer(here.path, here.host, here.session)}
-          />
+          <ServerFilePaths key={`server:${here.host ? "host" : ""}:${here.session ?? ""}:${here.path}:${history.reloadSeq}`} here={here}>
+            <FileBody name={here.path} load={() => readServer(here.path, here.host, here.session)} />
+          </ServerFilePaths>
         ) : (
           <FileBody key={`local:${here.path}:${history.reloadSeq}`} name={here.name} load={() => local.read(here)} />
         )}
@@ -670,6 +689,20 @@ function FileBody({ name, load }: { name: string; load: () => Promise<FileView> 
     );
   if (v.kind === "image") return <ImageView src={v.src} name={name} size={v.size} />;
   return <TextView view={v} name={name} />;
+}
+
+/**
+ * The paths in a Server file (ADR 0167): a relative one is relative to the folder the file is in, in the same chat's
+ * sandbox. A file on the dashboard's own machine names no path where tools run, so none of its paths link.
+ */
+function ServerFilePaths({ here, children }: { here: Extract<PreviewTarget, { kind: "server" }>; children: ReactNode }) {
+  const path = here.host ? undefined : resolvePath(here.path, undefined);
+  if (!path) return <>{children}</>;
+  return (
+    <PathsIn folder={folderOf(path)} session={here.session}>
+      {children}
+    </PathsIn>
+  );
 }
 
 function ImageView({ src, name, size }: { src: string; name: string; size?: number }) {

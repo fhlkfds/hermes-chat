@@ -1598,6 +1598,7 @@ impl Dashboard {
             ("PUT", _) if memory_provider_write("PUT", path, body.as_deref()) => Method::PUT,
             ("POST", _) if memory_provider_write("POST", path, body.as_deref()) => Method::POST,
             ("POST", _) if webhook_write("POST", path, body.as_deref()) => Method::POST,
+            ("POST", _) if kanban_write(path, body.as_deref()) => Method::POST,
             ("PUT", _) if webhook_write("PUT", path, body.as_deref()) => Method::PUT,
             ("PUT", p) if is_profile_soul(p) => Method::PUT,
             ("POST", "api/profiles") if profile_create_allowed(body.as_deref()) => Method::POST,
@@ -1807,7 +1808,7 @@ impl Dashboard {
             _ => return Err(unexpected(resp, &self.hidden()).await),
         }
         read_body(resp, max_bytes, ANSWER_IDLE_LIMIT).await.map_err(|e| match e {
-            // These answers are files, and Outputs tells one over its limit by `FileTooLarge`'s text.
+            // These answers are files: one over its limit is `FileTooLarge`, whose text says how big it is.
             TransportError::AnswerTooLarge { size, max } => TransportError::FileTooLarge { size, max },
             e => e,
         })
@@ -2559,6 +2560,24 @@ pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
     })
 }
 
+/// The Work page's two `POST`s to the dashboard's kanban plugin (ADR 0171): `api/plugins/kanban/tasks` creates a task,
+/// with only the fields New task sets, and `api/plugins/kanban/tasks/{id}/comments` adds a comment, with only its text.
+/// The task id is one segment of letters, digits, `-` and `_`, as the plugin makes them. Its edits and moves are
+/// `PATCH`es, which the relay already takes.
+fn kanban_write(path: &str, body: Option<&str>) -> bool {
+    let Some(rest) = path.strip_prefix("api/plugins/kanban/tasks") else { return false };
+    let id_ok = |id: &str| (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let keys: &[&str] = match rest.strip_prefix('/').map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
+        None if rest.is_empty() => &["title", "body", "assignee", "priority", "idempotency_key"],
+        Some([id, "comments"]) if id_ok(id) => &["body"],
+        _ => return false,
+    };
+    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|v| v.as_object().cloned()) else {
+        return false;
+    };
+    fields.keys().all(|k| keys.contains(&k.as_str())) && fields.get(if keys == ["body"] { "body" } else { "title" }).is_some_and(|v| v.is_string())
+}
+
 /// The Automations writes (ADR 0108, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
 /// api/webhooks` creates a route, `PUT api/webhooks/{name}` edits one, `PUT api/webhooks/{name}/enabled` pauses or
 /// resumes one, and `POST api/webhooks/{name}/deliveries/{id}/retry` retries a failed delivery. The route name is one
@@ -3105,9 +3124,8 @@ fn is_session_list(path: &str) -> bool {
     segs.next() == Some("api") && segs.next() == Some("sessions") && segs.next().is_none()
 }
 
-/// The most read of one relayed answer: the most Outputs reads of one chat in all (src/hermes/outputs.ts
-/// `CHAT_MAX_BYTES`). The biggest the webview asks of `get_limited` is about 13.4 MiB, a 10 MiB image preview as
-/// base64 JSON (src/hermes/remoteFiles.ts).
+/// The most read of one relayed answer, set for the removed Outputs screen's reads of one chat (ADR 0170). The biggest
+/// the webview asks of `get_limited` is about 13.4 MiB, a 10 MiB image preview as base64 JSON (src/hermes/remoteFiles.ts).
 const RELAY_MAX_BYTES: u64 = 64 * MIB;
 
 /// `n` bytes as an error names a limit: in whole MB, or whole KB under one MB.
@@ -3430,7 +3448,7 @@ fn agent_text_body(path: &str, text: &str, session: Option<&str>) -> Result<serd
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_text_body, memory_entry_edit_allowed, memory_provider_write, profile_create_allowed, profile_describe_auto, profile_field_write,
+        agent_text_body, kanban_write, memory_entry_edit_allowed, memory_provider_write, profile_create_allowed, profile_describe_auto, profile_field_write,
         provider_key_name, skill_create_allowed, text_unless_stalled, unless_stalled, webhook_write, TransportError,
     };
     use std::time::Duration;
@@ -3666,6 +3684,35 @@ mod tests {
             assert!(!webhook_write(method, path, Some(body)), "{method} {path} {body}");
         }
         assert!(!webhook_write("POST", "api/webhooks", None));
+    }
+
+    #[test]
+    fn only_the_work_pages_writes() {
+        for (path, body) in [
+            ("api/plugins/kanban/tasks", r#"{"title":"Ship it","priority":0,"idempotency_key":"k"}"#),
+            ("api/plugins/kanban/tasks", r#"{"title":"Ship it","body":"b","assignee":"researcher","priority":2,"idempotency_key":"k"}"#),
+            ("api/plugins/kanban/tasks/t_0000001a/comments", r#"{"body":"BLOCKED: waiting on keys"}"#),
+        ] {
+            assert!(kanban_write(path, Some(body)), "{path} {body}");
+        }
+        for (path, body) in [
+            // Only what New task sets: no tenant, workspace or parents.
+            ("api/plugins/kanban/tasks", r#"{"title":"x","workspace_path":"/"}"#),
+            ("api/plugins/kanban/tasks", r#"{"body":"no title"}"#),
+            ("api/plugins/kanban/tasks/t_1/comments", r#"{"body":"x","author":"someone"}"#),
+            ("api/plugins/kanban/tasks/t_1/comments", r#"{}"#),
+            ("api/plugins/kanban/tasks/t_1", r#"{"status":"done"}"#),
+            ("api/plugins/kanban/tasks/t_1/run", r#"{}"#),
+            ("api/plugins/kanban/tasks/../comments", r#"{"body":"x"}"#),
+            ("api/plugins/kanban/tasks/a%2Fb/comments", r#"{"body":"x"}"#),
+            ("api/plugins/kanban/tasksx", r#"{"title":"x"}"#),
+            ("api/plugins/kanban/boards", r#"{"slug":"x"}"#),
+            ("api/plugins/kanban/tasks", "not json"),
+            ("api/plugins/kanban/tasks", "[]"),
+        ] {
+            assert!(!kanban_write(path, Some(body)), "{path} {body}");
+        }
+        assert!(!kanban_write("api/plugins/kanban/tasks", None));
     }
 
     #[test]
@@ -3925,8 +3972,8 @@ mod tests {
         }
     }
 
-    /// The webview's limit for a big answer is held to the relay's 64 MiB, the most Outputs reads of one chat in all
-    /// (src/hermes/outputs.ts `CHAT_MAX_BYTES`): an answer announcing more is refused before any of it is read.
+    /// The webview's limit for a big answer is held to the relay's 64 MiB: an answer announcing more is refused before
+    /// any of it is read.
     #[tokio::test]
     async fn a_limited_get_past_any_size_is_held_to_the_relay_limit() {
         let relay_max: u64 = 64 * 1024 * 1024;

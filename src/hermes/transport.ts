@@ -51,22 +51,24 @@ import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
 import { CapabilityStore, CapabilityUnsupportedError, RouteMissingError, failureOf, isNoRoute, sharesChats, specOf, type CapabilityId, type ServerFacts } from "./capabilities";
+import type { AppMethod } from "./canonicalVerbs";
 import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
-import { RestError, conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
+import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
 import { projectContextFiles, type ChatContext, type ProjectContextFiles } from "./projectContextFiles";
 import { withContext } from "./projectContext";
 import { typedText } from "./branch";
 import { SUMMARY_INSTRUCTIONS, SUMMARY_MAX_TOKENS, cleanSummary, referenceBlock, storedReferences, summaryInput } from "./chatReferences";
-import { RemoteFilesError, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
+import { previewSupport, remoteFiles, type EditIo, type RemoteFiles } from "./remoteFiles";
 import { isUnsecure } from "./unsecure";
 import { signInRefused } from "./account";
 import { AccountsApi } from "./accounts";
 import { providerKeys, readyProviders, SignInFailure, type ProviderSetup, type SavedKey } from "./setup";
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
+import type { PathKind, ServerPath } from "./paths";
 import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
 import { agentFsEditIo } from "./artifacts";
-import { splitPath, type OutputsIo, type StoredRow as StoredOutputRow } from "./outputs";
+import { splitPath } from "./serverPaths";
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
@@ -216,13 +218,21 @@ export type ChatCache = {
   /** False: storage refused it, so it lasts until the app closes. */
   saveBranches(profile: string, store: BranchStore): boolean;
 };
+/**
+ * What clicking a notification about a waiting card does: `open` shows the card in its chat. `deny`, for an Approval
+ * only, answers it with Deny the way the card's own button does. Nothing a notification offers approves (ADR 0173).
+ */
+export type NoticeActions = { open: () => void; deny?: () => void };
+/** The waiting card a notification's click opens. */
+export type NoticeCard = { profile: string; chatId: string; title: string; itemId: string };
 /** Shows a desktop notification; rejects if it can't. */
-export type Notify = (n: { title: string; body: string }) => Promise<void>;
+export type Notify = (n: { title: string; body: string }, actions?: NoticeActions) => Promise<void>;
 /** What notifications say. They never quote a chat's title or messages, or what a Question asks. */
 export const NOTICES = {
   finished: { title: "Hermes finished a reply", body: "Open Hermes Chat to read it." },
   approval: { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Hermes Chat." },
   question: { title: "Hermes has a question", body: "A question is waiting for your answer in Hermes Chat." },
+  notDenied: { title: "The approval wasn't denied", body: "Open Hermes Chat to see where it stands and answer there." },
 };
 
 const noCache: ChatCache = {
@@ -721,6 +731,7 @@ export class Hermes {
   /** Approvals already notified, or that arrived in focus, by runtime session and request id. Hermes lists one again
    * after a reconnect. */
   private notified = new Set<string>();
+  private noticeOpens = new Set<(card: NoticeCard) => void>();
   /** The latest write marking each chat read, while it is under way. */
   private readWrites = new Map<string, Promise<void>>();
   /** Chats marked read since the list sync under way read the list, which may predate the write. */
@@ -1221,13 +1232,19 @@ export class Hermes {
 
   /**
    * What this Hermes server can do, for Connection diagnostics and the screens that depend on it (capabilities.ts,
-   * ADR 0044). Its checks only read, through the connection in use, and it is kept in memory for this sign-in only. A
-   * write whose capability Hermes lacks is refused here, before it is sent.
+   * ADR 0044). Its checks read, through the connection in use, but for Diagnostics' two write checks, which change
+   * nothing (ADR 0169), and it is kept in memory for this sign-in only. A write whose capability Hermes lacks is
+   * refused here, before it is sent.
    */
   readonly capabilities = new CapabilityStore(
     {
       get: (pathAndQuery, maxBytes) => this.restGet(pathAndQuery, maxBytes, false),
       rpc: (method, params) => this.request(method, params, undefined, false),
+      put: (pathAndQuery, body) => {
+        const pipe = this.pipe;
+        if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+        return pipe.request("PUT", pathAndQuery, JSON.stringify(body));
+      },
     },
     () => this.generation,
   );
@@ -2252,6 +2269,7 @@ export class Hermes {
       updatedAt: Date.now(),
       items: [],
       live: withLive(undefined, res.info),
+      ...folderIn(res.info),
     };
     // A new session's agent starts its counters from zero.
     this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
@@ -2361,6 +2379,7 @@ export class Hermes {
     const sid = await this.resume(chatId);
     const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
     if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
+    this.patchChat(chatId, (c) => ({ ...c, folder }));
   }
 
   /**
@@ -2828,6 +2847,7 @@ export class Hermes {
       items: historyItems(transcriptMessages(res.messages)),
       model: pickFromInfo(res.info),
       live: withLive(undefined, res.info),
+      ...folderIn(res.info),
     };
     this.usageFrom.set(res.session_id, countersOf((res.info as { usage?: unknown } | undefined)?.usage) ?? ZERO_COUNTERS);
     this.runtimeOwners.set(res.session_id, { profile, chatId: chat.id });
@@ -4016,7 +4036,7 @@ export class Hermes {
       const picking = this.approvalPickFor === session_id;
       this.patchChat(chat.id, (c) => {
         const live = withLive(c.live, payload);
-        return { ...c, ...(model && { model }), live: picking && live ? { ...live, approvals: c.live?.approvals } : live };
+        return { ...c, ...(model && { model }), ...folderIn(payload), live: picking && live ? { ...live, approvals: c.live?.approvals } : live };
       });
       // Between turns its usage is where the next turn starts; one sent during a turn is part of the way through it.
       const counters = countersOf(payload.usage);
@@ -4216,7 +4236,14 @@ export class Hermes {
     const cards = reqs.flatMap((r) => questionCard(r) ?? []);
     const fresh = cards.filter((q) => !this.notified.has(`${runtimeId} ${q.id}`));
     for (const q of fresh) this.notified.add(`${runtimeId} ${q.id}`);
-    if (fresh.length) this.alert(questionSpec(fresh[0]).notice);
+    if (fresh.length) {
+      const q = fresh[0];
+      const card: NoticeCard = { profile: this.profile, chatId, title: this.snapshot.chats.find((c) => c.id === chatId)?.title ?? "", itemId: q.id };
+      this.alert(questionSpec(q).notice, {
+        open: () => this.noticeOpens.forEach((fn) => fn(card)),
+        ...(q.kind === "approval" && { deny: () => this.track(this.denyNoticed(card, runtimeId)) }),
+      });
+    }
     this.patchChat(chatId, (c) => {
       const shown = new Set(c.items.map((i) => i.id));
       const items = [...c.items];
@@ -4477,6 +4504,7 @@ export class Hermes {
           runtimeId: res.session_id,
           model: pickFromInfo(res.info) ?? c.model,
           live: withLive(undefined, res.info, res.usage),
+          ...folderIn(res.info),
           running: c.running || !!res.running,
           savedAt: undefined,
           items: withRows(
@@ -4667,8 +4695,27 @@ export class Hermes {
   }
 
   /** A desktop notification, out of focus only. A missing notification service, or one that refuses, changes nothing. */
-  private alert(n: { title: string; body: string }) {
-    if (!this.focused || this.role === "background") this.track(Promise.resolve().then(() => this.notify(n)));
+  private alert(n: { title: string; body: string }, actions?: NoticeActions) {
+    if (!this.focused || this.role === "background") this.track(Promise.resolve().then(() => this.notify(n, actions)));
+  }
+
+  /**
+   * Deny from an Approval's notification. It answers only the request the notification was about: in its profile, still
+   * shown, in the same runtime session, and still waiting. Anything else is left alone, and a notification says it
+   * wasn't denied, since Deny leaves the window where it is.
+   */
+  private async denyNoticed(card: NoticeCard, runtimeId: string | undefined) {
+    const chat = () => (this.profile === card.profile ? this.snapshot.chats.find((c) => c.id === card.chatId) : undefined);
+    if (runtimeId && chat()?.runtimeId === runtimeId) await this.answerApproval(card.chatId, card.itemId, "deny");
+    const now = chat()?.items.find((i) => i.id === card.itemId);
+    if (now?.kind === "approval" && now.answer === "deny") return;
+    await this.notify(NOTICES.notDenied, { open: () => this.noticeOpens.forEach((fn) => fn(card)) });
+  }
+
+  /** Calls `fn` with the card a notification is about each time the owner clicks it. */
+  onNoticeOpen(fn: (card: NoticeCard) => void): () => void {
+    this.noticeOpens.add(fn);
+    return () => void this.noticeOpens.delete(fn);
   }
 
   /**
@@ -4757,6 +4804,7 @@ export class Hermes {
           // List rows carry the stored token and cost totals too.
           usage: newerListedUsage(c?.usage, chatUsageOf(r, Date.now())),
           ...(lineage && { lineage: c?.lineage && sameIds(c.lineage, lineage) ? c.lineage : lineage }),
+          ...folderIn(r),
         };
         return c && sameFields(c, next) ? c : next;
       });
@@ -4857,7 +4905,7 @@ export class Hermes {
     this.cache.save(
       profile,
       // A Bot Chat isn't part of the list, so it isn't kept as part of it (ADR 0066).
-      chats.filter((c) => !isBotChat(c)).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread }) => ({
+      chats.filter((c) => !isBotChat(c)).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
         id,
         title,
         source,
@@ -4866,6 +4914,7 @@ export class Hermes {
         archived,
         updatedAt,
         unread,
+        folder,
         items: [],
       })),
     );
@@ -4994,6 +5043,30 @@ export class Hermes {
     return readServerFile((q) => this.rest("GET", q), path, this.snapshot.profile, session);
   }
 
+  /** A folder's entries where `profile`'s tools run (`GET /api/fs/list`), or none and why: `ENOENT`, `ENOTDIR`, `EACCES`. */
+  private async fsList(path: string, profile: string): Promise<{ entries: { name: string; isDirectory: boolean }[]; error?: string }> {
+    const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
+    const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
+      typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
+    );
+    return { entries, ...(typeof res.error === "string" && { error: res.error }) };
+  }
+
+  /**
+   * What is at `path` where the profile shown runs its tools (ADR 0167), by listing it: a listing is a folder,
+   * `ENOTDIR` a file, `ENOENT` nothing. `unknown` when Hermes can't say: not connected, no such route, a refusal, a
+   * listing too long to read. The listing names no chat, so a file in a chat's sandbox reads as missing.
+   * Never rejects.
+   */
+  async pathKind(path: ServerPath): Promise<PathKind> {
+    try {
+      const { error } = await this.fsList(path, this.snapshot.profile);
+      return error === undefined ? "folder" : error === "ENOTDIR" ? "file" : error === "ENOENT" ? "missing" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+
   /**
    * A file on the dashboard's own machine, for the preview pane: found in its folder's listing and read through the
    * managed files routes, as the Server files screen reads it (ADR 0012), within that screen's preview limits. For
@@ -5006,52 +5079,6 @@ export class Hermes {
     const support = previewSupport(entry);
     if (support.kind === "none") return { kind: "unsupported", reason: support.why, size: entry.size };
     return hostFileView(await this.files.preview(entry, support.kind === "maybe-text"));
-  }
-
-  /**
-   * How Outputs reads Hermes for `profile` (outputs.ts): a chat's stored rows through dashboard REST, each page refused
-   * past its size limit, and a folder's listing through `GET /api/fs/list`, where the profile's tools run. Every
-   * request names the profile, so a run for a profile left behind still reads only that profile.
-   */
-  outputsIo(profile: string): OutputsIo {
-    return {
-      rows: async (chatId, offset, limit, maxBytes) => {
-        const query = new URLSearchParams({ profile, order: "latest", limit: String(limit), offset: String(offset), inline_images: "false" });
-        const body = await this.restGet(`${sessionPath(chatId)}/messages?${query}`, maxBytes);
-        const res = JSON.parse(body) as { messages?: unknown };
-        // UTF-8 bytes, as Rust counted them against the limit.
-        return { rows: Array.isArray(res.messages) ? (res.messages as StoredOutputRow[]) : [], bytes: new TextEncoder().encode(body).byteLength };
-      },
-      listDir: async (path, host) => {
-        // The dashboard's own machine, through the managed files routes Server files lists with (ADR 0012).
-        if (host)
-          return this.files.list(path).then(
-            (l) => ({ entries: l.entries.map((e) => ({ name: e.name, isDirectory: e.kind === "dir" })) }),
-            (e: unknown) => {
-              const status = e instanceof RemoteFilesError ? e.status : undefined;
-              const message = errorText(e);
-              if (status === 404 && /isn't on the server/.test(message)) return { entries: [], error: "ENOENT" };
-              if (status === 400 && /not a folder/.test(message)) return { entries: [], error: "ENOTDIR" };
-              if (status === 403) return { entries: [], error: "EACCES" };
-              throw new Error(message);
-            },
-          );
-        const res = JSON.parse(await this.restGet(`api/fs/list?${new URLSearchParams({ path, profile })}`, LIST_MAX_BYTES)) as { entries?: unknown; error?: unknown };
-        const entries = (Array.isArray(res.entries) ? res.entries : []).flatMap((e: { name?: unknown; isDirectory?: unknown }) =>
-          typeof e?.name === "string" ? [{ name: e.name, isDirectory: e.isDirectory === true }] : [],
-        );
-        return { entries, ...(typeof res.error === "string" && { error: res.error }) };
-      },
-      // Read as Preview reads it, naming the chat (ADR 0062). `read-text` reads at most 512 KB of the file.
-      confirm: async (path, session) => {
-        try {
-          await this.restGet(`api/fs/read-text?${new URLSearchParams({ path, profile, session_id: session })}`, LIST_MAX_BYTES);
-          return { state: "available" };
-        } catch (e) {
-          return outputFound(e);
-        }
-      },
-    };
   }
 
   /**
@@ -5136,7 +5163,7 @@ export class Hermes {
   }
 
   /** One JSON-RPC request. With a `file`, the pipe swaps its base64 in for the `FILE_MARK` in `params`. */
-  private request(method: string, params: Record<string, unknown>, file?: { path: string; maxBytes: number }, observe = true): Promise<unknown> {
+  private request(method: AppMethod, params: Record<string, unknown>, file?: { path: string; maxBytes: number }, observe = true): Promise<unknown> {
     const pipe = this.pipe;
     if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
     // A method that changes something, for a capability Hermes lacks, isn't sent.
@@ -5392,24 +5419,8 @@ function timeLimit<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
-/** The most a folder listing for Outputs may be: a folder of tens of thousands of entries. */
+/** The most a log read (`readLog`) may answer. */
 const LIST_MAX_BYTES = 8 * 1024 * 1024;
-
-/**
- * What a failed `read-text` naming an Output's chat says about the file (outputs.ts `OutputsIo.confirm`, ADR 0062), or
- * undefined when Hermes no longer has the chat. A file too large to preview, or one Hermes is using, is there.
- */
-export function outputFound(e: unknown): { state: "missing" | "folder" | "forbidden" | "available" | "unknown"; why?: string } | undefined {
-  if (sessionNotFound(e)) return undefined;
-  if (!(e instanceof RestError)) return { state: "unknown", why: errorText(e) };
-  const { status, detail } = e;
-  if (status === 404 && detail.startsWith(SANDBOX_NOT_FOUND_PREFIX)) return { state: "missing", why: SANDBOX_MISSING };
-  if (status === 404 && detail === "File not found") return { state: "missing", why: "It isn't at this path where its chat's tools ran: it was deleted, moved or renamed." };
-  if (status === 400 && detail === "Path points to a directory") return { state: "folder" };
-  if (status === 403) return { state: "forbidden", why: "The server refused to read it." };
-  if (status === 413 || status === 409) return { state: "available" };
-  return { state: "unknown", why: `The server couldn't read it (${status}): ${detail}` };
-}
 
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
@@ -5695,6 +5706,12 @@ const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (
  * The model is `Chat.model` (`pickFromInfo`).
  * Context fullness only as Hermes measured it: none until it has.
  */
+/** A chat's working folder as a session row or a session's `info` names it (`cwd`), to spread into the chat; nothing when it names none. */
+function folderIn(from: unknown): { folder?: string } {
+  const cwd = obj(from)?.cwd;
+  return typeof cwd === "string" && cwd ? { folder: cwd } : {};
+}
+
 function withLive(prev: SessionLive | undefined, info?: unknown, usage?: unknown): SessionLive | undefined {
   const i = obj(info);
   const u = obj(usage) ?? obj(i?.usage);

@@ -33,7 +33,9 @@
   --chat-width: 740px;
   /* Appearance (src/ui/appearance.ts) sets --ui-font, --mono-font, --mono-size and the root font size, the interface
      size. Other text sizes are calc(Nrem / 14): N px at the default 14px, scaling with the choice. */
-  --mono: var(--mono-font, "JetBrains Mono"), "JetBrains Mono", "Fira Code", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* Only the generic family behind the chosen font: WebKitGTK searches the system for each named family it lacks
+     (ui-monospace included, which it doesn't treat as generic) again at every font size (#456). */
+  --mono: var(--mono-font, monospace), monospace;
   --mono-size: 13px;
   color-scheme: dark;
   /* system-ui first: WebKitGTK searches the system for each named font that isn't installed, again at every font size,
@@ -458,6 +460,12 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .msg.assistant :not(pre) > code {
   background: var(--raised-2); padding: 1.5px 5px; border-radius: 5px; font-size: max(calc(12rem / 14), 0.86em); color: var(--code-inline);
 }
+/* A path in a reply (previewContext.tsx `PathLink`, ADR 0167): the words' own colour, so a reply full of paths doesn't
+   turn link blue, with a dotted line under it for what a click opens. */
+.path-link { color: inherit; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: pointer; border-radius: 3px; }
+.path-link:hover { text-decoration: underline solid currentColor; }
+.path-link:focus-visible { outline: 2px solid var(--line-3); outline-offset: 1px; }
+.path-link[aria-busy="true"] { cursor: progress; }
 .msg.assistant table { border-collapse: collapse; margin: 0.4em 0 0.9em; font-size: calc(13.5rem / 14); }
 .msg.assistant th, .msg.assistant td { border-bottom: 1px solid var(--line-2); padding: 6px 14px 6px 0; text-align: left; }
 .msg.assistant th { color: var(--muted); font-weight: 500; }
@@ -2340,16 +2348,21 @@ button.provider-row:hover:not(:disabled) { background: var(--hover); }
 .skill-row + .skill-row { border-top: 1px solid var(--line); }
 .skills-where { overflow-wrap: anywhere; }
 .skills-state > div { flex: 1; min-width: 0; }
-.skill-name { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+/* One line, whatever its badges: the category gives way, so every row is the same height. */
+.skill-name { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.skill-name > * { flex: none; }
+.skill-name > .skill-category { flex: 0 1 auto; }
 .skill-desc { position: relative; min-width: 0; }
-.skill-desc-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The whole description, under the pointer resting on the line: for a mouse only, as the owner asked (ADR 0113). */
+/* Two lines, always two lines tall, so a short description's row matches a long one's. */
+.skill-desc-line { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 3em; }
+/* The whole description, under the line while the pointer rests on it or a control in its row has focus. */
 .skill-desc-tip {
   display: none; position: absolute; left: 0; top: calc(100% + 4px); z-index: 10; width: min(560px, 90cqw); padding: 10px 12px;
   background: var(--raised-3); border: 1px solid var(--line-3); border-radius: 8px; font-size: calc(12.5rem / 14); line-height: 1.5; color: var(--text);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); white-space: pre-line;
 }
 @media (hover: hover) { .skill-desc:hover .skill-desc-tip { display: block; } }
+.skill-row:focus-within .skill-desc-tip { display: block; }
 .skill-category { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Which profile Skills, Memory and Persona show (ProfilePicker.tsx, ADR 0118), in place of the profile's name. */
 .profile-pick {
@@ -2694,6 +2707,10 @@ label.memory-pick { cursor: pointer; }
 .inbox-summary { color: var(--muted); font-size: calc(12rem / 14); line-height: 1.4; }
 .inbox-row.is-stale .inbox-summary { font-style: italic; }
 .inbox-dismiss { margin-top: 6px; flex: none; }
+/* A waiting Approval's card, under its entry (ADR 0173). */
+.inbox-row { flex-wrap: wrap; }
+.inbox-row > .approval { flex-basis: 100%; margin: 0 8px 8px; padding: 10px 12px; }
+.inbox-row > .approval .approval-actions { flex-wrap: wrap; }
 .inbox-empty { padding: 12px 16px; }
 .bots-btn { position: relative; }
 .bots-btn .dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
@@ -3115,8 +3132,7 @@ label.memory-pick { cursor: pointer; }
 .chat-banner { padding: 10px 28px 0; }
 .chat-banner > * { max-width: calc(var(--chat-width) - 56px); margin: 0 auto; }
 
-/* ---------- outputs (Outputs.tsx) ---------- */
-.outputs { container-type: inline-size; }
+/* A segmented picker of a few views, as Voice's local model and the instructions helper use. */
 .out-scopes { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; }
 .out-scope {
   padding: 3px 9px; border-radius: 6px; font-size: calc(12.5rem / 14); color: var(--muted); max-width: 260px;
@@ -3126,47 +3142,8 @@ label.memory-pick { cursor: pointer; }
 .out-scope.on { background: var(--accent-soft); color: var(--text); }
 .out-scope:disabled { opacity: 0.4; cursor: default; }
 .out-scope:focus-visible { outline: 2px solid var(--line-3); outline-offset: -2px; }
-.outputs .files-bar { gap: 8px; flex-wrap: wrap; }
-.out-search, .outputs .files-bar select {
-  background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; outline: none; font-size: calc(12.5rem / 14);
-}
-.out-search { flex: 1 1 180px; min-width: 140px; }
-.out-search:focus, .outputs .files-bar select:focus { border-color: var(--line-3); }
-.out-add { display: flex; align-items: center; gap: 2px; margin-left: auto; }
-.out-add input { width: 240px; }
-.out-status:empty { display: none; }
-.files-banner.ok { background: rgba(74, 222, 128, 0.1); color: var(--ok); }
-.out-table th:nth-child(1) { width: auto; }
-.out-table th:nth-child(2) { width: 104px; }
-.out-table th:nth-child(3) { width: 74px; }
-.out-table th:nth-child(4) { width: 140px; }
-.out-table th:nth-child(5) { width: 210px; }
-.out-table th:nth-child(6) { width: 112px; }
-.out-table td { height: auto; padding: 6px 8px; vertical-align: top; }
-.out-table td.out-name, .out-table td.out-source, .out-table td:nth-child(4) { white-space: normal; }
-.out-file { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 20px; }
-.out-file .badge { flex: none; }
-.out-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 23px; font-size: calc(12rem / 14); }
-.out-source > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px; }
-.out-avail { display: block; line-height: 20px; }
-.out-avail.available { color: var(--ok); }
-.out-avail.missing { color: var(--bad); }
-.out-avail.forbidden, .out-avail.folder, .out-avail.unknown { color: var(--warn); }
-.out-why { display: block; line-height: 1.35; }
-.out-avail .link-btn { display: block; font-size: 12px; margin-top: 2px; }
-.out-actions { text-align: right; white-space: nowrap; }
-.out-actions .icon-btn { width: 26px; height: 26px; }
-.out-actions .icon-btn:disabled { opacity: 0.35; cursor: default; }
-@container (max-width: 820px) {
-  .out-table th:nth-child(2), .out-table td:nth-child(2), .out-table th:nth-child(3), .out-table td:nth-child(3) { display: none; }
-  .out-add input { width: 180px; }
-}
-@container (max-width: 600px) {
-  .out-table th:nth-child(5), .out-table td:nth-child(5) { display: none; }
-  .out-table th:nth-child(4) { width: 96px; }
-}
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* The tool call an Output came from, once Outputs goes to it. */
+/* The message or tool call the chat went to. */
 .jumped { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; transition: outline-color 1.5s; }
 
 /* ---------- terminal on the server (Terminal.tsx) ---------- */
@@ -3516,8 +3493,17 @@ label.memory-pick { cursor: pointer; }
 /* Terminal in the panel */
 .terminal-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-tab[hidden] { display: none; }
-.terminal-kinds { margin: 10px 12px 0; align-self: flex-start; flex: none; }
+.terminal-shells { margin: 10px 12px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: none; }
+.terminal-kinds { flex: none; }
 .terminal-kinds button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; }
+/* A folder shell (ADR 0167): a chip beside the two computers, with its own close button. */
+.terminal-folder { display: inline-flex; align-items: center; max-width: 220px; min-width: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.terminal-folder button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; font-size: calc(12rem / 14); color: var(--muted); min-width: 0; }
+.terminal-folder button > svg, .terminal-folder button > .dot { flex: none; }
+.terminal-folder button > span:not(.dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-folder button[aria-pressed="true"] { background: var(--raised-3); color: var(--text); }
+.terminal-folder .terminal-folder-close { flex: none; padding: 3px 4px; }
+.terminal-folder .terminal-folder-close:hover { color: var(--text); }
 .side-panel .terminal-title { margin: 8px 12px 6px; min-height: 28px; gap: 8px; }
 .terminal-where { font-size: calc(12rem / 14); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .side-panel .terminal-connect { padding: 0 12px 10px; }
@@ -4186,6 +4172,73 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .ext-facts dd { margin: 0; }
 .ext-note { margin-top: 10px; font-size: calc(12.5rem / 14); color: var(--text-2); }
 .ext-note.error { color: var(--bad); }
+
+/* ---------- the Work page, the kanban board of bot work (Work.tsx, ADR 0171) ---------- */
+/* The board fills the screen and never scrolls the page: each column scrolls on its own, and the row of columns
+   scrolls sideways when they don't fit. */
+.work-screen { display: flex; flex-direction: column; overflow: hidden; }
+.work-inner { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px 24px 16px; }
+.work-inner .back { align-self: flex-start; }
+.work-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.work-head h1 { margin: 0; }
+.work-spacer { flex: 1; }
+.work-inner > .job-banner, .work-inner > .job-error { margin: 0; }
+.work-board { flex: 1; min-height: 0; display: flex; gap: 12px; align-items: flex-start; overflow: auto; padding-bottom: 4px; }
+/* `.settings section` would otherwise set its own padding and border-top on each column. */
+.settings section.work-column {
+  flex: 1 0 180px; max-width: 320px; max-height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border-radius: var(--radius); border: 1px solid var(--line-2); background: var(--sidebar); transition: opacity 0.12s;
+}
+.settings section.work-column.over { border-color: var(--accent); }
+.work-column.nodrop { opacity: 0.4; }
+.settings h2.work-column-head { margin: 0 2px 2px; display: flex; justify-content: space-between; font-size: calc(13rem / 14); font-weight: 600; text-transform: capitalize; color: var(--text-2); }
+.work-count { color: var(--faint); font: 500 calc(12rem / 14) var(--mono); }
+.work-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg); cursor: pointer; text-align: left; }
+.work-card:hover, .work-card:focus-visible { border-color: var(--line-3); outline: none; }
+.work-card[draggable="true"] { cursor: grab; }
+.work-card.dragging { opacity: 0.5; }
+.work-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: calc(12rem / 14); color: var(--faint); }
+.work-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.work-meta code { font-size: calc(12rem / 14); }
+.work-title { font-weight: 600; font-size: calc(13.5rem / 14); overflow-wrap: anywhere; }
+.settings .work-card p { margin: 0; font-size: calc(12.5rem / 14); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.settings .work-card p.work-why { color: var(--warn); }
+.work-why svg { vertical-align: -2px; }
+.work-assignee { display: flex; align-items: center; gap: 5px; font-size: calc(12rem / 14); color: var(--text-2); }
+.settings p.work-empty { margin: 4px 2px; font-size: calc(12.5rem / 14); color: var(--faint); }
+.leave-overlay .leave-dialog.work-dialog { max-width: min(480px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); }
+.leave-overlay .leave-dialog.work-dialog.wide { max-width: min(640px, calc(100% - 32px)); padding: 0; }
+.work-form { display: flex; flex-direction: column; gap: 10px; }
+.wide .work-form { padding: 18px 20px; }
+.work-form > input, .work-fields input, .work-fields select, .work-fields textarea, .work-add textarea, .work-sheet-foot select {
+  background: var(--bg); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 9px; color: var(--text); outline: none; font: inherit; min-width: 0;
+}
+.work-form > input:focus, .work-fields input:focus, .work-fields select:focus, .work-fields textarea:focus, .work-add textarea:focus { border-color: var(--line-3); }
+.work-fields { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.work-fields label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: calc(12.5rem / 14); }
+.work-fields textarea, .work-add textarea { resize: vertical; }
+.work-fields-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.work-fields-row label { flex: 1 1 160px; }
+.work-err { color: var(--bad); overflow-wrap: anywhere; }
+.work-sheet { display: flex; flex-direction: column; min-height: 0; max-height: calc(100vh - 32px); }
+.work-sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line-2); }
+.work-sheet-head h2 { margin: 0; font-size: calc(16rem / 14); overflow-wrap: anywhere; }
+.work-sheet-tools { display: flex; gap: 2px; flex: none; }
+.work-sheet-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px 20px; }
+.work-sheet > .work-err { margin: 0; padding: 0 20px 10px; }
+.work-status { text-transform: capitalize; color: var(--text-2); }
+.work-sub { margin: 6px 0 0; font-size: calc(12rem / 14); font-weight: 600; color: var(--faint); }
+.work-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+.work-comment { display: flex; flex-direction: column; gap: 2px; }
+.work-comment small { font-size: calc(12rem / 14); color: var(--faint); }
+.work-comment b { color: var(--text-2); font-weight: 600; }
+.work-add { display: flex; gap: 8px; align-items: flex-end; }
+.work-add textarea { flex: 1; }
+.work-sheet-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+@media (max-width: 640px) {
+  .work-inner { padding: 14px 16px 12px; }
+  .settings section.work-column { flex-basis: 78vw; }
+}
 
 /* After the form resets above, which turn outlines off at the same specificity. */
 :is(.first-run, .setup) :is(input, select, textarea, button, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
