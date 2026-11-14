@@ -1,0 +1,530 @@
+file	item	token	added_in
+01-time-machine.tsv	rollback.list	"rollback.list"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+01-time-machine.tsv	rollback.diff	"rollback.diff"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+01-time-machine.tsv	rollback.restore	"rollback.restore"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+01-time-machine.tsv	rollback.session_diff	'rollback.session_diff': partial	`v0.22.3` (2026-10-21)
+01-time-machine.tsv	GET /api/ops/checkpoints	/api/ops/checkpoints	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+01-time-machine.tsv	POST /api/ops/checkpoints/prune	/api/ops/checkpoints/prune	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+01-time-machine.tsv	hermes checkpoints prune	add_parser("prune"	`v2026.9.7` (2026-09-07)
+01-time-machine.tsv	checkpoints.enabled	"checkpoints": {	`v2026.3.12` (2026-03-12) or earlier, in another file until `v2026.7.30`
+01-time-machine.tsv	checkpoints.max_snapshots	"max_snapshots": 20,	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+01-time-machine.tsv	HERMES_TUI_CHECKPOINTS	os.environ.get("HERMES_TUI_CHECKPOINTS")	`v2026.5.7` (2026-05-07), in another file until `v0.21.6`
+01-time-machine.tsv	GET /api/config	.get("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+01-time-machine.tsv	tool.start	event("tool.start"	`v2026.9.14` (2026-09-14)
+01-time-machine.tsv	tool.complete	event("tool.complete"	`v2026.9.14` (2026-09-14)
+01-time-machine.tsv	GET /api/sessions/{session_id}/messages	/api/sessions/{session_id}/messages	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+01-time-machine.tsv	stored tool row display_metadata	tool_message["display_metadata"] = metadata	`v2026.9.24` (2026-09-24)
+01-time-machine.tsv	checkpoint before write_file/patch	if function_name in {"write_file", "patch"}:	`v2026.9.7` (2026-09-07)
+01-time-machine.tsv	checkpoint before destructive terminal	before terminal:	`v2026.3.17` (2026-03-17), in another file until `v2026.5.28`
+01-time-machine.tsv	agent-write ledger	mgr.record_agent_write(_p)	`v2026.8.16.2` (2026-08-17), in another file until `v2026.9.7`
+01-time-machine.tsv	session.branch	"session.branch"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+01-time-machine.tsv	session.resume	"session.resume"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+02-flight-recorder.tsv	tool.start	event("tool.start"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	tool.complete	event("tool.complete"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	tool.generating	event("tool.generating"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	tool.progress	event("tool.progress"	`v0.22.3` (2026-10-21)
+02-flight-recorder.tsv	tool.output_risk	event("tool.output_risk"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	message.start	event("message.start"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	message.delta	event("message.delta"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	message.interim	event("message.interim"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	message.complete	event("message.complete"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	reasoning.delta	event("reasoning.delta"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	reasoning.available	event("reasoning.available"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	thinking.delta	event("thinking.delta"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	session.usage (event)	event("session.usage"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	session.usage (method)	@_session_method("session.usage")	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	session.info	event("session.info"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	status.update	event("status.update"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	error	event("error"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	approval (server request)	server_request("approval"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	clarify (server request)	server_request("clarify"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	request.cancel	event("request.cancel"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	approval.cancelled	event("approval.cancelled"	`v0.21.6` (2026-10-08)
+02-flight-recorder.tsv	subagent.spawn_requested	("subagent.spawn_requested",	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	subagent.start	("subagent.start",	`v2026.4.23` (2026-04-23), in another file until `v2026.9.14`
+02-flight-recorder.tsv	subagent.progress	("subagent.progress",	`v2026.4.23` (2026-04-23), in another file until `v2026.9.14`
+02-flight-recorder.tsv	subagent.thinking	("subagent.thinking",	`v2026.4.23` (2026-04-23), in another file until `v2026.9.14`
+02-flight-recorder.tsv	subagent.tool	("subagent.tool",	`v2026.4.23` (2026-04-23), in another file until `v2026.9.14`
+02-flight-recorder.tsv	subagent.complete	("subagent.complete",	`v2026.4.23` (2026-04-23), in another file until `v2026.9.14`
+02-flight-recorder.tsv	subagent.* wire fields	_SUBAGENT_FIELDS = (	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	todo.updated	event("todo.updated"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	review.summary	event("review.summary"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	moa.reference	event("moa.reference"	`v2026.9.14` (2026-09-14)
+02-flight-recorder.tsv	session.events.since	@method("session.events.since")	`v2026.8.27` (2026-08-27)
+02-flight-recorder.tsv	event frame envelope	params: dict = {"type": event, "session_id": sid	`v2026.7.30` (2026-07-30)
+02-flight-recorder.tsv	spawn_tree.list	@method("spawn_tree.list")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+02-flight-recorder.tsv	spawn_tree.load	@method("spawn_tree.load")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+02-flight-recorder.tsv	spawn_tree.save	@method("spawn_tree.save")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+02-flight-recorder.tsv	subagent.list	@method("subagent.list")	`v2026.9.11` (2026-09-11)
+02-flight-recorder.tsv	subagent.tail	@method("subagent.tail")	`v2026.9.11` (2026-09-11)
+02-flight-recorder.tsv	subagent.roster	"subagent.roster"	`v0.22.6` (2026-11-02)
+02-flight-recorder.tsv	session.branch	@_session_method("session.branch", live=True)	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	GET /api/sessions/{session_id}/messages	/api/sessions/{session_id}/messages	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+02-flight-recorder.tsv	GET /api/sessions/{session_id}	get("/api/sessions/{session_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+02-flight-recorder.tsv	GET /api/sessions/{session_id}/export	/api/sessions/{session_id}/export	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+02-flight-recorder.tsv	stored messages table	CREATE TABLE IF NOT EXISTS messages (	`v2026.3.12` (2026-03-12) or earlier, in another file until `v2026.7.30`
+02-flight-recorder.tsv	assistant row time and finish_reason	"finish_reason": finish_reason})	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	tool row time	message = stamp_message_timestamp({	`v2026.8.16` (2026-08-16)
+02-flight-recorder.tsv	delegate_task per-child result	entry["cost_usd"] = round(entry["_child_cost_usd"], 6)	`v2026.8.13` (2026-08-13), in another file until `v2026.9.7`
+02-flight-recorder.tsv	GET /api/cron/jobs/{job_id}/runs	/api/cron/jobs/{job_id}/runs	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+02-flight-recorder.tsv	GET /api/plugins/kanban/tasks/{task_id}	@router.get("/tasks/{task_id}")	`v2026.5.7` (2026-05-07)
+02-flight-recorder.tsv	GET /api/plugins/kanban/runs/{run_id}	@router.get("/runs/{run_id}")	`v2026.5.28` (2026-05-28)
+02-flight-recorder.tsv	GET /api/plugins/kanban/tasks/{task_id}/log	@router.get("/tasks/{task_id}/log")	`v2026.5.7` (2026-05-07)
+02-flight-recorder.tsv	owner_admitted task event	kb._append_event(conn, task.id, 'owner_admitted',	`v0.22.3` (2026-10-21)
+02-flight-recorder.tsv	display.tool_progress	raw = _display_cfg().get("tool_progress", "all")	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+02-flight-recorder.tsv	post_api_request hook	"post_api_request",	`v2026.4.8` (2026-04-08), in another file until `v2026.9.7`
+02-flight-recorder.tsv	post_tool_call hook	"post_tool_call", tool_name=function_name, args=function_args, result=result,	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	subagent_stop hook	"subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	plugin dashboard routes	prefix = f"/api/plugins/{name}"	`v0.21.6` (2026-10-08)
+02-flight-recorder.tsv	monitoring.export.otlp	"export": {"otlp": {"enabled": False	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	save_trajectories	save_trajectories (bool): Save conversation trajectories to JSONL files	`v2026.3.12` (2026-03-12) or earlier
+02-flight-recorder.tsv	retry and fallback status buffer	def _buffer_retry_message	`v2026.9.7` (2026-09-07)
+02-flight-recorder.tsv	verification.status	@method("verification.status")	`v2026.7.1` (2026-07-01), in another file until `v2026.7.30`
+03-standing-missions.tsv	session.control.read	"session.control.read"	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	session.control	"session.control"	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	session.control.update	event("session.control.update"	`v2026.9.14` (2026-09-14)
+03-standing-missions.tsv	command.dispatch	@method("command.dispatch")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+03-standing-missions.tsv	/goal (command.dispatch name goal)	def _cmd_goal(	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	/goal grammar	def dispatch_goal_command(	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	inline goal contract fields	def parse_contract(	`v2026.7.1` (2026-07-01)
+03-standing-missions.tsv	/goal gate add	def _gate(mgr, arg, authorize_gate)	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	gate runner	def run_gate(	`v2026.8.13` (2026-08-13)
+03-standing-missions.tsv	gate timeout and retries	DEFAULT_GATE_TIMEOUT_SECONDS = 300	`v2026.8.13` (2026-08-13)
+03-standing-missions.tsv	goal judge	def judge_goal(	`v2026.5.7` (2026-05-07)
+03-standing-missions.tsv	goal evaluation after a turn	def evaluate_after_turn(	`v2026.5.7` (2026-05-07)
+03-standing-missions.tsv	auxiliary.goal_judge	"goal_judge": _aux(60)	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	goals.max_turns	"goals": {	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+03-standing-missions.tsv	loops config	"loops": {	`v2026.8.16` (2026-08-16)
+03-standing-missions.tsv	goal state row	return f"goal:{session_id}"	`v2026.5.7` (2026-05-07)
+03-standing-missions.tsv	loop state row	_META_PREFIX = "loop:"	`v2026.8.16` (2026-08-16)
+03-standing-missions.tsv	heartbeat state row	_META_PREFIX = "heartbeat:"	`v2026.9.21` (2026-09-21)
+03-standing-missions.tsv	/loop (command.dispatch name loop)	def _cmd_loop(	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	/heartbeat (slash.exec)	def _handle_heartbeat_command(	`v2026.8.13` (2026-08-13)
+03-standing-missions.tsv	/subgoal (slash.exec)	def _handle_subgoal_command(	`v2026.5.16` (2026-05-16), in another file until `v2026.6.19`
+03-standing-missions.tsv	slash.exec	@method("slash.exec")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+03-standing-missions.tsv	commands.catalog /goal entry	CommandDef("goal"	`v2026.5.7` (2026-05-07)
+03-standing-missions.tsv	dashboard loop tick driver	def _maybe_fire_tui_loop_tick(	`v2026.8.16` (2026-08-16), in another file until `v2026.9.7`
+03-standing-missions.tsv	dashboard heartbeat driver	def _maybe_fire_tui_heartbeat_tick(	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	detached chat kept for a loop or heartbeat	def _session_owns_live_wakeup_schedule(	`v0.21.7` (2026-10-12)
+03-standing-missions.tsv	HERMES_TUI_WS_ORPHAN_REAP_GRACE_S	"HERMES_TUI_WS_ORPHAN_REAP_GRACE_S"	`v2026.6.5` (2026-06-05)
+03-standing-missions.tsv	gateway goal continuation	async def _post_turn_goal_continuation(	`v2026.5.16` (2026-05-16), in another file until `v2026.9.7`
+03-standing-missions.tsv	gateway loop watcher	async def _loop_wakeup_watcher(	`v2026.8.16` (2026-08-16), in another file until `v2026.9.7`
+03-standing-missions.tsv	gateway heartbeat restore	async def restore_heartbeat_watches(	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	session.interrupt	@method("session.interrupt")	`v2026.4.23` (2026-04-23), in another file until `v0.21.6`
+03-standing-missions.tsv	delegation.pause	@method("delegation.pause")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+03-standing-missions.tsv	delegation.status	@method("delegation.status")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+03-standing-missions.tsv	session.active_list	@method("session.active_list")	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+03-standing-missions.tsv	session.resume	@method("session.resume")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+03-standing-missions.tsv	status.update kind goal	_emit("status.update", sid, {"kind": "goal", "text": verdict_msg})	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	hermes pause	"pause", help="Emergency stop	`v2026.9.7` (2026-09-07)
+03-standing-missions.tsv	ESTOP sentinel	SENTINEL_NAME = "ESTOP"	`v2026.8.13` (2026-08-13)
+03-standing-missions.tsv	session.control (canonical)	handlers['session.control']	`v0.22.3` (2026-10-21)
+03-standing-missions.tsv	session.control.read (canonical)	'session.control.read': 'control'	`v0.22.3` (2026-10-21)
+03-standing-missions.tsv	GET /api/sessions/control (missing)	/api/sessions/control	Not in Hermes
+04-mission-control.tsv	plugins.disabled (kanban)	if source in ("user", "bundled") and plugin_name in disabled_set:	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	/api/plugins/<name>/ mount	prefix=f"/api/plugins/{plugin['name']}",	`v0.21.6` (2026-10-08)
+04-mission-control.tsv	dashboard sign-in on /api/*	and path.startswith("/api/")	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	GET /api/plugins/kanban/boards	@router.get("/boards")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/board	@router.get("/board")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/workflow	@router.get("/workflow")	`v0.21.6` (2026-10-08)
+04-mission-control.tsv	GET /api/plugins/kanban/tasks/{id}	@router.get("/tasks/{task_id}")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	WS /api/plugins/kanban/events	@router.websocket("/events")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks	@router.post("/tasks")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/decompose	@router.post("/tasks/{task_id}/decompose")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/specify	@router.post("/tasks/{task_id}/specify")	`v2026.5.16` (2026-05-16)
+04-mission-control.tsv	POST /api/plugins/kanban/estimate	@router.post("/estimate")	`v2026.8.3` (2026-08-03)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/estimate	@router.post("/tasks/{task_id}/estimate")	`v2026.8.3` (2026-08-03)
+04-mission-control.tsv	POST /api/plugins/kanban/links	@router.post("/links")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	DELETE /api/plugins/kanban/links	@router.delete("/links")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	PATCH /api/plugins/kanban/tasks/{id}	@router.patch("/tasks/{task_id}")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/bulk	@router.post("/tasks/bulk")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	DELETE /api/plugins/kanban/tasks/{id}	@router.delete("/tasks/{task_id}")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	GET /api/plugins/kanban/assignees	@router.get("/assignees")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/profiles	@router.get("/profiles")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	GET /api/plugins/kanban/model-options	@router.get("/model-options")	`v2026.7.30` (2026-07-30)
+04-mission-control.tsv	GET /api/plugins/kanban/orchestration	@router.get("/orchestration")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	PUT /api/plugins/kanban/orchestration	@router.put("/orchestration")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	POST /api/plugins/kanban/dispatch	@router.post("/dispatch")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	kanban.auto_decompose	"auto_decompose": True,	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+04-mission-control.tsv	kanban.auto_promote_children	auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	kanban.dispatch_in_gateway	"dispatch_in_gateway": True,	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+04-mission-control.tsv	kanban.dispatch_interval_seconds	"dispatch_interval_seconds": 60,	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+04-mission-control.tsv	kanban.default_assignee	"default_assignee": "",	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+04-mission-control.tsv	decompose auto-promote	if auto_promote:	`v2026.5.28` (2026-05-28), in another file until `v2026.9.7`
+04-mission-control.tsv	dispatcher tick promotes todo	result.promoted = _kb.recompute_ready(conn	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	hermes kanban decompose	_cmd("decompose"	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	GET /api/plugins/kanban/workers/active	@router.get("/workers/active")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	GET /api/plugins/kanban/runs/{id}	@router.get("/runs/{run_id}")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	GET /api/plugins/kanban/runs/{id}/inspect	@router.get("/runs/{run_id}/inspect")	`v2026.5.28` (2026-05-28)
+04-mission-control.tsv	POST /api/plugins/kanban/runs/{id}/terminate	@router.post("/runs/{run_id}/terminate")	`v2026.6.5` (2026-06-05)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/reclaim	@router.post("/tasks/{task_id}/reclaim")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/reassign	@router.post("/tasks/{task_id}/reassign")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/tasks/{id}/log	@router.get("/tasks/{task_id}/log")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/stats	@router.get("/stats")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	GET /api/plugins/kanban/diagnostics	@router.get("/diagnostics")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	owner_admitted event (run to chat session)	kb._append_event(conn, task.id, 'owner_admitted',	`v0.22.3` (2026-10-21)
+04-mission-control.tsv	worker log Session line	print(f'Session: {	`v0.22.3` (2026-10-21)
+04-mission-control.tsv	GET /api/sessions/{id}	@manage_router.get("/api/sessions/{session_id}")	`v2026.7.30` (2026-07-30)
+04-mission-control.tsv	send back: reopen_review_task	def reopen_review_task	`v2026.8.13` (2026-08-13)
+04-mission-control.tsv	accept: complete_task from review	def complete_task(	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	POST /api/plugins/kanban/tasks/{id}/comments	@router.post("/tasks/{task_id}/comments")	`v2026.5.7` (2026-05-07)
+04-mission-control.tsv	request_changes (verdict)	def request_changes(	`v2026.8.13` (2026-08-13)
+04-mission-control.tsv	kanban_request_changes tool	"kanban_request_changes",	`v2026.8.13` (2026-08-13), in another file until `v2026.9.7`
+04-mission-control.tsv	hermes kanban request-changes	_cmd("request-changes"	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	kanban.review_dispatch	"review_dispatch": True,	`v2026.8.13` (2026-08-13)
+04-mission-control.tsv	tasks.session_id	session_id: Optional[str] = None         # originating	`v2026.9.7` (2026-09-07)
+04-mission-control.tsv	kanban.auto_subscribe_on_create	"auto_subscribe_on_create": True,	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+04-mission-control.tsv	a2a_call tool	def a2a_call(	`v2026.8.3` (2026-08-03)
+04-mission-control.tsv	a2a.forward	canonical_method("a2a.forward"	`v0.22.3` (2026-10-21)
+05-guardrails-budgets.tsv	GET /api/analytics/usage	/api/analytics/usage	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+05-guardrails-budgets.tsv	GET /api/analytics/models	/api/analytics/models	`v2026.4.30` (2026-04-30), in another file until `v2026.9.7`
+05-guardrails-budgets.tsv	GET /api/sessions	.get("/api/sessions")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	GET /api/sessions/{session_id}	.get("/api/sessions/{session_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	session.usage (method)	"session.usage"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	session.usage (event)	event("session.usage"	`v2026.9.14` (2026-09-14)
+05-guardrails-budgets.tsv	message.complete usage	event("message.complete"	`v2026.9.14` (2026-09-14)
+05-guardrails-budgets.tsv	cost pricing (estimate_usage_cost)	def estimate_usage_cost(	`v2026.3.23` (2026-03-23)
+05-guardrails-budgets.tsv	dashboard.show_token_analytics	"show_token_analytics": False	`v2026.5.16` (2026-05-16), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	usage.bars	_billing_view("usage.bars"	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	billing.state	@method("billing.state")	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	GET /api/cron/jobs	.get("/api/cron/jobs")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	GET /api/cron/jobs/{job_id}	.get("/api/cron/jobs/{job_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	POST /api/cron/jobs/{job_id}/pause	/api/cron/jobs/{job_id}/pause	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	POST /api/cron/jobs/{job_id}/resume	/api/cron/jobs/{job_id}/resume	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	POST /api/cron/jobs/{job_id}/cancel	/api/cron/jobs/{job_id}/cancel	`v0.22.6` (2026-11-02)
+05-guardrails-budgets.tsv	cron.catch_up_missed	"catch_up_missed": True	`v2026.9.14` (2026-09-14)
+05-guardrails-budgets.tsv	GET /api/plugins/kanban/orchestration	@router.get("/orchestration")	`v2026.5.28` (2026-05-28)
+05-guardrails-budgets.tsv	PUT /api/plugins/kanban/orchestration	@router.put("/orchestration")	`v2026.5.28` (2026-05-28)
+05-guardrails-budgets.tsv	kanban.dispatch_in_gateway	"dispatch_in_gateway": True	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	kanban.auto_decompose	"auto_decompose": True,	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	GET /api/plugins/kanban/stats	@router.get("/stats")	`v2026.5.7` (2026-05-07)
+05-guardrails-budgets.tsv	POST /api/plugins/kanban/estimate	@router.post("/estimate")	`v2026.8.3` (2026-08-03)
+05-guardrails-budgets.tsv	hermes pause / hermes resume	"pause", help="Emergency stop	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	ESTOP sentinel	SENTINEL_NAME = "ESTOP"	`v2026.8.13` (2026-08-13)
+05-guardrails-budgets.tsv	session.control	@method("session.control")	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	session.control.read	@method("session.control.read")	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	session.control.update	event("session.control.update"	`v2026.9.14` (2026-09-14)
+05-guardrails-budgets.tsv	delegation.pause	@method("delegation.pause")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	delegation.status	@method("delegation.status")	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	session.interrupt	@method("session.interrupt")	`v2026.4.23` (2026-04-23), in another file until `v0.21.6`
+05-guardrails-budgets.tsv	GET /api/config	.get("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+05-guardrails-budgets.tsv	PUT /api/config	.put("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+05-guardrails-budgets.tsv	PUT /api/config/raw	.put("/api/config/raw")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+05-guardrails-budgets.tsv	config.set approvals.mode	"approvals.mode": _set_word	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	approvals.mode	"mode": "smart",	`v2026.7.20` (2026-07-20), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	approvals.cron_mode	"cron_mode": "deny",	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	fallback_providers	"fallback_providers": [],	`v2026.3.30` (2026-03-30), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	hermes fallback	"fallback", help=	`v2026.9.7` (2026-09-07)
+05-guardrails-budgets.tsv	GET /api/delegation/routing	.get("/api/delegation/routing")	`v0.22.5` (2026-10-23)
+05-guardrails-budgets.tsv	GET /api/tools/toolsets	.get("/api/tools/toolsets")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	PUT /api/tools/toolsets/{name}	.put("/api/tools/toolsets/{name}")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	agent.max_turns	"max_turns": None,	`v2026.8.19` (2026-08-21)
+05-guardrails-budgets.tsv	agent.run_budget_seconds	"run_budget_seconds": None,	`v2026.8.19` (2026-08-21)
+05-guardrails-budgets.tsv	goals.max_turns	"max_turns": 20,	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	delegation.max_iterations	"max_iterations": 250,	`v2026.8.16` (2026-08-16)
+05-guardrails-budgets.tsv	delegation.max_spawn_depth	"max_spawn_depth": 1,	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	delegation.max_concurrent_children	"max_concurrent_children": 10,	`v2026.8.16` (2026-08-16)
+05-guardrails-budgets.tsv	delegation.subagent_auto_approve	"subagent_auto_approve": False,	`v2026.4.30` (2026-04-30), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	delegation.inherit_mcp_toolsets	"inherit_mcp_toolsets": True,	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	approvals.deny	"deny": [],	`v2026.7.7` (2026-07-07), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	kanban.max_in_progress	"max_in_progress": None,	`v2026.8.16.2` (2026-08-17)
+05-guardrails-budgets.tsv	kanban.failure_limit	"failure_limit": 2,	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+05-guardrails-budgets.tsv	mcp_servers.<name>.spend_limit	CONFIG_KEYS = ("tool_costs", "spend_limit", "cost_unit")	`v0.22.3` (2026-10-21)
+05-guardrails-budgets.tsv	agent.empty_response_guard.cost_threshold_usd	"cost_threshold_usd": 0.25,	`v2026.8.16.2` (2026-08-17)
+05-guardrails-budgets.tsv	hooks	"hooks": {},	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	POST /api/profiles	.post("/api/profiles")	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	POST /api/profiles clone_from	clone_from: Optional[str] = None	`v2026.3.30` (2026-03-30), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	clone copies config.yaml, .env, SOUL.md	_CLONE_CONFIG_FILES = ["config.yaml", ".env", "SOUL.md"]	`v2026.9.7` (2026-09-07)
+06-bot-test-lab.tsv	clone copies memory files	_CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]	`v2026.9.7` (2026-09-07)
+06-bot-test-lab.tsv	clone copies memory provider config	clone_memory_provider_config(source_dir, profile_dir,	`v2026.9.24` (2026-09-24)
+06-bot-test-lab.tsv	create notifies a running multiplexer	_notify_multiplexer(canon)	`v2026.9.14` (2026-09-14)
+06-bot-test-lab.tsv	GET /api/profiles	.get("/api/profiles")	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	DELETE /api/profiles/{name}	.delete("/api/profiles/{name}")	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	delete_profile	def delete_profile(name: str, yes: bool = False) -> Path:	`v2026.3.30` (2026-03-30)
+06-bot-test-lab.tsv	GET /api/profiles/{name}/soul	.get("/api/profiles/{name}/soul")	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	PUT /api/profiles/{name}/soul	.put("/api/profiles/{name}/soul")	`v2026.5.7` (2026-05-07), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	PUT /api/profiles/{name}/model	.put("/api/profiles/{name}/model")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/skills	.get("/api/skills")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	PUT /api/skills/content	.put("/api/skills/content")	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	PUT /api/skills/toggle	.put("/api/skills/toggle")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	POST /api/skills	.post("/api/skills")	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	PUT /api/tools/toolsets/{name}	.put("/api/tools/toolsets/{name}")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/config	.get("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+06-bot-test-lab.tsv	PUT /api/config	.put("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+06-bot-test-lab.tsv	profile param on /api/ws	def _profile_home(profile: str | None) -> Path | None:	`v2026.6.5` (2026-06-05)
+06-bot-test-lab.tsv	multi-profile hosting switch	activate_multi_profile_hosting()	`v2026.9.21` (2026-09-21)
+06-bot-test-lab.tsv	session.create	"session.create"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	session.create hidden	hidden: bool = False	`v2026.8.16` (2026-08-16), in another file until `v2026.9.14`
+06-bot-test-lab.tsv	session.create model override	session_model_override, create_reasoning_override, create_service_tier_override = create_overrides(params)	`v0.21.6` (2026-10-08)
+06-bot-test-lab.tsv	session.create source tag	return explicit or _resolve_session_platform()	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+06-bot-test-lab.tsv	prompt.submit	"prompt.submit"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	message.complete	event("message.complete"	`v2026.9.14` (2026-09-14)
+06-bot-test-lab.tsv	session.close	"session.close"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	session.set_hidden	"session.set_hidden"	`v2026.8.16` (2026-08-16)
+06-bot-test-lab.tsv	hidden listing filter	where_clauses.append("s.hidden = 0")	`v2026.8.16` (2026-08-16), in another file until `v2026.9.7`
+06-bot-test-lab.tsv	session.list include_hidden	include_hidden: bool = False	`v2026.8.16` (2026-08-16), in another file until `v2026.9.14`
+06-bot-test-lab.tsv	session.active_list	"session.active_list"	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/sessions	.get("/api/sessions")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/sessions/{session_id}	.get("/api/sessions/{session_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/sessions/{session_id}/messages	/api/sessions/{session_id}/messages	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	GET /api/sessions/{session_id}/mutation-snapshot	/api/sessions/{session_id}/mutation-snapshot	`v0.22.3` (2026-10-21)
+06-bot-test-lab.tsv	DELETE /api/sessions/{session_id}	.delete("/api/sessions/{session_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	delete removes messages	conn.execute('DELETE FROM messages WHERE session_id=?', (sid,))	`v0.22.3` (2026-10-21)
+06-bot-test-lab.tsv	delete scrubs session files	def _remove_session_files(sessions_dir	`v2026.4.30` (2026-04-30), in another file until `v2026.9.7`
+06-bot-test-lab.tsv	session.delete	"session.delete"	`v2026.4.30` (2026-04-30), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	sessions cost columns	estimated_cost_usd REAL,	`v2026.3.23` (2026-03-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	session.usage	"session.usage"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	llm.oneshot	"llm.oneshot"	`v2026.7.1` (2026-07-01), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	LlmOneshotParams	class LlmOneshotParams(ProfileParams):	`v2026.9.14` (2026-09-14)
+06-bot-test-lab.tsv	run_oneshot	def run_oneshot(	`v2026.4.30` (2026-04-30), in another file until `v2026.7.1`
+06-bot-test-lab.tsv	auxiliary task routing	def _resolve_task_provider_model(	`v2026.3.12` (2026-03-12) or earlier
+06-bot-test-lab.tsv	llm.oneshot max_tokens forwarding	def _forwards_max_tokens(	`v2026.9.7` (2026-09-07)
+06-bot-test-lab.tsv	llm.oneshot temperature stripping	def _fixed_temperature_for_model(	`v2026.4.23` (2026-04-23)
+06-bot-test-lab.tsv	approvals.mode	"approvals": {	`v2026.3.17` (2026-03-17), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	approvals.timeout	"timeout": 300,	`v2026.3.12` (2026-03-12) or earlier, in another file until `v2026.7.30`
+06-bot-test-lab.tsv	approval timeout denies	return deny(spec.gateway_refused, "timeout"	`v2026.9.7` (2026-09-07)
+06-bot-test-lab.tsv	approval.respond	"approval.respond"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+06-bot-test-lab.tsv	config.set yolo	"approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,	`v2026.9.7` (2026-09-07)
+06-bot-test-lab.tsv	unattended approval platforms	_UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/health	@router.get("/api/health")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/status	@router.get("/api/status")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	/api/status active_agents	"active_agents": active_agents,	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	/api/status gateway_platforms	"gateway_platforms": gateway["gateway_platforms"],	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	/api/status gateway_drainable	"gateway_drainable": derive_gateway_drainable(	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	/api/status can_update_hermes	"can_update_hermes": not _dashboard_local_update_managed_externally(),	`v2026.6.19` (2026-06-19), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	/api/status memory and disk	("disk", "gateway.disk_status", "collect_disk_status")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/system/stats	/api/system/stats	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/health/idle	/api/health/idle	`v2026.9.21` (2026-09-21)
+07-fleet-console-releases.tsv	GET /api/profiles	@router.get("/api/profiles")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	profile row distribution_version	"distribution_version": attr("distribution_version", None),	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/messaging/platforms	@router.get("/api/messaging/platforms")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/cron/jobs	@router.get("/api/cron/jobs")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	scheduler_heartbeat_age_s	"scheduler_heartbeat_age_s"	`v2026.9.21` (2026-09-21)
+07-fleet-console-releases.tsv	platforms.changed	event("platforms.changed"	`v2026.9.14` (2026-09-14)
+07-fleet-console-releases.tsv	pairing.changed	event("pairing.changed"	`v2026.9.14` (2026-09-14)
+07-fleet-console-releases.tsv	cron.changed	event("cron.changed"	`v2026.9.14` (2026-09-14)
+07-fleet-console-releases.tsv	POST /api/gateway/start	/api/gateway/start	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/gateway/stop	/api/gateway/stop	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/gateway/restart	/api/gateway/restart	`v2026.4.23` (2026-04-23), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/gateway/drain	@router.post("/api/gateway/drain")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	HERMES_DASHBOARD_DRAIN_SECRET	os.environ.get("HERMES_DASHBOARD_DRAIN_SECRET", "")	`v2026.7.1` (2026-07-01)
+07-fleet-console-releases.tsv	drain marker watcher	async def _drain_control_watcher(	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/hermes/update/check	/api/hermes/update/check	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/hermes/update	@router.post("/api/hermes/update")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/hermes/update/receipt	/api/hermes/update/receipt	`v2026.8.27` (2026-08-27), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/actions/{name}/status	/api/actions/{name}/status	`v2026.4.23` (2026-04-23), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/ops/doctor	/api/ops/doctor	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/ops/security-audit	/api/ops/security-audit	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/ops/backup	@router.post("/api/ops/backup")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/ops/backup/download	/api/ops/backup/download	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/pairing	@router.get("/api/pairing")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	POST /api/pairing/approve	/api/pairing/approve	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	POST /api/pairing/revoke	/api/pairing/revoke	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/ops/checkpoints	@router.get("/api/ops/checkpoints")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	POST /api/ops/checkpoints/prune	/api/ops/checkpoints/prune	`v2026.6.5` (2026-06-05), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	GET /api/credentials/pool	@router.get("/api/credentials/pool")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/profiles/{name}/soul	@router.get("/api/profiles/{name}/soul")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	PUT /api/profiles/{name}/soul	@router.put("/api/profiles/{name}/soul")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	GET /api/skills	@router.get("/api/skills")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	GET /api/skills/content	@router.get("/api/skills/content")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	PUT /api/skills/content	@router.put("/api/skills/content")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	PUT /api/skills/toggle	/api/skills/toggle	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+07-fleet-console-releases.tsv	POST /api/skills	@router.post("/api/skills")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	GET /api/model/options	@router.get("/api/model/options")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/model/auxiliary	@router.get("/api/model/auxiliary")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	POST /api/model/set	@router.post("/api/model/set")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	PUT /api/profiles/{name}/model	/api/profiles/{name}/model	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+07-fleet-console-releases.tsv	GET /api/delegation/routing	@router.get("/api/delegation/routing")	`v0.22.5` (2026-10-23)
+07-fleet-console-releases.tsv	GET /api/mcp/servers	@router.get("/api/mcp/servers")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	PUT /api/mcp/servers	@router.put("/api/mcp/servers")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	GET /api/config	.get("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+07-fleet-console-releases.tsv	PUT /api/config	@router.put("/api/config")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	GET /api/config/raw	@router.get("/api/config/raw")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	PUT /api/config/raw	@router.put("/api/config/raw")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	POST /api/profiles	@router.post("/api/profiles")	`v2026.7.30` (2026-07-30)
+07-fleet-console-releases.tsv	POST /api/profiles/{name}/export	/api/profiles/{name}/export	`v2026.8.13` (2026-08-13)
+07-fleet-console-releases.tsv	POST /api/profiles/import	/api/profiles/import	`v2026.8.13` (2026-08-13)
+07-fleet-console-releases.tsv	hermes profile export	add_parser("export", help="Export a profile to archive")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	hermes profile install	"install", help="Install a profile distribution from a git URL or local directory",	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	hermes profile update	"update", help="Re-pull a distribution and apply updates (user data preserved)",	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	hermes profile info	"info", help="Show a profile's distribution manifest (version, requirements, source)")	`v2026.9.7` (2026-09-07)
+07-fleet-console-releases.tsv	distribution.yaml	MANIFEST_FILENAME = "distribution.yaml"	`v2026.5.16` (2026-05-16)
+07-fleet-console-releases.tsv	distribution_owned defaults	DEFAULT_DIST_OWNED: tuple[str, ...] =	`v0.21.7` (2026-10-12)
+07-fleet-console-releases.tsv	hermes skills snapshot export	add_parser("export", help="Export installed skills to a file")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	GET /api/sessions/search	"/api/sessions/search"	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+08-fleet-memory.tsv	search route field projection	fields=("session_id", "role", "snippet", "source", "model", "session_started"))	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	search_messages result fields	"id", "session_id", "role", "snippet", "timestamp", "tool_name"	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	GET /api/sessions	@list_router.get("/api/sessions")	`v2026.7.30` (2026-07-30)
+08-fleet-memory.tsv	GET /api/profiles/sessions	"/api/profiles/sessions")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+08-fleet-memory.tsv	GET /api/profiles	@router.get("/api/profiles")	`v2026.7.30` (2026-07-30)
+08-fleet-memory.tsv	GET /api/sessions/{session_id}/messages	/api/sessions/{session_id}/messages	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+08-fleet-memory.tsv	GET /api/sessions/{session_id}/timeline	/api/sessions/{session_id}/timeline	`v2026.9.21` (2026-09-21)
+08-fleet-memory.tsv	GET /api/sessions/{session_id}/messages/around	/api/sessions/{session_id}/messages/around	`v2026.9.21` (2026-09-21)
+08-fleet-memory.tsv	session_search (agent tool)	name="session_search",	`v2026.3.12` (2026-03-12) or earlier
+08-fleet-memory.tsv	llm.oneshot	@method("llm.oneshot")	`v2026.7.1` (2026-07-01), in another file until `v2026.7.30`
+08-fleet-memory.tsv	GET /api/learning/graph	"/api/learning/graph"	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+08-fleet-memory.tsv	GET /api/learning/node	@router.get("/api/learning/node")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	PUT /api/learning/node	@router.put("/api/learning/node")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	DELETE /api/learning/node	@router.delete("/api/learning/node")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	learning.frames	"learning.frames"	`v2026.7.1` (2026-07-01), in another file until `v2026.7.30`
+08-fleet-memory.tsv	learning.detail	method("learning.detail"	`v2026.9.14` (2026-09-14)
+08-fleet-memory.tsv	learning.edit	method("learning.edit"	`v2026.9.14` (2026-09-14)
+08-fleet-memory.tsv	learning.delete	method("learning.delete"	`v2026.9.14` (2026-09-14)
+08-fleet-memory.tsv	GET /api/memory	@router.get("/api/memory")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	memory (agent tool)	name="memory",	`v2026.3.12` (2026-03-12) or earlier
+08-fleet-memory.tsv	memory.write_approval	"write_approval": False,	`v2026.6.19` (2026-06-19), in another file until `v2026.7.30`
+08-fleet-memory.tsv	pending memory store	get_hermes_home() / "pending" / subsystem	`v2026.6.19` (2026-06-19)
+08-fleet-memory.tsv	memory tool staging call	wa.stage_write(wa.MEMORY, payload	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	command.dispatch /memory pending|approve|reject	"memory": _cmd_memory	`v0.21.6` (2026-10-08)
+08-fleet-memory.tsv	review.summary	event("review.summary"	`v2026.9.14` (2026-09-14)
+08-fleet-memory.tsv	background review has no session store	review_agent._session_db = None	`v2026.7.1` (2026-07-01)
+08-fleet-memory.tsv	memory provider write metadata	def build_memory_write_metadata(	`v2026.5.28` (2026-05-28)
+08-fleet-memory.tsv	GET /api/fs/list	@router.get("/api/fs/list")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	GET /api/fs/read-text	@router.get("/api/fs/read-text")	`v2026.9.7` (2026-09-07)
+08-fleet-memory.tsv	GET /api/config	.get("/api/config")	`v2026.4.13` (2026-04-13), in another file until `v2026.9.7`
+09-rooms.tsv	groups.capabilities	"groups.capabilities"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.list	"groups.list"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.create	"groups.create"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.state	"groups.state"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.send	"groups.send"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.rename	"groups.rename"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.context	"groups.context"	`v0.22.7` (2026-11-03)
+09-rooms.tsv	groups.log	"groups.log"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.disband	"groups.disband"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.stop	"groups.stop"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.approve	"groups.approve"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.retry	"groups.retry"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.discard	"groups.discard"	`v0.22.6` (2026-11-02)
+09-rooms.tsv	groups.attachment.upload	"groups.attachment.upload"	`v0.22.6` (2026-11-02)
+09-rooms.tsv	groups.attachment.download	"groups.attachment.download"	`v0.22.6` (2026-11-02)
+09-rooms.tsv	groups.replicate	"groups.replicate"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.replica_state	"groups.replica_state"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.promote	"groups.promote"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.demote	"groups.demote"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.peer.invite	"groups.peer.invite"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.peer.revoke	"groups.peer.revoke"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	groups.peer.register	"groups.peer.register"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	bot_relay.roster.sync	"bot_relay.roster.sync"	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	bot_relay.outbox.drain	"bot_relay.outbox.drain"	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	bot_relay.deliver	"bot_relay.deliver"	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	bot_relay.reply	"bot_relay.reply"	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	bot_relay.outbox.pending	event("bot_relay.outbox.pending"	`v2026.9.14` (2026-09-14)
+09-rooms.tsv	groups forward to owning gateway	def forward(server, rid, method: str, params: dict)	`v0.22.6` (2026-11-02)
+09-rooms.tsv	canonical GROUP_METHODS	GROUP_METHODS = {	`v0.22.3` (2026-10-21)
+09-rooms.tsv	legacy /api/ws dispatch	return await asyncio.to_thread(server.dispatch, req, transport)	`v0.22.3` (2026-10-21)
+09-rooms.tsv	room worker starts with the dashboard	_hosted_groups.start_hosted_room_service()	`v2026.8.31` (2026-08-31), in another file until `v0.22.3`
+09-rooms.tsv	room log event kinds	_EVENT_KINDS_BY_ACTOR = {	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	message.member payload	_MEMBER_MESSAGE_FIELDS =	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	turn terminal events	("turn.settled", ("message_event_id", "passed"))	`v2026.9.7` (2026-09-07)
+09-rooms.tsv	room member activity	"member_activity": member_activity,	`v0.22.5` (2026-10-23)
+09-rooms.tsv	room approval pending action	"kind": "approval", "task_id": task["identity"].task_id,	`v2026.9.7` (2026-09-07)
+09-rooms.tsv	room approval choices	if choice not in {"once", "deny"}:	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	room member session	return f"Group: {room_id}"	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	room store	/ "shared-state.db"	`v2026.9.11` (2026-09-11)
+09-rooms.tsv	roster size 2 to 6	MAX_DISCUSSION_MEMBERS = 6	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	mention syntax	_MENTION_RE = re.compile(	`v2026.3.30` (2026-03-30), in another file until `v2026.8.31`
+09-rooms.tsv	first-round responders	def resolve_mentions(	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	bot pulls a peer in	def _unaddressed_member_mentions(	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	@user needs-you (Hermes desktop)	/@user\b/i.test(entry.text)	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	Hermes desktop room poll	setTimeout(() => void poll(), 2000)	`v2026.9.11` (2026-09-11), in another file until `v0.22.3`
+09-rooms.tsv	RoomLink refuses approvals off	if checked_policy.approval_mode == "off":	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	RoomLink durable run storage	def _room_link_run_storage_durable	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	hosted_rooms.discussion	"hosted_rooms": {	`v0.22.6` (2026-11-02)
+09-rooms.tsv	room_link_url	room_link_url: Optional[str] = None	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	HERMES_ROOM_LINK_URL	os.getenv("HERMES_ROOM_LINK_URL")	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	POST /v1/room-members/invitations	/v1/room-members/invitations	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	GET /v1/room-members/capabilities	/v1/room-members/capabilities	`v2026.8.31` (2026-08-31)
+09-rooms.tsv	bot_mode.envelope_ttl_seconds	"envelope_ttl_seconds": 900,	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	message_agent tool	MESSAGE_AGENT_TOOL_NAME = "message_agent"	`v2026.8.27` (2026-08-27)
+09-rooms.tsv	bot_relay.deliver forwards to target gateway	def authority_delivery(home, params):	`v0.22.3` (2026-10-21)
+09-rooms.tsv	profiles.list	"profiles.list"	`v2026.8.13` (2026-08-13)
+09-rooms.tsv	session.list	"session.list"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+09-rooms.tsv	session.create	"session.create"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+09-rooms.tsv	session.active_list	"session.active_list"	`v2026.5.28` (2026-05-28), in another file until `v2026.7.30`
+09-rooms.tsv	approval.respond	"approval.respond"	`v2026.4.23` (2026-04-23), in another file until `v2026.7.30`
+10-canonical-gateway.tsv	client.capabilities	@method("client.capabilities")	`v2026.9.21` (2026-09-21)
+10-canonical-gateway.tsv	gateway.capabilities	@method("gateway.capabilities")	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	gateway.ping	"gateway.ping"	`v2026.8.27` (2026-08-27)
+10-canonical-gateway.tsv	gateway.ready session_authority	"session_authority": True	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.create	'session.create'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	session.resume	'session.resume'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	prompt.submit	'prompt.submit'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	session.interrupt	'session.interrupt'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.events.since	'session.events.since'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.close -> session.detach	'session.detach'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.title -> session.mutate rename	'rename': {'title'}	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.cwd.set -> session.mutate workspace	operation == 'workspace'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.branch -> session.mutate branch	operation == 'branch' and _valid_branch_payload	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.undo -> session.mutate rewind	operation == 'rewind'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.compress -> session.mutate compress	operation == 'compress' and _valid_compress_payload	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.status -> session.info	'session.info'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	session.list	'session.list'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	session.active_list	handlers['session.active_list']	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.context_breakdown	'session.context_breakdown'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	approval.respond	'approval.respond'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	approval.received	'approval.received'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	clarify.lock	handlers['clarify.lock']	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	request.answer	@method("request.answer")	`v2026.9.14` (2026-09-14)
+10-canonical-gateway.tsv	image.attach_bytes	handlers['image.attach_bytes']	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	image.detach	@method("image.detach")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+10-canonical-gateway.tsv	file.attach	'file.attach'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	model.options	'model.options'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	config.get	'config.get': partial(config_get	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	config.set	'config.set'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	config.set model -> session.mutate model	operation == 'model' and 'model' in payload	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	profiles.list	method == 'profiles.list'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	profiles.get_asset	@_profile_handler("profiles.get_asset"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	llm.oneshot	'llm.oneshot'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	commands.catalog	'commands.catalog'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	command.dispatch	'command.dispatch'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	command.dispatch /steer -> session.steer	'session.steer'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	slash.exec	'slash.exec'	`v2026.9.7` (2026-09-07), in another file until `v0.22.3`
+10-canonical-gateway.tsv	prompt.btw	'prompt.btw'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	tools.show	'tools.show'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	subagent.list	'subagent.list'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	subagent.tail	'subagent.tail'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	subagent.steer	'subagent.steer'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	subagent.interrupt	'subagent.interrupt'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	subagent.roster	@method("subagent.roster")	`v0.22.6` (2026-11-02)
+10-canonical-gateway.tsv	projects.list	@_projects_method("projects.list")	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+10-canonical-gateway.tsv	projects.create	@_projects_method("projects.create")	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+10-canonical-gateway.tsv	projects.update	"update", "update_project"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	projects.delete	@_projects_method("projects.delete")	`v2026.7.1` (2026-07-01), in another file until `v2026.9.7`
+10-canonical-gateway.tsv	projects.add_folder	"add_folder", "add_folder"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	projects.remove_folder	_register_project_mutator("remove_folder"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	projects.membership.list	"projects.membership.list"	Not in Hermes
+10-canonical-gateway.tsv	projects.membership.apply	"projects.membership.apply"	Not in Hermes
+10-canonical-gateway.tsv	learning.frames	@_rpc("learning.frames"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	learning.detail	("detail", "node_detail"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	learning.edit	("edit", "edit_node"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	learning.delete	("delete", "delete_node"	`v2026.9.7` (2026-09-07)
+10-canonical-gateway.tsv	display.status	@method("display.status")	`v2026.9.24` (2026-09-24)
+10-canonical-gateway.tsv	display.start	@method("display.start")	`v2026.9.24` (2026-09-24)
+10-canonical-gateway.tsv	display.observe	@method("display.observe")	`v2026.9.24` (2026-09-24)
+10-canonical-gateway.tsv	display.lease.acquire	@method("display.lease.acquire")	`v2026.9.24` (2026-09-24)
+10-canonical-gateway.tsv	display.lease.release	@method("display.lease.release")	`v2026.9.24` (2026-09-24)
+10-canonical-gateway.tsv	session.mutate	'session.mutate'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	clarify.respond	'clarify.respond'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	prompt.receipt	'prompt.receipt'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	prompt.cancel	'prompt.cancel'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	prompt.steer_queued	'prompt.steer_queued'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	prompt.replace_queued	'prompt.replace_queued'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	prompt.resolve_unknown	'prompt.resolve_unknown'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	runtime.describe	'runtime.describe'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	admission dedupe on submission_id	RuntimeStoreError('admission_conflict'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	approval.request	event_type='approval.request'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	clarify.request	event_type="clarify.request"	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	approval.settled / clarify.settled	+ '.settled')	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.info event	}, event_type='session.info')	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session event envelope	class CanonicalReplayEvent	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.automation	handlers['session.automation']	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.export	'session.export'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	session.stats	handlers['session.stats']	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	cron.status	'cron.status'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	cron.cancel	'cron.cancel'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	command.observe	'command.observe'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	rollback.session_diff	'rollback.session_diff'	`v0.22.3` (2026-10-21)
+10-canonical-gateway.tsv	PATCH /api/sessions/{session_id}	patch("/api/sessions/{session_id}")	`v2026.6.5` (2026-06-05), in another file until `v2026.7.30`
+10-canonical-gateway.tsv	DELETE /api/sessions/{session_id}	delete("/api/sessions/{session_id}")	`v2026.4.13` (2026-04-13), in another file until `v2026.7.30`
+10-canonical-gateway.tsv	webapp.enabled	"webapp": {"enabled": False	`v0.22.6` (2026-11-02)
+10-canonical-gateway.tsv	Webapp listener plan	def listener_plan(home)	`v0.22.6` (2026-11-02)
