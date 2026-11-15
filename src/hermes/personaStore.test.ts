@@ -56,6 +56,20 @@ describe("PersonaStore", () => {
     ]);
   });
 
+  it("gives versions kept before that, sharing a time, a time each", () => {
+    const storage = memoryStorage();
+    const key = personaKey(ssh, "default");
+    const kept = (content: string, replacedAt: number) => ({ exists: true, content, replacedAt });
+    storage.items.set(`${key}.earlier`, JSON.stringify([kept("c", 5), kept("b", 5), kept("a", 5)]));
+    const store = new PersonaStore(storage);
+    expect(store.earlier(key).map((v) => [v.content, v.replacedAt])).toEqual([
+      ["c", 7],
+      ["b", 6],
+      ["a", 5],
+    ]);
+    expect(store.addEarlier(key, { exists: true, content: "d" }, 6).map((v) => v.replacedAt)).toEqual([8, 7, 6, 5]);
+  });
+
   it("ignores what it can't read, and keeps edits in memory when storage is full", () => {
     const storage = memoryStorage();
     storage.items.set(`${personaKey(ssh, "default")}.draft`, "{not json");

@@ -25,6 +25,13 @@ export function personaKey(connection: ScopeSource, profile: string): string {
 const isSoul = (s: unknown): s is Soul =>
   !!s && typeof (s as Soul).exists === "boolean" && typeof (s as Soul).content === "string";
 
+/** The first millisecond from `at` not in `taken`, which it then holds. */
+function freeTime(at: number, taken: Set<number>): number {
+  while (taken.has(at)) at++;
+  taken.add(at);
+  return at;
+}
+
 export class PersonaStore {
   /** Kept in memory too, so a storage that is full or can't be written still keeps them until the app closes. */
   private memory = new Map<string, string | null>();
@@ -146,22 +153,24 @@ export class PersonaStore {
     return this.saves.get(key);
   }
 
+  /** Newest first. Versions kept before `replacedAt` was unique, sharing a time, are each read a millisecond later than the older one. */
   earlier(key: string): EarlierSoul[] {
-    return (
+    const list =
       this.read(`${key}.earlier`, (v): v is EarlierSoul[] =>
         Array.isArray(v) && v.every((e) => isSoul(e) && typeof (e as EarlierSoul).replacedAt === "number"),
-      ) ?? []
-    );
+      ) ?? [];
+    const taken = new Set<number>();
+    return list.reduceRight<EarlierSoul[]>((newer, v) => [{ ...v, replacedAt: freeTime(v.replacedAt, taken) }, ...newer], []);
   }
 
   /**
-   * Keeps `soul` as the version a save just replaced. The same text twice in a row is kept once. Two saves in one
-   * millisecond are kept a millisecond apart, so each has its own `replacedAt`.
+   * Keeps `soul` as the version a save just replaced. The same text twice in a row is kept once. A save at a time
+   * already kept is kept a millisecond later, so each version has its own `replacedAt`.
    */
   addEarlier(key: string, soul: Soul, replacedAt: number): EarlierSoul[] {
     const list = this.earlier(key);
     const same = list[0] && list[0].exists === soul.exists && list[0].content === soul.content;
-    const at = Math.max(replacedAt, ...list.map((v) => v.replacedAt + 1));
+    const at = freeTime(replacedAt, new Set(list.map((v) => v.replacedAt)));
     const next = same ? list : [{ ...soul, replacedAt: at }, ...list].slice(0, EARLIER_KEPT);
     this.write(`${key}.earlier`, next);
     return next;
