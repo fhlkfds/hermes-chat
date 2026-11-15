@@ -924,9 +924,12 @@ export class FakeHermes {
       this.turns.add(runtimeId);
       if (stored) this.inflight.set(runtimeId, { stored, user: String(r.params.text ?? ""), assistant: "" });
       this.stopped.delete(runtimeId);
-      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
       const prompt = String(r.params.text ?? "");
-      if (stored && /edit two files/i.test(prompt)) queueMicrotask(() => this.fileReply(runtimeId, stored));
+      const fileTurn = !!stored && /edit two files/i.test(prompt);
+      // The file turn's message has its stored row reported, as Hermes reports every message's, so its reply gets a time.
+      const userRow = this.userRowId ?? (fileTurn ? this.transcripts[stored!].at(-1)?.row_id : undefined);
+      this.respond(r.id, { status: "streaming", ...(userRow !== undefined && { user_row_id: userRow }) });
+      if (fileTurn) queueMicrotask(() => this.fileReply(runtimeId, stored!));
       else if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
       else if (stored && /background/i.test(prompt)) queueMicrotask(() => this.backgroundReply(runtimeId, stored));
     },

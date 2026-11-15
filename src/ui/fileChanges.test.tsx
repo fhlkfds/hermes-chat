@@ -37,7 +37,6 @@ async function open(setup: (s: FakeHermes) => void = () => {}) {
   server.transcripts = { site: [] };
   server.serverDirs.add(FOLDER);
   server.checkpoints.on = true;
-  server.userRowId = 500;
   setup(server);
   const hermes = await connect(server.openPipe);
   running.push(hermes);

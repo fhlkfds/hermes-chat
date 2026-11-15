@@ -15,7 +15,6 @@ afterEach(async () => {
 async function edited(server = new FakeHermes()) {
   server.serverDirs.add(FOLDER);
   server.checkpoints.on = true;
-  server.userRowId = 500;
   const hermes = await connect(server.openPipe);
   running.push(hermes);
   const id = await hermes.newChat(undefined, { folder: FOLDER });
