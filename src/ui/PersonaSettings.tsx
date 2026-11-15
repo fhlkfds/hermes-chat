@@ -567,9 +567,9 @@ export function PersonaSettings({
   );
   const effect = (
     <p>
-      Hermes reads SOUL.md when a chat starts. Chats started after you save use the new persona, in Hermes Chat, in other Hermes clients and on messaging
+      Hermes reads SOUL.md when a chat starts. Chats started after you save use the new persona, in Highwing, in other Hermes clients and on messaging
       platforms that use the {profile} profile. A chat already under way keeps the persona it started with, unless Hermes rebuilds its instructions, as it
-      does when the chat's model changes. Hermes doesn't need to restart, and Hermes Chat never restarts it.
+      does when the chat's model changes. Hermes doesn't need to restart, and Highwing never restarts it.
     </p>
   );
   return (
@@ -587,7 +587,7 @@ export function PersonaSettings({
           <HeadPart at="applies">
             <AppliesBox line="Chats started after you save use the new persona. A chat already going keeps the one it started with." more="How changes apply">
               <div className="applies-text">
-                <p>Hermes Chat edits it as plain text and keeps its Markdown as you write it.</p>
+                <p>Highwing edits it as plain text and keeps its Markdown as you write it.</p>
                 {effect}
               </div>
             </AppliesBox>
@@ -605,7 +605,7 @@ export function PersonaSettings({
         }
         more={
           <>
-            <p>Hermes Chat edits it as plain text and keeps its Markdown as you write it.</p>
+            <p>Highwing edits it as plain text and keeps its Markdown as you write it.</p>
             {effect}
           </>
         }
@@ -618,7 +618,7 @@ export function PersonaSettings({
                 {pickerProblem}
                 {profile !== inUse && (
                   <div className="muted">
-                    Hermes Chat is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
+                    Highwing is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
                     the <span className="mono">{profile}</span> profile, in any Hermes client.
                   </div>
                 )}
@@ -628,13 +628,13 @@ export function PersonaSettings({
         ) : (
           <SettingRow
             name="Profile"
-            hint={picker ? "Pick any profile on this server to edit its persona; that doesn't change the profile Hermes Chat is using." : undefined}
+            hint={picker ? "Pick any profile on this server to edit its persona; that doesn't change the profile Highwing is using." : undefined}
             control={picker ?? <span className="set-value mono persona-fact">{profile}</span>}
           >
             {pickerProblem}
             {profile !== inUse && (
               <div className="muted">
-                Hermes Chat is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
+                Highwing is using the <span className="mono">{inUse}</span> profile, so chats started here keep its persona. This one is for chats on
                 the <span className="mono">{profile}</span> profile, in any Hermes client.
               </div>
             )}
@@ -843,7 +843,7 @@ export function PersonaSettings({
                 )}
                 {dirty && !kept && (
                   <p className="sign-in-error persona-note" role="alert">
-                    Hermes Chat couldn't write your changes to this computer's storage: it is full or can't be written. They last only until the app
+                    Highwing couldn't write your changes to this computer's storage: it is full or can't be written. They last only until the app
                     closes, unless you save them.{" "}
                     <button className="link-btn" onClick={() => void navigator.clipboard?.writeText(text)}>
                       Copy them

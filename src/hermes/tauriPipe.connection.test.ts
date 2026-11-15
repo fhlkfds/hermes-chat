@@ -84,7 +84,7 @@ describe("The Tauri pipe (#474, #486)", () => {
     expect(closed).not.toBeInstanceOf(RestError);
     expect(closed).toMatchObject({ message: "The chat connection is closed." });
 
-    failWith = "Hermes Chat doesn't relay POST api/x.";
-    expect(await pipe.request("GET", "api/sessions/x").catch((e: unknown) => e)).toMatchObject({ message: "Hermes Chat doesn't relay POST api/x." });
+    failWith = "Highwing doesn't relay POST api/x.";
+    expect(await pipe.request("GET", "api/sessions/x").catch((e: unknown) => e)).toMatchObject({ message: "Highwing doesn't relay POST api/x." });
   });
 });

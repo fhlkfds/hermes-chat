@@ -39,14 +39,14 @@ describe("Hermes transport", () => {
     const failure = (open: OpenPipe) => connect(open).catch((e: unknown) => explainSignIn(signInError(e), d));
     const canonical = new FakeHermes();
     canonical.readyPayload = { ...canonical.readyPayload, session_authority: true };
-    expect(await failure(canonical.openPipe)).toMatchObject({ stage: "chat", problem: "Hermes Chat can't talk to this server yet." });
+    expect(await failure(canonical.openPipe)).toMatchObject({ stage: "chat", problem: "Highwing can't talk to this server yet." });
     const server = new FakeHermes();
     const hidden: OpenPipe = async (onEvent, profile) => {
       const pipe = await server.openPipe(onEvent, profile);
       onEvent({ kind: "closed", reason: "closed by the server (1008 (not shown, as it may repeat your password or a request header))" });
       return pipe;
     };
-    expect(await failure(hidden)).toMatchObject({ stage: "chat", problem: "Something in front of the dashboard at hermes.example.com turned Hermes Chat away." });
+    expect(await failure(hidden)).toMatchObject({ stage: "chat", problem: "Something in front of the dashboard at hermes.example.com turned Highwing away." });
   });
 
   it("refuses a server that speaks the canonical protocol", async () => {

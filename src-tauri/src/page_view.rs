@@ -379,7 +379,7 @@ mod imp {
     }
 
     pub fn open(app: &tauri::AppHandle, key: String, on_event: Channel<PageEvent>) -> Result<(), String> {
-        let overlay = overlay(app).ok_or("Hermes Chat's window has no place for the page.")?;
+        let overlay = overlay(app).ok_or("Highwing's window has no place for the page.")?;
         open_in(&overlay, key, on_event);
         Ok(())
     }

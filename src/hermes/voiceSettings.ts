@@ -417,7 +417,7 @@ export class VoiceSettingsApi {
     // Without the config, nothing could be checked before a write or confirmed after it (Rust says so by leaving
     // `sttEnabled` out).
     if (setup.sttEnabled === undefined)
-      throw new Error("Hermes Chat couldn't read the profile's config on Hermes, so it can't check or confirm a change to the speech providers.");
+      throw new Error("Highwing couldn't read the profile's config on Hermes, so it can't check or confirm a change to the speech providers.");
     return { profile, setup, sides: { stt, tts }, values: valuesFrom(setup), options: optionsFrom(schema), readAt: Date.now() };
   }
 

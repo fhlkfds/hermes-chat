@@ -98,7 +98,7 @@ describe("Usage in the app", () => {
     await user.click(screen.getByRole("button", { name: "Back to the breakdown" }));
     // Focus goes back to the row's own button, mounted again with the breakdown.
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Telegram: show its 1 chats/ })));
-    await user.click(screen.getByRole("button", { name: /^Hermes Chat: show its/ }));
+    await user.click(screen.getByRole("button", { name: /^Highwing: show its/ }));
     await user.click(screen.getByRole("button", { name: "Disk alerts" }));
     await waitFor(() => expect(document.querySelector(".usage-screen")).toBeNull());
     expect(screen.getAllByText("Disk alerts").length).toBeGreaterThan(0);

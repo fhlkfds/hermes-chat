@@ -25,6 +25,7 @@ import { viaLabel } from "../hermes/routes";
 import { dragChat, dragChatEnd, rowDragged } from "./Tabs";
 import { ariaKeys, chordLabel, chordParts, pick, useBindings } from "./keybindings";
 import { errorText } from "../hermes/values";
+import { BrandMark } from "./BrandMark";
 
 
 
@@ -140,7 +141,7 @@ export function Rail({
     <>
       <div className="rail-top">
         <button className="rail-brand" aria-label="Hide or show chats" aria-keyshortcuts={ariaKeys(keys.toggleList)} onClick={onToggleList} {...bind("brand", { label: "Hide or show chats", keys: label("toggleList") })}>
-          H
+          <BrandMark />
         </button>
         <button className="icon-btn rail-primary" aria-label={`New chat (${label("newChat")})`} aria-keyshortcuts={ariaKeys(keys.newChat)} onClick={onNew} {...bind("new", { label: "New chat", keys: label("newChat") })}>
           <SquarePen size={18} />

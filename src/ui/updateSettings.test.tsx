@@ -72,7 +72,7 @@ describe("UpdateSettings", () => {
     stagedFiles.set(left, [{ name: "shot-1.png" }]);
     render(<UpdateSettings updates={fake({ state: "restart", from: "r1.ef433a2-1", to: "r2.2222222-1" })} />);
     expect(screen.getByRole("note").textContent).toBe(
-      "Not kept: a file attached in a composer, shot-1.png. Send or remove it first, or attach it again after the restart. A screenshot taken in Hermes Chat can't be attached again.",
+      "Not kept: a file attached in a composer, shot-1.png. Send or remove it first, or attach it again after the restart. A screenshot taken in Highwing can't be attached again.",
     );
     act(() => stagedFiles.set(right, [{ name: "notes.txt" }, { name: "log.txt" }]));
     expect(screen.getByRole("note").textContent).toContain("3 files attached in a composer, shot-1.png, notes.txt, log.txt. Send or remove them first");

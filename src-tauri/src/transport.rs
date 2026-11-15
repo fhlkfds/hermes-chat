@@ -82,12 +82,12 @@ pub enum TransportError {
     #[error("Wrong token: the dashboard turned it down. A token stops working when HERMES_DASHBOARD_SESSION_TOKEN is replaced on the server.")]
     BadToken,
     /// `/api/auth/me` named another provider than `TOKEN_PROVIDER` for the token.
-    #[error("The dashboard took the token as a {0} sign-in, not as its session token, so Hermes Chat didn't sign in with it.")]
+    #[error("The dashboard took the token as a {0} sign-in, not as its session token, so Highwing didn't sign in with it.")]
     NotSessionToken(String),
     #[error("Token sign-in sends the token in the Authorization header, and this connection's extra request headers already set Authorization. Remove that header to sign in with a token.")]
     AuthorizationHeaderSet,
     /// The server's `/api/status` doesn't list `TOKEN_PROVIDER`, so the token isn't sent to it.
-    #[error("This Hermes server doesn't take a token: its sign-in doesn't list the session-token provider. Hermes Chat didn't send it the token. Sign in with a password, or update Hermes on the server.")]
+    #[error("This Hermes server doesn't take a token: its sign-in doesn't list the session-token provider. Highwing didn't send it the token. Sign in with a password, or update Hermes on the server.")]
     TokenNotOffered,
     #[error("Too many sign-in attempts. Wait a minute and try again.")]
     RateLimited,
@@ -101,12 +101,12 @@ pub enum TransportError {
     Stalled(u64),
     #[error("The dashboard sign-in has expired. Sign in again.")]
     SignedOut,
-    #[error("Hermes Chat doesn't relay {0}.")]
+    #[error("Highwing doesn't relay {0}.")]
     NotRelayed(String),
     #[error("it's {:.1} MB now, over the {} MB limit", *.size as f64 / MIB as f64, .max / MIB)]
     FileTooLarge { size: u64, max: u64 },
     /// An answer past the most `read_body` reads of it; `size`: what was announced or read when it stopped.
-    #[error("The server's answer is over {}, the most Hermes Chat reads of one, so it wasn't read.", size_text(*.max))]
+    #[error("The server's answer is over {}, the most Highwing reads of one, so it wasn't read.", size_text(*.max))]
     AnswerTooLarge { size: u64, max: u64 },
     #[error("{0}")]
     File(String),
@@ -137,13 +137,13 @@ pub enum TransportError {
     /// Settings → MCP servers' edit, after something may have been written: Hermes didn't confirm all of it (ADR 0121).
     #[error("Not confirmed: {0}")]
     McpUnconfirmed(String),
-    #[error("The dashboard sent Hermes Chat on to {0}, another site. Hermes Chat doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    #[error("The dashboard sent Highwing on to {0}, another site. Highwing doesn't follow it there, so your extra request headers aren't sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     Redirected(String),
     /// `/api/status` answered, but not as a Hermes dashboard does (ADR 0120). No password was sent.
-    #[error("Wrong server: something answered at this address, but it isn't a Hermes dashboard. Hermes Chat didn't send it the password.")]
+    #[error("Wrong server: something answered at this address, but it isn't a Hermes dashboard. Highwing didn't send it the password.")]
     NotHermes,
     /// A Hermes dashboard answered whose install id isn't the one the connection signed in to before (ADR 0120).
-    #[error("Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password.")]
+    #[error("Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Highwing didn't send it the password.")]
     WrongServer,
     /// Plain http:// to an address that isn't this computer, a LAN or Tailscale (ADR 0120).
     #[error("Plain http:// is only used on this computer, a LAN or Tailscale, and {0} is a public address. Use https:// or SSH to reach it.")]
@@ -151,7 +151,7 @@ pub enum TransportError {
     /// Plain http:// to an address in 100.64.0.0/10 that this computer doesn't reach over Tailscale (ADR 0004).
     #[error("Plain http:// is only used on this computer, a LAN or Tailscale, and this computer doesn't reach {0} over Tailscale. Turn Tailscale on here, or use https:// or SSH to reach it.")]
     PlainHttpNotTailscale(String),
-    #[error("The dashboard sent Hermes Chat on to another site, whose address isn't shown, as it may repeat your password or a request header. Hermes Chat doesn't follow it there, so nothing is sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
+    #[error("The dashboard sent Highwing on to another site, whose address isn't shown, as it may repeat your password or a request header. Highwing doesn't follow it there, so nothing is sent to it. If a gateway such as Cloudflare Access is in front of the dashboard, check the headers it needs.")]
     RedirectedHidden,
 }
 
@@ -236,7 +236,7 @@ fn reserved(name: &HeaderName) -> bool {
 /// dropped; any other control character, a line break above all, is refused. Errors name the header, never its value.
 pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportError> {
     if headers.len() > MAX_EXTRA_HEADERS {
-        return Err(TransportError::BadHeader(format!("Hermes Chat sends at most {MAX_EXTRA_HEADERS} extra request headers.")));
+        return Err(TransportError::BadHeader(format!("Highwing sends at most {MAX_EXTRA_HEADERS} extra request headers.")));
     }
     let mut map = HeaderMap::new();
     for (i, h) in headers.iter().enumerate() {
@@ -248,7 +248,7 @@ pub fn extra_headers(headers: &[ExtraHeader]) -> Result<HeaderMap, TransportErro
         let name = HeaderName::from_bytes(raw.as_bytes())
             .map_err(|_| bad(format!("{raw:?} isn't a header name. Use letters, digits and dashes, such as CF-Access-Client-Id.")))?;
         if reserved(&name) {
-            return Err(bad(format!("Hermes Chat sets {raw} itself.")));
+            return Err(bad(format!("Highwing sets {raw} itself.")));
         }
         if map.contains_key(&name) {
             return Err(bad(format!("{raw} is set twice.")));

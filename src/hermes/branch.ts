@@ -121,7 +121,7 @@ export function locate(items: Item[], itemId: string, spine: SpineRow[]): { inde
     const index = spine.findIndex((r) => r.id === item.rowId);
     // The row decides: Hermes shows some stored messages differently from how it keeps them.
     if (index >= 0) return { index };
-    return { error: "Hermes doesn't list this message among the chat's stored messages, so Hermes Chat can't tell where the branch would start." };
+    return { error: "Hermes doesn't list this message among the chat's stored messages, so Highwing can't tell where the branch would start." };
   }
   const before = items.slice(0, items.indexOf(item)).filter((i) => branchable(i) && i.kind === item.kind && norm(i.text) === norm(item.text)).length;
   const shown = spine.map((r, index) => ({ r, index })).filter(({ r }) => !r.hidden && sameMessage(r, item));

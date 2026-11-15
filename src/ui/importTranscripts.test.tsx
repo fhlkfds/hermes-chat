@@ -89,7 +89,7 @@ describe("Import transcripts", () => {
     expect(box.textContent).toContain("the default profile, Settled");
     expect(box.textContent).toMatch(/every message is dated when the file was exported, 2026-11-01 08:00 UTC/);
     expect(box.textContent).toMatch(/1 attachment is named in the file but not in it/);
-    expect(box.textContent).toMatch(/Imported chats are read-only in Hermes Chat/);
+    expect(box.textContent).toMatch(/Imported chats are read-only in Highwing/);
     expect(t.posts()).toHaveLength(0);
 
     await user.selectOptions(screen.getByLabelText("Project"), "p1");

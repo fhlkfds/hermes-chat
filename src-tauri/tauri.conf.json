@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hermes Chat",
+  "productName": "Highwing",
   "version": "0.1.4",
   "identifier": "net.l0cky12.hermes-chat",
   "build": {
@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Hermes Chat", "create": false, "width": 1280, "height": 820, "minWidth": 760, "minHeight": 500 }],
+    "windows": [{ "title": "Highwing", "create": false, "width": 1280, "height": 820, "minWidth": 760, "minHeight": 500 }],
     "security": { "csp": null }
   },
   "bundle": {

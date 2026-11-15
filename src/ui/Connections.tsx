@@ -35,7 +35,7 @@ const StatusBadge = ({ s }: { s: LiveSummary }) => (
 
 /** Why a Connect was refused at the limit. */
 export const atLimitText = (limit: number) =>
-  `Hermes Chat already has ${limit} connection${limit === 1 ? "" : "s"} open, the most it keeps open. Disconnect one first, or raise the limit in Settings → General → Connections.`;
+  `Highwing already has ${limit} connection${limit === 1 ? "" : "s"} open, the most it keeps open. Disconnect one first, or raise the limit in Settings → General → Connections.`;
 
 /** What a live connection has under way, in a few words, or nothing. */
 export function liveCounts(s: Pick<LiveSummary, "waiting" | "running" | "failed" | "unread">): string {
@@ -392,7 +392,7 @@ export function ConnectionManager({
     >
       {unsaved && (
         <SettingNote tone="bad" role="alert">
-          This computer's storage is full, so the latest change to this list lasts only until Hermes Chat closes.
+          This computer's storage is full, so the latest change to this list lasts only until Highwing closes.
         </SettingNote>
       )}
       {liveLimit !== undefined && onLiveLimit && (

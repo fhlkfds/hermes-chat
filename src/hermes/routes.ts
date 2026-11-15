@@ -124,12 +124,12 @@ export function routeProblem(r: SavedRoute): string | undefined {
   const t = r.target.trim();
   if (!t) return r.kind === "ssh" ? "Enter an SSH target." : "Enter an address.";
   if (r.kind === "ssh") return t.startsWith("-") || /\s/.test(t) ? "An SSH target is a user and host, or an alias, with no spaces." : undefined;
-  if (/^(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#]*@/i.test(t)) return "An address can't hold a user name, password or token, since Hermes Chat saves and shows it. Take out the part before @.";
+  if (/^(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#]*@/i.test(t)) return "An address can't hold a user name, password or token, since Highwing saves and shows it. Take out the part before @.";
   let u: URL;
   try {
     u = new URL(normalizeTarget(r.kind, t));
   } catch {
-    return "That isn't an address Hermes Chat can use.";
+    return "That isn't an address Highwing can use.";
   }
   if (!/^(https?|wss?):$/.test(u.protocol)) return "Use an http:// or https:// address.";
   const host = u.hostname.replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "").toLowerCase();

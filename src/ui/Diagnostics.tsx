@@ -129,7 +129,7 @@ export function DiagnosticsSettings({
   }, [store, connected, profile]);
 
   const copy = () => {
-    const text = reportText(snap, { app: "Hermes Chat", server, signIn, headers, unsecure, profile });
+    const text = reportText(snap, { app: "Highwing", server, signIn, headers, unsecure, profile });
     copyText(text).then(
       () => setCopied("done"),
       () => setCopied("failed"),

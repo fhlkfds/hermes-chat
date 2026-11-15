@@ -22,16 +22,16 @@ afterEach(async () => {
   cleanup();
   await Promise.all(running.splice(0).map((h) => h.close()));
   localStorage.clear();
-  document.title = "Hermes Chat";
+  document.title = "Highwing";
 });
 
 describe("the window title", () => {
   it("names the chat after the unread count, leaves out a count of none, and with no chat open keeps the count before the app's name", () => {
-    expect(windowTitle("Nightly backup", 2)).toBe("(2) Nightly backup - Hermes Chat");
-    expect(windowTitle("Nightly backup", 0)).toBe("Nightly backup - Hermes Chat");
-    expect(windowTitle(undefined, 3)).toBe("(3) Hermes Chat");
-    expect(windowTitle(undefined, 0)).toBe("Hermes Chat");
-    expect(windowTitle("  ", 0)).toBe("Hermes Chat");
+    expect(windowTitle("Nightly backup", 2)).toBe("(2) Nightly backup - Highwing");
+    expect(windowTitle("Nightly backup", 0)).toBe("Nightly backup - Highwing");
+    expect(windowTitle(undefined, 3)).toBe("(3) Highwing");
+    expect(windowTitle(undefined, 0)).toBe("Highwing");
+    expect(windowTitle("  ", 0)).toBe("Highwing");
   });
 
   it("follows the chat on screen and the unread chats, and is the app's name again once signed out", async () => {
@@ -48,16 +48,16 @@ describe("the window title", () => {
     await waitFor(() => expect(hermes.hasListed()).toBe(true));
     await act(async () => void (await hermes.idle()));
     // Launch opens a new chat (ADR 0162): no chat yet, two unread.
-    expect(document.title).toBe("(2) Hermes Chat");
+    expect(document.title).toBe("(2) Highwing");
     // The window has the owner's focus, so a chat opened is read.
     act(() => void window.dispatchEvent(new Event("focus")));
     const user = userEvent.setup();
     await user.click(view.getByText("Nightly backup"));
-    await waitFor(() => expect(document.title).toBe("(2) Nightly backup - Hermes Chat"));
+    await waitFor(() => expect(document.title).toBe("(2) Nightly backup - Highwing"));
     // Opening an unread chat reads it, and the count drops.
     await user.click(view.getByText("Release notes"));
-    await waitFor(() => expect(document.title).toBe("(1) Release notes - Hermes Chat"));
+    await waitFor(() => expect(document.title).toBe("(1) Release notes - Highwing"));
     view.unmount();
-    expect(document.title).toBe("Hermes Chat");
+    expect(document.title).toBe("Highwing");
   });
 });

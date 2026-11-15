@@ -212,8 +212,8 @@ function MaskedField({ item, offline, deliberate, keepFocus, send }: Omit<Parts,
       </div>
       <div className="approval-desc question-note">
         {item.kind === "sudo"
-          ? "It goes only to Hermes, which keeps it in memory for this chat's later sudo commands. Hermes Chat doesn't keep it."
-          : `Hermes saves it as ${item.envVar} in this profile on the server. Hermes Chat doesn't keep it.`}
+          ? "It goes only to Hermes, which keeps it in memory for this chat's later sudo commands. Highwing doesn't keep it."
+          : `Hermes saves it as ${item.envVar} in this profile on the server. Highwing doesn't keep it.`}
       </div>
     </div>
   );

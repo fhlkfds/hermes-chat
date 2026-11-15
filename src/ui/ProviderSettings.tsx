@@ -168,7 +168,7 @@ export function ProviderSettings({ hermes, profile, connected, openModel }: { he
         <SettingNote role="status">
           <Info size={14} />
           <span>
-            This Hermes server doesn't let Hermes Chat set provider keys{setup.unsupported ? ` (${setup.unsupported})` : ""}. Set them on the server instead, for
+            This Hermes server doesn't let Highwing set provider keys{setup.unsupported ? ` (${setup.unsupported})` : ""}. Set them on the server instead, for
             example on the dashboard's Keys page.
           </span>
         </SettingNote>
@@ -295,7 +295,7 @@ export function ProviderSettings({ hermes, profile, connected, openModel }: { he
         title="Add a key"
         intro={
           <>
-            Hermes checks the key with the provider, then saves it in the {profileName} profile's <code>.env</code> on the server. Hermes Chat doesn't keep it.
+            Hermes checks the key with the provider, then saves it in the {profileName} profile's <code>.env</code> on the server. Highwing doesn't keep it.
           </>
         }
       >

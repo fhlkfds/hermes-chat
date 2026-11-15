@@ -401,7 +401,7 @@ export const REDACTION_LIMITS =
 export function bundleText(parts: readonly BundlePart[], about: { profile?: string; connection: string; now: number }): string {
   const counts = redactionCounts(parts);
   const head = [
-    "Hermes Chat support bundle",
+    "Highwing support bundle",
     `Made: ${new Date(about.now).toISOString()}`,
     `Connection: ${about.connection}`,
     ...(about.profile ? [`Profile: ${about.profile}`] : []),
@@ -409,7 +409,7 @@ export function bundleText(parts: readonly BundlePart[], about: { profile?: stri
     ...parts.map((p) => `  - ${p.title}: ${p.snapshot.lines} line${p.snapshot.lines === 1 ? "" : "s"}${p.snapshot.dropped ? `, ${p.snapshot.dropped} older dropped` : ""} (${p.detail})`),
     `Redacted: ${counts.length ? countsText(counts) : "nothing found"}.`,
     REDACTION_LIMITS,
-    "Times in [brackets] are when Hermes Chat received each line, in UTC. Times inside Hermes's lines are the server's own clock and zone.",
+    "Times in [brackets] are when Highwing received each line, in UTC. Times inside Hermes's lines are the server's own clock and zone.",
   ];
   return [...head, ...parts.flatMap((p) => ["", `===== ${p.title} =====`, asText(p.snapshot.entries, "utc", p.snapshot.dropped)])].join("\n") + "\n";
 }

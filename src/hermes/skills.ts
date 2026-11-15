@@ -215,11 +215,11 @@ export function skillProblems(content: string, name: string): string[] {
     const d = field(fm.yaml, "description");
     if (n?.murky)
       out.push(
-        "The front matter uses a YAML form Hermes Chat doesn't read (a tagged, anchored, merged, complex or escaped key, or a flow mapping), so it can't check the name isn't changed. Write each field as a plain key: value line.",
+        "The front matter uses a YAML form Highwing doesn't read (a tagged, anchored, merged, complex or escaped key, or a flow mapping), so it can't check the name isn't changed. Write each field as a plain key: value line.",
       );
     else if (!n) out.push(`The front matter needs a name: field. This skill's is name: ${name}`);
     else if (n.value === undefined)
-      out.push(`Write the name as one plain line, name: ${name}, so Hermes Chat can check it isn't changed.`);
+      out.push(`Write the name as one plain line, name: ${name}, so Highwing can check it isn't changed.`);
     else if (n.value !== name)
       out.push(`The name is "${n.value}" here but "${name}" on the server. Renaming a skill isn't supported here, as its chats and settings know it by name; change it back to name: ${name}`);
     if (!d) out.push("The front matter needs a description: field, which the agent reads to decide when to use the skill.");
@@ -269,7 +269,7 @@ export function skillsError(e: unknown, doing: "list" | "read" | "save" | "toggl
   if (/^Not connected to Hermes|^The chat connection is closed/.test(message)) return new SkillsError("disconnected", "Not connected to Hermes.", undefined, true);
   if (/^Can't reach the Hermes dashboard/.test(message)) return new SkillsError("disconnected", message);
   if (e instanceof RestError && e.status === 401) return new SkillsError("signed-out", message);
-  if (/^Hermes Chat doesn't relay/.test(message)) return new SkillsError("unsupported", message, undefined, true);
+  if (/^Highwing doesn't relay/.test(message)) return new SkillsError("unsupported", message, undefined, true);
   const a = answered(e);
   if (!a) return new SkillsError("error", `Couldn't ${what}: ${message}`);
   const said = a.detail ? ` Hermes said: ${a.detail}${/[.!?]$/.test(a.detail) ? "" : "."}` : "";
@@ -322,7 +322,7 @@ export class SkillsApi {
     } catch (e) {
       throw skillsError(e, "list");
     }
-    if (!Array.isArray(res)) throw new SkillsError("unsupported", "This Hermes server answered the skill list in a shape Hermes Chat doesn't understand.");
+    if (!Array.isArray(res)) throw new SkillsError("unsupported", "This Hermes server answered the skill list in a shape Highwing doesn't understand.");
     const skills: SkillRow[] = res.flatMap((r) => {
       if (!isObj(r) || typeof r.name !== "string" || !r.name) return [];
       const source = typeof r.provenance === "string" && r.provenance ? r.provenance : "agent";
@@ -392,7 +392,7 @@ export class SkillsApi {
    * name to a file whose front matter names another listed skill (a directory named like another skill's name).
    */
   async read(profile: string, name: string, listed: readonly string[]): Promise<SkillFile> {
-    if (!safeSkillName(name)) throw new SkillsError("identity", `"${name}" isn't a skill name Hermes Chat sends to Hermes, so this skill can't be opened here.`, undefined, true);
+    if (!safeSkillName(name)) throw new SkillsError("identity", `"${name}" isn't a skill name Highwing sends to Hermes, so this skill can't be opened here.`, undefined, true);
     let res: unknown;
     try {
       res = await deadline(this.rest("GET", `api/skills/content?${new URLSearchParams({ name, profile })}`), this.timeouts.readMs, `reading ${name}`);
@@ -400,12 +400,12 @@ export class SkillsApi {
       throw skillsError(e, "read", name);
     }
     if (!isObj(res) || typeof res.content !== "string" || typeof res.path !== "string" || !res.path)
-      throw new SkillsError("unsupported", "This Hermes server answered the skill read in a shape Hermes Chat doesn't understand.");
+      throw new SkillsError("unsupported", "This Hermes server answered the skill read in a shape Highwing doesn't understand.");
     const declared = frontmatterName(res.content);
     if (declared === null)
       throw new SkillsError(
         "identity",
-        `${res.path} gives its name in a form Hermes Chat doesn't read (not a plain name: line), so it can't check which skill the file is. Edit it on the server.`,
+        `${res.path} gives its name in a form Highwing doesn't read (not a plain name: line), so it can't check which skill the file is. Edit it on the server.`,
       );
     if (declared !== undefined && declared !== name && listed.includes(declared))
       throw new SkillsError(
@@ -499,7 +499,7 @@ export class SkillsApi {
 
   /** Turns `name` on or off in `profile`'s `skills.disabled`, then reads the list back to see whether Hermes has it so. */
   async setEnabled(profile: string, name: string, enabled: boolean): Promise<ToggleResult> {
-    if (!safeSkillName(name)) throw new SkillsError("identity", `"${name}" isn't a skill name Hermes Chat sends to Hermes.`, undefined, true);
+    if (!safeSkillName(name)) throw new SkillsError("identity", `"${name}" isn't a skill name Highwing sends to Hermes.`, undefined, true);
     let lost: SkillsError | undefined;
     try {
       await deadline(this.rest("PUT", `api/skills/toggle?${new URLSearchParams({ profile })}`, { name, enabled }), this.timeouts.writeMs, "the change");
@@ -592,7 +592,7 @@ export class SkillsApi {
    */
   async archive(profile: string, name: string): Promise<SkillsView> {
     // Hermes takes an id starting `memory:` for a memory entry.
-    if (!safeSkillName(name) || name.startsWith("memory:")) throw new SkillsError("identity", `"${name}" isn't a skill name Hermes Chat sends to Hermes.`, undefined, true);
+    if (!safeSkillName(name) || name.startsWith("memory:")) throw new SkillsError("identity", `"${name}" isn't a skill name Highwing sends to Hermes.`, undefined, true);
     if (name.includes("/"))
       throw new SkillsError("refused", `${name} is listed by its folder path because another skill declares the same name, and Hermes archives a skill by that name, so it can't be archived from here.`, undefined, true);
     let lost: SkillsError | undefined;

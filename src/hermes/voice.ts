@@ -83,7 +83,7 @@ export function micProblem(e: unknown): string {
   switch (name) {
     case "NotAllowedError":
     case "SecurityError":
-      return "Hermes Chat wasn't allowed to use the microphone. Allow it in your desktop's privacy or sound settings, then try again.";
+      return "Highwing wasn't allowed to use the microphone. Allow it in your desktop's privacy or sound settings, then try again.";
     case "NotFoundError":
     case "OverconstrainedError":
       return "No microphone was found. Plug one in or pick an input device in your sound settings, then try again.";

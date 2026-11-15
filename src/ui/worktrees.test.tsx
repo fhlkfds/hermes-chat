@@ -284,7 +284,7 @@ describe("the Worktrees view", () => {
   });
 
   it("protects a worktree from removal, and lists one made by hand without offering to remove it", async () => {
-    const byHand = tree({ path: "/srv/byhand", branch: "byhand", locked: null, managed: null, protected: [{ kind: "unmanaged", message: "Hermes Chat didn't make this worktree, so it doesn't remove it." }] });
+    const byHand = tree({ path: "/srv/byhand", branch: "byhand", locked: null, managed: null, protected: [{ kind: "unmanaged", message: "Highwing didn't make this worktree, so it doesn't remove it." }] });
     let marked = false;
     const { api, ops } = fakeApi({
       worktreeList: () => listOf([mainTree(), tree({ managed: record({ protected: marked }) }), byHand]),
@@ -294,7 +294,7 @@ describe("the Worktrees view", () => {
       },
     });
     const user = await show(api);
-    expect(rowOf("/srv/byhand").textContent).toContain("Not made by Hermes Chat");
+    expect(rowOf("/srv/byhand").textContent).toContain("Not made by Highwing");
     expect(within(rowOf("/srv/byhand")).queryByRole("button", { name: /Remove/ })).toBeNull();
     await user.click(within(rowOf(WT)).getByRole("button", { name: "Protect" }));
     await waitFor(() => expect(rowOf(WT).textContent).toContain("Protected"));

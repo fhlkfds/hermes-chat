@@ -46,7 +46,7 @@ struct Acted {
 /// with Review, so a service that draws actions as buttons never shows Deny as the only answer.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn actions(deny: bool) -> Vec<&'static str> {
-    let mut keys = vec!["default", "Open Hermes Chat"];
+    let mut keys = vec!["default", "Open Highwing"];
     if deny {
         keys.extend(["review", "Review", "deny", "Deny"]);
     }
@@ -289,7 +289,7 @@ mod desktop {
             hints.insert("desktop-entry".into(), Variant(Box::new("hermes-chat".to_owned())));
             let call = Message::new_method_call(SERVICE, PATH, SERVICE, "Notify")
                 .map_err(|e| dbus::Error::new_failed(&e))?
-                .append3("Hermes Chat", 0u32, "")
+                .append3("Highwing", 0u32, "")
                 .append3(title, body, super::actions(deny))
                 .append2(hints, -1i32);
             // The reply comes from the service's unique name, which is who may act on this notification.
@@ -501,8 +501,8 @@ mod tests {
 
     #[test]
     fn an_approval_offers_deny_beside_review_and_anything_else_only_the_click() {
-        assert_eq!(actions(false), ["default", "Open Hermes Chat"]);
-        assert_eq!(actions(true), ["default", "Open Hermes Chat", "review", "Review", "deny", "Deny"]);
+        assert_eq!(actions(false), ["default", "Open Highwing"]);
+        assert_eq!(actions(true), ["default", "Open Highwing", "review", "Review", "deny", "Deny"]);
         assert_eq!(invoked("default"), Some(Action::Open));
         assert_eq!(invoked("review"), Some(Action::Open));
         assert_eq!(invoked("deny"), Some(Action::Deny));

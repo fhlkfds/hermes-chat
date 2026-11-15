@@ -25,7 +25,7 @@ function backend(routes: Record<string, Behaviour>, password = "hunter2") {
     const b = routes[at(d)] ?? { stage: "address", message: "Can't reach the Hermes dashboard: couldn't look up nowhere" };
     if ("stage" in b) throw b;
     if (d.server && d.server !== b.server)
-      throw { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password." };
+      throw { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Highwing didn't send it the password." };
     return b;
   };
   const routeOf = (d: SignInDetails, server: string) =>

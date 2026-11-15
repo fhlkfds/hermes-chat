@@ -235,7 +235,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
           <BarChart3 size={20} /> <span>Usage</span>
         </h1>
         <p className="muted">
-          Tokens and cost as Hermes stored them for each chat, added up for the chats started in the period. Hermes Chat keeps no prices of its own: a cost
+          Tokens and cost as Hermes stored them for each chat, added up for the chats started in the period. Highwing keeps no prices of its own: a cost
           is only what Hermes recorded.
         </p>
 
@@ -473,7 +473,7 @@ function Problems({ data }: { data: UsageDataset }) {
           : `Couldn't read the ${p.profile} profile: ${p.error}. Its chats aren't counted.`,
       );
     if (p.state === "capped")
-      lines.push(`The ${p.profile} profile has more chats in this period than Hermes Chat reads at once (${fmt.number(p.read)}); the oldest aren't counted. Pick a shorter period.`);
+      lines.push(`The ${p.profile} profile has more chats in this period than Highwing reads at once (${fmt.number(p.read)}); the oldest aren't counted. Pick a shorter period.`);
   }
   if (data.missingSegments)
     lines.push(
@@ -929,7 +929,7 @@ function Notes() {
         <li>Chats from every source and archived chats count; a chat counts in the period it started in, with all its usage so far.</li>
         <li>A compressed chat is one chat: its segments are read and added once each.</li>
         <li>Subagent runs and Hermes's helper tasks aren't in any chat's usage. Hermes's own totals above show them, for periods ending now.</li>
-        <li>Projects come from this computer: chats added to a project in another Hermes Chat aren't known here.</li>
+        <li>Projects come from this computer: chats added to a project in another Highwing aren't known here.</li>
         <li>Nothing here is kept on this computer. Export CSV writes the chats counted here only where you save it.</li>
       </ul>
     </section>

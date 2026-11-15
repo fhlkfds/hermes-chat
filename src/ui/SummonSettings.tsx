@@ -19,7 +19,7 @@ export function SummonSettings() {
         }
         more={
           <p>
-            Only text that changed since you last left Hermes Chat is used, the selection first and then the clipboard, after anything already in the
+            Only text that changed since you last left Highwing is used, the selection first and then the clipboard, after anything already in the
             composer. Text a password manager marks as a password is never used. This works on Linux; on Windows the window only comes forward.
           </p>
         }

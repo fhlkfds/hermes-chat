@@ -273,7 +273,7 @@ export class TagsStore {
       if (res.swapped) return this.set(after);
       raw = res.current;
     }
-    throw new Error("Another Hermes Chat kept changing the tags, so nothing changed. Try again.");
+    throw new Error("Another Highwing kept changing the tags, so nothing changed. Try again.");
   }
 
   private set(s: ScopeTags) {
@@ -311,6 +311,6 @@ export async function moveTagScopes(file: TagsFile, move: (scope: string) => str
     if (res.swapped) return;
     raw = res.current;
   }
-  throw new Error("Another Hermes Chat kept changing the tags; they weren't moved. Try again.");
+  throw new Error("Another Highwing kept changing the tags; they weren't moved. Try again.");
 }
 

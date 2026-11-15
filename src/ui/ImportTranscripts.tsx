@@ -52,7 +52,7 @@ export function ImportSection({ wiring, connected }: { wiring: ImportWiring; con
         name="Import a chat export"
         hint={
           <>
-            Hermes Chat Markdown exports, and Hermes session exports (JSONL), into the <span className="mono">{wiring.profile}</span> profile.
+            Highwing Markdown exports, and Hermes session exports (JSONL), into the <span className="mono">{wiring.profile}</span> profile.
           </>
         }
         more="Imported chats are read-only here: they keep their words, not everything the original chat had."
@@ -367,7 +367,7 @@ function Preview({
           {plan.warnings.map((w) => (
             <li key={w}>{w}</li>
           ))}
-          <li>Imported chats are read-only in Hermes Chat. To carry on with one, start a new chat.</li>
+          <li>Imported chats are read-only in Highwing. To carry on with one, start a new chat.</li>
         </ul>
       </div>
 

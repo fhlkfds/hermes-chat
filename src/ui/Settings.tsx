@@ -184,7 +184,7 @@ const ABOUT: Partial<Record<Tab, string>> = {
   skills: "Instructions Hermes can load for a kind of task: turn each skill on or off for the profile, and edit its SKILL.md.",
   snapshots:
     "Share snapshot's host: the S3-compatible bucket and access key this computer publishes chat pages to, tested, changed or removed. The snapshots in the bucket, with Copy link and Revoke.",
-  extensions: "Optional commands and views that run in a sandbox: install the ones that come with Hermes Chat, grant or withdraw their permissions, disable or uninstall them, and see why one stopped.",
+  extensions: "Optional commands and views that run in a sandbox: install the ones that come with Highwing, grant or withdraw their permissions, disable or uninstall them, and see why one stopped.",
   diagnostics:
     "The connected Hermes's version, protocol and sign-in, which features this server supports, and whether its Bot Desktop has a browser. Logs: this app's own diagnostics and the profile's Hermes logs, followed, filtered, exported, or saved as a support bundle.",
 };
@@ -788,7 +788,7 @@ export function SettingsScreen({
             hint="Lets the chat list show at once, and recent chats open while Hermes can't be reached."
             more={
               <p>
-                Hermes Chat keeps a copy of each profile's chat list on this computer. It also keeps a Saved copy of the chats you opened most recently,
+                Highwing keeps a copy of each profile's chat list on this computer. It also keeps a Saved copy of the chats you opened most recently,
                 up to {formatBytes(TRANSCRIPT_LIMIT_BYTES)}; the oldest copies are deleted first when that fills up. Clearing the cache keeps your display
                 settings.
               </p>

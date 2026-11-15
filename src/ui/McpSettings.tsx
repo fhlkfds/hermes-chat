@@ -991,7 +991,7 @@ const effectRows = (
     <SettingRow
       name="Signing in"
       hint="OAuth sign-in opens the service's page in your browser, which then returns to the Hermes dashboard."
-      more={<p>The page returns to the dashboard at the address Hermes Chat uses for it, so finish signing in on this computer while Hermes Chat is connected. Test says whether Hermes has a sign-in for the server.</p>}
+      more={<p>The page returns to the dashboard at the address Highwing uses for it, so finish signing in on this computer while Highwing is connected. Test says whether Hermes has a sign-in for the server.</p>}
     />
   </>
 );

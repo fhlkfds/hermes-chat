@@ -215,7 +215,7 @@ describe("Settings → Profiles", { timeout: 30_000 }, () => {
     await user.click(within(option(list, "research")).getByRole("button", { name: "More for research" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
     const dialog = screen.getByRole("alertdialog");
-    expect(within(dialog).getByText(/Hermes Chat will switch to default first/)).toBeTruthy();
+    expect(within(dialog).getByText(/Highwing will switch to default first/)).toBeTruthy();
     await user.type(within(dialog).getByLabelText("Type research to confirm"), "research{Enter}");
     await waitFor(() => expect("research" in server.otherProfiles).toBe(false));
     expect(hermes.profile).toBe("default");

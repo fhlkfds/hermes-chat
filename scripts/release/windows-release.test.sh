@@ -19,7 +19,7 @@ EOF
 chmod +x "$work/bin/gh"
 export PATH="$work/bin:$PATH"
 
-installer() { mkdir -p "$1"; head -c 4096 /dev/urandom > "$1/Hermes Chat_$2_x64-setup.exe"; }
+installer() { mkdir -p "$1"; head -c 4096 /dev/urandom > "$1/Highwing_$2_x64-setup.exe"; }
 
 run() { # name, expect (0 or 1), log pattern or "", folder, tag, [has release]
   local name=$1 expect=$2 pattern=$3 dir=$4 tag=$5

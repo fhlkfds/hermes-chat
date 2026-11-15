@@ -646,7 +646,7 @@ export function MemorySettings({
       {/* What can't be undone from here stays in view (ADR 0059): it's said before an edit or a delete, not after. */}
       {resource && (
         <SettingNote className="memory-restore-limits">
-          Restore previous version puts back what a save from here replaced, until you sign out or close Hermes Chat. It's kept only in this app,
+          Restore previous version puts back what a save from here replaced, until you sign out or close Highwing. It's kept only in this app,
           never on the server or this computer's disk, and a removed entry can't be put back from here.
         </SettingNote>
       )}

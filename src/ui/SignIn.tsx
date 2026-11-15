@@ -14,6 +14,7 @@ import { RouteSummary } from "./Routes";
 import { routesSummary } from "../hermes/connections";
 import { ConnectionPicker } from "./Connections";
 import type { LiveSummary } from "../hermes/liveConnections";
+import { BrandMark } from "./BrandMark";
 import { MethodPicker, TokenField } from "./SignInMethods";
 
 export function SignIn({
@@ -111,7 +112,7 @@ export function SignIn({
   return (
     <div className="first-run">
       <div className={`first-run-card ${picker ? "with-picker" : ""}`}>
-        <div className="rail-brand big">H</div>
+        <div className="rail-brand big"><BrandMark /></div>
         <h1>{connection ? `Connect to ${connection.name}` : "Connect to Hermes"}</h1>
         <p className="muted">
           {connection ? (

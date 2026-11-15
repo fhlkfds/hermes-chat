@@ -1,6 +1,6 @@
 # Releases and standalone updates
 
-Hermes Chat can update itself only as a standalone AppImage built with an update key. This page says which copies that covers, how a release is built, signed and checked, and what the owner still has to set up before the first real release. ADR 0075 records the decisions.
+Highwing can update itself only as a standalone AppImage built with an update key. This page says which copies that covers, how a release is built, signed and checked, and what the owner still has to set up before the first real release. ADR 0075 records the decisions.
 
 Nothing here publishes an AppImage. The repo has no AppImage release, signing key, update endpoint or `TAURI_SIGNING_PRIVATE_KEY` secret yet, so no installed copy updates itself today.
 

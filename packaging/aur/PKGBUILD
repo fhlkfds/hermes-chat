@@ -29,7 +29,7 @@ options=('!debug' '!lto')
 source=("$_pkgname::git+$url.git"
         "$_pkgname.desktop")
 sha256sums=('SKIP'
-            'e1bbcd9b872d66015782fe4afce508d0259c1c7521dd5f63bc6fc331cdba64ca')
+            'b9e49d90dd9976b0051c303e741a90925d01d505f3234326574056325997c224')
 
 pkgver() {
   cd "$_pkgname"

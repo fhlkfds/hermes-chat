@@ -165,7 +165,7 @@ export function EndpointSettings({ api, profile, connected }: { api: EndpointApi
     return section(
       <SettingNote role="status">
         <Info size={14} />
-        <span>This Hermes server doesn't let Hermes Chat manage custom endpoints ({list.unsupported}). Set them up on the server instead, with <code>hermes model</code>.</span>
+        <span>This Hermes server doesn't let Highwing manage custom endpoints ({list.unsupported}). Set them up on the server instead, with <code>hermes model</code>.</span>
       </SettingNote>,
     );
 
@@ -274,7 +274,7 @@ export function EndpointSettings({ api, profile, connected }: { api: EndpointApi
         {field("name", "Name", { placeholder: "Ollama" })}
         {field("baseUrl", "Address", { placeholder: "http://localhost:11434/v1", hint: "The OpenAI-compatible base URL, usually ending in /v1." })}
         {field("model", "Model", { placeholder: "The first one Hermes finds", hint: "Optional." })}
-        {field("key", "API key", { placeholder: "None", type: "password", hint: "Optional. Hermes keeps it in the profile's .env on the server, and Hermes Chat doesn't keep it." })}
+        {field("key", "API key", { placeholder: "None", type: "password", hint: "Optional. Hermes keeps it in the profile's .env on the server, and Highwing doesn't keep it." })}
         <div className="confirm-actions">
           <button className="btn primary" disabled={busy || !form.name.trim() || !form.baseUrl.trim()} onClick={() => void add(false)}>
             {adding && !ui.anyway ? <Spinner /> : <Plus size={13} aria-hidden />} {adding && !ui.anyway ? "Checking…" : "Check and add"}

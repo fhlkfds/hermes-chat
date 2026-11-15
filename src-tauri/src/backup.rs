@@ -85,7 +85,7 @@ pub fn read_zip(path: &Path) -> Result<Vec<Entry>, String> {
         return Err("It isn't a file.".into());
     }
     if meta.len() > MAX_ARCHIVE_BYTES {
-        return Err(format!("It's over {} MB, bigger than any backup Hermes Chat makes.", MAX_ARCHIVE_BYTES / 1024 / 1024));
+        return Err(format!("It's over {} MB, bigger than any backup Highwing makes.", MAX_ARCHIVE_BYTES / 1024 / 1024));
     }
     let mut zip =
         zip::ZipArchive::new(io::BufReader::new(file)).map_err(|e| format!("It isn't a readable zip archive ({e}). It may be damaged or cut short."))?;
@@ -104,7 +104,7 @@ pub fn read_zip(path: &Path) -> Result<Vec<Entry>, String> {
             return Err(format!("“{name}” is in it twice."));
         }
         if f.compression() != zip::CompressionMethod::Stored {
-            return Err(format!("“{name}” is compressed; Hermes Chat stores backup files uncompressed and reads only those."));
+            return Err(format!("“{name}” is compressed; Highwing stores backup files uncompressed and reads only those."));
         }
         if f.size() > MAX_ENTRY_BYTES {
             return Err(format!("“{name}” is over {} MB.", MAX_ENTRY_BYTES / 1024 / 1024));
@@ -114,7 +114,7 @@ pub fn read_zip(path: &Path) -> Result<Vec<Entry>, String> {
         (&mut f).take(MAX_ENTRY_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("“{name}” couldn't be read whole ({e}). The backup may be damaged."))?;
         total += bytes.len() as u64;
         if bytes.len() as u64 > MAX_ENTRY_BYTES || total > MAX_ARCHIVE_BYTES {
-            return Err("It holds more than any backup Hermes Chat makes.".into());
+            return Err("It holds more than any backup Highwing makes.".into());
         }
         let text = String::from_utf8(bytes).map_err(|_| format!("“{name}” isn't UTF-8 text."))?;
         out.push(Entry { name, text });

@@ -863,8 +863,8 @@ async fn hermes_disconnect(
     Ok(())
 }
 
-const SIGNED_OUT: &str = "Hermes Chat left the Hermes server, so the tunnel to it closed.";
-const SIGNED_IN_ELSEWHERE: &str = "Hermes Chat is now connected to another server, so the tunnel to this one closed.";
+const SIGNED_OUT: &str = "Highwing left the Hermes server, so the tunnel to it closed.";
+const SIGNED_IN_ELSEWHERE: &str = "Highwing is now connected to another server, so the tunnel to this one closed.";
 
 /// Opens `url`, a page on the Hermes server's own loopback, through an SSH tunnel to the SSH target of the connection
 /// the webview opened as `attempt` (server_page.rs, ADR 0114). The webview names only the page and its own `key` for
@@ -2121,7 +2121,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Each ssh also has PR_SET_PDEATHSIG, so none outlives the app even if this doesn't run.
-                app.state::<Arc<server_page::ServerPages>>().close_all("Hermes Chat quit.");
+                app.state::<Arc<server_page::ServerPages>>().close_all("Highwing quit.");
                 update::relaunch(app);
             }
         });

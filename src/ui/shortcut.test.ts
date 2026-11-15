@@ -54,8 +54,8 @@ describe("Shortcuts that clash", () => {
     expect(checkShortcut("F9")).toEqual({});
   });
 
-  it("refuses Hermes Chat's own shortcuts as they are now, with Super read as Ctrl", () => {
-    expect(checkShortcut("Ctrl+K").error).toBe("Ctrl+K already runs Search all chats in Hermes Chat (Settings → Keyboard Shortcuts).");
+  it("refuses Highwing's own shortcuts as they are now, with Super read as Ctrl", () => {
+    expect(checkShortcut("Ctrl+K").error).toBe("Ctrl+K already runs Search all chats in Highwing (Settings → Keyboard Shortcuts).");
     expect(checkShortcut("Super+F").error).toMatch(/Find in the chat/);
     expect(checkShortcut("Ctrl+1").error).toMatch(/left/);
     expect(checkShortcut("Super+2").error).toMatch(/right/);

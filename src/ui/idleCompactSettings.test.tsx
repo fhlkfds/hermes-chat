@@ -82,7 +82,7 @@ describe("Idle compaction settings", () => {
     try {
       await user.click(screen.getByRole("switch", { name: "Compact idle chats" }));
       const alert = screen.getByRole("alert");
-      expect(alert.textContent).toBe("Couldn't save this on this computer; it applies only until Hermes Chat closes.");
+      expect(alert.textContent).toBe("Couldn't save this on this computer; it applies only until Highwing closes.");
       expect(alert.classList.contains("set-note")).toBe(true);
       expect(alert.closest("[hidden]")).toBeNull();
     } finally {

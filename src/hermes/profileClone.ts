@@ -138,7 +138,7 @@ export function preview(plan: Pick<Plan, "kind"> & { parts?: ReadonlySet<Part> }
 /** Sorts an error from a profile call into words for the owner, and whether it certainly changed nothing. */
 function profileProblem(e: unknown, doing: string): { problem: string; unwritten: boolean } {
   const message = errorText(e);
-  if (/^Not connected to Hermes|^The chat connection is closed|^Hermes Chat doesn't relay/.test(message)) return { problem: message, unwritten: true };
+  if (/^Not connected to Hermes|^The chat connection is closed|^Highwing doesn't relay/.test(message)) return { problem: message, unwritten: true };
   const a = answered(e);
   if (!a) return { problem: `Couldn't ${doing}: ${message}`, unwritten: false };
   const reason = a.detail ? ` Hermes said: ${a.detail}` : "";

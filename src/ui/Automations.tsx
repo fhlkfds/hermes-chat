@@ -148,7 +148,7 @@ export function Automations({
         {oneTime && (
           <div className="secret-once" role="alert" aria-label="The new secret, shown once">
             <p>
-              <strong>Copy the secret for “{oneTime.name}” into GitHub now.</strong> Hermes keeps it on the server and won't show it again; Hermes Chat
+              <strong>Copy the secret for “{oneTime.name}” into GitHub now.</strong> Hermes keeps it on the server and won't show it again; Highwing
               doesn't keep it either. It goes in the webhook's <em>Secret</em> field, never in the prompt.
             </p>
             <code className="secret-value">{oneTime.secret}</code>
@@ -170,7 +170,7 @@ export function Automations({
             </h1>
             <p className="muted">
               Tasks Hermes starts on the server, in the <span className="mono">{profile}</span> profile, when GitHub sends an event. Hermes checks each event's
-              signature and runs the task there, also while Hermes Chat is closed.
+              signature and runs the task there, also while Highwing is closed.
             </p>
             {loaded && !loaded.platformEnabled && (
               <p className="job-banner" role="note">
@@ -396,7 +396,7 @@ function Detail({
         <Webhook size={20} /> <span>{a.name}</span> {!a.enabled && <span className="badge">Paused</span>}
       </h1>
       <div className="jobs-actions">
-        <button className="btn" disabled={!connected || !!busy || a.kind !== "agent"} title={a.kind !== "agent" ? "Set up in another Hermes client: Hermes Chat edits task automations only." : offline} onClick={onEdit}>
+        <button className="btn" disabled={!connected || !!busy || a.kind !== "agent"} title={a.kind !== "agent" ? "Set up in another Hermes client: Highwing edits task automations only." : offline} onClick={onEdit}>
           <Pencil size={14} /> Edit
         </button>
         <button className="btn" disabled={!connected || !!busy} title={offline} onClick={() => void act(a.enabled ? "pause" : "resume", async () => onChanged(a.name, await api.setPaused(profile, a, a.enabled)))}>
@@ -1062,7 +1062,7 @@ function Editor({
           <span className="field-hint block">
             The secret never passes through the prompt.{" "}
             {list.contract
-              ? "With a variable, it never passes through Hermes Chat either: set it in the profile's .env on the server."
+              ? "With a variable, it never passes through Highwing either: set it in the profile's .env on the server."
               : "Reading it from a variable needs Hermes with webhooks/1."}
           </span>
         </fieldset>

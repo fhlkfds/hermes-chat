@@ -23,7 +23,7 @@ async function desktop() {
   return { desktopNotify, act, tags };
 }
 
-const APPROVAL = { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Hermes Chat." };
+const APPROVAL = { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Highwing." };
 
 beforeEach(() => {
   invoke.mockReset();
@@ -34,8 +34,8 @@ beforeEach(() => {
 describe("Notification actions", () => {
   it("shows a plain notification untagged and listens for nothing", async () => {
     const { desktopNotify } = await desktop();
-    await desktopNotify({ title: "Hermes finished a reply", body: "Open Hermes Chat to read it." });
-    expect(invoke).toHaveBeenCalledWith("notify_desktop", { title: "Hermes finished a reply", body: "Open Hermes Chat to read it." });
+    await desktopNotify({ title: "Hermes finished a reply", body: "Open Highwing to read it." });
+    expect(invoke).toHaveBeenCalledWith("notify_desktop", { title: "Hermes finished a reply", body: "Open Highwing to read it." });
     expect(listen).not.toHaveBeenCalled();
   });
 
@@ -44,7 +44,7 @@ describe("Notification actions", () => {
     const first = { open: vi.fn(), deny: vi.fn() };
     const question = { open: vi.fn() };
     await desktopNotify(APPROVAL, first);
-    await desktopNotify({ title: "Hermes has a question", body: "A question is waiting for your answer in Hermes Chat." }, question);
+    await desktopNotify({ title: "Hermes has a question", body: "A question is waiting for your answer in Highwing." }, question);
     expect(invoke.mock.calls[0]).toEqual(["notify_desktop", { ...APPROVAL, tag: tags()[0], deny: true }]);
     expect(invoke.mock.calls[1][1]).toMatchObject({ deny: false });
     expect(new Set(tags()).size).toBe(2);

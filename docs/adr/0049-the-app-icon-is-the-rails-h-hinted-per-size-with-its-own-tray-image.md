@@ -1,5 +1,7 @@
 # The app icon is the rail's H, hinted per size, with its own tray image
 
+> **Partly superseded** by ADR 0176: the mark is now Highwing's eagle's head, drawn on the same tile, and the rail shows it as `BrandMark` instead of a CSS letter. The 48 px size now uses the master instead of its own hinted drawing. Everything else here (the tile, hinting 16 to 32 px by hand, the tray images, the Inbox dot, the symbolic icon and `tools/icons/build.sh`) still holds.
+
 Issue #177 asks for a real app icon in place of the green placeholder square. It should match the "H" at the top of the rail, come in every size Tauri and the Arch package need, and include a tray version that reads at 16–22 px on light and dark panels.
 
 ## Decisions

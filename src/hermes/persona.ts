@@ -94,7 +94,7 @@ export function personaError(e: unknown, profile: string, writing: boolean): Per
   if (/^Can't reach the Hermes dashboard/.test(message)) return new PersonaError("disconnected", message);
   if (e instanceof RestError && e.status === 401) return new PersonaError("signed-out", message);
   // Refused before it was sent, by the relay or because Hermes lacks the route (capabilities.ts).
-  if (/^Hermes Chat doesn't relay/.test(message)) return new PersonaError("unsupported", message, undefined, true);
+  if (/^Highwing doesn't relay/.test(message)) return new PersonaError("unsupported", message, undefined, true);
   const a = answered(e);
   if (!a) return new PersonaError("error", `Couldn't ${verb} SOUL.md: ${message}`);
   const said = a.detail ? ` Hermes said: ${a.detail}` : "";
@@ -184,7 +184,7 @@ export class PersonaApi {
     }
     const r = res as { content?: unknown; exists?: unknown } | null;
     if (!r || typeof r.content !== "string" || typeof r.exists !== "boolean")
-      throw new PersonaError("unsupported", "This Hermes server answered the persona route in a way Hermes Chat doesn't understand.");
+      throw new PersonaError("unsupported", "This Hermes server answered the persona route in a way Highwing doesn't understand.");
     return { exists: r.exists, content: r.exists ? r.content : "" };
   }
 

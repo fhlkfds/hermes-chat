@@ -335,7 +335,7 @@ export class Connections {
   save(saving: SavedConnection) {
     const c = withFirstRoute(saving);
     const at = this.doc.connections.findIndex((x) => x.id === c.id);
-    if (at < 0 && this.doc.connections.length >= CONNECTIONS_MAX) throw new Error(`Hermes Chat keeps at most ${CONNECTIONS_MAX} connections. Remove one first.`);
+    if (at < 0 && this.doc.connections.length >= CONNECTIONS_MAX) throw new Error(`Highwing keeps at most ${CONNECTIONS_MAX} connections. Remove one first.`);
     const connections = [...this.doc.connections];
     if (at < 0) connections.push(c);
     else connections[at] = c;

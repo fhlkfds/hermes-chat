@@ -121,7 +121,7 @@ describe("Screenshot desk", () => {
     desk.attachTo(composer.s);
     for (const failure of [
       { kind: "cancelled" },
-      { kind: "denied", message: "Your desktop didn't allow Hermes Chat to take a screenshot." },
+      { kind: "denied", message: "Your desktop didn't allow Highwing to take a screenshot." },
       { kind: "unsupported", message: "No screenshot portal is running." },
       { kind: "failed", message: "grim failed: out of memory" },
       "Command screenshot_capture not found",
@@ -131,7 +131,7 @@ describe("Screenshot desk", () => {
       await taking;
     }
     expect(composer.notes).toEqual([
-      "Your desktop didn't allow Hermes Chat to take a screenshot.",
+      "Your desktop didn't allow Highwing to take a screenshot.",
       "Screenshots don't work on this desktop yet. No screenshot portal is running.",
       "Couldn't take a screenshot: grim failed: out of memory",
       "Couldn't take a screenshot: Command screenshot_capture not found",

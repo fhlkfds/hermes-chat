@@ -328,7 +328,7 @@ function MoreMenu({
           {onExport && onSnapshotSettings && item("Share snapshot…", <Share2 size={15} />, () => setExporting("share"), "Publish a copy of this chat that anyone with its link can read")}
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
-          {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Hermes Chat on this computer")}
+          {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Highwing on this computer")}
           {pin && !isBotChat(chat) && !chat.archived && <PinItem pin={pin} onClose={close} />}
           {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
@@ -1396,7 +1396,7 @@ const TranscriptChunk = memo(
 function UndrawnMessage({ id, error }: { id: string; error: Error }) {
   return (
     <div className="msg error" role="alert" data-item={id}>
-      Hermes Chat couldn't show this message: {error.message || error.name}
+      Highwing couldn't show this message: {error.message || error.name}
     </div>
   );
 }

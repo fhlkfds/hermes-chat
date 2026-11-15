@@ -16,9 +16,9 @@ appimage() {
     $tauri signer sign --app-version 0.2.0 "$2" > /dev/null
 }
 mkdir "$work/bundle" "$work/arm"
-appimage 62 "$work/bundle/Hermes Chat_0.2.0_amd64.AppImage"
+appimage 62 "$work/bundle/Highwing_0.2.0_amd64.AppImage"
 node scripts/release/manifest.mjs "$work/bundle" "$work/good" https://example.invalid/v0.2.0 > /dev/null
-appimage 183 "$work/arm/Hermes Chat_0.2.0_amd64.AppImage"
+appimage 183 "$work/arm/Highwing_0.2.0_amd64.AppImage"
 node scripts/release/manifest.mjs "$work/arm" "$work/other-arch" https://example.invalid/v0.2.0 > /dev/null
 key_a=$(cat "$work/a.key.pub")
 key_b=$(cat "$work/b.key.pub")

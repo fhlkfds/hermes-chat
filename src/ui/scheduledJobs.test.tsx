@@ -533,7 +533,7 @@ describe("the Scheduled jobs screen", () => {
     expect(row.textContent).toMatch(/Failed.*delivering its result failed: Telegram said: chat not found/);
   });
 
-  it("says when the profile a new job goes in has no time zone Hermes Chat can name", async () => {
+  it("says when the profile a new job goes in has no time zone Highwing can name", async () => {
     const s = server();
     s.cron.timezones = { work: "" };
     const { user } = await launch(s);
