@@ -89,6 +89,14 @@ Needs `commands.catalog`, `command.dispatch`, and `slash.exec` on `/api/ws`. Che
 
 Running skills from the composer also needs `commands.catalog` to list skills (its `skills` field), and Settings → Skills' `GET /api/skills` and `GET /api/config`. Without any of them, the menus show no skills, "$" opens nothing, and text naming a skill is sent as an ordinary message.
 
+## Standing missions
+
+Needs `session.control.read` and `session.control` on `/api/ws`, the `session.control.update` event, and `/goal` through `command.dispatch` as Hermes's own command. Hermes has all of them from `v2026.9.7` (`session.control.update` from `v2026.9.14`), and they are the same at `b200f5bc`, `bf0203a` and `f0d9488`, so the owner's server has them. Checked with `session.control.read` for a chat id no chat has: "session not found" (4001) means Hermes has the method, and "method not found" (-32601) means it doesn't. The check then reads `commands.catalog`: `/goal` must be listed as `/goal`, and no quick or plugin command may take the name, because `command.dispatch` would run that instead, and `session.control`'s goal actions go through it too. When Hermes can't list its quick and plugin commands, the state is Unknown.
+
+Without it, **Set a goal** doesn't show, typing `/goal` says why, and chats show no goal bar. A canonical gateway address has these methods too, but the app doesn't connect to one (ADR 0174).
+
+Every call needs the chat live on the server, which opening it does. A goal moves only after a turn of a chat live in the dashboard, so with the app closed an idle chat with only a goal closes after 20 seconds, and after a server restart nothing moves it until the chat is opened. Each check runs on the server as Hermes's own user, with no approval, for up to 300 seconds, and the fourth failure in a row pauses the goal; neither limit can be changed from `/goal`. The turn budget is the profile's `goals.max_turns` (read from `GET /api/config`, 20 by default), since Hermes takes no budget for each goal. See ADR 0178.
+
 ## The inbox
 
 Needs `session.active_list` on `/api/ws` to show work running in other profiles. Without it, the inbox still lists Unread chats and Failed messages in every profile, and says that it can't see running work elsewhere.

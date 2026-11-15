@@ -23,6 +23,7 @@ import { redactSecrets } from "./secrets";
 import { RestError, type RestMethod } from "./pipe";
 import { errorText, isObj } from "./values";
 import type { AppMethod } from "./canonicalVerbs";
+import { listServerCommands } from "./commands";
 
 /** The features whose server support is tracked. */
 export type CapabilityId =
@@ -31,6 +32,7 @@ export type CapabilityId =
   | "approvalAnswers"
   | "projects"
   | "commands"
+  | "standingMissions"
   | "liveSessions"
   | "memory"
   | "toolsets"
@@ -77,7 +79,17 @@ export type CapabilityAction = { name: string; method: RestMethod; route: RegExp
  */
 type Probe =
   | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean; lacks?: (body: unknown) => string | undefined }
-  | { kind: "rpc"; method: AppMethod; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean; lacks?: (result: unknown) => string | undefined };
+  | {
+      kind: "rpc";
+      method: AppMethod;
+      params: (profile: string) => Record<string, unknown>;
+      shape: (result: unknown) => boolean;
+      lacks?: (result: unknown) => string | undefined;
+      /** A JSON-RPC error code that shows the method is there: Hermes's refusal of a name nothing real has. */
+      refusedWith?: number;
+      /** What else decides the capability once the method is there, read only then. */
+      alsoNeeds?: (io: CapabilityIO, profile: string) => Promise<{ state: CapabilityState; why: string }>;
+    };
 
 /**
  * A check for a capability no read can settle: one request shaped like a write, for something that can't exist, so
@@ -220,6 +232,36 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     probe: { kind: "rpc", method: "commands.catalog", params: (profile) => ({ profile }), shape: isObj },
     methods: ["commands.catalog"],
     writeMethods: /^(command\.dispatch|slash\.exec)$/,
+  },
+  {
+    id: "standingMissions",
+    label: "Standing missions",
+    usedBy: "Set a goal, and the goal bar above a chat's message box",
+    needs: "session.control.read and session.control on /api/ws, and /goal as Hermes's own command in commands.catalog.",
+    without: "Set a goal doesn't show, and chats show no goal bar.",
+    anchor: "standing-missions",
+    // `session.control.read` for a session no chat has fails "session not found" (4001) before reading anything
+    // (`tui_gateway/methods_session_control.py`). A quick or plugin command named `goal` runs instead of Hermes's
+    // `/goal`, and so do `session.control`'s goal actions, which go through `command.dispatch` (ADR 0178).
+    probe: {
+      kind: "rpc",
+      method: "session.control.read",
+      params: () => ({ session_id: PROBE_NAME }),
+      shape: isObj,
+      // SESSION_NOT_FOUND, which is declared after this list.
+      refusedWith: 4001,
+      alsoNeeds: async (io, profile) => {
+        const list = await listServerCommands(io.rpc, profile).catch((e: unknown) => errorText(e));
+        if (typeof list === "string") return { state: "unknown", why: `Hermes has session.control, but couldn't say whether /goal is its own: ${list}` };
+        if (list.replaced.has("goal"))
+          return { state: "unsupported", why: "Hermes has session.control, but a quick or plugin command called /goal would run instead of Hermes's own, so Highwing doesn't set goals here." };
+        if (list.unsure.has("goal"))
+          return { state: "unknown", why: "Hermes has session.control, but couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /goal." };
+        if (!list.listed.has("goal")) return { state: "unsupported", why: "Hermes has session.control, but doesn't list /goal as its own command." };
+        return { state: "supported", why: "Hermes has session.control.read and session.control, and /goal is its own command." };
+      },
+    },
+    writeMethods: /^session\.control$/,
   },
   {
     id: "liveSessions",
@@ -1031,8 +1073,14 @@ export class CapabilityStore {
           ? { state: "unsupported", source: "probed", why: lacking }
           : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
     } catch (e) {
-      result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
+      const f = failureOf(e);
+      result =
+        probe.kind === "rpc" && probe.refusedWith !== undefined && f.rpcCode === probe.refusedWith
+          ? { state: "supported", source: "probed", why: "Hermes has the method: it refused the check's made-up name." }
+          : { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(f)) };
     }
+    if (result.state === "supported" && probe.kind === "rpc" && probe.alsoNeeds)
+      result = { source: "probed", ...(await within(probe.alsoNeeds(this.io, scope.profile), this.timeoutMs).catch((e: unknown) => stateOfFailure(failureOf(e)))) };
     // A screen's own answer that came in meanwhile is newer, and stands.
     if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.found(spec.id, probeKey(spec), result);
   }

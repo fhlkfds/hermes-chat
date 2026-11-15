@@ -38,6 +38,7 @@ import { failureMark } from "./inbox";
 // Projects are Hermes's own, read and written with legacy `projects.*` (projects.ts, research doc "Projects").
 import { projectsApi, type ProjectsApi } from "./projects";
 import { STEER, askSideQuestion, listServerCommands, runServerCommand, sideAnswer, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
+import { GoalBoard, GoalWriteError, controlOf, goalAction, maxTurnsOf, readControl, setGoal, type Control, type GoalAction, type GoalDraft } from "./goals";
 import { callText, offeredSkills, runSkill, skillInvocationText, type SkillCall, type SkillCommands } from "./skillCommands";
 import { CronApi } from "./cronJobs";
 import { followsSession, nextRoster, parseKanbanCreate, sameTask, type DispatchedTask } from "./dispatched";
@@ -1592,6 +1593,58 @@ export class Hermes {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
     if (!runtimeId) return Promise.reject(new Error("This chat isn't open on Hermes."));
     return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
+  }
+
+  /** Each chat's goal as Hermes last showed it (goals.ts, ADR 0178), for the goal bar. Kept in memory only. */
+  readonly goals = new GoalBoard();
+
+  /** The chat's live session id, or a rejection saying it isn't open on Hermes. */
+  private liveSession(chatId: string): string {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId) throw new Error("This chat isn't open on Hermes.");
+    return runtimeId;
+  }
+
+  /** Reads the chat's goal from Hermes, into `goals`. */
+  async readGoal(chatId: string): Promise<Control> {
+    const control = await readControl((method, params) => this.request(method, params), this.liveSession(chatId));
+    this.goals.put(chatId, control);
+    return control;
+  }
+
+  /**
+   * Sets the chat's goal (goals.ts `setGoal`), refused when it changed since the owner saw revision `seen`, and once
+   * Hermes's read back matches, sends the message that starts it as the chat's next turn. Nothing is sent after a
+   * profile switch. Rejects saying why, with `goals` showing what Hermes has now.
+   */
+  async setGoal(chatId: string, draft: GoalDraft, seen: string): Promise<void> {
+    const profile = this.profile;
+    try {
+      const { control, kickoff } = await setGoal((method, params) => this.request(method, params), this.liveSession(chatId), draft, seen);
+      this.goals.put(chatId, control);
+      if (this.profile === profile) await this.send(chatId, kickoff);
+    } catch (e) {
+      if (e instanceof GoalWriteError && e.control) this.goals.put(chatId, e.control);
+      throw e;
+    }
+  }
+
+  /** Pauses, resumes or clears the chat's goal. A resume sends the message Hermes wants as the chat's next turn. */
+  async controlGoal(chatId: string, action: GoalAction): Promise<void> {
+    const profile = this.profile;
+    try {
+      const { control, next } = await goalAction((method, params) => this.request(method, params), this.liveSession(chatId), action);
+      this.goals.put(chatId, control);
+      if (next && this.profile === profile) await this.send(chatId, next);
+    } catch (e) {
+      if (e instanceof GoalWriteError && e.control) this.goals.put(chatId, e.control);
+      throw e;
+    }
+  }
+
+  /** The shown profile's turn budget for a goal (`goals.max_turns`), undefined when Hermes doesn't say. */
+  async goalBudget(): Promise<number | undefined> {
+    return maxTurnsOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
   }
 
   /**
@@ -4051,6 +4104,12 @@ export class Hermes {
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
+    // A chat's goal changed, here or in another Hermes client, or after a turn (goals.ts, ADR 0178).
+    if (type === "session.control.update") {
+      const control = controlOf(payload);
+      if (control) this.goals.put(chat.id, control);
+      return;
+    }
     // A side question's answer is no part of the chat or of a turn running in it.
     if (type === "btw.complete") return this.sideAnswered(chat, textOf(payload.task_id) ?? "", payload.text);
     // Sent when the chat's model, reasoning, fast mode or YOLO changes, here or in another Hermes client.

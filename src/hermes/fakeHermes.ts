@@ -11,6 +11,7 @@ import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { FakeProjectContext } from "./fakeProjectContext";
+import { FakeGoals } from "./fakeGoals";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 import { skillInvocationText } from "./skillCommands";
 
@@ -412,7 +413,7 @@ export class FakeHermes {
     profiles?: Record<string, Record<string, unknown>>;
   };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
-  commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help"];
+  commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help", "goal"];
   /** False: a Hermes with no `prompt.btw`, which answers "method not found". */
   sideQuestions = true;
   /**
@@ -426,6 +427,11 @@ export class FakeHermes {
   catalogSkills = true;
   /** Each live session's profile, for the skills `command.dispatch` finds. */
   readonly runtimeProfile = new Map<string, string>();
+  /** Goals (fakeGoals.ts, ADR 0178). `standingMissions` false: a Hermes without `session.control`, "method not found". */
+  readonly goals = new FakeGoals();
+  standingMissions = true;
+  /** Starts the turn that follows a goal's turn at once, as Hermes does; none in tests, which send turns themselves. */
+  goalTurn?: (runtimeId: string, prompt: string) => void;
   /** A `/steer` is queued for the running turn; false answers as Hermes does with no turn running. */
   steerable = true;
   contextOutput = "Context window: 12,400 / 200,000 tokens (6%)\n  System prompt  3,100\n  Messages       9,300";
@@ -984,11 +990,34 @@ export class FakeHermes {
       if (!this.runtime.has(sid)) return this.fail(r.id, 4001, "session not found");
       const skill = this.skillMessage(this.runtimeProfile.get(sid) ?? "default", String(r.params.name), String(r.params.arg ?? ""));
       if (skill) return this.respond(r.id, skill);
+      if (r.params.name === "goal") {
+        const answer = this.goals.command(this.runtime.get(sid)!, String(r.params.arg ?? ""));
+        if ("error" in answer) return this.fail(r.id, answer.error.code, answer.error.message);
+        this.respond(r.id, answer.result);
+        return this.publishGoal(sid);
+      }
       if (r.params.name !== "steer") return this.fail(r.id, 4018, `not a quick/plugin/bundle/skill command: ${r.params.name}`);
       const arg = String(r.params.arg ?? "");
       if (!arg) return this.fail(r.id, 4004, "usage: /steer <prompt>");
       if (!this.steerable) return this.respond(r.id, { type: "send", message: arg, notice: `No agent running; sent as next turn: ${arg}` });
       this.respond(r.id, { type: "exec", output: `⏩ Steer queued — arrives after the next tool call: ${arg}` });
+    },
+    // `session.control.read` and `session.control` (tui_gateway/methods_session_control.py): 4001 for a session not live.
+    "session.control.read": (r) => {
+      if (!this.standingMissions) return this.fail(r.id, -32601, "unknown method: session.control.read");
+      const stored = this.runtime.get(String(r.params.session_id ?? ""));
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      this.respond(r.id, { control: this.goals.control(stored) });
+    },
+    "session.control": (r) => {
+      if (!this.standingMissions) return this.fail(r.id, -32601, "unknown method: session.control");
+      const sid = String(r.params.session_id ?? "");
+      const stored = this.runtime.get(sid);
+      if (!stored) return this.fail(r.id, 4001, "session not found");
+      const answer = this.goals.action(stored, String(r.params.action ?? ""));
+      if ("error" in answer) return this.fail(r.id, answer.error.code, answer.error.message);
+      this.respond(r.id, answer.result);
+      this.publishGoal(sid);
     },
     // `prompt.btw` (tui_gateway/methods_prompt.py at the deployed `f0d94882`): replies with a task id at once, and the
     // answer comes later as `btw.complete` on the asking session, `error: <why>` as its text when it failed.
@@ -1522,6 +1551,7 @@ export class FakeHermes {
       delegation: { ...this.modelConfig.delegation },
       terminal: { backend: this.terminalBackend[query.get("profile") || "default"] ?? "local" },
       dashboard: { turn_isolation: this.turnIsolation },
+      goals: { max_turns: this.goals.maxTurns },
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
       // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
       ...(this.mcp.servers[query.get("profile") || "default"] && { mcp_servers: this.mcp.servers[query.get("profile") || "default"] }),
@@ -2381,6 +2411,20 @@ export class FakeHermes {
       this.inflight.delete(sessionId);
     }
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+    // The goal is judged once the turn is done, and its update follows `message.complete` (`prompt_turn.py`).
+    const stored = this.runtime.get(sessionId);
+    if (type === "message.complete" && payload.status === "complete" && stored) {
+      const next = this.goals.afterTurn(stored);
+      if (next === null) return;
+      this.publishGoal(sessionId);
+      if (next) this.goalTurn?.(sessionId, next);
+    }
+  }
+
+  /** `session.control.update` with the chat's snapshot, as Hermes sends after each goal change. */
+  private publishGoal(sessionId: string) {
+    const stored = this.runtime.get(sessionId);
+    if (stored) setTimeout(() => this.event(sessionId, "session.control.update", { control: this.goals.control(stored) }), 0);
   }
 
   /** A reply that starts two background subagents, as `delegate_task` in background mode reports them, and ends its turn while they run. */

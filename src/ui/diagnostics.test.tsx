@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { CapabilityStore, guideUrl, type CapabilityIO } from "../hermes/capabilities";
-import { connect, type Hermes } from "../hermes/transport";
+import { RpcError, connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { CapabilityGate, DiagnosticsSettings } from "./Diagnostics";
 import { SettingsSearching } from "./SettingRows";
@@ -52,6 +52,7 @@ const NEW = {
   "RPC gateway.capabilities": { per_session_exclusive_submit: true },
   "RPC projects.list": { projects: [] },
   "RPC commands.catalog": {},
+  "RPC session.control.read": new RpcError(4001, "session not found"),
   "RPC session.active_list": { sessions: [] },
   "RPC subagent.roster": { sessions: [] },
   "RPC learning.detail": { ok: false },
