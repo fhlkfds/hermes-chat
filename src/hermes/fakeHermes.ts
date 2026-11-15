@@ -395,9 +395,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /**
    * What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. A function answers
-   * each call from what it was told and given.
+   * each call from what it was told and given, and the task and model it ran on.
    */
-  oneshotAnswer: string | ((call: { instructions: string; input: string }) => string) = "A new title";
+  oneshotAnswer: string | ((call: { instructions: string; input: string; task: string; model: string }) => string) = "A new title";
+  /** Providers Hermes on the server has no sign-in or key for: an `llm.oneshot` whose task runs on one fails. */
+  signedOut = new Set<string>();
   /**
    * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
    * holds it. Undefined: a Hermes without it, which answers "method not found". `profiles`: fields that differ for the
@@ -1134,10 +1136,14 @@ export class FakeHermes {
     "llm.oneshot": (r) => {
       if (!String(r.params.instructions ?? "").trim() && !String(r.params.input ?? "").trim())
         return this.fail(r.id, 4030, "llm.oneshot requires a template or instructions/input");
+      const task = String(r.params.task || "title_generation");
+      const runsOn = this.oneshotModel(task);
       const answer = () => {
         if (this.oneshotFailure !== undefined) return this.fail(r.id, 5030, `one-shot generation failed: ${this.oneshotFailure}`);
+        if (this.signedOut.has(runsOn.provider)) return this.fail(r.id, 5030, `one-shot generation failed: ${signedOutText(runsOn.provider)}`);
         const a = this.oneshotAnswer;
-        this.respond(r.id, { text: typeof a === "string" ? a : a({ instructions: String(r.params.instructions ?? ""), input: String(r.params.input ?? "") }) });
+        const call = { instructions: String(r.params.instructions ?? ""), input: String(r.params.input ?? ""), task, model: runsOn.model };
+        this.respond(r.id, { text: typeof a === "string" ? a : a(call) });
       };
       if (this.oneshotGate) void this.oneshotGate.then(answer);
       else answer();
@@ -1510,6 +1516,7 @@ export class FakeHermes {
     }),
     "GET /api/config": ({ query }) => ({
       model: this.modelConfig.model.default,
+      auxiliary: { ...structuredClone(this.modelConfig.auxiliary), ...structuredClone(this.modelConfig.unslottedAuxiliary) },
       skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
@@ -1536,9 +1543,14 @@ export class FakeHermes {
       const config = body?.config;
       if (!config || typeof config !== "object")
         throw new RestError(422, `{"detail":[{"type":"missing","loc":["body","config"],"msg":"Field required"}]}`);
-      const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown> };
+      const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown>; auxiliary?: Record<string, Record<string, string>> };
       Object.assign(this.modelConfig.agent, c.agent ?? {});
       Object.assign(this.modelConfig.delegation, c.delegation ?? {});
+      for (const [task, block] of Object.entries(c.auxiliary ?? {})) {
+        const slots = this.modelConfig.auxiliary;
+        if (slots[task]) Object.assign(slots[task], block);
+        else this.modelConfig.unslottedAuxiliary[task] = { ...this.modelConfig.unslottedAuxiliary[task], ...block };
+      }
       await this.voiceProviders.mergeConfig(query.get("profile") || "default", config as Record<string, unknown>);
       return { ok: true };
     },
@@ -2905,6 +2917,17 @@ export class FakeHermes {
     return { ok: true, scope, tasks: [task], provider, model, ...("reasoning_effort" in body ? { reasoning_effort: effort } : {}) };
   }
 
+  /**
+   * The model an `llm.oneshot` for `task` runs on (`_resolve_task_provider_model` at `f0d9488`): `auxiliary.<task>` for
+   * any task, slot or not, and the main model when that block is missing or its provider is empty or `auto`.
+   */
+  private oneshotModel(task: string): { provider: string; model: string } {
+    const block = this.modelConfig.auxiliary[task] ?? this.modelConfig.unslottedAuxiliary[task] ?? {};
+    const provider = String(block.provider ?? "").trim();
+    if (!provider || provider.toLowerCase() === "auto") return { provider: this.modelConfig.model.provider, model: this.modelConfig.model.default };
+    return { provider, model: String(block.model ?? "").trim() };
+  }
+
   private frame(f: unknown) {
     this.raw(JSON.stringify(f));
   }
@@ -2923,7 +2946,13 @@ export type FakeModelConfig = {
   agent: { reasoning_effort: string; service_tier: string };
   /** `delegation` as `GET /api/config` returns it, defaults filled in. */
   delegation: Record<string, unknown>;
+  /** The helper tasks Hermes has slots for (`_aux_task_slots()`): `/api/model/auxiliary` lists them and `/api/model/set` sets them. */
   auxiliary: Record<string, FakeAuxSlot>;
+  /**
+   * `auxiliary.<task>` blocks for tasks with no slot, such as `project_instructions` (ADR 0177): only `PUT /api/config`
+   * writes them and only `GET /api/config` returns them, yet `llm.oneshot` runs its task on one.
+   */
+  unslottedAuxiliary: Record<string, Record<string, string>>;
   catalog: FakeProvider[];
   /** "provider/model" -> [input, output] $ per million tokens, for models priced above Hermes's threshold. */
   expensive: Record<string, [number, number]>;
@@ -2949,6 +2978,7 @@ export function fakeModelConfig(): FakeModelConfig {
       approval: { provider: "auto", model: "", reasoning_effort: "none" },
       review: { provider: "auto", model: "" },
     },
+    unslottedAuxiliary: {},
     catalog: [
       { slug: "openrouter", name: "OpenRouter", models: openrouter, capabilities: caps(openrouter) },
       { slug: "nous", name: "Nous Portal", models: nous, capabilities: caps(nous) },
@@ -2957,6 +2987,12 @@ export function fakeModelConfig(): FakeModelConfig {
     expensive: { "openrouter/anthropic/claude-fable-5.1": [30, 150], "nous/anthropic/claude-fable-5.1": [30, 150] },
     modelMap: [],
   };
+}
+
+/** How Hermes's `_resolve_call_client` says it has no credentials for `provider` (as `titleModelUnavailable` reads them). */
+function signedOutText(provider: string): string {
+  if (provider === "nous") return "Nous Portal runtime credentials unavailable: Hermes is not logged into Nous Portal. (code: nous_auth_missing)";
+  return `Provider '${provider}' is set in config.yaml but no API key was found.`;
 }
 
 /** `SessionDB.session_unread`: activity postdates the read watermark, and `null` means read. */

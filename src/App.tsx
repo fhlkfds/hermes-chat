@@ -24,6 +24,7 @@ import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks"
 import { chatContext, contextLedger, knownWindow, type ChatContexts } from "./hermes/projectContextFiles";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
+import { unavailableWords } from "./hermes/instructionsAI";
 import { systemSecrets } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { tauriSnapshots } from "./hermes/snapshots";
@@ -3571,8 +3572,8 @@ export function Main({
                   writer:
                     status === "connected"
                       ? {
-                          ask: (c) => hermes.askForEdit({ profile, ...c }).then((r) => r.text),
-                          model: () => hermes.modelSettings.textModel(),
+                          ask: (c, m) => hermes.askForEdit({ profile, ...c, task: m.task, words: unavailableWords(m) }).then((r) => r.text),
+                          model: () => hermes.modelSettings.instructionsModel(),
                         }
                       : undefined,
                 }}
