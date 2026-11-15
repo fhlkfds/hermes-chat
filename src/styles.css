@@ -4182,7 +4182,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .ext-view .btn { margin-top: 12px; }
 .ext-for { margin: 0 0 10px; font-size: calc(12rem / 14); }
 /* A reply's files in the Preview, and its chip (FileChanges.tsx, ADR 0177). */
-.files-chip { margin-top: 8px; }
+.files-chip { margin-top: 8px; max-width: 100%; }
 .files-view { flex: 1; overflow: auto; padding: 14px 18px 40px; line-height: 1.55; user-select: text; display: flex; flex-direction: column; gap: 10px; }
 .files-view h3 { margin: 4px 0 0; font-size: calc(15rem / 14); }
 .files-view .btn { align-self: flex-start; }
