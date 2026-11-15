@@ -4211,7 +4211,7 @@ export class Hermes {
     return toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
   }
 
-  /** The stored rows of the turn holding row `replyRow`, oldest first, read newest first a page at a time. */
+  /** The stored rows of the turn holding row `replyRow`, oldest first, read a page at a time back from the newest. */
   private async turnRowsOf(profile: string, chatId: string, replyRow: number): Promise<RunRow[]> {
     const PAGE = 100;
     const rows: RunRow[] = [];
@@ -4219,7 +4219,8 @@ export class Hermes {
       const query = new URLSearchParams({ profile, order: "latest", limit: String(PAGE), offset: String(page * PAGE), inline_images: "false" });
       const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: RunRow[] };
       const got = (res.messages ?? []).filter((m) => typeof m?.id === "number" && typeof m.role === "string");
-      rows.unshift(...got.reverse());
+      // A `latest` page counts back from the newest row and is itself oldest first.
+      rows.unshift(...got);
       const turn = turnRows(rows, replyRow);
       if (turn) return turn;
       if (got.length < PAGE) break;

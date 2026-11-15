@@ -2764,7 +2764,7 @@ export class FakeHermes {
 
   /**
    * `GET /api/sessions/{id}/messages` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`): stored rows,
-   * `SELECT *` from `messages`, oldest first or `order=latest` newest first, a page of `limit` from `offset`. Only rows
+   * `SELECT *` from `messages`, oldest first, a page of `limit` from `offset`, counted from the newest for `order=latest`. Only rows
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
@@ -2788,10 +2788,11 @@ export class FakeHermes {
         _compressed_summary: m.summary ? 1 : null,
         message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
-    if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);
-    return { session_id: id, profile: query.get("profile") ?? "default", messages: rows.slice(offset, offset + limit), pagination: {} };
+    // `latest` pages back from the newest row and still answers oldest first (`get_messages`, `hermes_state_messages.py`).
+    const page = query.get("order") === "latest" ? rows.slice(Math.max(0, rows.length - offset - limit), rows.length - offset) : rows.slice(offset, offset + limit);
+    return { session_id: id, profile: query.get("profile") ?? "default", messages: page, pagination: {} };
   }
 
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */
