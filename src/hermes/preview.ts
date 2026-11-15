@@ -99,7 +99,7 @@ export function checkWebUrl(raw: string, appOrigin: string): { url: string } | {
     return { error: `Only http:// and https:// pages open in the preview, and ${u.protocol} isn't a web address.` };
   if (u.username || u.password) return { error: "Web addresses with a username or password in them don't open in the preview." };
   if (!u.hostname) return { error: "That isn't a web address." };
-  if (u.origin === appOrigin) return { error: "Flagstop's own pages don't open in the preview." };
+  if (u.origin === appOrigin) return { error: "Highwing's own pages don't open in the preview." };
   return { url: u.href };
 }
 
@@ -350,7 +350,7 @@ type ReadText = { binary?: boolean; byteSize?: number; language?: string; mimeTy
 /** A failed dashboard request in the owner's words. */
 function serverFileError(e: unknown): Error {
   const message = errorText(e);
-  if (message === "Not connected to Hermes.") return new Error("Files on the server can't be read while Flagstop isn't connected.");
+  if (message === "Not connected to Hermes.") return new Error("Files on the server can't be read while Highwing isn't connected.");
   if (!(e instanceof RestError)) return new Error(message);
   let detail = e.body.trim();
   try {

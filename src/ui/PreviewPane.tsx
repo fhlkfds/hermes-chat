@@ -394,7 +394,7 @@ function Badge({ here, serverLabel, onSwitch }: { here: PreviewTarget | undefine
           </span>
         );
       return (
-        <span className="where where-web" title="A web page, loaded by this computer and kept apart from Flagstop">
+        <span className="where where-web" title="A web page, loaded by this computer and kept apart from Highwing">
           <Globe size={12} /> Web
         </span>
       );
@@ -407,7 +407,7 @@ function Badge({ here, serverLabel, onSwitch }: { here: PreviewTarget | undefine
       );
     case "local":
       return (
-        <span className="where where-local" title="A file on this computer, read by Flagstop. It isn't sent to Hermes.">
+        <span className="where where-local" title="A file on this computer, read by Highwing. It isn't sent to Hermes.">
           <Laptop size={12} /> This computer
         </span>
       );
@@ -419,7 +419,7 @@ function Badge({ here, serverLabel, onSwitch }: { here: PreviewTarget | undefine
       );
     case "extension":
       return (
-        <span className="where where-tool" title="Drawn by Flagstop from what an extension sent. It runs in a sandbox on this computer.">
+        <span className="where where-tool" title="Drawn by Highwing from what an extension sent. It runs in a sandbox on this computer.">
           <Blocks size={12} /> Extension
         </span>
       );
@@ -536,7 +536,7 @@ function MoreMenu({
           {item("Open a file on this computer…", <Laptop size={14} />, onPick, picking)}
           <div className="menu-sep" />
           <div className="preview-menu-note">
-            Pages here run on their own, with no access to Flagstop or your sign-in, and only you can use them.
+            Pages here run on their own, with no access to Highwing or your sign-in, and only you can use them.
             {framed && " Links you follow inside a page don't change the address here. Pages here can't use their own storage, so some sites work only in your browser."}
           </div>
         </Menu>

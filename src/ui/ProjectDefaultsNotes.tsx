@@ -75,7 +75,7 @@ export function NewChatSettingsView({
         )}
         {row(
           "Instructions",
-          instructions.value ? <span title={instructions.value}>{firstLine(instructions.value)}</span> : "None from Flagstop",
+          instructions.value ? <span title={instructions.value}>{firstLine(instructions.value)}</span> : "None from Highwing",
           instructions.from,
         )}
       </dl>

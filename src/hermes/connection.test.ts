@@ -88,7 +88,7 @@ describe("Reconnecting", () => {
   it("goes Offline at once when the dashboard turns the token down, or takes it as another sign-in, without retrying it", async () => {
     for (const refusal of [
       "Wrong token: the dashboard turned it down. A token stops working when HERMES_DASHBOARD_SESSION_TOKEN is replaced on the server.",
-      "The dashboard took the token as a basic sign-in, not as its session token, so Flagstop didn't sign in with it.",
+      "The dashboard took the token as a basic sign-in, not as its session token, so Highwing didn't sign in with it.",
     ]) {
       const { server, hermes } = await signedIn();
       server.refuse = refusal;

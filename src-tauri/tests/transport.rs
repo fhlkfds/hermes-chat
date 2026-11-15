@@ -2085,12 +2085,12 @@ fn refuses_extra_headers_that_are_malformed_reserved_or_set_twice() {
         (vec![header("X-A", "  ")], "Extra request header 1: enter a value for X-A."),
         (vec![header("X-A", &"a".repeat(8 * 1024 + 1))], "Extra request header 1: the value of X-A is over 8 KB."),
         (vec![header("X-A", "1"), header("x-a", "2")], "Extra request header 2: x-a is set twice."),
-        (vec![header("Host", "evil")], "Extra request header 1: Flagstop sets Host itself."),
-        (vec![header("Cookie", "a=b")], "Extra request header 1: Flagstop sets Cookie itself."),
-        (vec![header("content-length", "0")], "Extra request header 1: Flagstop sets content-length itself."),
-        (vec![header("Sec-WebSocket-Key", "x")], "Extra request header 1: Flagstop sets Sec-WebSocket-Key itself."),
-        (vec![header("Proxy-Authorization", "x")], "Extra request header 1: Flagstop sets Proxy-Authorization itself."),
-        ((0..33).map(|i| header(&format!("X-{i}"), "v")).collect(), "Flagstop sends at most 32 extra request headers."),
+        (vec![header("Host", "evil")], "Extra request header 1: Highwing sets Host itself."),
+        (vec![header("Cookie", "a=b")], "Extra request header 1: Highwing sets Cookie itself."),
+        (vec![header("content-length", "0")], "Extra request header 1: Highwing sets content-length itself."),
+        (vec![header("Sec-WebSocket-Key", "x")], "Extra request header 1: Highwing sets Sec-WebSocket-Key itself."),
+        (vec![header("Proxy-Authorization", "x")], "Extra request header 1: Highwing sets Proxy-Authorization itself."),
+        ((0..33).map(|i| header(&format!("X-{i}"), "v")).collect(), "Highwing sends at most 32 extra request headers."),
     ];
     for (headers, want) in cases {
         let err = transport::extra_headers(&headers)

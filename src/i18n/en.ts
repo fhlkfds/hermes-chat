@@ -61,7 +61,7 @@ export const en = {
     /** Each page's one-line description, under its title. */
     pages: {
       general: "Connections, the chat list, launch and tray, screenshots, and this computer's data.",
-      appearance: "How Flagstop looks on this computer.",
+      appearance: "How Highwing looks on this computer.",
       keyboard: "Click a shortcut, press the new keys, then Save. Ctrl means Ctrl or Cmd.",
       snapshots: "The bucket Share snapshot publishes chat pages to, and the snapshots in it.",
       model: "The models this profile's chats, subagents and helpers run on.",
@@ -85,7 +85,7 @@ export const en = {
     language: {
       title: "Language",
       name: "Interface language",
-      hint: "The words Flagstop uses, and how it writes dates and numbers. Screens not translated yet stay in English.",
+      hint: "The words Highwing uses, and how it writes dates and numbers. Screens not translated yet stay in English.",
       /** `language` is the language System resolves to, in its own name. */
       system: (language: string) => `System (${language})`,
     },
@@ -231,12 +231,12 @@ export const en = {
     noRoute: (route: string) => `This Hermes server can't do this: it has no route for ${route}. Updating Hermes adds it.`,
     inUseGone: (name: string) => `The profile in use, ${name}, is no longer on the server. Another Hermes client may have renamed or deleted it.`,
     openDefault: "Open default",
-    moveOffer: (from: string, to: string) => `Hermes renamed ${from} to ${to}, but Flagstop closed before moving this computer's data. Move this computer's drafts, tags and pins from ${from} to ${to}?`,
+    moveOffer: (from: string, to: string) => `Hermes renamed ${from} to ${to}, but Highwing closed before moving this computer's data. Move this computer's drafts, tags and pins from ${from} to ${to}?`,
     move: "Move them",
     leave: "Leave them",
     moved: (to: string) => `Moved this computer's data to ${to}.`,
     movePartly: (from: string, to: string) =>
-      `Hermes renamed ${from} to ${to}, but some of this computer's data for it couldn't move, so it stays under ${from} for now. Flagstop offers to move it again.`,
+      `Hermes renamed ${from} to ${to}, but some of this computer's data for it couldn't move, so it stays under ${from} for now. Highwing offers to move it again.`,
     created: (name: string) => `Created ${name}.`,
     createdUnanswered: (name: string) => `Hermes's answer was lost, but it lists ${name} now.`,
     openNow: (name: string) => `Open ${name} now`,
@@ -328,7 +328,7 @@ export const en = {
       local: "On this computer, its drafts, queued messages, tags, pins, snoozes and Saved filters are removed too.",
       lost: (n: number) => (n === 1 ? "1 queued or Failed message will be lost." : `${n} queued or Failed messages will be lost.`),
       noUndo: "Hermes can't undo this. To keep a copy, clone it first.",
-      inUse: "You're using this profile. Flagstop will switch to default first.",
+      inUse: "You're using this profile. Highwing will switch to default first.",
       confirmLabel: (name: string) => `Type ${name} to confirm`,
       confirm: "Delete profile",
       deleting: "Deleting…",
@@ -339,8 +339,8 @@ export const en = {
       settlingNoCommand: (name: string) => `Deleted ${name}. Hermes hasn't finished cleaning up after it.`,
       copy: "Copy command",
       copied: "Copied",
-      stayed: "Nothing was deleted: Flagstop stayed on this profile.",
-      stillInUse: (name: string) => `Nothing was deleted: Flagstop couldn't switch away from ${name}.`,
+      stayed: "Nothing was deleted: Highwing stayed on this profile.",
+      stillInUse: (name: string) => `Nothing was deleted: Highwing couldn't switch away from ${name}.`,
       failed: (why: string) => `The profile wasn't deleted: ${why}`,
       forgetPartly: (name: string) => `Deleted ${name} on Hermes, but some of this computer's data for it couldn't be removed.`,
     },

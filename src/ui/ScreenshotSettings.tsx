@@ -66,7 +66,7 @@ export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Prom
       <SettingRow
         name="Screenshot shortcut"
         nameId="screenshot-shortcut-label"
-        hint={recording ? "Press the keys together, or Esc to keep the current shortcut." : "Works while Flagstop is the window you're using. Click the shortcut to change it."}
+        hint={recording ? "Press the keys together, or Esc to keep the current shortcut." : "Works while Highwing is the window you're using. Click the shortcut to change it."}
         hintId="screenshot-shortcut-help"
         control={
           <div className="shortcut-controls">
@@ -118,7 +118,7 @@ export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Prom
           <>
             <p>
               On Wayland, apps can't see key presses meant for other windows, so a shortcut that works while you're in another app has to be set up in
-              your desktop's own keyboard settings. If Flagstop is open, the screenshot goes to the chat on screen; if not, Flagstop opens and
+              your desktop's own keyboard settings. If Highwing is open, the screenshot goes to the chat on screen; if not, Highwing opens and
               takes it once you're signed in.
             </p>
             <ul>
@@ -131,11 +131,11 @@ export function ScreenshotSettings({ checkSupport }: { checkSupport?: () => Prom
               <li>GNOME or KDE Plasma: add a custom shortcut in the Keyboard settings with that command.</li>
             </ul>
             <p>
-              Pick keys your desktop doesn't already use. If Flagstop might not be open yet, run{" "}
+              Pick keys your desktop doesn't already use. If Highwing might not be open yet, run{" "}
               <code>env WEBKIT_DISABLE_DMABUF_RENDERER=1 {COMMAND}</code> instead, as the app's launcher does.
             </p>
             <p>
-              To bring Flagstop forward from any app, bind a key the same way to <code>hermes-chat --toggle</code> (or <code>--show</code>, which
+              To bring Highwing forward from any app, bind a key the same way to <code>hermes-chat --toggle</code> (or <code>--show</code>, which
               never hides it), for example <code>bind = SUPER, H, exec, hermes-chat --toggle</code> in <code>hyprland.conf</code>.
             </p>
           </>

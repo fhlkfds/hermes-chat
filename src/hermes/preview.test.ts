@@ -41,7 +41,7 @@ describe("Opening a web page", () => {
       error: "Web addresses with a username or password in them don't open in the preview.",
     });
     // In `npm run app` the app itself is served over http.
-    expect(checkWebUrl("http://localhost:1420/", "http://localhost:1420")).toEqual({ error: "Flagstop's own pages don't open in the preview." });
+    expect(checkWebUrl("http://localhost:1420/", "http://localhost:1420")).toEqual({ error: "Highwing's own pages don't open in the preview." });
     expect(checkWebUrl("http://localhost:5173/", "http://localhost:1420")).toEqual({ url: "http://localhost:5173/" });
   });
 });

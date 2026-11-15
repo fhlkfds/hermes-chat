@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "Flagstop",
+        "title": "Highwing",
         "create": false,
         "width": 1280,
         "height": 820,

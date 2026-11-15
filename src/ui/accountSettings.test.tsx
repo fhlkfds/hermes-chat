@@ -152,7 +152,7 @@ describe("Settings → Providers, subscription sign-ins", () => {
     const s = new FakeHermes();
     s.accounts.routes = false;
     await shown("signIns", { s });
-    expect(await screen.findByText(/This Hermes server doesn't let Flagstop sign in to subscription providers \(Hermes has no such route \(it answered 404\)\)/)).toBeTruthy();
+    expect(await screen.findByText(/This Hermes server doesn't let Highwing sign in to subscription providers \(Hermes has no such route \(it answered 404\)\)/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
@@ -234,7 +234,7 @@ describe("Settings → Providers, custom endpoints", () => {
     const s = new FakeHermes();
     s.accounts.routes = false;
     await shown("endpoints", { s });
-    expect(await screen.findByText(/This Hermes server doesn't let Flagstop manage custom endpoints/)).toBeTruthy();
+    expect(await screen.findByText(/This Hermes server doesn't let Highwing manage custom endpoints/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

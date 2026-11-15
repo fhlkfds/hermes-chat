@@ -178,7 +178,7 @@ describe("keeping the defaults", () => {
     await expect(d.save(SCOPE, "p_1", 1, { folder: "/srv/app" })).rejects.toBeInstanceOf(DefaultsConflict);
   });
 
-  it("won't change a document a newer Flagstop wrote, in any shape", async () => {
+  it("won't change a document a newer Highwing wrote, in any shape", async () => {
     for (const scopes of [{ [SCOPE]: { p_1: { rev: 4, instructions: "Newer", extra: 1 } } }, [1, 2], "x", null]) {
       const newer = JSON.stringify({ v: DEFAULTS_VERSION + 1, scopes, more: true });
       const f = sharedFile(newer);

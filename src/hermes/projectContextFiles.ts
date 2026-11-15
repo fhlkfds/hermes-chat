@@ -200,7 +200,7 @@ export function projectContextFiles(io: ContextFilesIo): ProjectContextFiles {
       throw new Error(`Couldn't list ${dir}: ${errorText(e)}`);
     }
     if (inside.path !== dir)
-      throw new Error(`${dir} is a link to ${inside.path}, outside the project's main folder. Flagstop only uses a context folder that is inside it.`);
+      throw new Error(`${dir} is a link to ${inside.path}, outside the project's main folder. Highwing only uses a context folder that is inside it.`);
     return { dir, exists: true, files: listedFiles(inside.entries), main: top.path };
   };
 

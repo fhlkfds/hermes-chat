@@ -1,5 +1,5 @@
 ; Until 0.1.4 the app was "Hermes Chat". The installer keys an install by product name (its folder, its uninstall entry),
-; so installing Flagstop over it would leave both. Run the old uninstaller silently first, in place, as Tauri's own
+; so installing Highwing over it would leave both. Run the old uninstaller silently first, in place, as Tauri's own
 ; reinstall page does. Its "delete app data" box stays off in silent mode, and the data folder is named by the bundle
 ; identifier, which didn't change, so chats, settings and the keyring sign-in carry over (ADR 0176).
 !macro NSIS_HOOK_PREINSTALL
@@ -18,7 +18,7 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  WriteRegStr SHCTX "Software\Classes\hermes-chat" "" "URL:Flagstop link"
+  WriteRegStr SHCTX "Software\Classes\hermes-chat" "" "URL:Highwing link"
   WriteRegStr SHCTX "Software\Classes\hermes-chat" "URL Protocol" ""
   WriteRegStr SHCTX "Software\Classes\hermes-chat\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
   WriteRegStr SHCTX "Software\Classes\hermes-chat\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""

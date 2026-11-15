@@ -284,10 +284,10 @@ export function automationError(e: unknown): AutomationError {
   if (e instanceof AutomationError) return e;
   const message = errorText(e);
   if (message === "Not connected to Hermes." || message === "The chat connection is closed.")
-    return new AutomationError("offline", "Flagstop isn't connected to Hermes, so nothing was sent. Automations keep running on the server.");
+    return new AutomationError("offline", "Highwing isn't connected to Hermes, so nothing was sent. Automations keep running on the server.");
   if (e instanceof RestError && e.status === 401) return new AutomationError("forbidden", "The dashboard sign-in has expired, so nothing was changed. Sign in again.");
   if (e instanceof CapabilityUnsupportedError) return new AutomationError("unsupported", "This Hermes server has no webhook routes, so nothing was sent. Updating Hermes adds them.");
-  if (!(e instanceof RestError)) return /doesn't relay/.test(message) ? new AutomationError("unsupported", "This version of Flagstop can't send that to Hermes.") : new AutomationError("unknown", `Hermes didn't answer: ${message}`);
+  if (!(e instanceof RestError)) return /doesn't relay/.test(message) ? new AutomationError("unsupported", "This version of Highwing can't send that to Hermes.") : new AutomationError("unknown", `Hermes didn't answer: ${message}`);
   const status = e.status;
   let detail: unknown = e.body.trim();
   try {

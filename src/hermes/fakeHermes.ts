@@ -1923,7 +1923,7 @@ export class FakeHermes {
   private saveProviderKey(profile: string, envVar: string, key: string): SavedKey {
     const row = this.env?.[envVar];
     if (!row || !row.provider || row.is_password !== true || row.channel_managed === true)
-      throw new Error(`Flagstop doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
+      throw new Error(`Highwing doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
     const value = key.trim();
     if (!value || /[\u0000-\u001f]/.test(value)) throw new Error("Paste the key on one line, without spaces around it.");
     const checked = this.checkKey(value);
@@ -1937,7 +1937,7 @@ export class FakeHermes {
   private removeProviderKey(profile: string, envVar: string) {
     const row = this.env?.[envVar];
     if (!row || !row.provider || row.is_password !== true || row.channel_managed === true)
-      throw new Error(`Flagstop doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
+      throw new Error(`Highwing doesn't relay ${envVar}: Hermes doesn't list it as a model provider's key.`);
     if (this.removeKeyFails) throw new Error(this.removeKeyFails);
     this.removedKeys.push({ profile, envVar });
     this.env![envVar] = { ...row, is_set: false, redacted_value: null };
@@ -2270,7 +2270,7 @@ export class FakeHermes {
    * credential paths before anything is sent (`write_agent_text`).
    */
   private async fsWriteText(profile: string, asked: string, text: string, session?: string): Promise<string> {
-    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(asked)) throw new Error(`Flagstop doesn't relay writes to ${asked}, a credential file Hermes keeps out of reach`);
+    if (/(^|\/)(\.env(\..*)?|auth\.json|config\.yaml)$/i.test(asked)) throw new Error(`Highwing doesn't relay writes to ${asked}, a credential file Hermes keeps out of reach`);
     await this.fsWriteGate;
     if (this.fsWriteFailure !== undefined) throw thrown(this.fsWriteFailure);
     this.ownedSession(profile, session);

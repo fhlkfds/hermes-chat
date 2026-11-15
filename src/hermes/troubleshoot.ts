@@ -376,7 +376,7 @@ export async function startTroubleshoot(
   text: string,
   open: (chatId: string) => void,
 ): Promise<Troubleshoot> {
-  if (hermes.profile !== profile) throw new Error(`Flagstop shows the ${hermes.profile} profile now, not ${profile}, the job's. Nothing was sent.`);
+  if (hermes.profile !== profile) throw new Error(`Highwing shows the ${hermes.profile} profile now, not ${profile}, the job's. Nothing was sent.`);
   const t = store.start(scope, profile, job);
   let chatId: string;
   try {

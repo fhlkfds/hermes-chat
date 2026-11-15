@@ -76,7 +76,7 @@ export type AgentFsPipe = {
 
 /** Hermes's refusals from `fs_write_text` and its SSH workspace backend that come before anything is written. */
 function refusedBeforeWriting(e: unknown): boolean {
-  if (!(e instanceof RestError)) return /^Flagstop doesn't relay|^Not connected|^it's .* MB, over the .* MB limit/i.test(errorText(e));
+  if (!(e instanceof RestError)) return /^Highwing doesn't relay|^Not connected|^it's .* MB, over the .* MB limit/i.test(errorText(e));
   const status = e.status;
   if (status === 401 || status === 422) return true;
   let detail: unknown;
@@ -200,7 +200,7 @@ export function artifactIo(o: { host: boolean; files: { openForEdit: (e: { name:
   if (o.host) return { open: (path, name) => o.files.openForEdit({ name, path, kind: "file" }), saveEdit: o.files.saveEdit, saveCopy: o.files.saveCopy };
   const editing = textEditing(o.fs);
   return {
-    open: (path, name) => (protectedPath(path) ? Promise.reject(new RemoteFilesError("Flagstop doesn't edit credential files.")) : editing.open(path, name)),
+    open: (path, name) => (protectedPath(path) ? Promise.reject(new RemoteFilesError("Highwing doesn't edit credential files.")) : editing.open(path, name)),
     saveEdit: editing.saveEdit,
     saveCopy: editing.saveCopy,
   };

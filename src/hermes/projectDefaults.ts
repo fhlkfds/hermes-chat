@@ -66,14 +66,14 @@ export const sameDraft = (a: DefaultsDraft, b: DefaultsDraft) => JSON.stringify(
 /** Another save landed since the defaults being edited were read. `saved`: the defaults as they are kept now. */
 export class DefaultsConflict extends Error {
   constructor(readonly saved: ProjectDefaults | undefined) {
-    super("These defaults were changed elsewhere since you opened them, for example in another Flagstop window.");
+    super("These defaults were changed elsewhere since you opened them, for example in another Highwing window.");
   }
 }
 
 /** The stored document was written by a newer Hermes Chat, whose defaults this version might not keep whole. */
 export class NewerDefaultsError extends Error {
   constructor() {
-    super("A newer version of Flagstop saved these projects. Update this one to change the defaults.");
+    super("A newer version of Highwing saved these projects. Update this one to change the defaults.");
   }
 }
 
@@ -215,7 +215,7 @@ export function defaultsDoc(file: DefaultsFile): DefaultsDoc {
       if (res.swapped) return result;
       raw = res.current;
     }
-    throw new Error("Another Flagstop kept changing the defaults; nothing was saved. Try again.");
+    throw new Error("Another Highwing kept changing the defaults; nothing was saved. Try again.");
   };
   return {
     read: async (scope) => {

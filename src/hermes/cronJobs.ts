@@ -318,10 +318,10 @@ export function cronError(e: unknown): CronError {
   if (e instanceof CronError) return e;
   const message = errorText(e);
   if (message === "Not connected to Hermes." || message === "The chat connection is closed.")
-    return new CronError("offline", "Flagstop isn't connected to Hermes, so nothing was sent. Jobs keep running on the server.");
+    return new CronError("offline", "Highwing isn't connected to Hermes, so nothing was sent. Jobs keep running on the server.");
   if (e instanceof RestError && e.status === 401) return new CronError("forbidden", "The dashboard sign-in has expired, so nothing was changed. Sign in again.");
   if (e instanceof CapabilityUnsupportedError) return new CronError("unsupported", "This Hermes server has no scheduled jobs, so nothing was sent. Updating Hermes adds them.");
-  if (!(e instanceof RestError)) return /doesn't relay/.test(message) ? new CronError("unsupported", "This version of Flagstop can't send that to Hermes.") : new CronError("unknown", `Hermes didn't answer: ${message}`);
+  if (!(e instanceof RestError)) return /doesn't relay/.test(message) ? new CronError("unsupported", "This version of Highwing can't send that to Hermes.") : new CronError("unknown", `Hermes didn't answer: ${message}`);
   const status = e.status;
   let detail: unknown = e.body.trim();
   try {
@@ -738,7 +738,7 @@ export function jobsZone(setting: string | undefined, jobs: CronJob[], here = In
   }
   const latest = stamps.sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   const offset = latest === undefined ? undefined : stampOffset(latest);
-  const unknown = setting ? `Hermes names the time zone “${setting}”, which this computer doesn't know.` : setting === undefined ? "Flagstop couldn't read the profile's time zone setting." : "Hermes uses the server's own time zone and doesn't name it.";
+  const unknown = setting ? `Hermes names the time zone “${setting}”, which this computer doesn't know.` : setting === undefined ? "Highwing couldn't read the profile's time zone setting." : "Hermes uses the server's own time zone and doesn't name it.";
   if (offset !== undefined) {
     const label = offsetLabel(offset);
     return { zone: `${offset < 0 ? "-" : "+"}${label.slice(4)}`, label: `the server's time, ${label}`, named: false, note: `${unknown} Times show its offset now, ${label}, so daylight-saving changes can't be previewed.` };

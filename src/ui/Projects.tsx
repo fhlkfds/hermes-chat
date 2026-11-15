@@ -532,7 +532,7 @@ export function ProjectScreen({
             <section data-section="folders">
               <h2 tabIndex={-1}>Folders</h2>
               <p className="muted">
-                Folders on the server this project is about. Flagstop adds only folders that are already there, and taking one out of the
+                Folders on the server this project is about. Highwing adds only folders that are already there, and taking one out of the
                 project leaves it on the server. The first is the main folder: new chats start in it, and the project's context files are kept in
                 its <span className="mono">context</span> folder.
               </p>

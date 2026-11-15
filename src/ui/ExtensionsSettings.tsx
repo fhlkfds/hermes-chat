@@ -68,7 +68,7 @@ export function ExtensionsSettings({ skills }: { skills?: () => Promise<SkillCom
           An extension adds commands to the <span className="mono">/</span> menu and a view to the Preview.
         </>
       }
-      rest="Each one runs in a sandbox with no network, no files and no passwords. It reads a chat only with your permission, and only while a command you ran is running. For now only the extensions that come with Flagstop can be installed. Installing one from a file comes later."
+      rest="Each one runs in a sandbox with no network, no files and no passwords. It reads a chat only with your permission, and only while a command you ran is running. For now only the extensions that come with Highwing can be installed. Installing one from a file comes later."
     />
   );
   return (
@@ -86,7 +86,7 @@ export function ExtensionsSettings({ skills }: { skills?: () => Promise<SkillCom
         const disabled = installed?.status.kind === "disabled";
         const headingId = `ext-${m.id}`;
         return (
-          <SettingsSection key={m.id} title={m.name} titleId={headingId} intro={<p className="muted">Comes with Flagstop · version {m.version} · <span className="mono">{m.id}</span></p>}>
+          <SettingsSection key={m.id} title={m.name} titleId={headingId} intro={<p className="muted">Comes with Highwing · version {m.version} · <span className="mono">{m.id}</span></p>}>
             <SettingRow
               name="Status"
               hint={statusText(s)}

@@ -269,7 +269,7 @@ export function LocalSttSettings({
             providers, below, and deletes its copy once it has the text. A cloud provider gets the recording too.
           </p>
           <p>
-            On <b>this computer</b>, Flagstop runs a speech-to-text engine here: whisper.cpp (whisper-cli), faster-whisper (whisper-ctranslate2),
+            On <b>this computer</b>, Highwing runs a speech-to-text engine here: whisper.cpp (whisper-cli), faster-whisper (whisper-ctranslate2),
             OpenAI Whisper or Vosk, with a model you already have, or a Whisper model downloaded here for whisper.cpp from whisper.cpp's own repository
             and checked against its published checksum. The recording is written to a private temporary folder, transcribed, and deleted; it never
             leaves this computer, and only the text goes to Hermes, when you send it. Dictation works without a connection to Hermes then.

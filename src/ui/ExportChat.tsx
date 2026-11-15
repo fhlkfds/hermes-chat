@@ -367,7 +367,7 @@ export function ExportChatDialog({
             <section className="export-secrets" aria-labelledby={secretsId}>
               <h3 id={secretsId}>Likely secrets</h3>
               <p className="muted small">
-                Flagstop looks for API keys, bearer and sign-in tokens, private keys, and passwords in links or named as a password. It can't find every
+                Highwing looks for API keys, bearer and sign-in tokens, private keys, and passwords in links or named as a password. It can't find every
                 secret: one written another way, such as a password in a sentence, stays in unless you redact it. Read the file below before you save it.
               </p>
               {preview.secrets.length ? (
@@ -565,7 +565,7 @@ function PublishStep({
         srcDoc={confirm.html}
       />
       <ul className="export-warnings">
-        <li>Flagstop can miss a secret written another way, such as a password in a sentence. Read the page above before you publish it.</li>
+        <li>Highwing can miss a secret written another way, such as a password in a sentence. Read the page above before you publish it.</li>
         <li>Anyone with the link can read the page until it ends. A copy someone saves can't be recalled, even after you revoke the snapshot.</li>
       </ul>
       {result?.outcome === "live" ? (

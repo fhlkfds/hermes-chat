@@ -114,7 +114,7 @@ describe("Restore a backup", () => {
     // Escape can't close it over a store the app hasn't reread: Reload is the way out.
     await userEvent.keyboard("{Escape}");
     expect(t.onClose).not.toHaveBeenCalled();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Reload Flagstop" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Reload Highwing" }));
     expect(t.reload).toHaveBeenCalled();
     expect(drafts(t.storage).get(draftKey(conn, "default", "chat-a"))).toBe("From the backup");
   });
@@ -157,7 +157,7 @@ describe("Restore a backup", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Choose backup…" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Nothing was restored. drafts.json doesn't match its checksum");
     await userEvent.click(screen.getByRole("button", { name: "Choose backup…" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("A newer Flagstop made it (backup schema 7)"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("A newer Highwing made it (backup schema 7)"));
     expect(t.storage.length).toBe(0);
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(t.onClose).toHaveBeenCalled();
@@ -179,7 +179,7 @@ describe("Restore a backup", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Drafts couldn't be put back fully after the write failed.");
     expect(screen.getByRole("status").textContent).toContain("Nothing was restored.");
     expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Reload Flagstop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reload Highwing" }));
     expect(t.reload).toHaveBeenCalled();
   });
 

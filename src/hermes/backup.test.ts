@@ -490,7 +490,7 @@ describe("reading a backup", () => {
     const entries = await made();
     await expect(readBackup(entries.slice(1))).rejects.toThrow(/no readable manifest/);
     await expect(readBackup(edit(entries, "manifest.json", (t) => t.slice(0, 40)))).rejects.toThrow(BackupError);
-    await expect(readBackup(edit(entries, "manifest.json", (t) => t.replace("hermes-chat-backup", "something-else")))).rejects.toThrow(/isn't a Flagstop backup/);
+    await expect(readBackup(edit(entries, "manifest.json", (t) => t.replace("hermes-chat-backup", "something-else")))).rejects.toThrow(/isn't a Highwing backup/);
     await expect(readBackup(edit(entries, "drafts.json", (t) => t.replace("Work draft", "Work draff")))).rejects.toThrow(/drafts.json doesn't match its checksum/);
     await expect(readBackup(entries.filter((e) => e.name !== "tags.json"))).rejects.toThrow(/missing tags.json/);
     const manifest = JSON.parse(entries[0].text);
@@ -500,7 +500,7 @@ describe("reading a backup", () => {
 
   it("refuses a newer schema whole, saying to update", async () => {
     const entries = edit(await made(), "manifest.json", (t) => t.replace('"schema": 1', '"schema": 2'));
-    await expect(readBackup(entries)).rejects.toThrow("A newer Flagstop made it (backup schema 2); this version reads schema 1. Update Flagstop, then restore it.");
+    await expect(readBackup(entries)).rejects.toThrow("A newer Highwing made it (backup schema 2); this version reads schema 1. Update Highwing, then restore it.");
   });
 
   it("skips a category it doesn't know, and values it can't use, without failing the rest", async () => {

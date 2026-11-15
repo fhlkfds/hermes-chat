@@ -1,4 +1,4 @@
-# Flagstop
+# Highwing
 
 A personal desktop chat client for the owner's own Hermes Agent servers, one at a time. Chats that need attention sit in the Inbox; finished ones are settled out of the way.
 
@@ -68,7 +68,7 @@ The owner's action that removes a chat from Hermes for good, in every Hermes cli
 _Avoid_: remove, archive
 
 **Export**:
-Saving one chat as a file, in a place the owner picks in the Save dialog: Markdown to read, JSON in Hermes's own session format, an Image (a PNG), or an HTML page that runs no script and loads nothing. The Export dialog comes first: the owner picks the messages, whether tool calls and Approvals and the names of attached files go in (left out at first), and what is redacted, and sees the file exactly as it will be saved. A Snapshot publishes the HTML page the dialog previews. Likely secrets are flagged and redacted unless the owner keeps them, and the owner can redact any text they select. The file holds only what Flagstop has loaded for the chat, as it was when the dialog opened, and never an attachment's contents. It warns that it may still contain sensitive information, since detection can miss a secret. An export uploads nothing (ADR 0076).
+Saving one chat as a file, in a place the owner picks in the Save dialog: Markdown to read, JSON in Hermes's own session format, an Image (a PNG), or an HTML page that runs no script and loads nothing. The Export dialog comes first: the owner picks the messages, whether tool calls and Approvals and the names of attached files go in (left out at first), and what is redacted, and sees the file exactly as it will be saved. A Snapshot publishes the HTML page the dialog previews. Likely secrets are flagged and redacted unless the owner keeps them, and the owner can redact any text they select. The file holds only what Highwing has loaded for the chat, as it was when the dialog opened, and never an attachment's contents. It warns that it may still contain sensitive information, since detection can miss a secret. An export uploads nothing (ADR 0076).
 _Avoid_: download, backup, snapshot (that is the page put on a Snapshot host for other people), share
 
 **Snapshot**:
@@ -80,7 +80,7 @@ Where snapshots are kept: an S3-compatible bucket the owner names in Settings �
 _Avoid_: server, publication service, dashboard
 
 **Backup**:
-A zip file of what Flagstop keeps on this computer, saved where the owner picks: settings and templates, and for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters, and branch origins. It never holds a password or other credential, the sign-in, or anything Hermes keeps on the server. **Restore a backup** checks all of it first, previews it, maps each of its connections and profiles to a profile here (only an identical one on its own), and writes each category by the owner's choice, Merge or Replace, after saving a recovery backup. Nothing restored is sent: queued messages come back paused (ADR 0038).
+A zip file of what Highwing keeps on this computer, saved where the owner picks: settings and templates, and for each connection and profile, drafts, queued messages, project membership and defaults, tags and Saved filters, and branch origins. It never holds a password or other credential, the sign-in, or anything Hermes keeps on the server. **Restore a backup** checks all of it first, previews it, maps each of its connections and profiles to a profile here (only an identical one on its own), and writes each category by the owner's choice, Merge or Replace, after saving a recovery backup. Nothing restored is sent: queued messages come back paused (ADR 0038).
 _Avoid_: export (that is one chat as Markdown), sync, restore (alone: that brings back an Archived chat), snapshot
 
 **Rename**:
@@ -103,7 +103,7 @@ _Avoid_: origin, platform (as an attribute of a chat)
 A chat whose source is anything other than this app. Imported chats start Settled.
 
 **Imported transcript**:
-A chat brought into Hermes from an export file with Import transcripts: a Flagstop Markdown export, or a Hermes session export (JSONL). Its Source is a transcript file (`import` in Hermes), in every Hermes client. It starts Settled and is read-only here: Hermes has its words, not everything the original chat had, so the owner starts a new chat to carry on. It is known by an id taken from the file, the session's own id or one made from the file's SHA-256, so the same file imported again adds nothing (ADR 0031).
+A chat brought into Hermes from an export file with Import transcripts: a Highwing Markdown export, or a Hermes session export (JSONL). Its Source is a transcript file (`import` in Hermes), in every Hermes client. It starts Settled and is read-only here: Hermes has its words, not everything the original chat had, so the owner starts a new chat to carry on. It is known by an id taken from the file, the session's own id or one made from the file's SHA-256, so the same file imported again adds nothing (ADR 0031).
 _Avoid_: restored chat, backup, upload
 
 **Import** (of transcripts):
@@ -196,7 +196,7 @@ Which chats are in which project, one link per chat and project. Kept by Hermes 
 _Avoid_: sync conflict (for a change that is only waiting), assignment
 
 **Folder** (of a project):
-A path on the server that a project refers to, shown with the connection it is on. The one Hermes names primary is the project's **main folder**: every computer agrees on it, and the project's Context files are kept in its `context` folder. Flagstop adds only a folder that is already there, and never moves or deletes one. It makes a folder in one case only: for Context files, it makes `context` in the main folder, and for a project with no folder it first makes `<profile's folder>/projects/<project's name>` on the server and adds it as the main folder (ADR 0135). A folder in a git repository shows its branch, and the repository's other worktrees can be added as folders too. Worktrees are made and removed only in the Repository screen's Worktrees view.
+A path on the server that a project refers to, shown with the connection it is on. The one Hermes names primary is the project's **main folder**: every computer agrees on it, and the project's Context files are kept in its `context` folder. Highwing adds only a folder that is already there, and never moves or deletes one. It makes a folder in one case only: for Context files, it makes `context` in the main folder, and for a project with no folder it first makes `<profile's folder>/projects/<project's name>` on the server and adds it as the main folder (ADR 0135). A folder in a git repository shows its branch, and the repository's other worktrees can be added as folders too. Worktrees are made and removed only in the Repository screen's Worktrees view.
 _Avoid_: directory, workspace, repo (unless it is one), primary folder (the main folder)
 
 **Context file** (of a project):
@@ -228,7 +228,7 @@ Keys that run one of the app's commands: Search all chats, Send, Next chat in th
 _Avoid_: keybinding (the code's word), hotkey, accelerator
 
 **Global shortcut** (removed):
-The app no longer registers a key of its own (#169; ADR 0107 is superseded). A key the owner binds in their desktop's own config to `hermes-chat --show` or `hermes-chat --toggle` brings Flagstop's one window forward from any app, with the cursor in the selected pane's composer; `--toggle` hides it when it's already in front.
+The app no longer registers a key of its own (#169; ADR 0107 is superseded). A key the owner binds in their desktop's own config to `hermes-chat --show` or `hermes-chat --toggle` brings Highwing's one window forward from any app, with the cursor in the selected pane's composer; `--toggle` hides it when it's already in front.
 _Avoid_: summon key, screenshot shortcut (that one works only inside the app, unless bound to `--screenshot`)
 
 **Branch**:
@@ -244,7 +244,7 @@ The text the owner has typed in a chat's composer and not sent. Each chat keeps 
 _Avoid_: unsent message, saved message
 
 **Queued message**:
-A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. Flagstop sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
+A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. Highwing sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
 _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
 
 **Steered message**:
@@ -288,7 +288,7 @@ Where Dictation and Voice conversations turn a recording into text: on **Hermes*
 _Avoid_: local mode, offline mode, STT engine
 
 **Close to tray**:
-The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording, stops Read aloud, pauses a Voice conversation, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, `hermes-chat --show` or `--toggle`, or launching Flagstop again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
+The owner's setting that has closing the window hide it in the tray instead of quitting. It is off unless the owner turns it on, and works only while the desktop shows the tray icon; otherwise closing quits. A hidden window keeps its chats, drafts and replies coming in, but drops a Dictation recording, stops Read aloud, pauses a Voice conversation, and the chat it shows doesn't count as on screen, so new replies leave it Unread. The tray menu, `hermes-chat --show` or `--toggle`, or launching Highwing again brings back the same window. Quit in the tray menu always exits. The setting is kept on this computer (ADR 0034).
 _Avoid_: minimize to tray, background mode, run in background
 
 **Failed message**:
@@ -323,11 +323,11 @@ A Question with one to five questions Hermes's model asks the owner, each open o
 _Avoid_: clarification, follow-up question, survey
 
 **Sudo password**:
-A Question for the password of a `sudo` command Hermes wants to run on the server. The card shows the command and takes the password in a masked field. Hermes keeps the password in memory for the chat's later sudo commands. Skip lets the command run without one, so it fails. Flagstop never keeps it.
+A Question for the password of a `sudo` command Hermes wants to run on the server. The card shows the command and takes the password in a masked field. Hermes keeps the password in memory for the chat's later sudo commands. Skip lets the command run without one, so it fails. Highwing never keeps it.
 _Avoid_: root password, admin password
 
 **Secret**:
-A Question for a value Hermes saves in the profile's settings on the server under a name (an env var), such as an API key a skill needs. The card shows what Hermes asks and takes the value in a masked field. Flagstop never keeps it.
+A Question for a value Hermes saves in the profile's settings on the server under a name (an env var), such as an API key a skill needs. The card shows what Hermes asks and takes the value in a masked field. Highwing never keeps it.
 _Avoid_: provider key (a Secret can be one, but Settings → Providers is where the app sets those), credential, token
 
 **Approval mode**:
@@ -399,11 +399,11 @@ A model the owner starred in the model picker. Favorites are listed first, and a
 _Avoid_: pinned model (pinning is how Hermes stores Active, ADR 0002)
 
 **Setup**:
-The steps that connect Flagstop to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key, which can be skipped. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen (**Run setup again**). Cancelling it, or stopping Save and connect, leaves every Connection as it was.
+The steps that connect Highwing to a Hermes server: the server, the dashboard sign-in, then optionally a Provider key, which can be skipped. Setup tests the connection before it keeps anything, and says what to fix when the test fails. It opens by itself only on a computer with nothing set up, and again to add a Connection or change a saved one, from Settings, the rail or the sign-in screen (**Run setup again**). Cancelling it, or stopping Save and connect, leaves every Connection as it was.
 _Avoid_: onboarding (fine in conversation, not in the app), wizard, first-run (that's only when setup opens by itself)
 
 **Provider key**:
-A model provider's API key that the owner gives Hermes, through Setup or Settings → Providers. The provider checks it first. Hermes keeps it in the profile's `.env` on the server, and Flagstop never stores it. Settings → Providers lists the shown profile's saved keys by Hermes's redacted preview, replaces a key, and removes one after asking; a removed key leaves the list only once Hermes reads back as not having it (ADR 0095). A subscription sign-in and a custom endpoint aren't Provider keys.
+A model provider's API key that the owner gives Hermes, through Setup or Settings → Providers. The provider checks it first. Hermes keeps it in the profile's `.env` on the server, and Highwing never stores it. Settings → Providers lists the shown profile's saved keys by Hermes's redacted preview, replaces a key, and removes one after asking; a removed key leaves the list only once Hermes reads back as not having it (ADR 0095). A subscription sign-in and a custom endpoint aren't Provider keys.
 _Avoid_: token, secret, credential (too broad), login (a subscription sign-in isn't a key)
 
 **Subscription sign-in**:
@@ -466,11 +466,11 @@ A file on the Hermes server, by its full path there. Hermes reads it, and Hermes
 _Avoid_: remote file
 
 **Local file**:
-A file on this computer that the owner picked to preview in the Open dialog. Flagstop reads it, and it isn't sent to Hermes.
+A file on this computer that the owner picked to preview in the Open dialog. Highwing reads it, and it isn't sent to Hermes.
 _Avoid_: attachment (that is a file sent with a message)
 
 **Extra request header**:
-A header name and value the owner adds to a URL Connection, for a gateway in front of the dashboard such as Cloudflare Access. Flagstop sends it with every request to that dashboard and never to another site, or another Connection. Its value is kept in the system keyring, for that Connection only, and never shown in Settings (ADR 0104).
+A header name and value the owner adds to a URL Connection, for a gateway in front of the dashboard such as Cloudflare Access. Highwing sends it with every request to that dashboard and never to another site, or another Connection. Its value is kept in the system keyring, for that Connection only, and never shown in Settings (ADR 0104).
 _Avoid_: custom header, gateway token
 
 **Server files** (the Files tab):
@@ -494,7 +494,7 @@ The rail's screen for a Git checkout on the Hermes server: its folder, branch, u
 _Avoid_: repo (in the interface), project (a Project is Hermes's group of chats and folders), workspace
 
 **Worktree**:
-A separate working folder of a repository on the server, with its own branch, made by Git (`git worktree add`). The Repository screen's Worktrees view lists them all. A **managed** worktree is one Flagstop made: it is recorded in the repository with its setup and the chats working in it, and only it can be removed from here. A chat started in a worktree works only there. A worktree with a chat **attached** can't be removed until the owner detaches it: a quiet chat still counts. A **Protected** worktree, the main checkout, and one Flagstop didn't make are never removed (ADR 0043).
+A separate working folder of a repository on the server, with its own branch, made by Git (`git worktree add`). The Repository screen's Worktrees view lists them all. A **managed** worktree is one Highwing made: it is recorded in the repository with its setup and the chats working in it, and only it can be removed from here. A chat started in a worktree works only there. A worktree with a chat **attached** can't be removed until the owner detaches it: a quiet chat still counts. A **Protected** worktree, the main checkout, and one Highwing didn't make are never removed (ADR 0043).
 _Avoid_: workspace, sandbox, clone (a clone has its own `.git`), checkout (for a worktree that isn't the main one)
 
 **Setup** (of a worktree):
@@ -546,11 +546,11 @@ A profile's SOUL.md on the Hermes server: who Hermes is and how it speaks in tha
 _Avoid_: soul, personality (Hermes's `/personality` presets are another thing), system prompt
 
 **Scheduled job**:
-A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Flagstop is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, Schedule time zone, next run, last result and delivery, and creates (in any profile), edits, pauses, resumes, runs and deletes them through Hermes, with each job's Job runs. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
+A Hermes cron job in one profile: a prompt Hermes runs at the times its schedule sets, delivering the reply where the job says. Hermes keeps the job on the server and its gateway runs it there, so it runs while Highwing is closed. The Scheduled jobs screen lists the profile's jobs with their schedule, Schedule time zone, next run, last result and delivery, and creates (in any profile), edits, pauses, resumes, runs and deletes them through Hermes, with each job's Job runs. A change shows only once Hermes, read back, has it. Deleting a job, or running it now, asks first (ADR 0013).
 _Avoid_: cron (Hermes's name, fine in server-side talk), task, automation, reminder
 
 **Automation**:
-A Hermes webhook route in one profile: when GitHub sends an event to it, Hermes checks the event's signature, filters it, and starts a task with a prompt made from the event. Hermes keeps the route and runs the task on the server, so it works while Flagstop is closed. The Automations screen sets routes up, previews what an example event would do, and shows what became of the events that arrived (ADR 0108).
+A Hermes webhook route in one profile: when GitHub sends an event to it, Hermes checks the event's signature, filters it, and starts a task with a prompt made from the event. Hermes keeps the route and runs the task on the server, so it works while Highwing is closed. The Automations screen sets routes up, previews what an example event would do, and shows what became of the events that arrived (ADR 0108).
 _Avoid_: webhook (fine for the transport), trigger, hook, scheduled job (that runs on a clock, not on an event)
 
 **Delivery**:
@@ -587,7 +587,7 @@ ordinary chat. While either has a reply running or messages queued, sending is r
 the owner stops it, or when either pane shows another chat or closes (ADR 0101).
 
 **Update**:
-A newer version of Flagstop itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app. Drafts, unsent and uncertain messages, and queues are kept across the restart, for every connection, profile and chat. Files staged in any chat's composer and a second pane aren't. A saved copy that can't be put back is set aside in a file of its own and never put back automatically (ADR 0060).
+A newer version of Highwing itself. For the packaged app, the owner installs it with pacman, and the app never replaces pacman's files. For a standalone build made with an update key, the app installs it, after checking its signature. Either way the new version runs only after the owner restarts the app. Drafts, unsent and uncertain messages, and queues are kept across the restart, for every connection, profile and chat. Files staged in any chat's composer and a second pane aren't. A saved copy that can't be put back is set aside in a file of its own and never put back automatically (ADR 0060).
 _Avoid_: upgrade (pacman's word, for the package step only)
 
 **Release**:
@@ -599,7 +599,7 @@ The key pair a Release is signed with. The public half is built into a standalon
 _Avoid_: signing key (ambiguous with Git commit signing)
 
 **Interface language**:
-The language Flagstop's own words are in, picked in Settings → Appearance: System, or a language by its own name. System takes the first of the desktop's languages the app has words for, else English. Dates and numbers follow it too, in the desktop's region where that is in the same language. A screen not yet translated stays English, and a word a language lacks shows in English (ADR 0100). It changes nothing Hermes writes: replies come in whatever language the model answers in.
+The language Highwing's own words are in, picked in Settings → Appearance: System, or a language by its own name. System takes the first of the desktop's languages the app has words for, else English. Dates and numbers follow it too, in the desktop's region where that is in the same language. A screen not yet translated stays English, and a word a language lacks shows in English (ADR 0100). It changes nothing Hermes writes: replies come in whatever language the model answers in.
 _Avoid_: locale (the code's word for the language, its tag and its formats together), translation
 
 **Extension**:
@@ -647,7 +647,7 @@ _Avoid_: capability (a feature Hermes supports, ADR 0044), approval (Hermes aski
 - **Toolset** vs **Approval** and the **Approval mode**: a toolset decides which tools the model is offered at all; the Approval mode, and the Approvals it leads to, decide whether a command Hermes counts as dangerous runs without asking. Turning a toolset on or off changes neither. Speech-to-text is listed among the toolsets because Hermes lists it there, but it has no tools: its switch is the profile's `stt.enabled`, which Dictation uses.
 - **Dictation**, **Read aloud** and **Voice conversation** vs Hermes's voice mode: Hermes's `/voice` mode (`voice.record`, `voice.tts` over the socket) records with the server's own microphone and speaks through the server's speakers. This app never uses it. Dictation and a Voice conversation record on this computer, and all three use the server only to transcribe and to make the audio. A Voice conversation borrows only voice mode's turn settings (`voice.silence_*`, `voice.max_recording_seconds`).
 - **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
-- **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Flagstop shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
+- **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Highwing shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
 - **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's reply without opening it as a chat.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).

@@ -204,7 +204,7 @@ async function toSignInStep(user: ReturnType<typeof userEvent.setup>, target = "
 describe("First run", () => {
   it("tests the connection, explains a failure, connects once it passes, and takes a provider key", async () => {
     const user = await start();
-    expect(await screen.findByRole("heading", { name: "Welcome to Flagstop" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome to Highwing" })).toBeTruthy();
     // There is nothing to cancel to yet.
     expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
 
@@ -260,11 +260,11 @@ describe("First run", () => {
 
   it("starts over on Cancel, forgetting the password typed", async () => {
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
     await user.click(screen.getByRole("button", { name: "Cancel and start over" }));
-    expect(await screen.findByRole("heading", { name: "Welcome to Flagstop" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome to Highwing" })).toBeTruthy();
 
     await toSignInStep(user);
     expect((screen.getByLabelText("Dashboard password") as HTMLInputElement).value).toBe("");
@@ -273,7 +273,7 @@ describe("First run", () => {
 
   it("explains an SSH host that can't be found", async () => {
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user, "liam@hermse");
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -288,7 +288,7 @@ describe("First run", () => {
   it("says in setup when the keyring couldn't keep the password", async () => {
     backend.keyringBroken = true;
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -305,7 +305,7 @@ describe("First run", () => {
   it("stops a test that's taking long", async () => {
     backend.holdProbe = true;
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -327,7 +327,7 @@ describe("First run", () => {
   it("keeps the next test's result when a stopped test answers late", async () => {
     Object.assign(backend, { holdProbe: true, lateCancel: true });
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -370,7 +370,7 @@ describe("An install set up before", () => {
     expect(dialog()).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
-    expect(await screen.findByRole("heading", { name: "Set up Flagstop" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up Highwing" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(await screen.findByRole("heading", { name: "Connect to hermes" })).toBeTruthy();
     expect(dialog()).toBeNull();
@@ -384,7 +384,7 @@ describe("Setup from Settings", () => {
     await screen.findByText("New chat", { selector: ".chat-title span" });
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "Run setup again" }));
-    expect(await screen.findByRole("heading", { name: "Set up Flagstop" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up Highwing" })).toBeTruthy();
     return user;
   }
 
@@ -476,7 +476,7 @@ describe("Setup from Settings", () => {
     backend.servers.set("url:http://studio.example.com:9119", { server: studio, password: "pa55" });
     const user = await start();
     // First run: connected, but the password is only in memory.
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -530,7 +530,7 @@ describe("Setup from Settings", () => {
 
 /** First run up to a passed test of liam@hermes. */
 async function testedFirstRun(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+  await screen.findByRole("heading", { name: "Welcome to Highwing" });
   await toSignInStep(user);
   await user.type(screen.getByLabelText("Dashboard username"), "liam");
   await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -544,7 +544,7 @@ const marks = (result: HTMLElement) => [...result.querySelectorAll(".setup-check
 describe("A connection test explains each stage on its own", () => {
   it("tells an unreachable dashboard, a refused sign-in, a gateway, a protocol mismatch and a pass apart, keeping nothing", async () => {
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await toSignInStep(user);
     await user.type(screen.getByLabelText("Dashboard username"), "liam");
     await user.type(screen.getByLabelText("Dashboard password"), "hunter2");
@@ -581,7 +581,7 @@ describe("A connection test explains each stage on its own", () => {
     backend.probeFailure = undefined;
     backend.probeReady = JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: { session_authority: "server" } } });
     result = await retest();
-    expect(result.textContent).toContain("Flagstop can't talk to this server yet.");
+    expect(result.textContent).toContain("Highwing can't talk to this server yet.");
     expect(result.textContent).toContain("newer session protocol");
     expect(marks(result).map((m) => m.split(": ")[1])).toEqual(["ok", "ok", "ok", "bad"]);
     // A protocol mismatch can't be saved.
@@ -597,9 +597,9 @@ describe("A connection test explains each stage on its own", () => {
     expect([backend.keyring, savedSignIn(), backend.probes]).toEqual([undefined, null, 5]);
   });
 
-  it("says a gateway turned Flagstop away before the password is sent", async () => {
+  it("says a gateway turned Highwing away before the password is sent", async () => {
     const user = await start();
-    await screen.findByRole("heading", { name: "Welcome to Flagstop" });
+    await screen.findByRole("heading", { name: "Welcome to Highwing" });
     await user.click(screen.getByRole("button", { name: "Get started" }));
     await user.selectOptions(screen.getByLabelText("Connect through"), "web");
     await user.type(screen.getByLabelText("Dashboard URL"), "https://hermes.example.com");
@@ -609,7 +609,7 @@ describe("A connection test explains each stage on its own", () => {
     backend.probeFailure = { stage: "reach", message: "The dashboard answered 403: Forbidden by Access", answered: { status: 403, body: "Forbidden by Access" } };
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     const result = await screen.findByRole("alert");
-    expect(result.textContent).toContain("Something in front of the dashboard at hermes.example.com turned Flagstop away.");
+    expect(result.textContent).toContain("Something in front of the dashboard at hermes.example.com turned Highwing away.");
     expect(result.textContent).toContain("CF-Access-Client-Id");
     expect(marks(result)).toEqual(["Find the server: ok", "Reach the Hermes dashboard: bad", "Sign in to the dashboard: skip", "Open the chat connection: skip"]);
   });
@@ -877,11 +877,11 @@ describe("Run setup again while the keyring is slow", () => {
     await user.click(screen.getByRole("button", { name: "Run setup again…" }));
     await waitFor(() => expect(backend.letKeyring).toBeTruthy());
     await user.click(screen.getByRole("button", { name: "Set up a new connection…" }));
-    expect(await screen.findByRole("heading", { name: "Set up Flagstop" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up Highwing" })).toBeTruthy();
     backend.holdHeadersLoad = false;
     await act(async () => backend.letKeyring!());
     await act(async () => {});
-    expect(screen.getByRole("heading", { name: "Set up Flagstop" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Set up Highwing" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Edit hermes" })).toBeNull();
   });
 });

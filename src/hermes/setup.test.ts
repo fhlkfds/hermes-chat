@@ -45,7 +45,7 @@ describe("Testing a connection", () => {
   it("fails on a server that speaks the canonical protocol", async () => {
     const ready = JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: { session_authority: true } } });
     const out = await testConnection(answering({ route: { kind: "ssh", target: "liam@hermes" }, status: STATUS, ready }), ssh);
-    expect(out).toMatchObject({ ok: false, stage: "chat", problem: "Flagstop can't talk to this server yet." });
+    expect(out).toMatchObject({ ok: false, stage: "chat", problem: "Highwing can't talk to this server yet." });
   });
 
   it("fails when the first frame isn't gateway.ready", async () => {
@@ -125,23 +125,23 @@ describe("Explaining a failed test", () => {
     const forbidden = "Forbidden. You don't have permission to view this.";
     const refused = { stage: "reach", message: `The dashboard answered 403: ${forbidden}`, answered: { status: 403, body: forbidden } } as const;
     expect(why(refused, url)).toMatchObject({
-      problem: "Something in front of the dashboard at hermes.example.com:9119 turned Flagstop away.",
+      problem: "Something in front of the dashboard at hermes.example.com:9119 turned Highwing away.",
       fixes: [expect.stringContaining("add the headers it needs under Extra request headers"), "Or connect over SSH, which goes straight to the dashboard."],
       detail: refused.message,
     });
     const withHeaders = { ...url, headers: [{ name: "CF-Access-Client-Id", value: "id" }] };
     expect(why(refused, withHeaders).fixes[0]).toMatch(/^Check the extra request headers' names and values/);
-    const away = "The dashboard sent Flagstop on to https://team.cloudflareaccess.com, another site. Flagstop doesn't follow it there.";
-    expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Flagstop on to another site.");
-    const awayHidden = "The dashboard sent Flagstop on to another site, whose address isn't shown, as it may repeat your password or a request header. Flagstop doesn't follow it there, so nothing is sent to it.";
-    expect(why({ stage: "reach", message: awayHidden }, withHeaders).problem).toBe("The dashboard's address sent Flagstop on to another site.");
+    const away = "The dashboard sent Highwing on to https://team.cloudflareaccess.com, another site. Highwing doesn't follow it there.";
+    expect(why({ stage: "reach", message: away }, withHeaders).problem).toBe("The dashboard's address sent Highwing on to another site.");
+    const awayHidden = "The dashboard sent Highwing on to another site, whose address isn't shown, as it may repeat your password or a request header. Highwing doesn't follow it there, so nothing is sent to it.";
+    expect(why({ stage: "reach", message: awayHidden }, withHeaders).problem).toBe("The dashboard's address sent Highwing on to another site.");
     // Past the first request, a refusal whose body Rust hid for the headers' sake still points at them.
     const hiddenBody = "(not shown, as it may repeat your password or a request header)";
     const hidden = { message: `The dashboard answered 403: ${hiddenBody}`, answered: { status: 403, body: hiddenBody } };
     const closed = "The chat connection closed before Hermes was ready: closed by the server (1008 (not shown, as it may repeat your password or a request header))";
     for (const [stage, failure] of [["sign-in", hidden], ["chat", hidden], ["chat", { message: closed }]] as const) {
       expect(why({ stage, ...failure, status: STATUS }, withHeaders)).toMatchObject({
-        problem: "Something in front of the dashboard at hermes.example.com:9119 turned Flagstop away.",
+        problem: "Something in front of the dashboard at hermes.example.com:9119 turned Highwing away.",
         fixes: [expect.stringMatching(/^Check the extra request headers' names and values/), "Or connect over SSH, which goes straight to the dashboard."],
       });
     }
@@ -154,7 +154,7 @@ describe("Explaining a failed test", () => {
     const tokenOnly = JSON.stringify({ version: "0.22.5", auth_required: true, auth_providers: ["session-token"] });
     const unknown = '{"detail":"Unknown provider"}';
     expect(why({ stage: "sign-in", message: `The dashboard answered 404: ${unknown}`, answered: { status: 404, body: unknown }, status: tokenOnly })).toMatchObject({
-      problem: "This dashboard doesn't offer username and password sign-in, which Flagstop uses.",
+      problem: "This dashboard doesn't offer username and password sign-in, which Highwing uses.",
       fixes: expect.arrayContaining(["It offers: session-token."]),
     });
     const unavailable = '{"detail":"provider unreachable"}';
@@ -201,7 +201,7 @@ describe("Explaining a failure the dashboard answered (#517)", () => {
 
   it("points a refusal at the extra request headers by its status alone", () => {
     const withHeaders = { ...url, headers: [{ name: "CF-Access-Client-Id", value: "id" }] };
-    const turnedAway = "Something in front of the dashboard at hermes.example.com:9119 turned Flagstop away.";
+    const turnedAway = "Something in front of the dashboard at hermes.example.com:9119 turned Highwing away.";
     expect(explain(answer("chat", 407, "(not shown, as it may repeat your password or a request header)"), withHeaders).problem).toBe(turnedAway);
     expect(explain(answer("chat", 502, "answered 403: (not shown, as it may repeat your password or a request header)"), withHeaders).problem).not.toBe(turnedAway);
   });
@@ -294,7 +294,7 @@ describe("Model provider keys", () => {
     await hermes.close();
   });
 
-  it("says when the server can't take keys from Flagstop", async () => {
+  it("says when the server can't take keys from Highwing", async () => {
     const server = new FakeHermes();
     server.env = undefined;
     const hermes = await connect(server.openPipe);

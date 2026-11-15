@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Flagstop
+Name=Highwing
 GenericName=Hermes Agent Client
 Comment=Desktop client for your Hermes Agent servers
 Keywords=hermes;agent;chat;
@@ -9,5 +9,5 @@ Icon=hermes-chat
 Terminal=false
 Categories=Network;Chat;
 StartupWMClass=hermes-chat
-# Chat links (hermes-chat://chat?…, ADR 0037) open in Flagstop. The link arrives as %u.
+# Chat links (hermes-chat://chat?…, ADR 0037) open in Highwing. The link arrives as %u.
 MimeType=x-scheme-handler/hermes-chat;

@@ -166,7 +166,7 @@ describe("Logs screen", () => {
     await userEvent.selectOptions(screen.getByLabelText("Source"), "attempts");
     await waitFor(() =>
       expect(rows()).toEqual([
-        "Didn't finish: Flagstop was closed while it was connecting, at status. LAN route k3x9q2ab: keyring 3 ms, resolve 11 ms, status.",
+        "Didn't finish: Highwing was closed while it was connecting, at status. LAN route k3x9q2ab: keyring 3 ms, resolve 11 ms, status.",
         "Failed after 900 ms. SSH route main: keyring 2 ms, tunnel 300 ms, status 90 ms, sign-in 500 ms; stopped at sign-in: Wrong username or password.",
       ]),
     );

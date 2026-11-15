@@ -152,14 +152,14 @@ fn decode(line: &str) -> Result<Request, String> {
     if line.len() > WIRE_MAX {
         return Err("That request is too long.".into());
     }
-    let request: Request = serde_json::from_str(line.trim_end()).map_err(|_| "Flagstop only answers screenshot, show, toggle and openLink.".to_owned())?;
+    let request: Request = serde_json::from_str(line.trim_end()).map_err(|_| "Highwing only answers screenshot, show, toggle and openLink.".to_owned())?;
     let token = |t: Option<String>| t.filter(|t| !t.is_empty());
     Ok(match request {
         Request::Screenshot => Request::Screenshot,
         Request::Show { token: t } => Request::Show { token: token(t) },
         Request::Toggle { token: t } => Request::Toggle { token: token(t) },
         Request::OpenLink { link, token: t } if crate::links::candidate(&link) => Request::OpenLink { link, token: token(t) },
-        Request::OpenLink { .. } => return Err("That isn't a Flagstop link.".into()),
+        Request::OpenLink { .. } => return Err("That isn't a Highwing link.".into()),
     })
 }
 

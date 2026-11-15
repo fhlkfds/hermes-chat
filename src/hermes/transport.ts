@@ -230,10 +230,10 @@ export type NoticeCard = { profile: string; chatId: string; title: string; itemI
 export type Notify = (n: { title: string; body: string }, actions?: NoticeActions) => Promise<void>;
 /** What notifications say. They never quote a chat's title or messages, or what a Question asks. */
 export const NOTICES = {
-  finished: { title: "Hermes finished a reply", body: "Open Flagstop to read it." },
-  approval: { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Flagstop." },
-  question: { title: "Hermes has a question", body: "A question is waiting for your answer in Flagstop." },
-  notDenied: { title: "The approval wasn't denied", body: "Open Flagstop to see where it stands and answer there." },
+  finished: { title: "Hermes finished a reply", body: "Open Highwing to read it." },
+  approval: { title: "Hermes is asking for approval", body: "A command is waiting for your answer in Highwing." },
+  question: { title: "Hermes has a question", body: "A question is waiting for your answer in Highwing." },
+  notDenied: { title: "The approval wasn't denied", body: "Open Highwing to see where it stands and answer there." },
 };
 
 const noCache: ChatCache = {
@@ -435,7 +435,7 @@ function parseFrame(text: string): RpcFrame | undefined {
 
 export class ProtocolMismatchError extends SignInFailure {
   constructor() {
-    super({ stage: "chat", message: "This Hermes server speaks the canonical session protocol, which Flagstop doesn't support yet." });
+    super({ stage: "chat", message: "This Hermes server speaks the canonical session protocol, which Highwing doesn't support yet." });
   }
 }
 
@@ -499,7 +499,7 @@ export function titleModelUnavailable(why: string, profile: string): TitleModelU
  */
 export class BranchUnconfirmed extends Error {
   constructor() {
-    super("The connection dropped before Hermes answered, so it isn't known yet whether it made the branch. Flagstop checks the chat list once it's connected again.");
+    super("The connection dropped before Hermes answered, so it isn't known yet whether it made the branch. Highwing checks the chat list once it's connected again.");
   }
 }
 
@@ -1195,7 +1195,7 @@ export class Hermes {
     async (profile, edit) => {
       const pipe = this.closing ? undefined : this.connectedPipe();
       if (!pipe) throw new Error("Not connected to Hermes.");
-      if (!pipe.mcpEdit) throw new Error("Flagstop can't edit MCP servers over this connection. Remove the server and add it again instead.");
+      if (!pipe.mcpEdit) throw new Error("Highwing can't edit MCP servers over this connection. Remove the server and add it again instead.");
       return pipe.mcpEdit(profile, edit);
     },
     async (profile) => {
@@ -2486,7 +2486,7 @@ export class Hermes {
         throw e;
       }
       // Kept, so the chat list settles it later, and branching from here again asks with the same key.
-      throw new Error(`Hermes said: ${why}. Flagstop couldn't tell whether it made the branch anyway; it checks the chat list again, and branching from here again won't make a second one.`);
+      throw new Error(`Hermes said: ${why}. Highwing couldn't tell whether it made the branch anyway; it checks the chat list again, and branching from here again won't make a second one.`);
     }
     const generation2 = this.generation;
     // Read back as stored, the same way the parent was read: the branch must hold exactly the rows the preview showed.
@@ -2511,7 +2511,7 @@ export class Hermes {
       );
       throw new Error(
         gone
-          ? "Hermes copied a different part of this chat than the preview showed, so Flagstop deleted that branch again. Nothing else changed."
+          ? "Hermes copied a different part of this chat than the preview showed, so Highwing deleted that branch again. Nothing else changed."
           : `Hermes copied a different part of this chat than the preview showed, and the branch it made, "${res.title}", couldn't be deleted. Delete it from the list.`,
       );
     }
@@ -2520,7 +2520,7 @@ export class Hermes {
       this.generation !== generation2 || this.snapshot.status !== "connected"
         ? { chatId: await this.adoptListed({ id: res.stored_session_id, title: res.title }, attempt, profile), warnings: [] as string[] }
         : await this.adopt(res, attempt, profile);
-    if (check instanceof Error) made.warnings.unshift(`Flagstop couldn't read the branch back to check what it holds (${check.message}).`);
+    if (check instanceof Error) made.warnings.unshift(`Highwing couldn't read the branch back to check what it holds (${check.message}).`);
     return made;
   }
 
@@ -2679,7 +2679,7 @@ export class Hermes {
       // Only the very message the branch was made through is taken back: one another client changed stays.
       if (spineKey(spine) !== pending.through) {
         this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
-        throw new Error("The branch's last message isn't the one it was made with any more, so Flagstop didn't take it back or send anything. Look at the branch before you go on.");
+        throw new Error("The branch's last message isn't the one it was made with any more, so Highwing didn't take it back or send anything. Look at the branch before you go on.");
       }
       // The branch still holds its copy of the original message: take it back, in the branch only.
       try {
@@ -2700,7 +2700,7 @@ export class Hermes {
             this.saveList(profile, this.snapshot.chats);
           }
           throw new Error(
-            `This Hermes server can't take a message back (it has no session.undo), so it can't edit or regenerate. ${gone ? "Flagstop deleted the branch it had made. Nothing else changed." : "Delete the branch it made from the list."}`,
+            `This Hermes server can't take a message back (it has no session.undo), so it can't edit or regenerate. ${gone ? "Highwing deleted the branch it had made. Nothing else changed." : "Delete the branch it made from the list."}`,
           );
         }
         throw new Error(`Hermes didn't take back the branch's copy of your message (${(e as Error).message}). Nothing was sent; finish it from the top of the branch.`);
@@ -2709,7 +2709,7 @@ export class Hermes {
       stillMine();
       if (!kept(spine)) {
         this.setVariant(profile, chatId, ({ pending: _, ...v }) => v);
-        throw new Error("Hermes took back a different part of the branch than the one asked for, so Flagstop didn't send anything. Look at the branch before you go on.");
+        throw new Error("Hermes took back a different part of the branch than the one asked for, so Highwing didn't send anything. Look at the branch before you go on.");
       }
     } else if (!kept(spine)) {
       // More is in it than when it was made: the message went already, or the owner went on in the branch.
@@ -2719,7 +2719,7 @@ export class Hermes {
     // Read once more just before it goes: nothing may have been added to the branch since it was checked.
     spine = await read();
     stillMine();
-    if (!kept(spine)) throw new Error("Something was added to the branch meanwhile, so Flagstop didn't send anything. Look at the branch before you finish it.");
+    if (!kept(spine)) throw new Error("Something was added to the branch meanwhile, so Highwing didn't send anything. Look at the branch before you finish it.");
     // What the branch shows: its history before the message, whether the copy was taken back now or by an earlier try
     // whose answer was lost. The owner's messages kept are the ones before it; the copy and anything after it go.
     const shown = spine.filter((r) => r.role === "user" && !r.hidden).length;
@@ -2747,7 +2747,7 @@ export class Hermes {
       rows.push(...got.filter((r) => Number.isSafeInteger(r?.id)));
       if (got.length < BRANCH_PAGE_ROWS) return rows;
     }
-    throw new Error(`This chat has more than ${(BRANCH_MAX_PAGES * BRANCH_PAGE_ROWS).toLocaleString("en")} stored rows, too many for Flagstop to check where a branch would start.`);
+    throw new Error(`This chat has more than ${(BRANCH_MAX_PAGES * BRANCH_PAGE_ROWS).toLocaleString("en")} stored rows, too many for Highwing to check where a branch would start.`);
   }
 
   /** Whether a Server file a message refers to is still there, by listing its folder. A relative path can't be checked. */
@@ -2830,7 +2830,7 @@ export class Hermes {
           branchNews: {
             text: result.sure
               ? `Hermes didn't make the branch of "${a.parentTitle}". Nothing changed; branch again to try.`
-              : `Flagstop couldn't tell whether Hermes made the branch of "${a.parentTitle}". Look for it in the list before branching again.`,
+              : `Highwing couldn't tell whether Hermes made the branch of "${a.parentTitle}". Look for it in the list before branching again.`,
             at: Date.now(),
           },
         });
@@ -5547,7 +5547,7 @@ function loadOutbox(cache: ChatCache, profile: string): Record<string, OutgoingI
 /** Why a queue waits for the owner's Resume (ADR 0018). */
 const PAUSED = {
   owner: "You paused it.",
-  restored: "Flagstop closed, or showed another profile, since these were queued. Check the chat, then resume.",
+  restored: "Highwing closed, or showed another profile, since these were queued. Check the chat, then resume.",
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",

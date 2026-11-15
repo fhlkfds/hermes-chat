@@ -148,7 +148,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     label: "Chats",
     usedBy: "The chat list, transcripts and composer",
     needs: "The dashboard's legacy session protocol on /api/ws.",
-    without: "Flagstop doesn't connect, and the sign-in screen says why.",
+    without: "Highwing doesn't connect, and the sign-in screen says why.",
     anchor: "chats-and-the-session-protocol",
     notChecked: "Known once a connection opens.",
   },
@@ -672,7 +672,7 @@ function valid(spec: CapabilitySpec, key: string, answer: unknown): boolean {
 export class CapabilityUnsupportedError extends Error {
   constructor(readonly capability: CapabilityId) {
     // Worded as the relay's own refusals are, which every screen already reads as certainly not sent.
-    super(`Flagstop doesn't relay this: the connected Hermes server doesn't support ${specOf(capability).label}, so nothing was sent. See Settings → Diagnostics.`);
+    super(`Highwing doesn't relay this: the connected Hermes server doesn't support ${specOf(capability).label}, so nothing was sent. See Settings → Diagnostics.`);
   }
 }
 
@@ -682,7 +682,7 @@ export class CapabilityUnsupportedError extends Error {
  */
 export class RouteMissingError extends Error {
   constructor(readonly route: string) {
-    super(`Flagstop doesn't relay this: the connected Hermes server has no route for ${route}, so nothing was sent. See Settings → Diagnostics.`);
+    super(`Highwing doesn't relay this: the connected Hermes server has no route for ${route}, so nothing was sent. See Settings → Diagnostics.`);
   }
 }
 
@@ -1097,7 +1097,7 @@ export function reportText(snap: CapabilitySnapshot, ctx: { app: string; server?
   const f = snap.facts;
   const when = (t?: number) => (t === undefined ? "not checked yet" : new Date(t).toISOString());
   const lines = [
-    "Flagstop connection diagnostics",
+    "Highwing connection diagnostics",
     `App: ${ctx.app}`,
     `Server: ${ctx.server ?? "not connected"}${ctx.unsecure ? " (Unsecure)" : ""}`,
     `Profile: ${ctx.profile}`,

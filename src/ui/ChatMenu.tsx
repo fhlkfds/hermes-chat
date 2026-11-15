@@ -138,7 +138,7 @@ export function ChatMenu({
         <button
           role="menuitem"
           className="menu-item"
-          title="Copy a link that opens this chat in Flagstop on this computer"
+          title="Copy a link that opens this chat in Highwing on this computer"
           onClick={() => {
             onClose();
             onCopyLink();

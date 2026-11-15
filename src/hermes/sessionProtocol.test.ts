@@ -47,8 +47,8 @@ describe("the canonical session protocol", () => {
     const shown = await connect(server.openPipe).catch((e: unknown) => explainSignIn(signInError(e), d));
     expect(shown).toMatchObject({
       stage: "chat",
-      problem: "Flagstop can't talk to this server yet.",
-      fixes: ["This server uses Hermes's newer session protocol. Flagstop speaks only the legacy one."],
+      problem: "Highwing can't talk to this server yet.",
+      fixes: ["This server uses Hermes's newer session protocol. Highwing speaks only the legacy one."],
     });
   });
 });

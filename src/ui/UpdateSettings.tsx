@@ -36,7 +36,7 @@ function PackageStep({ command }: { command: string }) {
   return (
     <>
       <p className="muted small">
-        pacman manages this copy, so Flagstop doesn't replace its files. To update it, run this from your hermes-chat checkout:
+        pacman manages this copy, so Highwing doesn't replace its files. To update it, run this from your hermes-chat checkout:
       </p>
       <div className="update-command">
         <code className="mono selectable">{command}</code>
@@ -49,7 +49,7 @@ function PackageStep({ command }: { command: string }) {
           <Copy size={14} /> {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <p className="muted small">Once pacman has installed it, Flagstop offers to restart into the new version.</p>
+      <p className="muted small">Once pacman has installed it, Highwing offers to restart into the new version.</p>
     </>
   );
 }
@@ -67,7 +67,7 @@ function RestartNote() {
         <p className="update-warning small" role="note">
           Not kept: {files.length === 1 ? "a file" : `${files.length} files`} attached in a composer,{" "}
           <span className="selectable">{files.join(", ")}</span>. Send or remove {files.length === 1 ? "it" : "them"} first, or attach{" "}
-          {files.length === 1 ? "it" : "them"} again after the restart. A screenshot taken in Flagstop can't be attached again.
+          {files.length === 1 ? "it" : "them"} again after the restart. A screenshot taken in Highwing can't be attached again.
         </p>
       )}
     </>
@@ -83,13 +83,13 @@ function Status({ s, updates }: { s: UpdateState; updates: Updater }) {
     case "upToDate":
       return (
         <p className="muted">
-          Flagstop <span className="mono">{s.version}</span> is up to date. Checked at {clockTime(s.checkedAt)}.{s.note && ` ${s.note}`}
+          Highwing <span className="mono">{s.version}</span> is up to date. Checked at {clockTime(s.checkedAt)}.{s.note && ` ${s.note}`}
         </p>
       );
     case "unsupported":
       return (
         <p className="muted">
-          Flagstop <span className="mono">{s.version}</span>. {s.reason}
+          Highwing <span className="mono">{s.version}</span>. {s.reason}
         </p>
       );
     case "available":
@@ -108,7 +108,7 @@ function Status({ s, updates }: { s: UpdateState; updates: Updater }) {
           {s.found.command ? (
             <PackageStep command={s.found.command} />
           ) : s.found.via === "pacman" ? (
-            <p className="muted small">pacman manages this copy, so Flagstop doesn't replace its files. Update it with your package manager.</p>
+            <p className="muted small">pacman manages this copy, so Highwing doesn't replace its files. Update it with your package manager.</p>
           ) : (
             <button className="btn primary" onClick={() => void updates.install()}>
               <Download size={14} /> Download and install

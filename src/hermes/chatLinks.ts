@@ -39,31 +39,31 @@ const bad = (reason: string): Parsed => ({ ok: false, reason });
  */
 export function parseChatLink(raw: unknown): Parsed {
   if (typeof raw !== "string" || !raw) return bad("The link is empty.");
-  if (raw.length > LINK_MAX) return bad(`The link is too long (over ${LINK_MAX} characters), so it isn't a Flagstop link.`);
+  if (raw.length > LINK_MAX) return bad(`The link is too long (over ${LINK_MAX} characters), so it isn't a Highwing link.`);
   // Printable ASCII only: a real link has nothing else, so whitespace, control characters and look-alike letters
   // never reach the URL parser.
-  if (!/^[\x21-\x7e]+$/.test(raw)) return bad("The link has spaces or characters a Flagstop link never has.");
+  if (!/^[\x21-\x7e]+$/.test(raw)) return bad("The link has spaces or characters a Highwing link never has.");
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return bad("That isn't a link Flagstop can read.");
+    return bad("That isn't a link Highwing can read.");
   }
-  if (url.protocol !== `${LINK_SCHEME}:`) return bad(`That isn't a Flagstop link: it doesn't start with ${LINK_SCHEME}://.`);
-  if (url.username || url.password) return bad("The link has a sign-in in it. Flagstop links never do, so it wasn't opened.");
+  if (url.protocol !== `${LINK_SCHEME}:`) return bad(`That isn't a Highwing link: it doesn't start with ${LINK_SCHEME}://.`);
+  if (url.username || url.password) return bad("The link has a sign-in in it. Highwing links never do, so it wasn't opened.");
   if (url.hostname !== "chat" || url.port || (url.pathname !== "" && url.pathname !== "/") || url.hash)
-    return bad("Flagstop can't open that kind of link. Only links to a chat, made with Copy chat link, open.");
+    return bad("Highwing can't open that kind of link. Only links to a chat, made with Copy chat link, open.");
   const params = url.searchParams;
   const keys = [...params.keys()];
   const extra = keys.find((k) => !(PARAMS as readonly string[]).includes(k));
   if (extra !== undefined) return bad("The link has parts a chat link doesn't have, so it wasn't opened.");
   if (new Set(keys).size !== keys.length) return bad("The link names something twice, so it wasn't opened.");
   if (!params.has("v")) return bad("The link is missing its version.");
-  if (params.get("v") !== "1") return bad("The link was made by a newer Flagstop. Update Flagstop to open it.");
+  if (params.get("v") !== "1") return bad("The link was made by a newer Highwing. Update Highwing to open it.");
   const connection = params.get("connection") ?? "";
   const profile = params.get("profile") ?? "";
   const chatId = params.get("id") ?? "";
-  if (!CONNECTION_REF.test(connection)) return bad("The link's connection isn't one Flagstop could have made.");
+  if (!CONNECTION_REF.test(connection)) return bad("The link's connection isn't one Highwing could have made.");
   if (!PROFILE_ID.test(profile)) return bad("The link's profile isn't a Hermes profile name.");
   if (!CHAT_ID.test(chatId)) return bad("The link's chat isn't a Hermes chat id.");
   return { ok: true, link: { connection, profile, chatId } };

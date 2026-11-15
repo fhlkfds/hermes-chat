@@ -267,10 +267,10 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     const names = new Set(listing.entries.map((e) => e.name));
     const dest = joinPath(listing.path, picked.name);
     const plan: UploadPlan = { dest, taken: listing.entries.find((e) => e.name === picked.name), keepBothName: freeName(picked.name, names) };
-    if (protectedPath(dest)) plan.refused = `Hermes keeps credential files such as ${picked.name} out of its file browser, so Flagstop doesn't upload over them.`;
+    if (protectedPath(dest)) plan.refused = `Hermes keeps credential files such as ${picked.name} out of its file browser, so Highwing doesn't upload over them.`;
     // A link in the way would be written through: Hermes replaces what it points to.
     else if (plan.taken?.linkTarget && protectedPath(plan.taken.linkTarget))
-      plan.refused = `${picked.name} here is a link to a credential file (${plan.taken.linkTarget}), so Flagstop doesn't upload over it.`;
+      plan.refused = `${picked.name} here is a link to a credential file (${plan.taken.linkTarget}), so Highwing doesn't upload over it.`;
     else if (picked.size > SERVER_FILE_MAX_BYTES) plan.refused = `It's ${formatBytes(picked.size)}. Hermes takes files up to 100 MB.`;
     else if (plan.taken?.kind === "dir") plan.refused = `There's a folder named ${picked.name} there.`;
     return plan;
@@ -300,7 +300,7 @@ export function remoteFiles(get: RemoteGet, pipe: TransferPipe): RemoteFiles {
     async openForEdit(entry) {
       if (entry.kind !== "file") throw new RemoteFilesError("Only files can be edited.");
       if (entry.size !== undefined && entry.size > EDIT_MAX_BYTES) throw new RemoteFilesError(`It's ${formatBytes(entry.size)}. The editor opens files up to ${formatBytes(EDIT_MAX_BYTES)}.`);
-      if (protectedPath(entry.path)) throw new RemoteFilesError("Flagstop doesn't edit credential files.");
+      if (protectedPath(entry.path)) throw new RemoteFilesError("Highwing doesn't edit credential files.");
       return editing.open(entry.path, entry.name);
     },
     saveEdit: editing.saveEdit,
@@ -448,7 +448,7 @@ function explainTransfer(e: unknown, what: "download" | "upload"): string {
   if (e instanceof RestError || /^Not connected|^The chat connection is closed/.test(message)) return explain(e, what === "download" ? "read" : "write").message;
   if (/^couldn't (write|read) it on this computer/.test(message)) return message[0].toUpperCase() + message.slice(1) + ".";
   if (/^it's .* MB now, over the .* MB limit/.test(message)) return `It's grown: ${message}.`;
-  if (/^Flagstop doesn't relay/.test(message)) return message;
+  if (/^Highwing doesn't relay/.test(message)) return message;
   return `The ${what} broke off: ${message}.`;
 }
 
@@ -478,7 +478,7 @@ function sizeChecked(text: string): Uint8Array {
  * after the write landed, so it is settled by reading the file back.
  */
 function refusedBeforeWriting(e: unknown): boolean {
-  if (!(e instanceof RestError)) return /^Flagstop doesn't relay|^Not connected/.test(errorText(e));
+  if (!(e instanceof RestError)) return /^Highwing doesn't relay|^Not connected/.test(errorText(e));
   const status = e.status;
   // An expired sign-in never reaches the route, and FastAPI checks the form before it runs.
   if (status === 401 || status === 422) return true;
@@ -503,7 +503,7 @@ function refusedBeforeWriting(e: unknown): boolean {
 function explainSave(e: unknown): RemoteFilesError {
   if (refused(e, 403, "File is not writable")) return new RemoteFilesError("The Hermes server's user isn't allowed to write this file.", 403);
   if (refused(e, 409, "File already exists")) return new RemoteFilesError("A file with that name is on the server now. Nothing was replaced.", 409);
-  if (/^Flagstop doesn't relay/.test(errorText(e))) return new RemoteFilesError(errorText(e));
+  if (/^Highwing doesn't relay/.test(errorText(e))) return new RemoteFilesError(errorText(e));
   return explain(e, "write");
 }
 

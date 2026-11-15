@@ -431,7 +431,7 @@ export function ContextCard({
                   {f.size !== undefined && <span>{formatBytes(f.size)}</span>}
                   <span className="badge">{typeLabel(f.name)}</span>
                   {f.tokens === undefined && (
-                    <span className="badge" title="It has no text Flagstop can read, so chats get its path and open it with their own tools.">
+                    <span className="badge" title="It has no text Highwing can read, so chats get its path and open it with their own tools.">
                       Path only
                     </span>
                   )}

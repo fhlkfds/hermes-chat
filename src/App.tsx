@@ -396,7 +396,7 @@ function Screens({ links }: { links: LinkInbox }) {
     links.clear(arrived.at);
   }, [arrived, links]);
   const linkNotice = badLink ? (
-    <ChatLinkNotice view={{ kind: "error", text: `Flagstop didn't open that link. ${badLink.reason}` }} onClose={() => setBadLink(undefined)} />
+    <ChatLinkNotice view={{ kind: "error", text: `Highwing didn't open that link. ${badLink.reason}` }} onClose={() => setBadLink(undefined)} />
   ) : (
     goodLink &&
     !hermes && (
@@ -1052,7 +1052,7 @@ const draftChat = (draftError?: string): Chat => ({
   items: draftError ? [{ kind: "error", id: "e-draft", text: draftError }] : [],
 });
 /** What the desktop is told when a desktop shortcut's screenshot is attached while Hermes Chat isn't focused. */
-const SCREENSHOT_ATTACHED = { title: "Screenshot attached", body: "Review it in Flagstop before you send it." };
+const SCREENSHOT_ATTACHED = { title: "Screenshot attached", body: "Review it in Highwing before you send it." };
 
 /** The real screenshot calls, and what a desktop shortcut does once its screenshot is attached. */
 export type Screenshots = {
@@ -2697,7 +2697,7 @@ export function Main({
       );
     if (conn.kind === "unknown")
       return failLink(
-        `This link is for a connection this computer doesn't know, perhaps one from another computer. Links carry no server address or sign-in, so Flagstop won't connect anywhere for it. If the chat is on ${hereLabel}, you can open it here.`,
+        `This link is for a connection this computer doesn't know, perhaps one from another computer. Links carry no server address or sign-in, so Highwing won't connect anywhere for it. If the chat is on ${hereLabel}, you can open it here.`,
         [{ label: "Open it here", onClick: () => (refs.alias(job.link.connection, connection), retryLink(job)) }],
       );
     if (hermes.getSnapshot().status !== "connected") {
@@ -2722,7 +2722,7 @@ export function Main({
       located = await locateChat<Found>(job.link, hermes);
     } catch (e) {
       if (!isCurrent(job) || movedOn()) return;
-      return failLink(`Flagstop couldn't look the linked chat up: ${errorText(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
+      return failLink(`Highwing couldn't look the linked chat up: ${errorText(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
     }
     if (!isCurrent(job) || movedOn()) return;
     if (located.kind === "no-profile")
@@ -2757,7 +2757,7 @@ export function Main({
       if (profile !== linkJob.from) closeLinkNotice();
       return;
     }
-    if (switching?.error) return failLink(`Flagstop switched to ${profile} but couldn't load its chats: ${switching.error}`);
+    if (switching?.error) return failLink(`Highwing switched to ${profile} but couldn't load its chats: ${switching.error}`);
     if (!switching) openLinked(linkJob, linkJob.found);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- run when the link job, profile or switch changes; `openLinked` is a new function each render and would open the chat again on every render
   }, [linkJob, profile, switching]);
@@ -2789,7 +2789,7 @@ export function Main({
   /** Copies a link that opens `chat`, in this connection and profile, in Hermes Chat on this computer. */
   const copyChatLink = (chat: Chat) => {
     const url = formatChatLink({ connection: refs.refFor(connection), profile, chatId: chat.id });
-    const done = () => setToast({ text: "Chat link copied. It opens this chat in Flagstop on this computer.", at: Date.now() });
+    const done = () => setToast({ text: "Chat link copied. It opens this chat in Highwing on this computer.", at: Date.now() });
     const failed = (e?: unknown) => setToast({ text: `Couldn't copy the chat link${e ? `: ${errorText(e)}` : "."}`, at: Date.now() });
     if (!navigator.clipboard?.writeText) return failed();
     navigator.clipboard.writeText(url).then(done, failed);
@@ -4347,12 +4347,12 @@ function ChatView({
       if (def.name === "delete" && chat.running) return "A chat with a reply running can't be deleted.";
       // A Bot Chat's title is its identity, and it is its bot's one chat (ADR 0066).
       if (def.name === "rename" && isBotChat(chat)) return "A Bot Chat's name is how Hermes finds it, so it can't be renamed.";
-      if (def.name === "delete" && isBotChat(chat)) return "A Bot Chat is its bot's one continuous chat, so Flagstop doesn't delete it.";
+      if (def.name === "delete" && isBotChat(chat)) return "A Bot Chat is its bot's one continuous chat, so Highwing doesn't delete it.";
       if (def.scope === "local") return undefined;
       if (serverCommands.state === "loading") return "Checking whether this Hermes has it…";
       if (serverCommands.state === "failed") return `Couldn't check whether this Hermes has it: ${serverCommands.reason}`;
       if (serverCommands.list.replaced.has(def.name))
-        return `This Hermes has a quick or plugin command called /${def.name}, which it would run instead, so Flagstop doesn't run it.`;
+        return `This Hermes has a quick or plugin command called /${def.name}, which it would run instead, so Highwing doesn't run it.`;
       if (serverCommands.list.unsure.has(def.name))
         return `Hermes couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /${def.name}.`;
       if (!serverCommands.list.listed.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";

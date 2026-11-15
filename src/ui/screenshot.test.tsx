@@ -265,8 +265,8 @@ describe("Taking a screenshot for the composer", () => {
     expect(screen.queryByText(/Taking a screenshot/)).toBeNull();
 
     await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
-    await rust.fail({ kind: "denied", message: "Your desktop didn't allow Flagstop to take a screenshot. Check the screenshot permission in its privacy settings." });
-    expect((await screen.findByRole("alert")).textContent).toContain("Your desktop didn't allow Flagstop to take a screenshot.");
+    await rust.fail({ kind: "denied", message: "Your desktop didn't allow Highwing to take a screenshot. Check the screenshot permission in its privacy settings." });
+    expect((await screen.findByRole("alert")).textContent).toContain("Your desktop didn't allow Highwing to take a screenshot.");
 
     await user.keyboard("{Control>}{Shift>}s{/Shift}{/Control}");
     await rust.fail({ kind: "unsupported", message: "No screenshot portal is running. Install xdg-desktop-portal and the backend for your desktop." });
@@ -537,7 +537,7 @@ describe("A desktop without a way to take screenshots", () => {
     const server = new FakeHermes();
     const hermes = await connect(server.openPipe);
     const rust = fakeRust(server);
-    rust.wiring.support = async () => ({ ok: false, summary: "On Hyprland, Sway and other wlroots desktops, Flagstop picks a region or window with slurp and grim." });
+    rust.wiring.support = async () => ({ ok: false, summary: "On Hyprland, Sway and other wlroots desktops, Highwing picks a region or window with slurp and grim." });
     const user = userEvent.setup();
     render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} screenshots={rust.wiring} />);
     await settle(hermes);
@@ -581,7 +581,7 @@ describe("Setting the screenshot shortcut", () => {
     const { rust, user, key } = await inSettings();
     await user.click(key);
     await user.keyboard("{Control>}k{/Control}");
-    expect(screen.getByRole("alert").textContent).toContain("Ctrl+K: Ctrl+K already runs Search all chats in Flagstop (Settings → Keyboard Shortcuts).");
+    expect(screen.getByRole("alert").textContent).toContain("Ctrl+K: Ctrl+K already runs Search all chats in Highwing (Settings → Keyboard Shortcuts).");
     // Search didn't open, and the recorder is still waiting.
     expect(screen.queryByPlaceholderText(/Search all chats/)).toBeNull();
     expect(key.textContent).toContain("Press the shortcut…");

@@ -98,7 +98,7 @@ fn segments(path: &str) -> Result<Vec<&str>, String> {
 }
 
 fn credential(path: &str) -> String {
-    format!("Flagstop never writes {path}: it's where Hermes keeps credentials.")
+    format!("Highwing never writes {path}: it's where Hermes keeps credentials.")
 }
 
 /// A local file the owner attached (`Attachable`, ADR 0129) that may be added to a project: a regular file no bigger
@@ -461,7 +461,7 @@ pub async fn git_exclude(dashboard: &Dashboard, main_folder: &str, ssh_profile: 
     let mut pairs = vec![("path", main_folder)];
     pairs.extend(ssh_profile.map(|p| ("profile", p)));
     let answer = dashboard.send_limited(Method::GET, "api/fs/git-root", &query(&pairs), None, ANSWER_MAX_BYTES).await.map_err(RelayError::from)?;
-    let found: GitRoot = serde_json::from_slice(&answer).map_err(|_| "Hermes's answer to finding the Git repository wasn't one Flagstop knows.")?;
+    let found: GitRoot = serde_json::from_slice(&answer).map_err(|_| "Hermes's answer to finding the Git repository wasn't one Highwing knows.")?;
     let Some(root) = found.root else { return Ok(GitExclude::None) };
     let root = normalize(&root).ok_or_else(|| format!("Hermes named {root} as the Git repository, which isn't a full path."))?;
     let rel = relative(&root, main_folder)
@@ -618,7 +618,7 @@ async fn exclude_is_itself(dashboard: &Dashboard, on: Machine<'_>, exclude: &Exc
         Err(TransportError::Unexpected { status: 404, .. }) => return Ok(true),
         Err(e) => return Err(e.into()),
     };
-    let unknown = || "Hermes's answer about info/exclude wasn't one Flagstop knows.".to_owned();
+    let unknown = || "Hermes's answer about info/exclude wasn't one Highwing knows.".to_owned();
     Ok(match on {
         Machine::Dashboard => {
             let listing: Listing = serde_json::from_slice(&body).map_err(|_| unknown())?;

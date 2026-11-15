@@ -684,7 +684,7 @@ describe("Settings → Memory as cards of rows (ADR 0059)", () => {
     expect(about.getAttribute("aria-expanded")).toBe("true");
     expect(help.hidden).toBe(false);
     const limits = memory.querySelector<HTMLElement>(".memory-restore-limits")!;
-    expect(limits.textContent).toMatch(/until you sign out or close Flagstop/);
+    expect(limits.textContent).toMatch(/until you sign out or close Highwing/);
     expect(limits.textContent).toMatch(/a removed entry can't be put back from here/);
     expect(folded(limits)).toBe(false);
     const effect = pageHead().querySelector<HTMLElement>("section.applies-box")!;
@@ -708,7 +708,7 @@ describe("Settings → Memory as cards of rows (ADR 0059)", () => {
     // What Restore can't do is said in view, not behind the (i).
     expect(help.textContent).not.toMatch(/Restore previous version/);
     const limits = memory.querySelector<HTMLElement>(".memory-restore-limits")!;
-    expect(limits.textContent).toMatch(/until you sign out or close Flagstop/);
+    expect(limits.textContent).toMatch(/until you sign out or close Highwing/);
     expect(limits.textContent).toMatch(/a removed entry can't be put back from here/);
     expect(folded(limits)).toBe(false);
     expect(searchText(memory)).toMatch(/To add a memory, ask Hermes in a chat/);

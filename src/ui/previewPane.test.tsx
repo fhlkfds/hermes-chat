@@ -319,7 +319,7 @@ describe("Opening the preview pane", () => {
     expect(within(pane()).getByRole("alert").textContent).toBe("To preview a file on this computer, use Open a file on this computer.");
     await user.clear(box);
     await user.type(box, `${location.origin}/{Enter}`);
-    expect(within(pane()).getByRole("alert").textContent).toBe("Flagstop's own pages don't open in the preview.");
+    expect(within(pane()).getByRole("alert").textContent).toBe("Highwing's own pages don't open in the preview.");
 
     await user.clear(box);
     await user.type(box, "/home/liam/app/README.md{Enter}");
@@ -991,7 +991,7 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
 
   it("says when the sign-in has no SSH target, and offers this computer instead", async () => {
     const pages = theServer(
-      new ServerPageError("noSshTarget", "This sign-in uses a dashboard URL, so Flagstop has no SSH target to reach the server's own pages."),
+      new ServerPageError("noSshTarget", "This sign-in uses a dashboard URL, so Highwing has no SSH target to reach the server's own pages."),
     );
     const { user } = await signedIn({ pages });
     await user.click(screen.getByRole("link", { name: "the dev server" }));
@@ -1081,12 +1081,12 @@ describe("Pages on the Hermes server's own loopback (issue #171)", () => {
   });
 
   it("says the tunnel closed when the app left the server while it connected", async () => {
-    const pages = theServer(new ServerPageError("closed", "Flagstop left the Hermes server, so the tunnel to it closed."));
+    const pages = theServer(new ServerPageError("closed", "Highwing left the Hermes server, so the tunnel to it closed."));
     const { user } = await signedIn({ pages });
     await user.click(screen.getByRole("link", { name: "the dev server" }));
     const alert = await within(pane()).findByRole("alert");
     expect(alert.textContent).toContain("The SSH tunnel to this page closed");
-    expect(alert.textContent).toContain("Flagstop left the Hermes server");
+    expect(alert.textContent).toContain("Highwing left the Hermes server");
     expect(within(alert).getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
@@ -1201,7 +1201,7 @@ describe("The empty Preview (issue #376)", () => {
     await user.click(screen.getByRole("link", { name: "the docs" }));
     await user.click(button("More"));
     const menu = within(pane()).getByRole("menu", { name: "More" });
-    expect(menu.textContent).toContain("Pages here run on their own, with no access to Flagstop or your sign-in, and only you can use them.");
+    expect(menu.textContent).toContain("Pages here run on their own, with no access to Highwing or your sign-in, and only you can use them.");
     expect(menu.textContent, "a frame can't report a link followed inside it").toContain("Links you follow inside a page don't change the address here.");
     expect(menu.textContent, "a frame's origin is opaque, so its storage throws (ADR 0155)").toContain(
       "Pages here can't use their own storage, so some sites work only in your browser.",

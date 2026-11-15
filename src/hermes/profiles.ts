@@ -166,7 +166,7 @@ export function profileFailure(e: unknown, action: ProfileAction): ProfileFailur
     return { kind: "lost", message: `Hermes answered ${e.status}${detail ? `: ${detail}` : "."}` };
   }
   const message = said(e);
-  if (/^Not connected to Hermes|^The chat connection is closed|^Flagstop doesn't relay/.test(message)) return { kind: "unsent", message };
+  if (/^Not connected to Hermes|^The chat connection is closed|^Highwing doesn't relay/.test(message)) return { kind: "unsent", message };
   return { kind: "lost", message };
 }
 

@@ -567,8 +567,8 @@ export const DIMENSION_LABEL: Record<Dimension, string> = { model: "Model", sour
 
 /** Hermes's `sessions.source` names, as this app says them (GLOSSARY.md "Source"). */
 const SOURCE_NAMES: Record<string, string> = {
-  gui: "Flagstop",
-  "hermes-chat": "Flagstop",
+  gui: "Highwing",
+  "hermes-chat": "Highwing",
   desktop: "Hermes desktop app",
   cli: "Command line",
   tui: "Command line",

@@ -64,7 +64,7 @@ export function TraySettings({ tray }: { tray?: TrayWiring }) {
         hintId="close-to-tray-help"
         more={
           <p>
-            Replies keep arriving, drafts stay, and the tray icon or opening Flagstop again brings the same window back. Hiding it stops Dictation
+            Replies keep arriving, drafts stay, and the tray icon or opening Highwing again brings the same window back. Hiding it stops Dictation
             and Read aloud, and pauses a voice conversation. Quit in the tray menu always exits.
           </p>
         }

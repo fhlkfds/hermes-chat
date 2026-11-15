@@ -1268,9 +1268,9 @@ async fn pick(app: &AppHandle, title: &str, folder: bool) -> Result<Option<PathB
 pub async fn local_stt_pick_program(app: AppHandle) -> Result<Option<State>, String> {
     let Some(binary) = pick(&app, "Choose a speech-to-text program", false).await? else { return Ok(None) };
     let kind = kind_of(&binary).ok_or(if cfg!(windows) {
-        "Flagstop can run whisper-cli.exe, whisper-cpp.exe, whisper.exe, whisper-ctranslate2.exe or vosk-transcriber.exe."
+        "Highwing can run whisper-cli.exe, whisper-cpp.exe, whisper.exe, whisper-ctranslate2.exe or vosk-transcriber.exe."
     } else {
-        "Flagstop can run whisper-cli, whisper-cpp, whisper, whisper-ctranslate2 or vosk-transcriber."
+        "Highwing can run whisper-cli, whisper-cpp, whisper, whisper-ctranslate2 or vosk-transcriber."
     })?;
     if !is_executable(&binary) {
         return Err(format!("{} can't be run: it isn't an executable file.", binary.display()));
