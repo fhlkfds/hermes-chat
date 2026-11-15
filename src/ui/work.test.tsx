@@ -311,6 +311,13 @@ describe("planning on the Work page (issue #604)", () => {
     await waitFor(() => expect(within(bot).getByRole("option", { name: "researcher (claude-sonnet-5-5)" })).toBeTruthy());
     await user.selectOptions(bot, "researcher");
     expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("Build it goes to researcher.");
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("Once it's ready, the dispatcher starts it on its next tick.");
+    // Unassigning never promises that nothing runs it: a server's kanban.default_assignee takes unassigned cards.
+    await user.click(within(picks).getByRole("button", { name: "Cancel" }));
+    await user.selectOptions(bot, "");
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("unless this server sets kanban.default_assignee");
+    await user.click(within(picks).getByRole("button", { name: "Cancel" }));
+    await user.selectOptions(bot, "researcher");
     await user.click(within(picks).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(s.kanban.find(build.id)!.assignee).toBe("researcher"));
     const model = within(picks).getByRole("combobox", { name: "Model" });
@@ -429,6 +436,21 @@ describe("the Work page on its own", () => {
     });
     render(<Work api={api} connected onClose={() => {}} />);
     await waitFor(() => expect(screen.getByRole("note").textContent).toMatch(/no Kanban plugin/));
+  });
+
+  it("keeps focus in New task while it asks for a token guess, so Escape still closes it", async () => {
+    const user = userEvent.setup();
+    let asked = 0;
+    render(<Work api={stub({ estimate: () => (asked++, new Promise(() => {})) })} connected onClose={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "New task" }));
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Title" }), "Write it up");
+    await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    await within(dialog).findByText(/Asking Hermes for a token guess/);
+    await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    expect(asked).toBe(1);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("doesn't read the board while the task sheet saves an edit", async () => {

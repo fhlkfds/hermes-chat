@@ -109,7 +109,14 @@ export function EstimateBox({ ask, text, disabled }: { ask: () => Promise<Estima
   };
   return (
     <div className="work-estimate" aria-live="polite">
-      <button type="button" className="btn" disabled={disabled || guess.kind === "asking"} onClick={() => void run()}>
+      {/* Not `disabled` while asking: a button that disables itself under focus drops focus out of the dialog, and Escape stops closing it. */}
+      <button
+        type="button"
+        className="btn"
+        disabled={disabled}
+        aria-disabled={guess.kind === "asking"}
+        onClick={() => guess.kind !== "asking" && void run()}
+      >
         {guess.kind === "answered" ? "Estimate again" : "Estimate"}
       </button>
       {guess.kind === "asking" && (
@@ -512,8 +519,14 @@ export function BotModelSection({ task, api, onRead, onSaved, onWriting, assigne
 
 function preview(t: BoardTask, c: BotModelChange, choices?: Choices): string[] {
   if (c.kind === "bot") {
-    if (!c.bot) return [`${t.title} will have no bot, so nothing picks it up.`];
-    const starts = t.status === "ready" ? [`It's ready, so the dispatcher starts it on its next tick, about a minute.`] : [];
+    // A server with `kanban.default_assignee` set gives an unassigned ready card to that bot, so "nothing runs it" would be wrong there.
+    if (!c.bot) return [`${t.title} will have no bot. The dispatcher skips it, unless this server sets kanban.default_assignee, which then takes it.`];
+    const starts =
+      t.status === "ready"
+        ? [`It's ready, so the dispatcher starts it on its next tick, about a minute.`]
+        : t.status === "todo"
+          ? [`Once it's ready, the dispatcher starts it on its next tick.`]
+          : [];
     return [`${t.title} goes to ${c.bot}.`, ...starts];
   }
   if (!c.pick) return [`${t.title} goes back to its bot's own model.`];
