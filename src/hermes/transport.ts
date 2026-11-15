@@ -3335,6 +3335,7 @@ export class Hermes {
     if (!chat || chat.running) return false;
     const profile = this.profile;
     this.deleted.set(profile, chatId, true);
+    this.recorder.forget(chatId);
     this.pinWanted.delete(profile, chatId);
     this.archiveWanted.delete(profile, chatId);
 
@@ -3576,7 +3577,11 @@ export class Hermes {
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
       if (!(await send(chat.runtimeId))) this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
-      else this.recorder.hear(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: "Answered from this app" });
+      else {
+        const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
+        // A Clarify answered a question at a time is still waiting until its last question is locked.
+        if (now && isQuestion(now) && now.answer) this.recorder.hear(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+      }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
       this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, errorItem(c, `Couldn't answer Hermes: ${(e as Error).message}`)] }));
@@ -4188,7 +4193,8 @@ export class Hermes {
   private costAfter(chatId: string, turn: WatchedTurn) {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const ended = turn.heard.at(-1)?.at ?? 0;
-    if (chat?.usage && !chat.usageError && chat.usage.readAt >= ended) turn.costAfter = chat.usage.cost;
+    turn.costRead = true;
+    if (chat?.usage && !chat.usageError && chat.usage.readAt >= ended && !turn.costOverlap) turn.costAfter = chat.usage.cost;
   }
 
   /**
@@ -4202,7 +4208,8 @@ export class Hermes {
     if (!chat || reply?.kind !== "assistant") throw new Error("This reply isn't in the chat any more.");
     const config = this.toolProgress().catch(() => undefined);
     const watched = this.recorder.find(chatId, reply);
-    if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+    // A recording cut short is missing steps the stored rows still have.
+    if (watched && !(watched.truncated && reply.rowId !== undefined)) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
     if (reply.rowId === undefined) throw new Error("Hermes hasn't stored this reply yet, so its steps can't be read. Try again once the chat has reloaded.");
     const rows = await this.turnRowsOf(profile, chatId, reply.rowId);
     return { run: storedRun(rows), toolProgress: await config };
@@ -4708,6 +4715,7 @@ export class Hermes {
     if (this.profile !== profile) return;
     if (now === undefined) {
       this.deleted.set(profile, chatId, true);
+      this.recorder.forget(chatId);
       this.update({
         chats: this.snapshot.chats.filter((c) => c.id !== chatId),
         syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
@@ -5763,6 +5771,16 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
 
 /** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
 const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
+
+const APPROVAL_ANSWERED: Record<ApprovalChoice, string> = { once: "Allowed once", session: "Allowed for this chat", always: "Always allowed", deny: "Denied" };
+
+/** How the owner answered a Question from here, for its step in the Run view. A password or secret is never kept. */
+function answeredHow(q: QuestionItem): string {
+  if (q.kind === "approval") return `${q.answer ? APPROVAL_ANSWERED[q.answer] : "Answered"} from this app`;
+  if (q.answer === "skipped") return "Skipped from this app";
+  if (q.kind !== "clarify") return "Answered from this app";
+  return `Answered from this app: ${q.questions.map((x) => `${x.question} → ${q.locked[x.qid] ?? "skipped"}`).join("; ")}`;
+}
 
 /** One line for what a Question asks, for its step in the Run view. */
 function questionSummary(q: QuestionItem): string {

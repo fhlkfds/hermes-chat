@@ -241,6 +241,12 @@ export function RunDialog({ api, onClose }: { api: RunApi; onClose: () => void }
                 here.
               </p>
             )}
+            {run.truncated && (
+              <p className="run-note" role="note">
+                <TriangleAlert size={13} aria-hidden /> This turn sent more events than this app keeps, so its later steps are missing here. Open it again
+                once Hermes has stored the reply to read every step from the chat's history.
+              </p>
+            )}
             {run.steps.length === 0 ? (
               <p className="muted">No steps to show.</p>
             ) : (

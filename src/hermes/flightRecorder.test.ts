@@ -5,7 +5,7 @@ import { FakeHermes, row, type ToolTurnPlan } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import { localChatCache } from "./chatCache";
 import type { Item } from "./model";
-import { judgeFailure, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type RunRow, type Step, type WatchedTurn } from "./flightRecorder";
+import { FlightRecorder, judgeFailure, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type RunRow, type Step, type WatchedTurn } from "./flightRecorder";
 
 const counters = (calls: number, prompt: number, output: number) => ({ prompt, output, reasoning: 0, calls });
 const lastReply = (items: Item[]) => [...items].reverse().find((i) => i.kind === "assistant")!;
@@ -116,11 +116,54 @@ describe("A watched run", () => {
     expect(run.outcome).toBe("interrupted");
   });
 
+  it("shows why a turn failed when its end says so, as a failed step", () => {
+    const run = watchedRun(turn([{ kind: "start", at: T }, { kind: "end", at: T + 500, status: "error", failure: "Context window exceeded" }]), T + 1000);
+    expect(run.steps.at(-1)).toMatchObject({ kind: "error", text: "Context window exceeded", failed: "Context window exceeded" });
+    expect(run.outcome).toBe("failed");
+  });
+
   it("places a tool sent with no start, as with tool progress off, back from its measured length", () => {
     const run = watchedRun(turn([{ kind: "start", at: T }, { kind: "tool.complete", at: T + 5000, id: "c1", name: "patch", durationS: 1.5, result: "ok" }]), T + 6000);
     expect(run.steps.find((s) => s.kind === "tool")).toMatchObject({ start: T + 3500, end: T + 5000, length: { ms: 1500, measured: true }, placed: true });
     expect(run.steps[0]).toMatchObject({ kind: "model", start: T, end: T + 3500 });
     expect(run.outcome).toBe("running");
+  });
+
+  it("can't tell two turns' costs apart when the second starts before the first's cost is read", () => {
+    const recorder = new FlightRecorder();
+    const cost = (usd: number) => ({ kind: "estimated" as const, usd });
+    recorder.begin("c", T, undefined, cost(0.01));
+    recorder.end("c", { kind: "end", at: T + 10, status: "complete" }, ["a1"], undefined);
+    recorder.begin("c", T + 20, undefined, cost(0.01));
+    recorder.end("c", { kind: "end", at: T + 30, status: "complete" }, ["a2"], undefined);
+    for (const reply of ["a1", "a2"]) {
+      const turn = recorder.find("c", { id: reply })!;
+      turn.costAfter = cost(0.03);
+      expect(watchedRun(turn, T).cost).toMatchObject({ why: expect.stringContaining("can't be told apart") });
+    }
+  });
+
+  it("says a recording was cut short once a turn sends more events than it keeps", () => {
+    const recorder = new FlightRecorder();
+    recorder.begin("c", T, undefined, undefined);
+    for (let n = 0; n < 2500; n++) {
+      recorder.hear("c", { kind: "tool.start", at: T + n, id: `t${n}`, name: "terminal" });
+      recorder.hear("c", { kind: "tool.complete", at: T + n, id: `t${n}`, name: "terminal", durationS: 0 });
+    }
+    recorder.end("c", { kind: "end", at: T + 3000, status: "complete" }, ["a1"], undefined);
+    expect(watchedRun(recorder.find("c", { id: "a1" })!, T).truncated).toBe(true);
+  });
+
+  it("keeps the most recent chats' recordings and forgets a deleted chat's", () => {
+    const recorder = new FlightRecorder();
+    for (let n = 0; n <= 40; n++) {
+      recorder.begin(`c${n}`, T, undefined, undefined);
+      recorder.end(`c${n}`, { kind: "end", at: T + 1, status: "complete" }, [`a${n}`], undefined);
+    }
+    expect(recorder.find("c0", { id: "a0" })).toBeUndefined();
+    expect(recorder.find("c1", { id: "a1" })).toBeDefined();
+    recorder.forget("c1");
+    expect(recorder.find("c1", { id: "a1" })).toBeUndefined();
   });
 
   it("works a turn's cost out from the chat's cost before and after it, or says why it can't", () => {
@@ -266,6 +309,29 @@ describe("The Run view against FakeHermes", () => {
     await hermes.idle();
     const reply = lastReply(hermes.getSnapshot().chats.find((c) => c.id === chatId)!.items);
     expect((await hermes.run(chatId, reply.id)).run.cost).toEqual({ usd: expect.closeTo(0.002, 9) });
+  });
+
+  it("keeps the owner's answers on Question steps, a Clarify's only once its last question is locked", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe, undefined, localChatCache(nas));
+    running.push(hermes);
+    const chatId = await hermes.newChat();
+    await hermes.send(chatId, "Clear the logs");
+    const runtime = server.runtimeIdOf(chatId)!;
+    server.event(runtime, "message.start");
+    const asked = server.askClarify(runtime, [{ question: "Which logs?" }, { question: "When?" }])!;
+    await hermes.idle();
+    await hermes.answerQuestion(chatId, asked, { kind: "lock", qid: "q0", answer: "Old ones" });
+    await hermes.answerQuestion(chatId, asked, { kind: "lock", qid: "q1", answer: "Tonight" });
+    const approval = server.askApproval(runtime)!.id!;
+    await hermes.idle();
+    await hermes.answerApproval(chatId, approval, "once");
+    server.event(runtime, "message.delta", { text: "Cleared." });
+    server.event(runtime, "message.complete", { text: "Cleared.", status: "complete" });
+    await hermes.idle();
+    const reply = lastReply(hermes.getSnapshot().chats.find((c) => c.id === chatId)!.items);
+    const questions = (await hermes.run(chatId, reply.id)).run.steps.filter((s) => s.kind === "question");
+    expect(questions.map((s) => s.kind === "question" && s.outcome)).toEqual(["Answered from this app: Which logs? → Old ones; When? → Tonight", "Allowed once from this app"]);
   });
 
   it("notes that message.start carries turn ids when Hermes sends them", async () => {

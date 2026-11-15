@@ -18,8 +18,11 @@ export type Heard =
   | { kind: "status"; at: number; status: string; text: string }
   /** `requestId`: an Approval's own id, which `approval.cancelled` may name instead of the request's frame id. */
   | { kind: "ask"; at: number; id: string; requestId?: string; what: QuestionKind; summary: string }
-  /** A Question ended: answered from here, or Hermes stopped waiting (`request.cancel`, `approval.cancelled`). */
-  | { kind: "settled"; at: number; ids?: string[]; how: string }
+  /**
+   * A Question ended: Hermes stopped waiting (`request.cancel`, `approval.cancelled`), or `answered` from here. Hermes
+   * may say it stopped waiting, as `resolved`, before the app hears its own answer was taken.
+   */
+  | { kind: "settled"; at: number; ids?: string[]; how: string; answered?: boolean }
   | { kind: "error"; at: number; message: string }
   | { kind: "end"; at: number; status: string; failure?: string; counters?: UsageCounters };
 
@@ -33,6 +36,12 @@ export type WatchedTurn = {
   from?: UsageCounters;
   costBefore?: Cost;
   costAfter?: Cost;
+  /** The read of the chat's cost after the turn has finished, or none was made. */
+  costRead?: boolean;
+  /** Why the turn's cost can't be told apart from another's: one turn started before the other's cost was read. */
+  costOverlap?: string;
+  /** More events came than are kept, so later steps are missing. */
+  truncated?: boolean;
   replies: string[];
   replyRow?: number;
 };
@@ -43,8 +52,9 @@ function lastOf<T, S extends T = T>(xs: readonly T[], ok: ((x: T) => x is S) | (
   return undefined;
 }
 
-/** The most turns kept per chat. A run older than that is read from Hermes's stored rows instead. */
+/** The most turns kept per chat, and the most chats kept. A run no longer kept is read from Hermes's stored rows. */
 const TURNS_KEPT = 30;
+const CHATS_KEPT = 40;
 /** The most events kept per turn; merged deltas make this a very long turn. */
 const HEARD_KEPT = 4000;
 
@@ -59,21 +69,36 @@ export class FlightRecorder {
   /** Opens the chat's turn at its `message.start`. One still open, whose end never came, stays as it was heard. */
   begin(chatId: string, at: number, from: UsageCounters | undefined, costBefore: Cost | undefined) {
     const turn: WatchedTurn = { heard: [{ kind: "start", at }], ...(from && { from }), ...(costBefore && { costBefore }), replies: [] };
+    const before = this.turns.get(chatId) ?? [];
+    const prev = before.at(-1);
+    // The last turn's cost read hadn't come back, so neither turn's cost can be told apart from the other's.
+    if (prev && !prev.costRead) {
+      prev.costOverlap = "The next turn started before this turn's cost was read, so the two can't be told apart.";
+      turn.costOverlap = "This turn started before the last turn's cost was read, so the two can't be told apart.";
+    }
     this.open.set(chatId, turn);
-    const kept = [...(this.turns.get(chatId) ?? []), turn];
-    this.turns.set(chatId, kept.slice(-TURNS_KEPT));
+    this.turns.delete(chatId);
+    this.turns.set(chatId, [...before, turn].slice(-TURNS_KEPT));
+    for (const old of [...this.turns.keys()].slice(0, Math.max(0, this.turns.size - CHATS_KEPT))) this.forget(old);
+  }
+
+  /** Drops what was heard of a chat, as when it is deleted. */
+  forget(chatId: string) {
+    this.turns.delete(chatId);
+    this.open.delete(chatId);
   }
 
   /** Adds to the chat's running turn, if one is open. Text deltas merge into the one before. */
   hear(chatId: string, h: Heard) {
     const turn = this.open.get(chatId);
-    if (!turn || turn.heard.length >= HEARD_KEPT) return;
+    if (!turn) return;
     const last = turn.heard.at(-1);
     if (h.kind === "text" && last?.kind === "text" && last.reasoning === h.reasoning) {
       turn.heard[turn.heard.length - 1] = { ...last, last: h.at, chars: last.chars + h.chars };
       return;
     }
-    turn.heard.push(h);
+    if (turn.heard.length >= HEARD_KEPT) turn.truncated = true;
+    else turn.heard.push(h);
   }
 
   /** Ends the chat's running turn, with its replies, and returns it for the cost read that follows. */
@@ -81,6 +106,8 @@ export class FlightRecorder {
     const turn = this.open.get(chatId);
     if (!turn) return undefined;
     turn.heard.push(h);
+    // A turn that ended in an error has no cost read after it.
+    if (h.kind === "error") turn.costRead = true;
     turn.replies = replies;
     if (replyRow !== undefined) turn.replyRow = replyRow;
     this.open.delete(chatId);
@@ -130,6 +157,8 @@ export type Run = {
   outcome: "complete" | "interrupted" | "failed" | "running";
   calls?: number;
   cost?: RunCost;
+  /** The app stopped keeping this turn's events part way, so later steps are missing. */
+  truncated?: boolean;
 };
 
 const counterDiff = (a: UsageCounters, b: UsageCounters) => ({ prompt: b.prompt - a.prompt, output: b.output - a.output, reasoning: b.reasoning - a.reasoning });
@@ -160,7 +189,8 @@ const QUESTION_NAME: Record<QuestionKind, string> = { approval: "Approval", clar
 export const questionName = (k: QuestionKind) => QUESTION_NAME[k];
 
 /** The cost of a watched turn: the change in the chat's cost between the reads before and after it. */
-function turnCost(before: Cost | undefined, after: Cost | undefined): RunCost {
+function turnCost(before: Cost | undefined, after: Cost | undefined, overlap: string | undefined): RunCost {
+  if (overlap) return { why: overlap };
   if (!after) return { why: "The chat's cost wasn't read after this turn." };
   if (!before) return { why: "The chat's cost wasn't read before this turn." };
   if (after.kind === "included") return { why: "The model is in a subscription, and Hermes recorded no charge." };
@@ -182,7 +212,7 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   const endH = lastOf(heard, (h): h is Extract<Heard, { kind: "end" | "error" }> => h.kind === "end" || h.kind === "error");
   const steps: Step[] = [];
   const running = new Map<string, Extract<Step, { kind: "tool" }>>();
-  const asks = new Map<string, { step: Extract<Step, { kind: "question" }>; requestId?: string }>();
+  const asks: { id: string; requestId?: string; step: Extract<Step, { kind: "question" }>; ended?: boolean }[] = [];
   type ModelStep = Extract<Step, { kind: "model" }>;
   let model: ModelStep | undefined;
   const models: ModelStep[] = [];
@@ -228,15 +258,19 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
       if (!running.size) openModel(h.at);
     } else if (h.kind === "ask") {
       const step: Extract<Step, { kind: "question" }> = { kind: "question", id: id("q"), what: h.what, summary: h.summary, start: h.at, end: h.at, length: { ms: 0, measured: false }, outcome: "Still waiting" };
-      asks.set(h.id, { step, requestId: h.requestId });
+      asks.push({ id: h.id, requestId: h.requestId, step });
       steps.push(step);
     } else if (h.kind === "settled") {
-      for (const [key, { step, requestId }] of asks) {
-        if (h.ids && !h.ids.includes(key) && !(requestId && h.ids.includes(requestId))) continue;
-        step.end = h.at;
-        step.length = { ms: h.at - step.start, measured: false };
+      for (const ask of asks) {
+        const { step, requestId } = ask;
+        if (h.ids && !h.ids.includes(ask.id) && !(requestId && h.ids.includes(requestId))) continue;
+        if (ask.ended && !h.answered) continue;
+        if (!ask.ended) {
+          step.end = h.at;
+          step.length = { ms: h.at - step.start, measured: false };
+        }
         step.outcome = h.how;
-        asks.delete(key);
+        ask.ended = true;
       }
     } else if (h.kind === "status") {
       steps.push({ kind: "status", id: id("s"), status: h.status, text: h.text, start: h.at, end: h.at, length: { ms: 0, measured: false }, ...(h.status === "warn" && { failed: h.text }) });
@@ -246,11 +280,16 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   }
   const end = endH?.at ?? now;
   closeModel(end);
+  // A turn that ended failed, with no `error` event, says why on its `message.complete`.
+  if (endH?.kind === "end" && (endH.failure || endH.status === "error")) {
+    const why = endH.failure ?? "The turn failed.";
+    steps.push({ kind: "error", id: id("e"), text: why, start: end, end, length: { ms: 0, measured: false }, failed: why });
+  }
   for (const step of running.values()) {
     step.end = end;
     step.length = { ms: end - step.start, measured: false };
   }
-  for (const { step } of asks.values()) {
+  for (const { step } of asks.filter((a) => !a.ended)) {
     step.end = end;
     step.length = { ms: end - step.start, measured: false };
     if (endH) step.outcome = "The turn ended";
@@ -268,7 +307,8 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
     steps: kept,
     outcome,
     ...(calls !== undefined && { calls }),
-    ...(endH && { cost: turnCost(turn.costBefore, turn.costAfter) }),
+    ...(endH && { cost: turnCost(turn.costBefore, turn.costAfter, turn.costOverlap) }),
+    ...(turn.truncated && { truncated: true }),
   };
 }
 
