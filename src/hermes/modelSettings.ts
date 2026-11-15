@@ -19,6 +19,11 @@ export const AUX_AUTO = "auto";
  * it on its own as the Text generation model.
  */
 export const TEXT_TASK = "title_generation";
+/**
+ * The helper task that writes project instructions (ADR 0177). Hermes has no slot for it, so `/api/model/set` refuses it;
+ * `llm.oneshot` still reads `auxiliary.project_instructions` for it, and runs it on the main model when that's unset.
+ */
+export const INSTRUCTIONS_TASK = "project_instructions";
 
 /** What the catalog says a model can do (`model.options` → `providers[].capabilities[model]`). */
 export type ModelCaps = { fast: boolean; reasoning: boolean };
@@ -76,8 +81,16 @@ export type ModelSettings = {
   /** Named routes of the advanced-delegation plugin (`delegation.backends.model_map`), not edited here. */
   namedRoutes: number;
   auxiliary: AuxTask[];
+  /** The Project instructions model (`auxiliary.project_instructions`); undefined while it follows Text generation. */
+  instructions?: AuxDraft;
   providers: CatalogProvider[];
 };
+
+/**
+ * The model one call that writes project instructions runs on, and the `task` that call sends for it. `follows`: the
+ * Project instructions model is unset, so the call runs on Text generation's model, which may be the main model.
+ */
+export type WriterModel = { task: string; provider: string; model: string; follows?: "text" | "main" };
 
 export type SubagentDraft = {
   route: SubagentRoute;
@@ -293,6 +306,17 @@ function catalogFrom(res: unknown): CatalogProvider[] {
   });
 }
 
+/** `auxiliary.project_instructions` from `GET /api/config`: unset when missing, or its provider is empty or `auto`. */
+function instructionsFrom(config: unknown): AuxDraft | undefined {
+  const block = obj(obj(obj(config).auxiliary)[INSTRUCTIONS_TASK]);
+  const provider = textOrEmpty(block.provider).trim();
+  if (!provider || provider.toLowerCase() === AUX_AUTO) return undefined;
+  return { provider, model: textOrEmpty(block.model).trim(), effort: effortFromConfig(block.reasoning_effort) || AUX_INHERIT };
+}
+
+/** Endpoint keys a provider change leaves stale (`clear_model_endpoint_credentials` at `f0d9488`). */
+const CLEARED_CREDENTIALS = { api_key: "", api: "", key_env: "", api_mode: "" };
+
 function auxFrom(res: unknown): AuxTask[] {
   const rows = obj(res).tasks;
   if (!Array.isArray(rows)) return [];
@@ -344,6 +368,18 @@ export class ModelSettingsApi {
     return { provider: textOrEmpty(main.provider), model: textOrEmpty(main.model), followsMain: true };
   }
 
+  /**
+   * The model Write with AI and Improve with AI run on: the Project instructions model, or Text generation's while it's
+   * unset. Hermes would run an unset `project_instructions` task on the main model, so then the call sends Text
+   * generation's task instead. Reads `GET /api/config`, and `GET /api/model/auxiliary` only when it follows.
+   */
+  async instructionsModel(): Promise<WriterModel> {
+    const own = instructionsFrom(await this.rest("GET", `api/config?${this.q()}`));
+    if (own) return { task: INSTRUCTIONS_TASK, provider: own.provider, model: own.model };
+    const text = await this.textModel();
+    return { task: TEXT_TASK, provider: text.provider, model: text.model, follows: text.followsMain ? "main" : "text" };
+  }
+
   /** `GET /api/model/options`, `/api/model/auxiliary`, `/api/config` and `/api/delegation/routing`. */
   async load(): Promise<ModelSettings> {
     const [options, aux, config, routing] = await Promise.all([
@@ -371,6 +407,7 @@ export class ModelSettingsApi {
       },
       namedRoutes: Array.isArray(routes) ? routes.length : 0,
       auxiliary: auxFrom(aux),
+      instructions: instructionsFrom(config),
       providers: catalogFrom(options),
     };
   }
@@ -413,6 +450,26 @@ export class ModelSettingsApi {
     if (problem) throw new Error(problem);
     const patch = subagentPatch(saved, d);
     if (patch) await this.rest("PUT", `api/config?${this.q()}`, { config: { delegation: patch } });
+  }
+
+  /**
+   * Writes the Project instructions model, or with undefined unsets it so it follows Text generation again, with
+   * `PUT /api/config`: `/api/model/set` refuses a task Hermes has no slot for. The deep merge can't delete a key, so
+   * what `/api/model/set` would drop on a provider change is written as "", which Hermes reads as unset. Nothing
+   * checks the price here, as nothing on this route does.
+   */
+  async applyInstructions(saved: ModelSettings, next: AuxDraft | undefined): Promise<void> {
+    const apiUrl = next && saved.providers.find((p) => p.slug === next.provider)?.apiUrl;
+    const block = next
+      ? {
+          provider: next.provider,
+          model: next.model,
+          reasoning_effort: next.effort === AUX_INHERIT ? "" : next.effort,
+          ...(next.provider !== saved.instructions?.provider && { base_url: "", ...CLEARED_CREDENTIALS }),
+          ...(apiUrl && { base_url: apiUrl }),
+        }
+      : { provider: "", model: "", reasoning_effort: "", base_url: "", ...CLEARED_CREDENTIALS };
+    await this.rest("PUT", `api/config?${this.q()}`, { config: { auxiliary: { [INSTRUCTIONS_TASK]: block } } });
   }
 
   /**
