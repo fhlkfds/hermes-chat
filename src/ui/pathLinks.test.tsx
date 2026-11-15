@@ -213,6 +213,38 @@ describe("A path in a reply", () => {
     expect(await screen.findByText("Path copied.")).toBeTruthy();
   });
 
+  it("opens a file Hermes hands over as `MEDIA:/path` in the Preview, and copies its path without the tag", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("shots", 1, { pinned: true, title: "Redesign shots" })];
+    server.transcripts = {
+      shots: [
+        { role: "user", text: "Show me the shots" },
+        { role: "assistant", text: "After (round 5):\nMEDIA:/home/liam/shots/chat.png\nMEDIA:/home/liam/shots/settings.png" },
+      ],
+    };
+    server.serverFiles = { "/home/liam/shots/chat.png": "\x89PNG\r\n", "/home/liam/shots/settings.png": "\x89PNG\r\n" };
+    const hermes = await connect(server.openPipe);
+    running.push(hermes);
+    const user = userEvent.setup();
+    render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
+    await user.click(await screen.findByRole("button", { name: /Redesign shots/ }));
+    await screen.findByText(/After \(round 5\)/);
+    expect([...document.querySelectorAll(".msg.assistant a.path-link")].map((a) => a.textContent)).toEqual([
+      "MEDIA:/home/liam/shots/chat.png",
+      "MEDIA:/home/liam/shots/settings.png",
+    ]);
+
+    await user.click(path("MEDIA:/home/liam/shots/chat.png"));
+    await waitFor(() => expect(address()).toBe("/home/liam/shots/chat.png"));
+    await waitFor(() => expect(asked(server, "/home/liam/shots/chat.png")).toEqual(["list -", "read-data-url shots"]));
+
+    const writeText = vi.fn(async (_text: string) => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    fireEvent.contextMenu(path("MEDIA:/home/liam/shots/settings.png"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy path" }));
+    expect(writeText).toHaveBeenCalledWith("/home/liam/shots/settings.png");
+  });
+
   it("in a previewed Server file is relative to that file's folder", async () => {
     const { user } = await launch();
     await user.click(path("README.md"));
