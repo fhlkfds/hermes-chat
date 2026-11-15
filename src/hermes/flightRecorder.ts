@@ -76,6 +76,8 @@ export class FlightRecorder {
       prev.costOverlap = "The next turn started before this turn's cost was read, so the two can't be told apart.";
       turn.costOverlap = "This turn started before the last turn's cost was read, so the two can't be told apart.";
     }
+    // The read after the last turn failed, so the chat's cost as this turn starts isn't known.
+    if (prev?.costRead && !prev.costAfter) delete turn.costBefore;
     this.open.set(chatId, turn);
     this.turns.delete(chatId);
     this.turns.set(chatId, [...before, turn].slice(-TURNS_KEPT));
@@ -101,13 +103,20 @@ export class FlightRecorder {
     else turn.heard.push(h);
   }
 
+  /**
+   * The owner's answer to a Question, which Hermes may acknowledge after the turn has ended: it goes to the turn that
+   * asked it, open or not.
+   */
+  answered(chatId: string, h: Extract<Heard, { kind: "settled" }>) {
+    const asked = lastOf(this.turns.get(chatId) ?? [], (t) => t.heard.some((e) => e.kind === "ask" && h.ids?.includes(e.id)));
+    if (asked && asked.heard.length < HEARD_KEPT) asked.heard.push(h);
+  }
+
   /** Ends the chat's running turn, with its replies, and returns it for the cost read that follows. */
   end(chatId: string, h: Extract<Heard, { kind: "end" | "error" }>, replies: string[], replyRow: number | undefined): WatchedTurn | undefined {
     const turn = this.open.get(chatId);
     if (!turn) return undefined;
     turn.heard.push(h);
-    // A turn that ended in an error has no cost read after it.
-    if (h.kind === "error") turn.costRead = true;
     turn.replies = replies;
     if (replyRow !== undefined) turn.replyRow = replyRow;
     this.open.delete(chatId);
@@ -266,8 +275,9 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
         if (h.ids && !h.ids.includes(ask.id) && !(requestId && h.ids.includes(requestId))) continue;
         if (ask.ended && !h.answered) continue;
         if (!ask.ended) {
-          step.end = h.at;
-          step.length = { ms: h.at - step.start, measured: false };
+          // An answer acknowledged after the turn ended was given before it ended.
+          step.end = endH ? Math.min(h.at, endH.at) : h.at;
+          step.length = { ms: step.end - step.start, measured: false };
         }
         step.outcome = h.how;
         ask.ended = true;

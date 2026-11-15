@@ -3580,7 +3580,7 @@ export class Hermes {
       else {
         const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
         // A Clarify answered a question at a time is still waiting until its last question is locked.
-        if (now && isQuestion(now) && now.answer) this.recorder.hear(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+        if (now && isQuestion(now) && now.answer) this.recorder.answered(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
       }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
@@ -4116,6 +4116,8 @@ export class Hermes {
       else this.stampTurn(chat.id, receipt);
     }
     if (type === "message.complete") this.track(this.refreshUsage(chat.id).then(() => ended && this.costAfter(chat.id, ended)));
+    // A failed turn may have cost something too, and the next turn is measured from the read after it.
+    if (type === "error" && ended) this.track(this.refreshUsage(chat.id).then(() => this.costAfter(chat.id, ended)));
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(this.profile, chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
@@ -4208,8 +4210,12 @@ export class Hermes {
     if (!chat || reply?.kind !== "assistant") throw new Error("This reply isn't in the chat any more.");
     const config = this.toolProgress().catch(() => undefined);
     const watched = this.recorder.find(chatId, reply);
-    // A recording cut short is missing steps the stored rows still have.
-    if (watched && !(watched.truncated && reply.rowId !== undefined)) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+    // A recording cut short is missing steps the stored rows still have, when they can be read back that far.
+    if (watched?.truncated && reply.rowId !== undefined) {
+      const rows = await this.turnRowsOf(profile, chatId, reply.rowId).catch(() => undefined);
+      return { run: rows ? storedRun(rows) : watchedRun(watched, Date.now()), toolProgress: await config };
+    }
+    if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
     if (reply.rowId === undefined) throw new Error("Hermes hasn't stored this reply yet, so its steps can't be read. Try again once the chat has reloaded.");
     const rows = await this.turnRowsOf(profile, chatId, reply.rowId);
     return { run: storedRun(rows), toolProgress: await config };

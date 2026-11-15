@@ -143,6 +143,29 @@ describe("A watched run", () => {
     }
   });
 
+  it("gives an answer Hermes acknowledged after the turn ended to the turn that asked, at the turn's end at the latest", () => {
+    const recorder = new FlightRecorder();
+    recorder.begin("c", T, undefined, undefined);
+    recorder.hear("c", { kind: "ask", at: T + 100, id: "q1", requestId: "apr-1", what: "approval", summary: "rm -rf build" });
+    recorder.hear("c", { kind: "settled", at: T + 200, ids: ["q1"], how: "Hermes stopped waiting: resolved" });
+    recorder.end("c", { kind: "end", at: T + 300, status: "complete" }, ["a1"], undefined);
+    recorder.answered("c", { kind: "settled", at: T + 900, ids: ["q1"], how: "Denied from this app", answered: true });
+    const step = watchedRun(recorder.find("c", { id: "a1" })!, T).steps.find((s) => s.kind === "question");
+    expect(step).toMatchObject({ outcome: "Denied from this app", end: T + 200 });
+  });
+
+  it("doesn't measure a turn from a cost read that failed after the turn before it", () => {
+    const recorder = new FlightRecorder();
+    const cost = (usd: number) => ({ kind: "estimated" as const, usd });
+    recorder.begin("c", T, undefined, cost(0.01));
+    const first = recorder.end("c", { kind: "error", at: T + 10, message: "Provider unavailable" }, [], undefined)!;
+    first.costRead = true;
+    recorder.begin("c", T + 20, undefined, cost(0.01));
+    const second = recorder.end("c", { kind: "end", at: T + 30, status: "complete" }, ["a2"], undefined)!;
+    second.costAfter = cost(0.023);
+    expect(watchedRun(second, T).cost).toEqual({ why: "The chat's cost wasn't read before this turn." });
+  });
+
   it("says a recording was cut short once a turn sends more events than it keeps", () => {
     const recorder = new FlightRecorder();
     recorder.begin("c", T, undefined, undefined);
@@ -332,6 +355,47 @@ describe("The Run view against FakeHermes", () => {
     const reply = lastReply(hermes.getSnapshot().chats.find((c) => c.id === chatId)!.items);
     const questions = (await hermes.run(chatId, reply.id)).run.steps.filter((s) => s.kind === "question");
     expect(questions.map((s) => s.kind === "question" && s.outcome)).toEqual(["Answered from this app: Which logs? → Old ones; When? → Tonight", "Allowed once from this app"]);
+  });
+
+  it("measures the turn after a failed one from the cost read after the failure", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 0, { estimated_cost_usd: 0.01, cost_status: "estimated", input_tokens: 0, output_tokens: 0, api_call_count: 0 })];
+    server.transcripts = { nas: [] };
+    const { hermes, chat } = await connected(server);
+    await hermes.refreshUsage("nas");
+    await hermes.send("nas", "one");
+    const runtime = server.runtimeIdOf("nas")!;
+    server.event(runtime, "message.start");
+    server.sessions[0].estimated_cost_usd = 0.02;
+    server.event(runtime, "error", { message: "Provider unavailable" });
+    await hermes.idle();
+    await hermes.send("nas", "two");
+    await server.toolTurn(runtime, { ...PLAN, calls: [] });
+    await hermes.idle();
+    const { run } = await hermes.run("nas", lastReply(chat().items).id);
+    expect(run.cost).toEqual({ usd: expect.closeTo(0.002, 9) });
+  });
+
+  it("keeps a recording cut short, with its warning, when the stored rows can't be read back to the turn", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 0)];
+    server.transcripts = { nas: [] };
+    server.userRowId = 5;
+    const { hermes, chat } = await connected(server);
+    await hermes.send("nas", "go");
+    const runtime = server.runtimeIdOf("nas")!;
+    server.event(runtime, "message.start");
+    for (let n = 0; n < 2100; n++) {
+      server.event(runtime, "tool.start", { tool_id: `t${n}`, name: "terminal" });
+      server.event(runtime, "tool.complete", { tool_id: `t${n}`, name: "terminal", duration_s: 0.01, result: "ok" });
+    }
+    server.event(runtime, "message.delta", { text: "Done." });
+    server.event(runtime, "message.complete", { text: "Done.", status: "complete", persisted_turn: { user_row_id: 5, final_assistant_row_id: 999_999 } });
+    await hermes.idle();
+    const reply = lastReply(chat().items);
+    expect(reply.kind === "assistant" && reply.rowId).toBe(999_999);
+    const { run } = await hermes.run("nas", reply.id);
+    expect(run).toMatchObject({ source: "watched", truncated: true });
   });
 
   it("notes that message.start carries turn ids when Hermes sends them", async () => {
