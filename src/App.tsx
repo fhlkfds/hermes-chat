@@ -133,6 +133,7 @@ import { tauriTray, type TrayWiring } from "./hermes/tauriTray";
 import { usePageHidden, useWindowHidden } from "./ui/windowState";
 import { getUIPrefs, setUIPrefs, subscribe as subscribeUIPrefs, toggleModelFavorite, type StickyModelPick } from "./hermes/uiPrefs";
 import { errorText } from "./hermes/values";
+import { BrandMark } from "./ui/BrandMark";
 
 /** Keeps the repository folder opened last, and the recent ones, on this computer (Repository screen, ADR 0110). */
 function rememberRepo(top: string) {
@@ -924,7 +925,7 @@ function Screens({ links }: { links: LinkInbox }) {
     return (
       <div className="first-run">
         <div className="first-run-card">
-          <div className="rail-brand big">H</div>
+          <div className="rail-brand big"><BrandMark /></div>
           <p className="muted" role="status">
             {removingActive ? `Removing ${removingActive.name}…` : switchingTo ? `Connecting to ${switchingTo.name}…` : "Signing in…"}
           </p>

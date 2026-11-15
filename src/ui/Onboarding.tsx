@@ -14,6 +14,7 @@ import { routesOf } from "../hermes/routes";
 import { isPicked, methodsNote, offered, withMethod } from "../hermes/signInMethods";
 import { MethodPicker, TokenField } from "./SignInMethods";
 import { errorText } from "../hermes/values";
+import { BrandMark } from "./BrandMark";
 
 /**
  * `first-run`: nothing is set up on this computer, so there is nowhere to cancel to; Cancel starts over.
@@ -236,7 +237,7 @@ export function Onboarding({
     <div className="setup" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="setup-card">
         <div className="setup-top">
-          <div className="rail-brand">H</div>
+          <div className="rail-brand"><BrandMark /></div>
           {n >= 0 && (
             <ol className="setup-steps" aria-label="Setup steps">
               {NUMBERED.map((s, i) => (
