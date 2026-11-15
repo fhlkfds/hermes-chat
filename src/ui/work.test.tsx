@@ -178,12 +178,12 @@ describe("the Work page", () => {
 });
 
 describe("the Work page on its own", () => {
-  const board: Board = { columns: [{ name: "ready", tasks: [{ id: "t_1", title: "Research", body: "", assignee: "", status: "ready", priority: 0, comments: 0 }] }], assignees: [] };
+  const board: Board = { columns: [{ name: "ready", tasks: [{ id: "t_1", title: "Research", body: "", assignee: "", status: "ready", priority: 0, comments: 0, links: { parents: 0, children: 0 } }] }], assignees: [] };
   const workflow = { columns: [{ key: "ready", label: "Ready", dropTarget: true }], manual: {} };
   const stub = (over: Partial<WorkApi>): WorkApi => ({
     loadBoard: async () => board,
     loadWorkflow: async () => workflow,
-    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [] }),
+    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [] }),
     createTask: async () => ({}),
     editTask: async () => undefined,
     addComment: async () => {},
