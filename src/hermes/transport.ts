@@ -5792,6 +5792,33 @@ function turnFrom(items: Item[], from?: string | null): number {
   return at < 0 ? -1 : at + 1;
 }
 
+/**
+ * Where the response the model is giving now is, oldest part first: the turn's last replies back to a tool call,
+ * anything else but reasoning or a steer, or sealed text. Reasoning inside a response, such as a `<think>` block Hermes
+ * takes out of its text, splits it into parts. Empty when there is none. Hermes's final `text` is this response's text.
+ */
+function currentResponse(items: Item[], start: number): number[] {
+  const parts: number[] = [];
+  for (let n = items.length - 1; n >= start; n--) {
+    const i = items[n];
+    if (i.kind === "assistant") {
+      if (i.sealed && parts.length) break;
+      parts.unshift(n);
+      if (i.sealed) break;
+    } else if (i.kind !== "thinking" && !(i.kind === "user" && i.steer)) break;
+  }
+  return parts;
+}
+
+/** Puts a response's whole text in its last part, and drops the others. */
+function replaceResponse(items: Item[], parts: number[], text: string, sealed?: boolean): void {
+  const last = parts[parts.length - 1];
+  const reply = items[last];
+  if (reply?.kind !== "assistant") return;
+  items[last] = { ...reply, text, ...(sealed && { sealed }) };
+  for (const n of parts.slice(0, -1).reverse()) items.splice(n, 1);
+}
+
 /** Where the call a `tool.complete` names is: the latest still running with that call id, which a provider may reuse. */
 function runningCall(items: Item[], toolId: unknown): number {
   const callId = textOf(toolId);
@@ -5831,8 +5858,21 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
     case "message.delta": {
       const text = p.text;
       if (typeof text !== "string" || !text) return c;
-      if (last?.kind === "assistant") items[items.length - 1] = { ...last, text: last.text + text };
+      if (last?.kind === "assistant" && !last.sealed) items[items.length - 1] = { ...last, text: last.text + text };
       else items.push({ kind: "assistant", id: nextId(items, "a"), text });
+      return { ...c, items, updatedAt: Date.now() };
+    }
+    // A whole message Hermes delivers apart from the stream: commentary beside a tool call, or an answer before a nudge
+    // (`prompt_turn.py`). It replaces what streamed of it, which may be cut short, and closes it.
+    case "message.interim": {
+      const text = typeof p.text === "string" ? p.text.trim() : "";
+      if (!text) return c;
+      const begin = turnFrom(items, from);
+      const parts = currentResponse(items, begin < 0 ? turnStart(items) : begin);
+      const reply = items[parts[parts.length - 1]];
+      if (reply?.kind === "assistant" && !reply.sealed) replaceResponse(items, parts, text, true);
+      else if (reply?.kind === "assistant" && reply.text === text) return c;
+      else items.push({ kind: "assistant", id: nextId(items, "a"), text, sealed: true });
       return { ...c, items, updatedAt: Date.now() };
     }
     case "tool.start": {
@@ -5872,18 +5912,30 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
       };
     }
     case "message.complete": {
-      // Providers that don't stream send the whole reply here; a streamed turn repeats text it already sent.
       // A steered message is part of the turn, so the turn starts at the last message that began one.
       const begin = turnFrom(items, from);
       const lastUser = (begin < 0 ? turnStart(items) : begin) - 1;
-      const answered = items.slice(lastUser + 1).some((i) => i.kind === "assistant");
       // The last response's reasoning, for a turn that showed none: it goes before the reply.
       const reasoning = typeof p.reasoning === "string" ? p.reasoning.trim() : "";
       if (reasoning && !items.slice(lastUser + 1).some((i) => i.kind === "thinking")) {
         const reply = items.map((i) => i.kind).lastIndexOf("assistant");
         items.splice(reply > lastUser ? reply : items.length, 0, { kind: "thinking", id: nextId(items, "r"), text: reasoning });
       }
-      if (!answered && typeof p.text === "string" && p.text) items.push({ kind: "assistant", id: nextId(items, "a"), text: p.text });
+      // `text` is the response after the turn's last tool call. A streamed one repeats it, unless a plugin rewrote it
+      // (`response_transformed`) or Hermes showed it already as interim text (`response_previewed`), which it replaces,
+      // as it does interim text it goes on from. Providers that don't stream send it only here, as does a model that
+      // answered again after interim text. `response_reused`: the turn already showed it before a tool call. A failed or
+      // stopped turn's `text` is all it kept, or an account of the failure, so it shows only when the turn showed nothing.
+      const text = typeof p.text === "string" ? p.text : "";
+      const failed = p.status === "error" || p.status === "interrupted";
+      if (text && !(failed && items.slice(lastUser + 1).some((i) => i.kind === "assistant"))) {
+        const parts = currentResponse(items, lastUser + 1);
+        const shown = items[parts[parts.length - 1]];
+        const answer = shown?.kind === "assistant" ? shown : undefined;
+        if (answer && (p.response_transformed === true || p.response_previewed === true || (answer.sealed && text.startsWith(answer.text)))) {
+          replaceResponse(items, parts, text);
+        } else if (p.response_reused !== true && (!answer || answer.sealed)) items.push({ kind: "assistant", id: nextId(items, "a"), text });
+      }
       const end = { ...c, live: withLive(c.live, undefined, p.usage), running: false, stopping: false, updatedAt: Date.now() };
       // Stopped here or from another Hermes client.
       if (p.status === "interrupted") return { ...end, items: markInterrupted(endApprovals(items, "turn ended"), from) };

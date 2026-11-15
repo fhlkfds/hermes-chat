@@ -63,9 +63,10 @@ export type Item =
   | { kind: "user"; id: string; text: string; attachments?: string[]; references?: string[]; at?: number; outgoing?: Outgoing; rowId?: number; steer?: boolean }
   /**
    * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
-   * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
+   * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`). `sealed`:
+   * Hermes sent its whole text as `message.interim`, so text streamed after it is a new message.
    */
-  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage }
+  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage; sealed?: boolean }
   /**
    * A Returned result: the work a chat handed off, come back in the turn Hermes started for it (ADR 0175). `title`:
    * Hermes's one line for it, when it sent one. `body`: the result without Hermes's notice around it (`returned.ts`).
