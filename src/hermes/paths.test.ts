@@ -78,6 +78,27 @@ describe("A path in running text", () => {
   });
 });
 
+describe("A file Hermes hands over as `MEDIA:/path`", () => {
+  it.each([
+    ["MEDIA:/home/liam/shots/chat.png", ["MEDIA:/home/liam/shots/chat.png -> /home/liam/shots/chat.png"]],
+    ["Before:\nMEDIA:/srv/a/dark.png\nMEDIA:/srv/a/light.png", ["MEDIA:/srv/a/dark.png -> /srv/a/dark.png", "MEDIA:/srv/a/light.png -> /srv/a/light.png"]],
+    ["Saved MEDIA:~/voice-memos/memo.ogg.", ["MEDIA:~/voice-memos/memo.ogg -> ~/voice-memos/memo.ogg"]],
+    ["(MEDIA:/tmp/report)", ["MEDIA:/tmp/report -> /tmp/report"]],
+    ["MEDIA:/out", ["MEDIA:/out -> /out"]],
+    ["media:/srv/a/b.pdf", ["media:/srv/a/b.pdf -> /srv/a/b.pdf"]],
+    ["MEDIA:/srv/app/x.py:12", ["MEDIA:/srv/app/x.py:12 -> /srv/app/x.py"]],
+  ])("links the whole tag in %j to its path", (text, paths) => expect(linked(text)).toEqual(paths));
+
+  it("links a tag in a code span as it does in running text", () => {
+    expect(linked("MEDIA:/home/liam/shots/chat.png", "code")).toEqual(["MEDIA:/home/liam/shots/chat.png -> /home/liam/shots/chat.png"]);
+  });
+
+  it.each(["MEDIA:", "MEDIA:/", "MEDIA:shots/chat.png", "MEDIA:./chat.png", "MEDIA:https://example.com/a.png", "MEDIA://host/a.png", "MEDIA:$HOME/a.png", "XMEDIA:/srv/a/b.png"])(
+    "leaves %j as text",
+    (text) => expect(linked(text)).toEqual([]),
+  );
+});
+
 describe("A path in a code span", () => {
   it.each([
     ["/tmp", ["/tmp"]],

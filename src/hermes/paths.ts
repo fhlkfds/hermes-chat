@@ -35,6 +35,10 @@ const CLOSING = new Set([".", ",", ";", ":", "!", "?", "…", '"', "'", "”", "
 const OPENED_BY: Record<string, string> = { ")": "(", "]": "[" };
 
 const startsAsPath = (w: string) => w.startsWith("~/") || w.startsWith("./") || w.startsWith("../");
+/** Hermes's tag for a file it hands over, `MEDIA:/path`, matched without case as its gateway does. */
+const MEDIA_TAG = /^MEDIA:/i;
+/** The path after a `MEDIA:` tag, which Hermes writes in full, so it needs nothing else to be told from prose. */
+const mediaPath = (w: string) => (w.startsWith("/") && w.length > 1) || w.startsWith("~/");
 
 /**
  * A web address without its scheme (`github.com/a/b`, `example.com`). One file's name the Preview knows is not one:
@@ -105,14 +109,16 @@ function inWord(word: string): { from: number; to: number; mention: PathMention 
       to--;
     } else break;
   }
-  const mention = mentionIn(word.slice(from, to), prosePath);
+  const body = word.slice(from, to);
+  const tag = MEDIA_TAG.exec(body)?.[0].length;
+  const mention = tag ? mentionIn(body.slice(tag), mediaPath) : mentionIn(body, prosePath);
   return mention && { from, to, mention };
 }
 
 /**
  * The paths in one run of text, in order, never overlapping. `where`: "code" for a code span, whose whole text may be
- * one path by a looser rule (`codePath`); otherwise, and for running text, each word is tried (`prosePath`). One pass,
- * linear in `text`.
+ * one path by a looser rule (`codePath`); otherwise, and for running text, each word is tried (`prosePath`, or
+ * `mediaPath` after a `MEDIA:` tag). One pass, linear in `text`.
  */
 export function findPaths(text: string, where: "prose" | "code"): PathSpan[] {
   if (where === "code") {
