@@ -119,7 +119,7 @@ describe("Setting a goal", () => {
     const quick = new FakeHermes();
     quick.quickCommands = { goal: "exec: ./ship.sh" };
     const b = await opened(quick);
-    await expect(b.hermes.setGoal("release", DRAFT, "")).rejects.toThrow(/can't set goals here/);
+    await expect(b.hermes.setGoal("release", DRAFT, "")).rejects.toThrow(/can't run goals here/);
     expect([server, quick].flatMap((s) => s.requests).some((r) => r.method === "command.dispatch")).toBe(false);
   });
 
@@ -181,6 +181,21 @@ describe("The goal bar's goal", () => {
 
     await hermes.controlGoal("release", "goal.clear");
     expect(hermes.goals.get("release")).toEqual({ goal: null, revision: "" });
+  });
+
+  it("sends no Pause, Resume or Clear after a reconnect until /goal is found Hermes's own again", async () => {
+    const { server, hermes } = await opened();
+    await hermes.setGoal("release", DRAFT, "");
+    server.drop();
+    await vi.waitFor(() => expect(hermes.getSnapshot().status).toBe("connected"), { timeout: 5_000 });
+    await hermes.open("release");
+    expect(hermes.capabilities.get("standingMissions").state).toBe("unknown");
+    for (const action of ["goal.pause", "goal.resume", "goal.clear"] as const)
+      await expect(hermes.controlGoal("release", action)).rejects.toThrow("Checking that /goal is Hermes's own on this connection… Nothing was sent.");
+    expect(server.requests.some((r) => r.method === "session.control")).toBe(false);
+    await hermes.capabilities.refresh();
+    await hermes.controlGoal("release", "goal.pause");
+    expect(hermes.goals.get("release")?.goal?.status).toBe("paused");
   });
 
   it("follows session.control.update from another client, and reads again after a reconnect", async () => {
@@ -266,7 +281,7 @@ describe("The standing missions check", () => {
     await b.hermes.capabilities.refresh();
     expect(b.hermes.capabilities.get("standingMissions")).toMatchObject({ state: "unsupported", why: expect.stringMatching(/quick or plugin command called \/goal/) });
     // Pause, Resume and Clear would run the quick command too, so they go nowhere.
-    await expect(b.hermes.controlGoal("release", "goal.pause")).rejects.toThrow(/doesn't support Standing missions/);
+    await expect(b.hermes.controlGoal("release", "goal.pause")).rejects.toThrow(/can't run goals here.*quick or plugin command called \/goal.*Nothing was sent/);
   });
 
   it("reads the profile's turn budget", async () => {

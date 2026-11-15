@@ -1634,15 +1634,29 @@ export class Hermes {
    * end would judge the goal before it is read back.
    */
   goalRefusal(chatId: string): string | undefined {
-    const missions = this.capabilities.get("standingMissions");
-    if (missions.state !== "supported") return `This Hermes can't set goals here. ${missions.why ?? ""}`.trim();
+    const unchecked = this.goalUnchecked();
+    if (unchecked) return unchecked;
     if (this.snapshot.chats.find((c) => c.id === chatId)?.running) return "A reply is running. Set the goal once it ends.";
     return undefined;
+  }
+
+  /**
+   * Why no goal write may go: until this connection has found `/goal` Hermes's own, a quick or plugin command of that
+   * name could run instead, for `session.control`'s goal actions too.
+   */
+  goalUnchecked(): string | undefined {
+    const missions = this.capabilities.get("standingMissions");
+    if (missions.state === "supported") return undefined;
+    return missions.state === "unknown" && !missions.checkedAt
+      ? "Checking that /goal is Hermes's own on this connection…"
+      : `This Hermes can't run goals here. ${missions.why ?? ""}`.trim();
   }
 
   /** Pauses, resumes or clears the chat's goal. A resume sends the message Hermes wants as the chat's next turn. */
   async controlGoal(chatId: string, action: GoalAction): Promise<void> {
     const profile = this.profile;
+    const unchecked = this.goalUnchecked();
+    if (unchecked) throw new Error(`${unchecked} Nothing was sent.`);
     try {
       const { control, next } = await goalAction((method, params) => this.request(method, params), this.liveSession(chatId), action);
       this.goals.put(chatId, control);

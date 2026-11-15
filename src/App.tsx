@@ -4624,7 +4624,7 @@ function ChatView({
         control?.goal && started && missions.state !== "unsupported" ? (
           <GoalBar
             goal={control.goal}
-            blocked={goalBlocked}
+            blocked={goalBlocked ?? hermes.goalUnchecked()}
             resumeBlocked={chat.running ? "A reply is running. Resume once it ends." : undefined}
             act={goalApi.act}
           />
