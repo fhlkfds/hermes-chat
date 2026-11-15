@@ -173,6 +173,10 @@ Needs the `subagent.*` events on a chat's session (`spawn_requested`, `start`, `
 
 Needs `subagent.roster` on `/api/ws`, which counts the background subagents and background processes running for each chat of a profile, with no chat open. Hermes `f0d94882` has it, and 0.16.0 doesn't. Checked with `subagent.roster`. The app reads it with `session.active_list`, so a chat not opened since launch stays in Working while its background subagents run (ADR 0096). Without it, only a chat opened on the connection stays in Working while they run. Any other chat goes to the Inbox when its reply ends, as before.
 
+## Run view
+
+Needs nothing new. For a reply this app watched, it uses the `tool.*`, `message.*`, `session.usage`, `status.update` and `error` events and the Question requests on `/api/ws`. For a reply it didn't watch, it uses `GET /api/sessions/{id}/messages`, which the app already reads when a reply it sent ends, and which settles this check. It also reads `display.tool_progress` from `GET /api/config?profile=`. Hermes `bf0203a` and `f0d94882` both have all of it. At `bf0203a`, `message.start` carries no `turn_id`, so a reply's events are paired by their order, which works at every version. Times are when the app heard each event, because Hermes sends no times. Only a tool's `duration_s` is Hermes's own. With `display.tool_progress: off`, Hermes sends tool events only for file edits, delegations, questions and a few card tools, and the view says so. Settings → Diagnostics shows the setting as **Tool steps** and whether turns carry ids as **Turn ids** (ADR 0177). Without the messages route, the view shows only replies the app watched.
+
 ## Versions checked
 
 Checked live on 2026-11-04 with throwaway dashboards holding no real data (`src/hermes/capabilities.live.test.ts`):
