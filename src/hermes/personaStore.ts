@@ -14,7 +14,7 @@ export type PersonaStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
 
 /** An edit not saved to Hermes. `base`: the SOUL.md it started from, which a Save checks Hermes still has. */
 export type PersonaDraft = { text: string; base: Soul; at: number };
-/** A SOUL.md a save from this app replaced, and when. */
+/** A SOUL.md a save from this app replaced, and when, which also names it among the versions kept: no two share one. */
 export type EarlierSoul = Soul & { replacedAt: number };
 
 /** Where a connection and profile's persona edits are kept. */
@@ -154,11 +154,15 @@ export class PersonaStore {
     );
   }
 
-  /** Keeps `soul` as the version a save just replaced. The same text twice in a row is kept once. */
+  /**
+   * Keeps `soul` as the version a save just replaced. The same text twice in a row is kept once. Two saves in one
+   * millisecond are kept a millisecond apart, so each has its own `replacedAt`.
+   */
   addEarlier(key: string, soul: Soul, replacedAt: number): EarlierSoul[] {
     const list = this.earlier(key);
     const same = list[0] && list[0].exists === soul.exists && list[0].content === soul.content;
-    const next = same ? list : [{ ...soul, replacedAt }, ...list].slice(0, EARLIER_KEPT);
+    const at = Math.max(replacedAt, ...list.map((v) => v.replacedAt + 1));
+    const next = same ? list : [{ ...soul, replacedAt: at }, ...list].slice(0, EARLIER_KEPT);
     this.write(`${key}.earlier`, next);
     return next;
   }

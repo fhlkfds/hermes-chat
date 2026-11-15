@@ -575,17 +575,17 @@ function Activity({ s, following }: { s: Subagent; following: { readonly current
     const measure = () =>
       setCut((was) => {
         const now = new Set<number>();
-        list.querySelectorAll<HTMLElement>(".tool-preview[data-i]").forEach((p) => {
-          const i = Number(p.dataset.i);
-          if (p.scrollWidth > p.clientWidth + 1 || (was.has(i) && p.closest(".whole"))) now.add(i);
+        list.querySelectorAll<HTMLElement>(".tool-preview[data-id]").forEach((p) => {
+          const id = Number(p.dataset.id);
+          if (p.scrollWidth > p.clientWidth + 1 || (was.has(id) && p.closest(".whole"))) now.add(id);
         });
-        return was.size === now.size && [...now].every((i) => was.has(i)) ? was : now;
+        return was.size === now.size && [...now].every((id) => was.has(id)) ? was : now;
       });
     measure();
     const watch = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
     watch?.observe(list);
     return () => watch?.disconnect();
-  }, [s.activity.length]);
+  }, [s.activity]);
   // Heard of only part way, its start is known from when it ended and how long it ran.
   const end = s.activity.find((a) => a.kind === "ended")?.at;
   const start = s.startedAt ?? (end !== undefined && s.durationS !== undefined ? end - s.durationS * 1000 : undefined);
@@ -603,26 +603,26 @@ function Activity({ s, following }: { s: Subagent; following: { readonly current
           {s.activity.map((a, i) => {
             const Tool = a.kind === "tool" ? (TOOL_ICON[a.tool] ?? Wrench) : undefined;
             return (
-              <li key={i} className={`subagent-act${a.kind === "ended" ? ` end ${toneOf(s.state)}` : ""}${i === newest ? " newest" : ""}${open === i ? " whole" : ""}`}>
+              <li key={a.id} className={`subagent-act${a.kind === "ended" ? ` end ${toneOf(s.state)}` : ""}${i === newest ? " newest" : ""}${open === a.id ? " whole" : ""}`}>
                 <span className="subagent-act-icon">
                   {i === newest ? <span className="subagent-dot" aria-hidden /> : Tool ? <Tool size={13} aria-hidden /> : <EndIcon state={s.state} size={13} />}
                 </span>
                 {a.kind === "tool" ? (
                   // A preview the line cuts short opens in full; one that fits is plain text.
-                  cut.has(i) ? (
+                  cut.has(a.id) ? (
                     <button
                       className="subagent-act-call"
-                      aria-expanded={open === i}
+                      aria-expanded={open === a.id}
                       onClick={(e) => {
                         // A drag that selected part of the command copies it; it doesn't open or close the line. Enter and
                         // Space (a click with no pointer, `detail` 0) always do.
                         const picked = getSelection();
                         if (e.detail > 0 && picked && !picked.isCollapsed && e.currentTarget.contains(picked.anchorNode)) return;
-                        setOpen(open === i ? undefined : i);
+                        setOpen(open === a.id ? undefined : a.id);
                       }}
                     >
                       <span className="tool-name">{a.tool}</span>
-                      <span className="tool-preview" data-i={i}>
+                      <span className="tool-preview" data-id={a.id}>
                         {a.preview}
                       </span>
                     </button>
@@ -630,7 +630,7 @@ function Activity({ s, following }: { s: Subagent; following: { readonly current
                     <span className="subagent-act-call">
                       <span className="tool-name">{a.tool}</span>
                       {a.preview && (
-                        <span className="tool-preview" data-i={i}>
+                        <span className="tool-preview" data-id={a.id}>
                           {a.preview}
                         </span>
                       )}
