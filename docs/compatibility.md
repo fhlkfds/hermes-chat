@@ -10,7 +10,7 @@ The app learns what a server supports in three ways, in this order:
 
 1. **What Hermes says about itself.** `GET /api/health` gives the version and commit. `GET /api/status` gives the release date and the sign-in providers. The `gateway.ready` frame gives the protocol. `client.capabilities` lists the requests Hermes may send, such as Approvals, and `gateway.capabilities` lists feature flags.
 2. **What the app's own requests show.** When a screen reads a route and Hermes answers, that feature is supported. When Hermes answers that it has no such route or method, it is not supported.
-3. **A check.** For anything still not known about 2 seconds after the connection opens, the app sends one request that only reads. Each check has an 8-second time limit. Two features have no read to check them by: Toolset switches and Answering Approvals. While Settings → Diagnostics is open, it sends each one request shaped like a change, for something that can't exist, which Hermes refuses before changing anything (ADR 0169). Nothing else is sent to find out, and the app sends neither check on connect.
+3. **A check.** For anything still not known about 2 seconds after the connection opens, the app sends one request that only reads. Each check has an 8-second time limit. Four features have no read to check them by: Toolset switches, Answering Approvals, Work links and Work estimate. While Settings → Diagnostics is open, it sends each one request shaped like a change, which Hermes refuses before changing anything (ADR 0169, ADR 0177). Nothing else is sent to find out, and the app sends neither check on connect.
 
 A version number alone doesn't prove that a route exists, so each feature is checked on its own. A Hermes installed from a git checkout may report its version as `unknown`; diagnostics then shows its build and commit.
 
@@ -156,6 +156,17 @@ Needs `GET /api/fs/list`, and `GET /api/sessions/{id}/messages` with tool rows. 
 ## Work
 
 Needs the dashboard's kanban plugin (`plugins/kanban/dashboard/plugin_api.py`), under `/api/plugins/kanban`. Checked with `GET /api/plugins/kanban/boards`. The Work page reads `GET board` and `GET workflow` for the current board, and `GET tasks/{id}` for a task's sheet. It changes the board with `PATCH tasks/{id}` (an edit or a move), `POST tasks` (a new task, with an `idempotency_key`) and `POST tasks/{id}/comments`. Without the plugin, the Work button doesn't show, and a board read that answers 404 shows a note asking for the plugin to be turned on. The same plugin tells the chat list which tasks a chat dispatched.
+
+Planning on the Work page (ADR 0177) uses more of the same plugin's routes. Each part is its own feature in Diagnostics, and each hides only when Hermes is found to lack its own route. The rest of the page stays.
+
+| Feature | Routes | Checked with | Without it |
+| --- | --- | --- | --- |
+| Work dispatch settings | `GET orchestration` | That read: an answer with a true or false `auto_decompose` | The Work page has no Dispatch line. |
+| Work bot and model pickers | `GET model-options`, `GET assignees`, `GET profiles`, and `PATCH tasks/{id}` with `assignee`, `model_override`, `provider_override` or `clear_model_override` | `GET model-options`, which answers `providers` (an empty list when Hermes can't build the catalog: the sheet then takes a typed model) | A card's sheet has no Bot and model pickers. Edit still sets the assignee. |
+| Work links | `POST links {parent_id, child_id}` and `DELETE links?parent_id=&child_id=` | In Diagnostics, `POST links` from a task named `__hermes_chat_probe__` to itself, which Hermes refuses (400) before it reads the board | A card's sheet has no Waits on and Then lists. The Graph view still draws links, since it reads them from `GET tasks/{id}` (`links` and `link_tasks`) and the board's `link_counts`. |
+| Work estimate | `POST estimate {title, body}` and `POST tasks/{id}/estimate` | In Diagnostics, `POST estimate` with an empty title, which Hermes answers `ok: false` before asking any model | New task and a card's sheet offer no token guess. |
+
+Diagnostics also shows the server's `kanban.auto_decompose` and `kanban.auto_promote_children` (from `GET orchestration`) and the profile's `kanban.review_dispatch` (from `GET /api/config`). The relay takes `POST links`, `POST estimate` and `POST tasks/{id}/estimate` only with the fields the page sends (`kanban_write`). The plugin is the same at Hermes `b200f5bc`, `bf0203a` and `f0d9488`.
 
 ## Sign-in methods
 
