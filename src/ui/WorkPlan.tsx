@@ -50,7 +50,7 @@ export function CardFace({ t }: { t: BoardTask }) {
           )}
           {t.model && (
             <span className="work-model" title={t.provider ? `${t.model} from ${t.provider}` : t.model}>
-              <Cpu size={13} /> {t.model}
+              <Cpu size={13} /> <span>{t.model}</span>
             </span>
           )}
         </small>

@@ -97,7 +97,7 @@ export function layout(ids: readonly string[], edges: readonly Edge[]): string[]
 }
 
 /** A card's size and the gaps between cards in the drawn graph, in CSS pixels. */
-export const NODE = { width: 208, height: 84, gapX: 56, gapY: 16 };
+export const NODE = { width: 184, height: 84, gapX: 44, gapY: 16 };
 
 /** Where each card sits, its top left corner, and the size of the whole drawing. */
 export function place(layers: readonly string[][]): { at: Map<string, { x: number; y: number }>; width: number; height: number } {

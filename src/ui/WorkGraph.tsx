@@ -3,7 +3,7 @@
 // task not on the board ends at a dashed ghost.
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { BoardTask, KanbanApi } from "../hermes/kanban";
-import { arrow, graphOf, layout, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
+import { NODE, arrow, graphOf, layout, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
 import { errorText, plural } from "../hermes/values";
 import { CardFace } from "./WorkPlan";
 
@@ -97,7 +97,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
               const waits = g.edges.filter((e) => e.child === id).map((e) => titleOf(e.parent));
               const then = g.edges.filter((e) => e.parent === id).map((e) => titleOf(e.child));
               const said = [waits.length && `Waits on ${waits.join(", ")}.`, then.length && `Then ${then.join(", ")}.`].filter(Boolean).join(" ");
-              const style = { left: pos.x, top: pos.y };
+              const style = { left: pos.x, top: pos.y, width: NODE.width, height: NODE.height };
               return n.task ? (
                 <div key={id} className="work-card work-node" role="button" tabIndex={0} style={style} title={n.task.body || n.task.title} onClick={() => onOpen(id)} onKeyDown={opensOnKey(() => onOpen(id))}>
                   <CardFace t={n.task} />

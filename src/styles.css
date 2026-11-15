@@ -4224,7 +4224,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .settings .work-card p { margin: 0; font-size: calc(12.5rem / 14); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .settings .work-card p.work-why { color: var(--warn); }
 .work-why svg { vertical-align: -2px; }
-.work-assignee { display: flex; align-items: center; gap: 5px; font-size: calc(12rem / 14); color: var(--text-2); }
+.work-assignee { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; font-size: calc(12rem / 14); color: var(--text-2); }
 .settings p.work-empty { margin: 4px 2px; font-size: calc(12.5rem / 14); color: var(--faint); }
 .leave-overlay .leave-dialog.work-dialog { max-width: min(480px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); }
 .leave-overlay .leave-dialog.work-dialog.wide { max-width: min(640px, calc(100% - 32px)); padding: 0; }
@@ -4259,15 +4259,17 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .settings p.work-dispatch { margin: 0; font-size: calc(12.5rem / 14); color: var(--text-2); }
 .work-dispatch b { margin-right: 4px; color: var(--text); }
 .work-dispatch small { display: block; margin-top: 2px; font-size: calc(12rem / 14); }
-.work-model { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); overflow-wrap: anywhere; }
-.work-assignee .work-model { margin-left: 6px; }
+.work-model { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--muted); }
+.work-model > :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-assignee > .work-model:not(:first-child) { margin-left: 4px; }
+.settings .work-loose h2.work-column-head { text-transform: none; }
 .work-graph-view { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
 .work-graph-scroll { flex: none; overflow: auto; padding: 4px; }
 .work-graph { position: relative; }
 .work-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; }
 .work-edges marker path { fill: var(--line-3); stroke: none; }
-.settings .work-card.work-node { position: absolute; box-sizing: border-box; width: 208px; height: 84px; overflow: hidden; gap: 2px; padding: 8px 10px; }
+.settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 2px; padding: 8px 10px; }
 .settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .settings .work-card.work-node p { -webkit-line-clamp: 1; line-clamp: 1; }
 .work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); }
