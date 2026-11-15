@@ -75,6 +75,30 @@ describe("The Run view", () => {
     expect(runButtons()).toEqual(["h-3", "h-5"]);
   });
 
+  it("is offered under a turn's error when the turn has no reply", () => {
+    render(
+      <ChatPane
+        chat={{ id: "c1", runtimeId: "rt", title: "Folder", source: "app", settled: false, updatedAt: 0, items: [...items, { kind: "user", id: "h-6", text: "Again" }, { kind: "error", id: "e-7", text: "Provider timed out" }] }}
+        status="connected"
+        draft=""
+        draftKey="draft"
+        screenshots={new ScreenshotDesk(noScreenshots)}
+        onDraft={() => {}}
+        onDraftStep={() => undefined}
+        onRetry={() => {}}
+        onEdit={() => {}}
+        onDismiss={() => {}}
+        onAttach={async () => ({ attachments: [], refused: [] })}
+        onSend={() => {}}
+        onStop={() => {}}
+        onAnswer={() => {}}
+        onQuestion={() => {}}
+        run={async () => view}
+      />,
+    );
+    expect(runButtons()).toEqual(["h-3", "h-5", "e-7"]);
+  });
+
   it("isn't offered under the reply of a turn still running", () => {
     pane(async () => view, true);
     expect(runButtons()).toEqual(["h-3"]);

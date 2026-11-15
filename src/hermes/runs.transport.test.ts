@@ -76,6 +76,23 @@ describe("The Run view of a reply", () => {
     expect(hermes.capabilities.getSnapshot().facts.toolProgress).toEqual({ mode: "off" });
   });
 
+  it("keeps a failed turn's run with the reply it shows, not the error after it", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe);
+    const id = await hermes.newChat();
+    await hermes.send(id, "Check the logs");
+    const runtime = server.runtimeIdOf(id)!;
+    server.event(runtime, "message.start");
+    server.event(runtime, "message.delta", { text: "Looking at the logs." });
+    server.event(runtime, "error", { message: "Provider timed out" });
+    const items = hermes.getSnapshot().chats.find((c) => c.id === id)!.items;
+    const reply = items.find((i) => i.kind === "assistant")!;
+    const { run } = await hermes.runOf(id, reply.id);
+    // Every event here arrives in the same millisecond, so the two steps tie on time.
+    expect(run.steps.map((s) => s.kind).sort()).toEqual(["error", "model"]);
+    expect(run.steps.find((s) => s.kind === "error")!.failed).toBe("Provider timed out");
+  });
+
   it("refuses a reply it neither watched nor has a stored row for", async () => {
     const server = new FakeHermes();
     const hermes = await connect(server.openPipe);

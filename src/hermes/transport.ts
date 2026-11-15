@@ -4150,8 +4150,8 @@ export class Hermes {
   }
 
   /**
-   * Ends the chat's running run, kept with the reply the turn ended with: the last reply or error after `from`, the item
-   * before the turn, and the stored row Hermes says that reply is.
+   * Ends the chat's running run, kept with the reply its Run view opens from: after `from`, the item before the turn, the
+   * last reply with text, or the last error when the turn has none. Also kept with the stored row Hermes says the reply is.
    */
   private endRun(chatId: string, from: string | null | undefined, receipt?: PersistedTurn) {
     const open = this.recording.get(this.profile, chatId);
@@ -4159,7 +4159,8 @@ export class Hermes {
     this.recording.delete(this.profile, chatId);
     const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
     const after = from === undefined ? -1 : from === null ? 0 : items.findIndex((i) => i.id === from) + 1;
-    const reply = after < 0 ? undefined : items.slice(after).filter((i) => i.kind === "assistant" || i.kind === "error").at(-1);
+    const turn = after < 0 ? [] : items.slice(after);
+    const reply = turn.filter((i) => i.kind === "assistant" && i.text.trim()).at(-1) ?? turn.filter((i) => i.kind === "error").at(-1);
     const rowId = typeof receipt?.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
     const done: Recording = { ...open, endedAt: Date.now(), ...(reply && { replyId: reply.id }), ...(rowId !== undefined && { rowId }) };
     this.recorded.set(this.profile, chatId, [...(this.recorded.get(this.profile, chatId) ?? []), done].slice(-RUNS_KEPT));

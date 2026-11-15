@@ -126,7 +126,8 @@ const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
 
 /**
  * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and
- * each turn's last reply with text whoever began the turn (`replies`), where the Run view opens (ADR 0177).
+ * each turn's last reply with text whoever began the turn, or its last error when it has none (`replies`), where the Run
+ * view opens (ADR 0177).
  */
 type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; replies: Set<string> };
 
@@ -618,13 +619,17 @@ export function ChatPane({
     for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
     const replies = new Set<string>();
     let reply: string | undefined;
+    let failed: string | undefined;
+    const close = () => (reply ?? failed) && replies.add((reply ?? failed)!);
     for (const i of chat.items) {
-      if (beginsTurn(i) && reply) replies.add(reply);
-      if (beginsTurn(i)) reply = undefined;
-      else if (i.kind === "assistant" && i.text.trim()) reply = i.id;
+      if (beginsTurn(i)) {
+        close();
+        reply = failed = undefined;
+      } else if (i.kind === "assistant" && i.text.trim()) reply = i.id;
+      else if (i.kind === "error") failed = i.id;
     }
     // The running turn's run isn't over, so its last reply so far has none yet.
-    if (reply && !chat.running) replies.add(reply);
+    if (!chat.running) close();
     return { ofUser, regenerable: new Set(lastReply.values()), anchor, replies };
   }, [chat.items, chat.running]), sameTurns);
   // App builds the versions again on every streamed delta.
@@ -1275,6 +1280,11 @@ const BlockView = memo(
         <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
+          {onRun && (
+            <div className="msg-actions">
+              <RunButton onRun={() => onRun(block.id)} />
+            </div>
+          )}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
@@ -1383,7 +1393,7 @@ const TranscriptChunk = memo(
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
-                  onRun={b.kind === "assistant" && turns.replies.has(b.id) ? onRun : undefined}
+                  onRun={turns.replies.has(b.id) ? onRun : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
                   chatId={chatId}
                   turn={turns.anchor.get(b.id)}

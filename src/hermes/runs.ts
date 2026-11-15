@@ -111,13 +111,18 @@ const RECORDED = new Set([
 
 /** What is kept of a payload: only what a step shows, with long texts cut. */
 function kept(type: string, p: Record<string, unknown>): Record<string, unknown> {
-  if (STREAMED.has(type) || type === "message.interim" || type === "reasoning.available") return { text: typeof p.text === "string" ? p.text : "" };
+  if (STREAMED.has(type) || type === "reasoning.available") return { text: typeof p.text === "string" ? p.text : "" };
+  if (type === "message.interim") return { text: typeof p.text === "string" ? p.text : "", already_streamed: p.already_streamed === true };
   if (type === "tool.start") return { tool_id: p.tool_id, name: p.name, ...(p.args !== undefined && { args: p.args }) };
   if (type === "tool.complete") {
     const result = text(p.result) ?? text(p.result_text);
-    return { tool_id: p.tool_id, name: p.name, duration_s: p.duration_s, ...(result !== undefined && { result: clip(result) }) };
+    return { tool_id: p.tool_id, name: p.name, duration_s: p.duration_s, ...(p.args !== undefined && { args: p.args }), ...(result !== undefined && { result: clip(result) }) };
   }
-  if (type === "message.complete") return { usage: p.usage, status: p.status, failure_reason: p.failure_reason, error: p.error };
+  if (type === "message.complete") {
+    const said = typeof p.text === "string" ? clip(p.text) : undefined;
+    const reasoning = typeof p.reasoning === "string" ? clip(p.reasoning) : undefined;
+    return { usage: p.usage, status: p.status, failure_reason: p.failure_reason, error: p.error, ...(said && { text: said }), ...(reasoning && { reasoning }) };
+  }
   if (type === "message.start") return typeof p.turn_id === "string" ? { turn_id: p.turn_id } : {};
   return p;
 }
@@ -218,8 +223,11 @@ export function watchedRun(rec: Recording): Run {
     const at = e.until ?? e.at;
     switch (e.type) {
       case "message.delta":
-      case "message.interim":
         openModel(e.at).text += typeof p.text === "string" ? p.text : "";
+        break;
+      case "message.interim":
+        // Text beside tool calls, sealed: already in the deltas when Hermes streamed it.
+        if (p.already_streamed !== true) openModel(e.at).text += typeof p.text === "string" ? p.text : "";
         break;
       case "reasoning.delta":
       case "reasoning.available":
@@ -254,7 +262,7 @@ export function watchedRun(rec: Recording): Run {
           end: at,
           length: measured !== undefined ? { ms: measured, measured: true } : { ms: at - start, measured: false },
           ...(failed && { failed, judged: true }),
-          ...(started?.args !== undefined && { args: started.args }),
+          ...((started?.args ?? p.args) !== undefined && { args: started?.args ?? p.args }),
           ...(result !== undefined && { result }),
         });
         // The next model call starts once every tool it asked for is done.
@@ -287,6 +295,16 @@ export function watchedRun(rec: Recording): Run {
       case "status.update": {
         const kind = typeof p.kind === "string" ? p.kind : "status";
         const compaction = kind === "compacting" || kind === "compressing";
+        // Hermes repeats a compaction's progress line, and only a turn-isolated one sends `compacted` at the end
+        // (`tui_gateway/compute_host_bridge.py`): one compaction spans its lines, to `compacted` when that comes.
+        const last = steps.at(-1);
+        if ((compaction || kind === "compacted") && last?.kind === "compaction" && !last.note) {
+          last.end = e.at;
+          last.length = { ms: e.at - last.start, measured: false };
+          if (typeof p.text === "string") last.text = `${last.text ?? ""}\n${p.text}`.trim();
+          if (kind === "compacted") last.note = "Ended when Hermes said the compaction was complete.";
+          break;
+        }
         steps.push({
           id: `s${n++}`,
           kind: compaction ? "compaction" : "status",
@@ -302,6 +320,11 @@ export function watchedRun(rec: Recording): Run {
         break;
       case "message.complete": {
         latest = heard(countersOf(p.usage)) ?? latest;
+        // A provider that doesn't stream sends the reply's words only here; a streamed reply's are in the calls already.
+        const words = rec.events.some((x) => x.type === "message.delta" || x.type === "message.interim");
+        const thought = rec.events.some((x) => x.type === "reasoning.delta" || x.type === "reasoning.available" || x.type === "thinking.delta");
+        if (model && !words && typeof p.text === "string") model.text = p.text;
+        if (model && !thought && typeof p.reasoning === "string") model.reasoning = p.reasoning;
         const failure = typeof p.failure_reason === "string" && p.failure_reason ? p.failure_reason : typeof p.error === "string" && p.error ? p.error : undefined;
         if (p.status === "interrupted") outcome = "Stopped before it finished.";
         else if (p.status === "error" || failure) outcome = failure ? `Failed: ${failure}` : "Failed.";

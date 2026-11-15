@@ -163,6 +163,41 @@ describe("watchedRun", () => {
     expect(tool).toMatchObject({ end: 3000, note: expect.stringMatching(/No tool.complete/) });
   });
 
+  it("keeps a reply's words that weren't streamed, interim text once, and a tool's arguments from its completion", () => {
+    const rec = recordTurn([
+      [1000, "message.start", {}],
+      [1100, "message.delta", { text: "Checking. " }],
+      [1200, "message.interim", { text: "Checking. ", already_streamed: true }],
+      [1500, "tool.complete", { tool_id: "c1", name: "read_file", args: { path: "/x" }, duration_s: 0.2, result: '{"error":"missing"}' }],
+      [2000, "message.complete", { text: "Checking. It's missing.", reasoning: "Done." }],
+    ]);
+    const run = watchedRun({ ...rec, endedAt: 2000 });
+    expect(run.steps.map((s) => [s.kind, s.text])).toEqual([
+      ["model", "Checking. "],
+      ["tool", undefined],
+      ["model", undefined],
+    ]);
+    expect(run.steps[1].args).toEqual({ path: "/x" });
+    expect(run.steps[2].reasoning).toBe("Done.");
+    const quiet = watchedRun({ ...recordTurn([[1000, "message.start", {}], [2000, "message.complete", { text: "Whole reply." }]]), endedAt: 2000 });
+    expect(quiet.steps[0].text).toBe("Whole reply.");
+  });
+
+  it("draws a compaction's repeated progress lines as one span, ended by compacted when Hermes sends it", () => {
+    const rec = recordTurn([
+      [1000, "message.start", {}],
+      [1500, "status.update", { kind: "compacting", text: "Compacting 40 messages" }],
+      [2500, "status.update", { kind: "compacting", text: "Still compacting" }],
+      [3500, "status.update", { kind: "compacted", text: "Context compression complete" }],
+      [3600, "status.update", { kind: "compacting", text: "Compacting again" }],
+    ]);
+    const compactions = watchedRun({ ...rec, endedAt: 4000 }).steps.filter((s) => s.kind === "compaction");
+    expect(compactions.map((s) => [s.start, s.end, s.length?.ms])).toEqual([
+      [1500, 3500, 2000],
+      [3600, 3600, undefined],
+    ]);
+  });
+
   it("ignores events no step is drawn from", () => {
     const rec = recordTurn([[1000, "todo.updated", { todos: [] }]]);
     expect(rec.events).toEqual([]);
