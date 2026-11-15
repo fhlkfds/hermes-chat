@@ -44,7 +44,6 @@ show("restore b.txt to turn-1 checkpoint", await call("rollback.restore", { sess
 show("read b.txt", await (await fetch(base + "api/fs/read-text?path=/tmp/hermes601/work/b.txt&profile=default", { headers: { cookie: s.cookie } })).json());
 show("diff after restore", await call("rollback.diff", { session_id: sid, hash: h }));
 show("list after restore", await call("rollback.list", { session_id: sid }));
-const stored = created.stored_session_id ?? created.info?.session_key ?? sid;
 pipe.close();
 const p2 = await openPipe(s, "default");
 const keySid = (await (await fetch(base + "api/sessions?profile=default", { headers: { cookie: s.cookie } })).json());
