@@ -1268,6 +1268,11 @@ export class Hermes {
         if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
         return pipe.request("PUT", pathAndQuery, JSON.stringify(body));
       },
+      post: (pathAndQuery, body) => {
+        const pipe = this.pipe;
+        if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+        return pipe.request("POST", pathAndQuery, JSON.stringify(body));
+      },
     },
     () => this.generation,
   );

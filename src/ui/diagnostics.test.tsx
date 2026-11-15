@@ -42,6 +42,7 @@ function scriptedStore(answers: Record<string, unknown>) {
     get: (p) => answer(`GET ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
     rpc: (m) => answer(`RPC ${m}`),
     put: (p) => answer(`PUT ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
+    post: (p) => answer(`POST ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
   };
   return new CapabilityStore(io, () => 1, Date.now, 500, 0);
 }
@@ -64,7 +65,8 @@ const NEW = {
   "GET api/cron/jobs": [],
   "GET api/webhooks": { subscriptions: [] },
   "GET api/fs/list": {},
-  "GET api/plugins/kanban/boards": { boards: [] },
+  "GET api/plugins/kanban/boards": { boards: [] },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
+  "GET api/plugins/kanban/model-options": { providers: [] },
 };
 
 function diagnostics(store: CapabilityStore, props: Partial<Parameters<typeof DiagnosticsSettings>[0]> = {}) {
