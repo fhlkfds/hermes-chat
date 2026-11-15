@@ -1620,13 +1620,24 @@ export class Hermes {
   async setGoal(chatId: string, draft: GoalDraft, seen: string): Promise<void> {
     const profile = this.profile;
     try {
-      const { control, kickoff } = await setGoal((method, params) => this.request(method, params), this.liveSession(chatId), draft, seen);
+      const { control, kickoff } = await setGoal((method, params) => this.request(method, params), this.liveSession(chatId), draft, seen, () => this.goalRefusal(chatId));
       this.goals.put(chatId, control);
       if (this.profile === profile) await this.send(chatId, kickoff);
     } catch (e) {
       if (e instanceof GoalWriteError && e.control) this.goals.put(chatId, e.control);
       throw e;
     }
+  }
+
+  /**
+   * Why a goal can't be set in the chat now: `/goal` may not be Hermes's own (ADR 0178), or a reply is running, whose
+   * end would judge the goal before it is read back.
+   */
+  goalRefusal(chatId: string): string | undefined {
+    const missions = this.capabilities.get("standingMissions");
+    if (missions.state !== "supported") return `This Hermes can't set goals here. ${missions.why ?? ""}`.trim();
+    if (this.snapshot.chats.find((c) => c.id === chatId)?.running) return "A reply is running. Set the goal once it ends.";
+    return undefined;
   }
 
   /** Pauses, resumes or clears the chat's goal. A resume sends the message Hermes wants as the chat's next turn. */

@@ -114,6 +114,20 @@ describe("Set a goal", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "Goal" })).toBeNull());
   });
 
+  it("can't be saved once a reply starts, and says why", async () => {
+    const { s, user } = await launch();
+    await user.click(await screen.findByRole("button", { name: "Set a goal" }));
+    const dialog = await screen.findByRole("dialog", { name: "Set a goal" });
+    await within(dialog).findByText("20 turns");
+    await user.type(within(dialog).getByRole("textbox", { name: /Outcome/ }), "Green CI");
+    await user.click(within(dialog).getByRole("button", { name: "Review" }));
+    act(() => s.event(s.runtimeIdOf("c1")!, "message.start"));
+    const review = screen.getByRole("dialog", { name: "Check before saving" });
+    await waitFor(() => expect((within(review).getByRole("button", { name: "Set goal" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(review.textContent).toContain("A reply is running. Set the goal once it ends.");
+    expect(s.requests.some((r) => r.method === "command.dispatch")).toBe(false);
+  });
+
   it("opens from /goal with the outcome typed, and sends nothing until saved", async () => {
     const { s, user } = await launch();
     const composer = screen.getByPlaceholderText("Message Hermes");

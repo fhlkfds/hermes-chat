@@ -4338,10 +4338,7 @@ function ChatView({
   const [settingGoal, setSettingGoal] = useState<{ outcome: string }>();
   useEffect(() => setSettingGoal(undefined), [chatId, profile]);
   const goalBlocked = status !== "connected" || !chat.runtimeId ? "Hermes isn't connected to this chat right now." : undefined;
-  const setGoalWhy =
-    missions.state !== "supported"
-      ? `This Hermes can't set goals here. ${missions.why ?? ""}`.trim()
-      : (goalBlocked ?? (chat.running ? "A reply is running. Set a goal once it ends." : undefined));
+  const setGoalWhy = goalBlocked ?? hermes.goalRefusal(chat.id);
   // Another of the profile's chats can be referenced; a Bot Chat is its bot's, and an archived one is out of sight.
   const referable = useMemo(
     () => listedChats.filter((c) => c.id !== chat.id && !c.archived && !isBotChat(c) && c.title.trim()).map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
@@ -4727,7 +4724,7 @@ function ChatView({
       />
     )}
     {settingGoal && (
-      <SetGoalDialog key={chat.id} api={goalApi} outcome={settingGoal.outcome} onClose={() => setSettingGoal(undefined)} onDone={() => setSettingGoal(undefined)} />
+      <SetGoalDialog key={chat.id} api={goalApi} outcome={settingGoal.outcome} blocked={setGoalWhy} onClose={() => setSettingGoal(undefined)} onDone={() => setSettingGoal(undefined)} />
     )}
     {branchFrom && (
       <BranchDialog

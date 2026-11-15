@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import { localChatCache } from "./chatCache";
-import { controlOf, draftProblem, goalArg, readBackProblem, type Control, type GoalDraft } from "./goals";
+import { controlOf, draftProblem, goalArg, readBackProblem, setGoal, type Control, type GoalDraft } from "./goals";
 
 const nas = { mode: "ssh" as const, sshTarget: "liam@nas", url: "", username: "liam" };
 
@@ -22,6 +22,7 @@ async function opened(server = new FakeHermes()) {
   running.push(hermes);
   await hermes.sync();
   await hermes.open("release");
+  await hermes.capabilities.refresh();
   const runtime = server.runtimeIdOf("release")!;
   return { server, hermes, runtime, goal: () => hermes.goals.get("release")?.goal, chat: () => hermes.getSnapshot().chats.find((c) => c.id === "release")! };
 }
@@ -107,6 +108,31 @@ describe("Setting a goal", () => {
     await expect(hermes.setGoal("release", DRAFT, "")).rejects.toThrow("Hermes set the goal but didn't add its check: /goal gate add: no active goal. Nothing was started.");
     expect(server.last("prompt.submit")).toBeUndefined();
     expect(goal()?.checks).toEqual([]);
+  });
+
+  it("is refused, with nothing sent, while a reply runs or where /goal isn't Hermes's own", async () => {
+    const { server, hermes, runtime } = await opened();
+    server.event(runtime, "message.start");
+    await hermes.idle();
+    await expect(hermes.setGoal("release", DRAFT, "")).rejects.toThrow("A reply is running. Set the goal once it ends.");
+
+    const quick = new FakeHermes();
+    quick.quickCommands = { goal: "exec: ./ship.sh" };
+    const b = await opened(quick);
+    await expect(b.hermes.setGoal("release", DRAFT, "")).rejects.toThrow(/can't set goals here/);
+    expect([server, quick].flatMap((s) => s.requests).some((r) => r.method === "command.dispatch")).toBe(false);
+  });
+
+  it("writes nothing once a reply starts after the goal was read", async () => {
+    const calls: string[] = [];
+    const rpc = async (method: string) => {
+      calls.push(method);
+      return { control: { goal: null, revision: "" } };
+    };
+    let reads = 0;
+    const refusal = () => (reads++ ? "A reply is running. Set the goal once it ends." : undefined);
+    await expect(setGoal(rpc, "rt", DRAFT, "", refusal)).rejects.toThrow("A reply is running. Set the goal once it ends. Nothing was saved.");
+    expect(calls).toEqual(["session.control.read"]);
   });
 
   it("reads back a goal with no check as having none", () => {

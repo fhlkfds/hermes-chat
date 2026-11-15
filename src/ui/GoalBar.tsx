@@ -196,9 +196,22 @@ type Loaded = { control: Control; budget?: number };
 /**
  * Set a goal: the outcome, what must not change and a check, then a look at exactly what goes to Hermes before anything
  * is saved (ADR 0110, ADR 0171). Saving is refused if the chat's goal changed since it was read here, and it is done
- * only once Hermes's read back matches. `outcome`: what `/goal` was typed with.
+ * only once Hermes's read back matches. `outcome`: what `/goal` was typed with. `blocked`: why it can't be saved now,
+ * such as a reply that started meanwhile.
  */
-export function SetGoalDialog({ api, outcome: typed = "", onClose, onDone }: { api: GoalApi; outcome?: string; onClose: () => void; onDone: () => void }) {
+export function SetGoalDialog({
+  api,
+  outcome: typed = "",
+  blocked,
+  onClose,
+  onDone,
+}: {
+  api: GoalApi;
+  outcome?: string;
+  blocked?: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const keys = useModal(box);
   const titleId = useId();
@@ -223,7 +236,7 @@ export function SetGoalDialog({ api, outcome: typed = "", onClose, onDone }: { a
   const check = draft.check.trim();
   const close = () => !saving && onClose();
   const save = () => {
-    if (!ready) return;
+    if (!ready || blocked) return;
     setSaving(true);
     setError(undefined);
     api.set(draft, ready.control.revision).then(onDone, (e) => {
@@ -352,11 +365,16 @@ export function SetGoalDialog({ api, outcome: typed = "", onClose, onDone }: { a
                 <CircleAlert size={13} aria-hidden /> {error}
               </p>
             )}
+            {blocked && !saving && (
+              <p role="status" className="branch-unsure">
+                <CircleAlert size={13} aria-hidden /> {blocked}
+              </p>
+            )}
             <div className="confirm-actions">
               <button className="btn" disabled={saving} onClick={() => setStep("edit")}>
                 Back
               </button>
-              <button className="btn primary" autoFocus disabled={saving} onClick={save}>
+              <button className="btn primary" autoFocus disabled={saving || !!blocked} onClick={save}>
                 {saving && <Spinner />} {check ? "Set goal and run this check" : "Set goal"}
               </button>
             </div>
