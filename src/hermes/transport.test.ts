@@ -273,6 +273,15 @@ describe("Hermes transport", () => {
       expect(shown()).toEqual(["user", "The disk is 92% full.", "tool"]);
     });
 
+    it("shows only the error when a turn fails after streamed text and a tool call", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Checking…" });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      send("message.complete", { text: "Checking…", status: "error", error: "Provider returned 529 overloaded" });
+      expect(shown()).toEqual(["user", "Checking…", "tool", "error"]);
+    });
+
     it("doesn't repeat a streamed answer when the owner steered too late for it", async () => {
       const { hermes, id, send, shown } = await checkDisk();
       send("message.delta", { text: "The disk is 92% full." });
@@ -329,6 +338,14 @@ describe("Hermes transport", () => {
       whole.send("message.interim", { text: "Done.", already_streamed: false });
       whole.send("message.complete", { text: "I fixed the two type errors too.", status: "complete" });
       expect(whole.shown()).toEqual(["user", "Done.", "I fixed the two type errors too."]);
+    });
+
+    it("replaces interim text with a final answer that goes on from it", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Let me check the files." });
+      send("message.interim", { text: "Let me check the files.", already_streamed: true });
+      send("message.complete", { text: "Let me check the files. Everything looks good.", status: "complete" });
+      expect(shown()).toEqual(["user", "Let me check the files. Everything looks good."]);
     });
 
     it("shows an interim answer once when message.complete says it was already shown", async () => {
