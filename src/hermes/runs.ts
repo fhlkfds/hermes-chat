@@ -86,7 +86,7 @@ const clip = (s: string) => (s.length > KEPT_TEXT ? `${s.slice(0, KEPT_TEXT)}\nâ
 const text = (v: unknown): string | undefined => (typeof v === "string" ? v : v === undefined || v === null ? undefined : JSON.stringify(v));
 
 /** Streamed events whose chunks join into one event. */
-const STREAMED = new Set(["message.delta", "reasoning.delta", "thinking.delta"]);
+const STREAMED = new Set(["message.delta", "reasoning.delta"]);
 
 /** The events a run is drawn from. Anything else Hermes sends for the chat is no step. */
 const RECORDED = new Set([
@@ -95,7 +95,6 @@ const RECORDED = new Set([
   "message.interim",
   "reasoning.delta",
   "reasoning.available",
-  "thinking.delta",
   "tool.start",
   "tool.complete",
   "session.usage",
@@ -121,7 +120,7 @@ function kept(type: string, p: Record<string, unknown>): Record<string, unknown>
   if (type === "message.complete") {
     const said = typeof p.text === "string" ? clip(p.text) : undefined;
     const reasoning = typeof p.reasoning === "string" ? clip(p.reasoning) : undefined;
-    return { usage: p.usage, status: p.status, failure_reason: p.failure_reason, error: p.error, ...(said && { text: said }), ...(reasoning && { reasoning }) };
+    return { usage: p.usage, status: p.status, failure_reason: p.failure_reason, error: p.error, response_reused: p.response_reused === true, ...(said && { text: said }), ...(reasoning && { reasoning }) };
   }
   if (type === "message.start") return typeof p.turn_id === "string" ? { turn_id: p.turn_id } : {};
   return p;
@@ -199,6 +198,8 @@ export function watchedRun(rec: Recording): Run {
     return c;
   };
   const tools = new Map<string, { start: number; name: string; args?: unknown }>();
+  // The compaction whose progress lines are still coming: anything but a status line or a usage tick ends it.
+  let compacting: Step | undefined;
   const questions = new Map<string, { start: number; kind: string; name: string; answer?: string; answeredAt?: number; ended?: string; endedAt?: number }>();
 
   const closeModel = (at: number) => {
@@ -221,6 +222,7 @@ export function watchedRun(rec: Recording): Run {
   for (const e of rec.events) {
     const p = e.payload;
     const at = e.until ?? e.at;
+    if (e.type !== "status.update" && e.type !== "session.usage") compacting = undefined;
     switch (e.type) {
       case "message.delta":
         openModel(e.at).text += typeof p.text === "string" ? p.text : "";
@@ -231,7 +233,6 @@ export function watchedRun(rec: Recording): Run {
         break;
       case "reasoning.delta":
       case "reasoning.available":
-      case "thinking.delta":
         openModel(e.at).reasoning += typeof p.text === "string" ? p.text : "";
         break;
       case "session.usage":
@@ -294,15 +295,17 @@ export function watchedRun(rec: Recording): Run {
         break;
       case "status.update": {
         const kind = typeof p.kind === "string" ? p.kind : "status";
-        const compaction = kind === "compacting" || kind === "compressing";
+        const compaction = kind === "compacting" || kind === "compressing" || kind === "compacted";
         // Hermes repeats a compaction's progress line, and only a turn-isolated one sends `compacted` at the end
-        // (`tui_gateway/compute_host_bridge.py`): one compaction spans its lines, to `compacted` when that comes.
-        const last = steps.at(-1);
-        if ((compaction || kind === "compacted") && last?.kind === "compaction" && !last.note) {
-          last.end = e.at;
-          last.length = { ms: e.at - last.start, measured: false };
-          if (typeof p.text === "string") last.text = `${last.text ?? ""}\n${p.text}`.trim();
-          if (kind === "compacted") last.note = "Ended when Hermes said the compaction was complete.";
+        // (`tui_gateway/compute_host_bridge.py`): one compaction spans its lines in a row, to `compacted` when that comes.
+        if (compaction && compacting) {
+          compacting.end = e.at;
+          compacting.length = { ms: e.at - compacting.start, measured: false };
+          if (typeof p.text === "string") compacting.text = `${compacting.text ?? ""}\n${p.text}`.trim();
+          if (kind === "compacted") {
+            compacting.note = "Ended when Hermes said the compaction was complete.";
+            compacting = undefined;
+          }
           break;
         }
         steps.push({
@@ -313,6 +316,7 @@ export function watchedRun(rec: Recording): Run {
           end: e.at,
           ...(typeof p.text === "string" && { text: p.text }),
         });
+        compacting = compaction && kind !== "compacted" ? steps.at(-1) : undefined;
         break;
       }
       case "error":
@@ -320,11 +324,10 @@ export function watchedRun(rec: Recording): Run {
         break;
       case "message.complete": {
         latest = heard(countersOf(p.usage)) ?? latest;
-        // A provider that doesn't stream sends the reply's words only here; a streamed reply's are in the calls already.
-        const words = rec.events.some((x) => x.type === "message.delta" || x.type === "message.interim");
-        const thought = rec.events.some((x) => x.type === "reasoning.delta" || x.type === "reasoning.available" || x.type === "thinking.delta");
-        if (model && !words && typeof p.text === "string") model.text = p.text;
-        if (model && !thought && typeof p.reasoning === "string") model.reasoning = p.reasoning;
+        // A provider that doesn't stream sends the last call's words only here. `response_reused`: they were delivered
+        // already, in this call or an earlier one.
+        if (model && !model.text.trim() && p.response_reused !== true && typeof p.text === "string") model.text = p.text;
+        if (model && !model.reasoning.trim() && typeof p.reasoning === "string") model.reasoning = p.reasoning;
         const failure = typeof p.failure_reason === "string" && p.failure_reason ? p.failure_reason : typeof p.error === "string" && p.error ? p.error : undefined;
         if (p.status === "interrupted") outcome = "Stopped before it finished.";
         else if (p.status === "error" || failure) outcome = failure ? `Failed: ${failure}` : "Failed.";
@@ -349,6 +352,8 @@ export function watchedRun(rec: Recording): Run {
     });
   }
   const calls = steps.filter((s) => s.kind === "model");
+  // No counters heard during the turn: nothing to say of its calls.
+  if (latest === rec.from) latest = undefined;
   const base = rec.from?.calls ?? (latest ? latest.calls - calls.length : undefined);
   if (latest && base !== undefined && latest.calls - base === calls.length)
     calls.forEach((s, i) => {

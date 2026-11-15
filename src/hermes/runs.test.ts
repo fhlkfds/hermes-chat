@@ -42,11 +42,11 @@ describe("watchedRun", () => {
     const rec = recordTurn(
       [
         [2450, "message.start", {}],
-        [2730, "thinking.delta", { text: "Checking" }],
+        [2730, "thinking.delta", { text: "pondering..." }],
         [3800, "tool.start", { tool_id: "c1", name: "terminal", args: { command: "sleep 1; df -h /tmp | tail -1" } }],
         [4460, "session.usage", { usage: u(1, 1800, 40) }],
         [5240, "tool.complete", { tool_id: "c1", name: "terminal", duration_s: 1.44, result: '{"output":"tmpfs 32G 11G 21G 34% /tmp","exit_code":0,"error":null}' }],
-        [5280, "thinking.delta", { text: "Now the log" }],
+        [5280, "thinking.delta", { text: "pondering..." }],
         [6080, "tool.start", { tool_id: "c2", name: "read_file", args: { path: "/tmp/backup-last-run.log" } }],
         [6280, "tool.complete", { tool_id: "c2", name: "read_file", duration_s: 0.196, result: '{"content":"","error":"File not found: /tmp/backup-last-run.log"}' }],
         [6460, "session.usage", { usage: u(2, 4200, 80) }],
@@ -169,7 +169,7 @@ describe("watchedRun", () => {
       [1100, "message.delta", { text: "Checking. " }],
       [1200, "message.interim", { text: "Checking. ", already_streamed: true }],
       [1500, "tool.complete", { tool_id: "c1", name: "read_file", args: { path: "/x" }, duration_s: 0.2, result: '{"error":"missing"}' }],
-      [2000, "message.complete", { text: "Checking. It's missing.", reasoning: "Done." }],
+      [2000, "message.complete", { text: "Checking. It's missing.", reasoning: "Done.", response_reused: true }],
     ]);
     const run = watchedRun({ ...rec, endedAt: 2000 });
     expect(run.steps.map((s) => [s.kind, s.text])).toEqual([
@@ -179,8 +179,22 @@ describe("watchedRun", () => {
     ]);
     expect(run.steps[1].args).toEqual({ path: "/x" });
     expect(run.steps[2].reasoning).toBe("Done.");
-    const quiet = watchedRun({ ...recordTurn([[1000, "message.start", {}], [2000, "message.complete", { text: "Whole reply." }]]), endedAt: 2000 });
-    expect(quiet.steps[0].text).toBe("Whole reply.");
+    const quiet = watchedRun({ ...recordTurn([[1000, "message.start", {}], [1200, "thinking.delta", { text: "pondering..." }], [2000, "message.complete", { text: "Whole reply.", reasoning: "Short." }]]), endedAt: 2000 });
+    expect(quiet.steps.map((s) => [s.text, s.reasoning])).toEqual([["Whole reply.", "Short."]]);
+    // An earlier call's words don't stand for the last call's, which Hermes sends only at the end.
+    const later = watchedRun({
+      ...recordTurn([
+        [1000, "message.start", {}],
+        [1100, "message.interim", { text: "Looking first.", already_streamed: false }],
+        [1200, "tool.start", { tool_id: "c1", name: "terminal" }],
+        [1500, "tool.complete", { tool_id: "c1", name: "terminal", duration_s: 0.3 }],
+        [2000, "message.complete", { text: "All fine." }],
+      ]),
+      endedAt: 2000,
+    });
+    expect(later.steps.map((s) => s.text)).toEqual(["Looking first.", undefined, "All fine."]);
+    const reused = watchedRun({ ...recordTurn([[1000, "message.start", {}], [2000, "message.complete", { text: "Said before.", response_reused: true }]]), endedAt: 2000 });
+    expect(reused.steps.map((s) => [s.kind, s.text, s.note])).toEqual([["model", undefined, undefined]]);
   });
 
   it("draws a compaction's repeated progress lines as one span, ended by compacted when Hermes sends it", () => {
@@ -190,11 +204,15 @@ describe("watchedRun", () => {
       [2500, "status.update", { kind: "compacting", text: "Still compacting" }],
       [3500, "status.update", { kind: "compacted", text: "Context compression complete" }],
       [3600, "status.update", { kind: "compacting", text: "Compacting again" }],
+      [3700, "message.delta", { text: "Back to work." }],
+      [3800, "status.update", { kind: "compacting", text: "And again" }],
     ]);
     const compactions = watchedRun({ ...rec, endedAt: 4000 }).steps.filter((s) => s.kind === "compaction");
+    // Model activity between two compactions keeps them apart.
     expect(compactions.map((s) => [s.start, s.end, s.length?.ms])).toEqual([
       [1500, 3500, 2000],
       [3600, 3600, undefined],
+      [3800, 3800, undefined],
     ]);
   });
 
