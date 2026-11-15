@@ -1,0 +1,238 @@
+// @vitest-environment jsdom
+// The flight recorder (ADR 0177): a reply's turn as steps, from the events the app heard or from Hermes's stored rows.
+import { afterEach, describe, expect, it } from "vitest";
+import { FakeHermes, row, type ToolTurnPlan } from "./fakeHermes";
+import { connect, type Hermes } from "./transport";
+import { localChatCache } from "./chatCache";
+import { judgeFailure, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type RunRow, type Step, type WatchedTurn } from "./flightRecorder";
+
+const counters = (calls: number, prompt: number, output: number) => ({ prompt, output, reasoning: 0, calls });
+const kinds = (steps: Step[]) => steps.map((s) => (s.kind === "tool" ? `tool:${s.name}` : s.kind));
+
+describe("A watched run", () => {
+  const T = 1_000_000;
+  const turn = (heard: Heard[], over: Partial<WatchedTurn> = {}): WatchedTurn => ({ heard, from: counters(4, 1000, 100), replies: ["a1"], ...over });
+
+  it("draws model calls between tool calls, each tool with the length Hermes measured", () => {
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "text", at: T + 300, last: T + 900, chars: 40, reasoning: true },
+        { kind: "tool.start", at: T + 1000, id: "c1", name: "terminal", args: { command: "df -h" } },
+        { kind: "usage", at: T + 1200, counters: counters(5, 1500, 130) },
+        { kind: "tool.complete", at: T + 3100, id: "c1", name: "terminal", durationS: 2.04, result: '{"output":"92% used","exit_code":0}' },
+        { kind: "text", at: T + 4000, last: T + 4500, chars: 120, reasoning: false },
+        { kind: "end", at: T + 4600, status: "complete", counters: counters(6, 2200, 190) },
+      ]),
+      T + 10_000,
+    );
+    expect(kinds(run.steps)).toEqual(["model", "tool:terminal", "model"]);
+    const [first, tool, last] = run.steps;
+    expect(first).toMatchObject({ start: T, end: T + 1000, length: { ms: 1000, measured: false }, calls: 1, tokens: { prompt: 500, output: 30 } });
+    expect(tool).toMatchObject({ start: T + 1000, end: T + 3100, length: { ms: 2040, measured: true }, args: { command: "df -h" } });
+    expect(tool.failed).toBeUndefined();
+    expect(last).toMatchObject({ start: T + 3100, end: T + 4600, calls: 1, tokens: { prompt: 700, output: 60 } });
+    expect(run).toMatchObject({ source: "watched", start: T, end: T + 4600, outcome: "complete", calls: 2 });
+  });
+
+  it("judges a failed tool from its result, as Hermes does, and keeps a status warning and an error as failed", () => {
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "tool.start", at: T + 100, id: "c1", name: "terminal" },
+        { kind: "tool.complete", at: T + 200, id: "c1", name: "terminal", durationS: 0.1, result: '{"output":"","exit_code":2,"error":null}' },
+        { kind: "status", at: T + 300, status: "warn", text: "API call failed after 3 retries" },
+        { kind: "error", at: T + 400, message: "Provider unavailable" },
+      ]),
+      T + 1000,
+    );
+    expect(run.steps.filter((s) => s.failed).map((s) => [s.kind, s.failed])).toEqual([
+      ["tool", "Exit code 2."],
+      ["status", "API call failed after 3 retries"],
+      ["error", "Provider unavailable"],
+    ]);
+    expect(run.outcome).toBe("failed");
+  });
+
+  it("draws an Approval from when it was asked to when it was answered, matched by either of its ids", () => {
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "tool.start", at: T + 100, id: "c1", name: "terminal" },
+        { kind: "ask", at: T + 200, id: "frame-1", requestId: "apr-1", what: "approval", summary: "rm -rf build" },
+        { kind: "ask", at: T + 250, id: "frame-2", what: "clarify", summary: "Which folder?" },
+        { kind: "settled", at: T + 900, ids: ["apr-1"], how: "Hermes stopped waiting: timeout" },
+        { kind: "end", at: T + 1000, status: "interrupted" },
+      ]),
+      T + 2000,
+    );
+    const asked = run.steps.filter((s) => s.kind === "question");
+    expect(asked).toMatchObject([
+      { what: "approval", summary: "rm -rf build", start: T + 200, end: T + 900, outcome: "Hermes stopped waiting: timeout" },
+      { what: "clarify", end: T + 1000, outcome: "The turn ended" },
+    ]);
+    expect(run.outcome).toBe("interrupted");
+  });
+
+  it("places a tool sent with no start, as with tool progress off, back from its measured length", () => {
+    const run = watchedRun(turn([{ kind: "start", at: T }, { kind: "tool.complete", at: T + 5000, id: "c1", name: "patch", durationS: 1.5, result: "ok" }]), T + 6000);
+    expect(run.steps.find((s) => s.kind === "tool")).toMatchObject({ start: T + 3500, end: T + 5000, length: { ms: 1500, measured: true }, placed: true });
+    expect(run.outcome).toBe("running");
+  });
+
+  it("works a turn's cost out from the chat's cost before and after it, or says why it can't", () => {
+    const end: Heard = { kind: "end", at: T + 10, status: "complete" };
+    const at = (before?: number, after?: number) =>
+      watchedRun(turn([{ kind: "start", at: T }, end], { costBefore: before === undefined ? undefined : { kind: "estimated", usd: before }, costAfter: after === undefined ? undefined : { kind: "estimated", usd: after } }), T).cost;
+    expect(at(0.01, 0.035)).toEqual({ usd: expect.closeTo(0.025, 9) });
+    expect(at(undefined, 0.035)).toEqual({ why: "The chat's cost wasn't read before this turn." });
+    expect(at(0.01, undefined)).toEqual({ why: "The chat's cost wasn't read after this turn." });
+    expect(at(0.05, 0.01)).toMatchObject({ why: expect.stringContaining("went down") });
+  });
+});
+
+describe("A stored run", () => {
+  const rows: RunRow[] = [
+    { id: 1, role: "user", content: "earlier", timestamp: 90 },
+    { id: 2, role: "assistant", content: "earlier reply", timestamp: 95 },
+    { id: 10, role: "user", content: "Check the NAS", timestamp: 100 },
+    {
+      id: 11,
+      role: "assistant",
+      content: "",
+      timestamp: 103.5,
+      tool_calls: JSON.stringify([
+        { id: "c1", type: "function", function: { name: "terminal", arguments: '{"command":"df -h"}' } },
+        { id: "c2", type: "function", function: { name: "read_file", arguments: '{"path":"/etc/fstab"}' } },
+      ]),
+    },
+    { id: 12, role: "tool", tool_call_id: "c1", content: '{"output":"92% used","exit_code":0}', timestamp: 105 },
+    { id: 13, role: "tool", tool_call_id: "c2", content: '{"error":"File not found: /etc/fstab"}', timestamp: 105.25 },
+    { id: 14, role: "assistant", content: "The NAS is 92% full.", timestamp: 109 },
+    { id: 15, role: "user", content: "next", timestamp: 200 },
+  ];
+
+  it("finds the rows of a reply's turn, from the message that began it to the next one", () => {
+    expect(turnRows(rows, 14)?.map((r) => r.id)).toEqual([10, 11, 12, 13, 14]);
+    expect(turnRows(rows, 11)?.map((r) => r.id)).toEqual([10, 11, 12, 13, 14]);
+    expect(turnRows(rows.slice(3), 14)).toBeUndefined();
+    expect(turnRows(rows, 99)).toBeUndefined();
+  });
+
+  it("draws each step as the gap since the row before, all inferred, with tools paired to their calls", () => {
+    const run = storedRun(turnRows(rows, 14)!);
+    expect(kinds(run.steps)).toEqual(["model", "tool:terminal", "tool:read_file", "model"]);
+    expect(run.steps.every((s) => !s.length.measured)).toBe(true);
+    expect(run.steps.map((s) => s.length.ms)).toEqual([3500, 1500, 250, 3750]);
+    expect(run.steps[1]).toMatchObject({ args: { command: "df -h" }, together: true });
+    expect(run.steps[2]).toMatchObject({ args: { path: "/etc/fstab" }, failed: "File not found: /etc/fstab", together: true });
+    expect(run.steps[3]).toMatchObject({ text: "The NAS is 92% full." });
+    expect(run).toMatchObject({ source: "stored", start: 100_000, end: 109_000 });
+  });
+});
+
+describe("Judging a tool's failure", () => {
+  it("follows Hermes's rule for a failure the owner must see", () => {
+    expect(judgeFailure('{"success": false}')).toBe("The result says it didn't succeed.");
+    expect(judgeFailure('{"ok": false}')).toBe("The result says it didn't succeed.");
+    expect(judgeFailure('{"error": "  "}')).toBeUndefined();
+    expect(judgeFailure('{"exit_code": 0, "output": "fine"}')).toBeUndefined();
+    expect(judgeFailure('{"result": {"error": "nested"}}')).toBeUndefined();
+    expect(judgeFailure("Error: plain text")).toBeUndefined();
+    expect(judgeFailure("[1, 2]")).toBeUndefined();
+  });
+});
+
+describe("display.tool_progress", () => {
+  it("reads it as Hermes does, YAML booleans and unknown values included", () => {
+    expect(toolProgressOf({ display: { tool_progress: "off" } })).toBe("off");
+    expect(toolProgressOf({ display: { tool_progress: false } })).toBe("off");
+    expect(toolProgressOf({ display: { tool_progress: true } })).toBe("all");
+    expect(toolProgressOf({ display: { tool_progress: " Verbose " } })).toBe("verbose");
+    expect(toolProgressOf({ display: { tool_progress: "loud" } })).toBe("all");
+    expect(toolProgressOf({})).toBe("all");
+  });
+});
+
+describe("The Run view against FakeHermes", () => {
+  const nas = { mode: "ssh" as const, sshTarget: "liam@nas", url: "", username: "liam" };
+  const running: Hermes[] = [];
+  afterEach(async () => {
+    await Promise.all(running.splice(0).map((h) => h.close()));
+    localStorage.clear();
+  });
+
+  const PLAN: ToolTurnPlan = {
+    calls: [[{ name: "terminal", args: { command: "df -h" }, result: { output: "92% used", exit_code: 0 }, seconds: 2.5 }], [{ name: "read_file", args: { path: "/etc/fstab" }, result: { error: "File not found" }, seconds: 0.5 }]],
+    reply: "The NAS is 92% full.",
+    modelSeconds: 1,
+    tokens: { prompt: 800, output: 40 },
+    costUsd: 0.002,
+  };
+
+  async function connected(server: FakeHermes) {
+    const hermes = await connect(server.openPipe, undefined, localChatCache(nas));
+    running.push(hermes);
+    await hermes.sync();
+    await hermes.open("nas");
+    const chat = () => hermes.getSnapshot().chats.find((c) => c.id === "nas")!;
+    return { hermes, chat };
+  }
+
+  it("draws a watched reply from what the app heard, and an unwatched one from the stored rows", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 0, { title: "NAS", estimated_cost_usd: 0.01, cost_status: "estimated", input_tokens: 0, output_tokens: 0, api_call_count: 0 })];
+    server.transcripts = { nas: [] };
+    const { hermes, chat } = await connected(server);
+    await hermes.refreshUsage("nas");
+    await hermes.send("nas", "How full is the NAS?");
+    await server.toolTurn(server.runtimeIdOf("nas")!, PLAN);
+    await hermes.idle();
+    const reply = chat().items.findLast((i) => i.kind === "assistant")!;
+
+    const { run } = await hermes.run("nas", reply.id);
+    expect(run.source).toBe("watched");
+    expect(kinds(run.steps)).toEqual(["model", "tool:terminal", "model", "tool:read_file", "model"]);
+    expect(run.steps.filter((s) => s.kind === "tool").map((s) => s.length)).toEqual([
+      { ms: 2500, measured: true },
+      { ms: 500, measured: true },
+    ]);
+    expect(run.steps.find((s) => s.kind === "tool" && s.name === "read_file")?.failed).toBe("File not found");
+    expect(run.calls).toBe(3);
+    expect(run.cost).toEqual({ usd: expect.closeTo(0.006, 9) });
+    expect(hermes.capabilities.getSnapshot().facts.turnIds).toBe(false);
+
+    const later = await connected(server);
+    const stored = later.chat().items.findLast((i) => i.kind === "assistant")!;
+    const { run: again } = await later.hermes.run("nas", stored.id);
+    expect(again.source).toBe("stored");
+    expect(kinds(again.steps)).toEqual(["model", "tool:terminal", "model", "tool:read_file", "model"]);
+    expect(again.steps.map((s) => s.length.ms)).toEqual([1000, 2500, 1000, 500, 1000]);
+    expect(again.steps[1]).toMatchObject({ args: { command: "df -h" }, length: { measured: false } });
+    expect(again.cost).toBeUndefined();
+  });
+
+  it("notes that message.start carries turn ids when Hermes sends them", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 0)];
+    server.transcripts = { nas: [] };
+    const { hermes } = await connected(server);
+    await hermes.send("nas", "hi");
+    await server.toolTurn(server.runtimeIdOf("nas")!, { ...PLAN, calls: [], turnId: "turn-1" });
+    await hermes.idle();
+    expect(hermes.capabilities.getSnapshot().facts.turnIds).toBe(true);
+  });
+
+  it("reads the profile's tool progress with the run", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("nas", 0)];
+    server.transcripts = { nas: [] };
+    server.toolProgress = { default: false };
+    const { hermes, chat } = await connected(server);
+    await hermes.send("nas", "hi");
+    await server.toolTurn(server.runtimeIdOf("nas")!, { ...PLAN, calls: [] });
+    await hermes.idle();
+    const reply = chat().items.findLast((i) => i.kind === "assistant")!;
+    expect((await hermes.run("nas", reply.id)).toolProgress).toBe("off");
+  });
+});

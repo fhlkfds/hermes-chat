@@ -445,6 +445,11 @@ export type ServerFacts = {
   versionWhy?: string;
   /** Why the feature flags couldn't be read, if they couldn't. */
   flagsWhy?: string;
+  /**
+   * Whether `message.start` carries `turn_id` on this connection: `bf0203a` sends none, so the flight recorder pairs a
+   * turn's events by order (ADR 0177). Undefined until a turn starts.
+   */
+  turnIds?: boolean;
 };
 
 export type CapabilitySnapshot = {
@@ -794,7 +799,7 @@ export class CapabilityStore {
     this.run++;
     clearTimeout(this.due);
     // The canonical protocol never gets this far (`ProtocolMismatchError`), so a connection that is up is legacy.
-    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready) }, stale: false });
+    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready), turnIds: undefined }, stale: false });
     this.setCap("chat", { state: "supported", source: "advertised", why: "Hermes speaks the legacy session protocol on this connection." });
     const learnt = (declinesNotShown: boolean, approvals: Pick<Capability, "state" | "why">) => {
       if (!this.current(scope)) return;
@@ -806,6 +811,11 @@ export class CapabilityStore {
       (e) => learnt(false, approvalsFailed(e)),
     );
     this.due = setTimeout(() => void this.check(scope, false), this.delayMs);
+  }
+
+  /** What the first `message.start` on this connection showed of turn ids; seen passively, never asked. */
+  noteTurnIds(present: boolean) {
+    if (this.snap.facts.turnIds !== present) this.set({ facts: { ...this.snap.facts, turnIds: present } });
   }
 
   /** The connection dropped, closed or changed profile: what shows stays, marked as last checked, and checks under way are dropped. */
@@ -951,7 +961,7 @@ export class CapabilityStore {
     // A build is known by its commit when Hermes names one, else by its version: a git checkout has no version.
     const key = facts.commit ?? facts.build ?? facts.version;
     const sameBuild = key !== undefined && key === this.checkedFor;
-    this.set({ facts: { ...facts, protocol: this.snap.facts.protocol, declinesNotShown: this.snap.facts.declinesNotShown } });
+    this.set({ facts: { ...facts, protocol: this.snap.facts.protocol, declinesNotShown: this.snap.facts.declinesNotShown, turnIds: this.snap.facts.turnIds } });
     // Another build may have other routes: only what this connection learnt stands.
     if (!sameBuild && this.checkedFor !== undefined) {
       const kept = Object.values(this.snap.caps).filter((c) => (c.checkedAt ?? 0) >= this.connectedAt);
