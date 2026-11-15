@@ -255,6 +255,19 @@ describe("The Run view against FakeHermes", () => {
     expect(again.cost).toBeUndefined();
   });
 
+  it("measures a new chat's first turn from no cost", async () => {
+    const server = new FakeHermes();
+    const hermes = await connect(server.openPipe, undefined, localChatCache(nas));
+    running.push(hermes);
+    await hermes.sync();
+    const chatId = await hermes.newChat();
+    await hermes.send(chatId, "How full is the NAS?");
+    await server.toolTurn(server.runtimeIdOf(chatId)!, { ...PLAN, calls: [] });
+    await hermes.idle();
+    const reply = lastReply(hermes.getSnapshot().chats.find((c) => c.id === chatId)!.items);
+    expect((await hermes.run(chatId, reply.id)).run.cost).toEqual({ usd: expect.closeTo(0.002, 9) });
+  });
+
   it("notes that message.start carries turn ids when Hermes sends them", async () => {
     const server = new FakeHermes();
     server.sessions = [row("nas", 0)];

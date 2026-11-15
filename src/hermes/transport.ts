@@ -4063,7 +4063,9 @@ export class Hermes {
     }
     if (type === "message.start") {
       const from = this.usageFrom.get(session_id!);
-      this.recorder.begin(chat.id, Date.now(), from === "unknown" ? undefined : from, chat.usage?.cost);
+      // A chat with nothing but the owner's messages has had no reply, so it has cost nothing before this turn.
+      const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
+      this.recorder.begin(chat.id, Date.now(), from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
       this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
