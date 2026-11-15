@@ -136,6 +136,11 @@ export type CapabilitySpec = {
   actions?: CapabilityAction[];
   /** Why it is unknown before anything has settled it, when no check will. */
   notChecked?: string;
+  /**
+   * What settles it differs by profile, so it starts unknown on each connection, a profile switch included, and is
+   * checked again: nothing it guards goes until then.
+   */
+  perProfile?: boolean;
 };
 
 const isList = (v: unknown) => Array.isArray(v);
@@ -262,6 +267,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
       },
     },
     writeMethods: /^session\.control$/,
+    perProfile: true,
   },
   {
     id: "liveSessions",
@@ -838,6 +844,11 @@ export class CapabilityStore {
     // The canonical protocol never gets this far (`ProtocolMismatchError`), so a connection that is up is legacy.
     this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready) }, stale: false });
     this.setCap("chat", { state: "supported", source: "advertised", why: "Hermes speaks the legacy session protocol on this connection." });
+    for (const c of CAPABILITIES)
+      if (c.perProfile) {
+        this.missing.delete(c.id);
+        this.setCapRaw(c.id, fresh()[c.id]);
+      }
     const learnt = (declinesNotShown: boolean, approvals: Pick<Capability, "state" | "why">) => {
       if (!this.current(scope)) return;
       this.set({ facts: { ...this.snap.facts, declinesNotShown } });

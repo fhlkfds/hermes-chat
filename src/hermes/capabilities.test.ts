@@ -589,6 +589,17 @@ describe("refusing writes Hermes can't take", () => {
 });
 
 describe("checking again", () => {
+  it("checks standing missions again on each connection, since another profile may have a /goal of its own", async () => {
+    const t = store({ ...NEW });
+    await connectAndCheck(t);
+    expect(t.caps.get("standingMissions").state).toBe("supported");
+    t.answers["RPC commands.catalog"] = { canon: { "/goal": "/goal" }, categories: [{ name: "User commands", pairs: [["/goal", "exec: ./ship.sh"]] }] };
+    t.setGen(2);
+    t.caps.connected(2, "work", { skin: {} }, Promise.resolve({ server_requests: ["approval"] }));
+    expect(t.caps.get("standingMissions").state).toBe("unknown");
+    await vi.waitFor(() => expect(t.caps.get("standingMissions").state).toBe("unsupported"));
+  });
+
   it("keeps what it knew on a reconnect to the same build checked lately", async () => {
     let now = 1_000_000;
     const t = store(NEW, { now: () => now });
@@ -598,8 +609,8 @@ describe("checking again", () => {
     const before = t.calls.length;
     await connectAndCheck(t, 2);
     const again = t.calls.slice(before);
-    // Only the facts, to see whether the build changed.
-    expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC gateway.capabilities"]);
+    // Only the facts, to see whether the build changed, and standing missions, whose /goal may differ by profile.
+    expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC commands.catalog", "RPC gateway.capabilities", "RPC session.control.read"]);
     expect(t.caps.getSnapshot().checkedAt).toBe(now);
   });
 
