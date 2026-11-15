@@ -3,8 +3,14 @@
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#df9d80"/><stop offset="1" stop-color="#c27859"/></linearGradient>
     <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".22"/></filter>
+    <clipPath id="in"><rect x="48" y="40" width="416" height="416" rx="124"/></clipPath>
   </defs>
   <rect x="48" y="40" width="416" height="416" rx="124" fill="url(#tile)" filter="url(#shadow)"/>
+  <g clip-path="url(#in)">
+    <path d="M104 480L104 404L118 356L90 364L118 316L92 318L132 274L110 270C146 198 208 142 286 134C342 128 386 150 404 190C424 198 438 220 438 246C438 274 426 296 410 306C410 288 402 276 390 272C382 284 366 290 348 288C316 314 286 360 280 480Z" fill="#19110d"/>
+    <path d="M390 186C416 192 438 216 438 246C438 274 426 296 410 306C410 288 402 276 390 272C378 270 364 274 354 280L346 254C366 246 382 234 390 186Z" fill="#f4dccb"/>
+    <path d="M286 198 C312 180 344 180 370 194 C348 196 326 206 310 220 Z" fill="#c27859"/>
+    <circle cx="336" cy="216" r="13" fill="#f4dccb"/><circle cx="339" cy="216" r="6" fill="#19110d"/>
+  </g>
   <rect x="50" y="42" width="412" height="412" rx="122" fill="none" stroke="url(#rim)" stroke-width="4"/>
-  <path d="M176 120H224V144H352V208H224V248H320V288H224V376H176z" fill="#19110d"/>
 </svg>
