@@ -24,6 +24,7 @@ import { useLocale } from "../i18n/locale";
 import { SettingNote, SettingRow, SettingsSection } from "./SettingRows";
 import { useInPage } from "./SettingsPage";
 import { errorText } from "../hermes/values";
+import type { KanbanApi, Orchestration } from "../hermes/kanban";
 
 /** Opens a compatibility guide page in the owner's browser. */
 export type OpenGuide = (url: string) => void;
@@ -92,6 +93,7 @@ export function DiagnosticsSettings({
   openGuide,
   focus,
   screen,
+  work,
   copyText = (text) => (navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard"))),
 }: {
   store: CapabilityStore;
@@ -111,6 +113,8 @@ export function DiagnosticsSettings({
   copyText?: (text: string) => Promise<void>;
   /** `display.status` for the profile in use, which says whether its Bot Desktop has a browser. */
   screen?: Pick<ScreenApi, "status">;
+  /** The kanban plugin's dispatch settings and the profile's `kanban.review_dispatch`. */
+  work?: WorkDispatchApi;
 }) {
   const snap = useCapabilities(store);
   const [copied, setCopied] = useState<"done" | "failed">();
@@ -183,6 +187,7 @@ export function DiagnosticsSettings({
       </SettingsSection>
 
       {screen && <BotDesktopSection screen={screen} connected={connected} profile={profile} />}
+      {work && snap.caps.kanban.state !== "unsupported" && <WorkDispatchSection work={work} connected={connected} profile={profile} />}
 
       <SettingsSection
         title="Features"
@@ -199,9 +204,9 @@ export function DiagnosticsSettings({
         }
         more={
           <p>
-            Checks only read, but for two that send a change for something that can't exist, which Hermes refuses before changing anything: a switch
-            for a toolset no toolset is named, and an answer to an Approval no chat has. Those two go only while this page is open. Results are kept in
-            memory for this sign-in, never on disk. The report holds no password, cookie, ticket or header value.
+            Checks only read, but for four that send a change Hermes refuses before changing anything: a switch for a toolset no toolset is named, an
+            answer to an Approval no chat has, a Work link from a card to itself, and a Work token guess with no title. Those four go only while this
+            page is open. Results are kept in memory for this sign-in, never on disk. The report holds no password, cookie, ticket or header value.
           </p>
         }
         action={
@@ -363,6 +368,68 @@ function BotDesktopSection({ screen, connected, profile }: { screen: Pick<Screen
       <SettingRow className="diag-fact" name="Browser on the Hermes server" control={<span className="set-value" role="status">{value}</span>}>
         {note}
       </SettingRow>
+    </SettingsSection>
+  );
+}
+
+export type WorkDispatchApi = Pick<KanbanApi, "orchestration" | "reviewDispatch">;
+
+type Settled<T> = { ok: true; value: T } | { ok: false; why: string };
+type DispatchCheck = { kind: "checking" } | { kind: "read"; orchestration: Settled<Orchestration>; review: Settled<boolean> };
+
+const settle = <T,>(p: Promise<T>): Promise<Settled<T>> =>
+  p.then(
+    (value) => ({ ok: true, value }),
+    (e: unknown) => ({ ok: false, why: errorText(e) }),
+  );
+
+/**
+ * How the server's kanban dispatcher treats cards (ADR 0177): whether it splits triage cards and makes their cards ready
+ * on its own, from `GET orchestration`, and whether a bot reviewer takes review cards first, from the profile's config.
+ * Read when the page opens, the profile changes, and on Check again.
+ */
+function WorkDispatchSection({ work, connected, profile }: { work: WorkDispatchApi; connected: boolean; profile: string }) {
+  const [check, setCheck] = useState<DispatchCheck>();
+  const asked = useRef(0);
+  const read = useCallback(async () => {
+    const ask = ++asked.current;
+    setCheck({ kind: "checking" });
+    const [orchestration, review] = await Promise.all([settle(work.orchestration()), settle(work.reviewDispatch(profile))]);
+    if (ask === asked.current) setCheck({ kind: "read", orchestration, review });
+  }, [work, profile]);
+  useEffect(() => {
+    if (connected) void read();
+    else {
+      asked.current++;
+      setCheck((c) => (c?.kind === "checking" ? undefined : c));
+    }
+  }, [connected, read]);
+
+  const value = <T,>(pick: (c: Extract<DispatchCheck, { kind: "read" }>) => Settled<T>, says: (v: T) => boolean): ReactNode => {
+    if (!check) return <span className="muted">{connected ? "Not checked yet" : "Connect to Hermes to check."}</span>;
+    if (check.kind === "checking")
+      return (
+        <>
+          <Spinner /> Checking…
+        </>
+      );
+    const r = pick(check);
+    return r.ok ? (says(r.value) ? "On" : "Off") : <span className="muted">Couldn't read: {r.why}</span>;
+  };
+  return (
+    <SettingsSection
+      title="Work dispatch"
+      titleId="diag-work-dispatch"
+      intro="How the server's kanban dispatcher treats cards on its own. A ready card with a bot starts on its next tick whatever these say."
+      action={
+        <button className="btn" aria-label="Check the Work dispatch settings again" disabled={!connected || check?.kind === "checking"} onClick={() => void read()}>
+          <RefreshCw size={14} aria-hidden /> Check again
+        </button>
+      }
+    >
+      <Fact name="Splits triage cards into linked cards (kanban.auto_decompose)">{value((c) => c.orchestration, (o) => o.autoDecompose)}</Fact>
+      <Fact name="Makes a split's cards ready at once (kanban.auto_promote_children)">{value((c) => c.orchestration, (o) => o.autoPromoteChildren)}</Fact>
+      <Fact name={`A bot reviews assigned review cards first (kanban.review_dispatch, profile ${profile})`}>{value((c) => c.review, (on) => on)}</Fact>
     </SettingsSection>
   );
 }

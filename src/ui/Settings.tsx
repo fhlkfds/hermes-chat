@@ -73,7 +73,7 @@ import type { SnapshotApi } from "../hermes/snapshots";
 import { ImportSection, type ImportWiring } from "./ImportTranscripts";
 import { BackupSection, type BackupWiring } from "./Backup";
 import { guideUrl, type CapabilityId, type CapabilityStore } from "../hermes/capabilities";
-import { CapabilityGate, DiagnosticsSettings, type OpenGuide } from "./Diagnostics";
+import { CapabilityGate, DiagnosticsSettings, type OpenGuide, type WorkDispatchApi } from "./Diagnostics";
 import { LogsPanel, type LogsWiring } from "./Logs";
 import type { ScreenApi } from "../hermes/screen";
 import { NAMED, applySearch, clearMarks, queryWords, textMatches } from "./settingsSearch";
@@ -274,6 +274,7 @@ export function SettingsScreen({
   openGuide = () => {},
   showDiagnostics,
   screen,
+  work,
   logs,
   connectionManager,
   listProfiles,
@@ -389,6 +390,8 @@ export function SettingsScreen({
   showDiagnostics?: { id?: CapabilityId };
   /** The profile's Bot Desktop, for Diagnostics' browser check. */
   screen?: Pick<ScreenApi, "status">;
+  /** The kanban plugin, for Diagnostics' Work dispatch settings. */
+  work?: WorkDispatchApi;
   /** Diagnostics → Logs (ADR 0033, 0087); without it Diagnostics has no Logs. */
   logs?: LogsWiring;
   /** Settings → Profiles (ADR 0156); without it there is no Profiles tab. Settings adds where its menu's tab jumps go. */
@@ -1054,6 +1057,7 @@ export function SettingsScreen({
               openGuide={openGuide}
               focus={diagFocus}
               screen={screen}
+              work={work}
             />
           )
         ) : (

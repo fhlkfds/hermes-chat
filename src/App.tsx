@@ -3643,6 +3643,7 @@ export function Main({
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
             screen={hermes.screen}
+            work={hermes.kanban}
             logs={logs}
             onClearCache={() => hermes.clearCache()}
             importer={{

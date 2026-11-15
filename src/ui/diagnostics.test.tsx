@@ -303,6 +303,39 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
   });
 });
 
+describe("Work dispatch (issue #604)", () => {
+  const work = (orchestration: () => Promise<{ autoDecompose: boolean; autoPromoteChildren: boolean }>, review: () => Promise<boolean>) => ({
+    orchestration,
+    reviewDispatch: vi.fn(review),
+  });
+  const value = (name: RegExp) => screen.getByText(name).closest<HTMLElement>(".diag-fact")!;
+
+  it("shows whether the server splits triage cards, makes their cards ready, and has a bot review first", async () => {
+    const w = work(async () => ({ autoDecompose: true, autoPromoteChildren: false }), async () => true);
+    diagnostics(scriptedStore(NEW), { work: w, profile: "coder" });
+    const section = screen.getByRole("region", { name: "Work dispatch" });
+    await waitFor(() => expect(within(value(/kanban\.auto_decompose/)).getByText("On")).toBeTruthy());
+    expect(within(value(/kanban\.auto_promote_children/)).getByText("Off")).toBeTruthy();
+    expect(within(value(/kanban\.review_dispatch, profile coder/)).getByText("On")).toBeTruthy();
+    expect(w.reviewDispatch).toHaveBeenCalledWith("coder");
+    expect(section.textContent).not.toMatch(/nothing runs/i);
+  });
+
+  it("says which setting it couldn't read, and leaves the others", async () => {
+    diagnostics(scriptedStore(NEW), { work: work(() => Promise.reject(new RestError(404, `{"detail":"Not Found"}`)), async () => false) });
+    await waitFor(() => expect(within(value(/kanban\.review_dispatch/)).getByText("Off")).toBeTruthy());
+    expect(within(value(/kanban\.auto_decompose/)).getByText(/^Couldn't read/)).toBeTruthy();
+  });
+
+  it("isn't shown on a Hermes without the kanban plugin", async () => {
+    const store = scriptedStore({ ...NEW, "GET api/plugins/kanban/boards": undefined });
+    diagnostics(store, { work: work(async () => ({ autoDecompose: true, autoPromoteChildren: true }), async () => true) });
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    await waitFor(() => expect(store.getSnapshot().caps.kanban.state).toBe("unsupported"));
+    expect(screen.queryByRole("region", { name: "Work dispatch" })).toBeNull();
+  });
+});
+
 describe("the note in place of a screen", () => {
   it("shows the screen while its feature is supported, unknown or couldn't be checked", () => {
     const store = scriptedStore(NEW);
