@@ -5793,16 +5793,30 @@ function turnFrom(items: Item[], from?: string | null): number {
 }
 
 /**
- * Where the response the model is giving now is: the turn's last reply, unless a tool call or anything else but
- * reasoning or a steer came after it. -1 when there is none. Hermes's final `text` is this response's text.
+ * Where the response the model is giving now is, oldest part first: the turn's last replies back to a tool call,
+ * anything else but reasoning or a steer, or sealed text. Reasoning inside a response, such as a `<think>` block Hermes
+ * takes out of its text, splits it into parts. Empty when there is none. Hermes's final `text` is this response's text.
  */
-function currentResponse(items: Item[], start: number): number {
+function currentResponse(items: Item[], start: number): number[] {
+  const parts: number[] = [];
   for (let n = items.length - 1; n >= start; n--) {
     const i = items[n];
-    if (i.kind === "assistant") return n;
-    if (i.kind !== "thinking" && !(i.kind === "user" && i.steer)) return -1;
+    if (i.kind === "assistant") {
+      if (i.sealed && parts.length) break;
+      parts.unshift(n);
+      if (i.sealed) break;
+    } else if (i.kind !== "thinking" && !(i.kind === "user" && i.steer)) break;
   }
-  return -1;
+  return parts;
+}
+
+/** Puts a response's whole text in its last part, and drops the others. */
+function replaceResponse(items: Item[], parts: number[], text: string, sealed?: boolean): void {
+  const last = parts[parts.length - 1];
+  const reply = items[last];
+  if (reply?.kind !== "assistant") return;
+  items[last] = { ...reply, text, ...(sealed && { sealed }) };
+  for (const n of parts.slice(0, -1).reverse()) items.splice(n, 1);
 }
 
 /** Where the call a `tool.complete` names is: the latest still running with that call id, which a provider may reuse. */
@@ -5854,9 +5868,9 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
       const text = typeof p.text === "string" ? p.text.trim() : "";
       if (!text) return c;
       const begin = turnFrom(items, from);
-      const at = currentResponse(items, begin < 0 ? turnStart(items) : begin);
-      const reply = items[at];
-      if (reply?.kind === "assistant" && !reply.sealed) items[at] = { ...reply, text, sealed: true };
+      const parts = currentResponse(items, begin < 0 ? turnStart(items) : begin);
+      const reply = items[parts[parts.length - 1]];
+      if (reply?.kind === "assistant" && !reply.sealed) replaceResponse(items, parts, text, true);
       else if (reply?.kind === "assistant" && reply.text === text) return c;
       else items.push({ kind: "assistant", id: nextId(items, "a"), text, sealed: true });
       return { ...c, items, updatedAt: Date.now() };
@@ -5915,11 +5929,11 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
       const text = typeof p.text === "string" ? p.text : "";
       const failed = p.status === "error" || p.status === "interrupted";
       if (text && !(failed && items.slice(lastUser + 1).some((i) => i.kind === "assistant"))) {
-        const at = currentResponse(items, lastUser + 1);
-        const shown = items[at];
+        const parts = currentResponse(items, lastUser + 1);
+        const shown = items[parts[parts.length - 1]];
         const answer = shown?.kind === "assistant" ? shown : undefined;
         if (answer && (p.response_transformed === true || p.response_previewed === true || (answer.sealed && text.startsWith(answer.text)))) {
-          items[at] = { ...answer, text };
+          replaceResponse(items, parts, text);
         } else if (p.response_reused !== true && (!answer || answer.sealed)) items.push({ kind: "assistant", id: nextId(items, "a"), text });
       }
       const end = { ...c, live: withLive(c.live, undefined, p.usage), running: false, stopping: false, updatedAt: Date.now() };

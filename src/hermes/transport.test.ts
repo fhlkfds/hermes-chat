@@ -230,6 +230,15 @@ describe("Hermes transport", () => {
       expect(shown()).toEqual(["user", "Checking…", "tool", "Your disk is 92% full, [user]."]);
     });
 
+    it("replaces every part of a rewritten answer that reasoning split", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Your disk is " });
+      send("reasoning.delta", { text: "Name them?" });
+      send("message.delta", { text: "92% full, Alice." });
+      send("message.complete", { text: "Your disk is 92% full, [user].", status: "complete", response_transformed: true });
+      expect(shown()).toEqual(["user", "thinking", "Your disk is 92% full, [user]."]);
+    });
+
     it("shows a rewritten answer after a tool call when nothing streamed after it", async () => {
       const { send, shown } = await checkDisk();
       send("message.delta", { text: "Checking…" });
@@ -324,6 +333,15 @@ describe("Hermes transport", () => {
       send("message.delta", { text: "Let me check" });
       send("message.interim", { text: "Let me check the disk.", already_streamed: false });
       expect(shown()).toEqual(["user", "Let me check the disk."]);
+    });
+
+    it("completes commentary that reasoning split, once", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Let me " });
+      send("reasoning.delta", { text: "Which disk?" });
+      send("message.delta", { text: "check the disk." });
+      send("message.interim", { text: "Let me check the disk.", already_streamed: true });
+      expect(shown()).toEqual(["user", "thinking", "Let me check the disk."]);
     });
 
     it("keeps an answer given before a nudge apart from the answer after it", async () => {
