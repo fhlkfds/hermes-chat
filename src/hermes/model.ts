@@ -87,6 +87,11 @@ export type Item =
       durationS?: number;
       result?: string;
       summary?: string;
+      /**
+       * A file edit's diff as Hermes drew it for a terminal, ANSI colours and all: `tool.complete`'s `inline_diff`, or a
+       * stored row's `display_metadata.tool_result_metadata.inline_diff` (fileChanges.ts).
+       */
+      inlineDiff?: string;
     }
   /**
    * An Approval: Hermes asks before running a command it counts as dangerous. Like every Question (`QuestionItem`), it
