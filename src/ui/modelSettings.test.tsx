@@ -270,7 +270,10 @@ describe("Settings → Model as cards of rows (#174, ADR 0059)", () => {
     for (const name of ["Subagent turn limit", "Subagent concurrency", "Subagent timeout in seconds"])
       expect(inRow(screen.getByRole("spinbutton", { name }), "Subagents")).toBe(true);
     for (const name of ["Compression provider", "Compression model", "Compression effort"]) expect(inRow(select(name), "Auxiliary models")).toBe(true);
-    expect(inRow(screen.getByRole("button", { name: /^Model:/ }), "Text generation")).toBe(true);
+    // Text generation's picker, then the Project instructions model's.
+    const pickers = screen.getAllByRole("button", { name: /^Model:/ });
+    expect(pickers).toHaveLength(2);
+    for (const picker of pickers) expect(inRow(picker, "Text generation")).toBe(true);
     expect(inRow(screen.getByRole("switch", { name: "Compact idle chats" }), "Idle compaction")).toBe(true);
     for (const [part, heading] of [
       ["main model", "Main model"],
@@ -508,5 +511,57 @@ describe("Text generation model", () => {
     await user.click(within(await within(card()).findByRole("group", { name: "OpenRouter" })).getByRole("button", { name: /^anthropic\/claude-fable-5.1/ }));
     await user.click(within(await screen.findByRole("alertdialog", { name: "Expensive model" })).getByRole("button", { name: "Use anyway" }));
     await waitFor(() => expect(server.modelConfig.auxiliary.title_generation.model).toBe("anthropic/claude-fable-5.1"));
+  });
+});
+
+describe("Project instructions model (ADR 0177)", () => {
+  const card = () => screen.getByRole("group", { name: "Project instructions model" });
+  const textCard = () => screen.getByRole("group", { name: "Text generation model" });
+
+  it("follows Text generation until one is picked, is written to the profile's config at once, and goes back with reset", async () => {
+    const { server, user } = await shown();
+    expect(card().textContent).toContain("Writes and improves project instructions (Write with AI). Until you pick one, it follows Text generation, deepseek/deepseek-v4-flash.");
+    expect(within(card()).queryByRole("button", { name: "Use the Text generation model for project instructions" })).toBeNull();
+
+    await user.click(within(card()).getByRole("button", { name: /^Model:/ }));
+    await user.click(await within(card()).findByRole("button", { name: /^gpt-6.1-mini/ }));
+    await waitFor(() =>
+      expect(server.modelConfig.unslottedAuxiliary.project_instructions).toEqual({
+        provider: "openai-codex",
+        model: "gpt-6.1-mini",
+        reasoning_effort: "",
+        base_url: "",
+        api_key: "",
+        api: "",
+        key_env: "",
+        api_mode: "",
+      }),
+    );
+    expect(writes(server).map(([route]) => route)).toEqual(["PUT /api/config"]);
+    expect(await within(card()).findByRole("button", { name: "Model: gpt-6.1-mini" })).toBeTruthy();
+    expect(card().textContent).not.toContain("Until you pick one");
+    // Text generation keeps its model, and chat titles with it.
+    expect(within(textCard()).getByRole("button", { name: "Model: deepseek/deepseek-v4-flash" })).toBeTruthy();
+    expect(server.modelConfig.auxiliary.title_generation).toEqual({ provider: "openrouter", model: "deepseek/deepseek-v4-flash" });
+
+    await user.click(within(card()).getByRole("button", { name: "Use the Text generation model for project instructions" }));
+    await waitFor(() => expect(server.modelConfig.unslottedAuxiliary.project_instructions).toMatchObject({ provider: "", model: "" }));
+    expect(await within(card()).findByText(/Until you pick one, it follows Text generation, deepseek\/deepseek-v4-flash\./)).toBeTruthy();
+    expect(within(card()).queryByRole("button", { name: "Use the Text generation model for project instructions" })).toBeNull();
+    expect(server.modelConfig.auxiliary.title_generation).toEqual({ provider: "openrouter", model: "deepseek/deepseek-v4-flash" });
+  });
+
+  it("sets its reasoning effort from the pill, and leaves it alone when Text generation changes", async () => {
+    const { server, user } = await shown((s) => (s.modelConfig.unslottedAuxiliary.project_instructions = { provider: "nous", model: "hermes-5-70b" }));
+    expect(within(card()).getByRole("button", { name: "Model: hermes-5-70b" })).toBeTruthy();
+    await user.click(within(card()).getByRole("button", { name: /^Reasoning effort:/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Low" }));
+    await waitFor(() => expect(server.modelConfig.unslottedAuxiliary.project_instructions).toEqual({ provider: "nous", model: "hermes-5-70b", reasoning_effort: "low" }));
+
+    await user.click(within(textCard()).getByRole("button", { name: /^Model:/ }));
+    await user.click(await within(textCard()).findByRole("button", { name: /^google\/gemini-3.7-flash/ }));
+    await waitFor(() => expect(server.modelConfig.auxiliary.title_generation.model).toBe("google/gemini-3.7-flash"));
+    expect(server.modelConfig.unslottedAuxiliary.project_instructions).toEqual({ provider: "nous", model: "hermes-5-70b", reasoning_effort: "low" });
+    expect(within(card()).getByRole("button", { name: "Model: hermes-5-70b" })).toBeTruthy();
   });
 });
