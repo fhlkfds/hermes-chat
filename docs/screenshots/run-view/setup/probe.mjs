@@ -22,7 +22,6 @@ await pipe.request("prompt.submit", { session_id: sid, text: "check disk please"
 await finished;
 await new Promise((r) => setTimeout(r, 1500));
 console.log(seen.join("\n"));
-const stored = created.stored_session_id ?? created.info?.stored_session_id ?? sid;
 const list = await get("api/sessions?profile=default&limit=5");
 const id = (list.sessions ?? list)[0]?.id;
 const row = await get(`api/sessions/${id}?profile=default`);
