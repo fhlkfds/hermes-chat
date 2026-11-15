@@ -28,6 +28,6 @@ The collision bar: the exact name in any AI, chat or agent product with real pre
 ## Consequences
 
 - "Flag stop" is North American usage; British English says "request stop". The README's first lines say what one is.
-- On Windows the program's file and Start-menu entry change name with `productName`. The upgrade from 0.1.4 was checked on a Windows runner (see the PR).
+- On Windows the install folder (`%LOCALAPPDATA%\Flagstop`), the uninstall entry and the shortcuts take the new name; the program file stays `hermes-chat.exe`. Installing Flagstop over Hermes Chat 0.1.4 on a Windows runner left one install, kept the app data, and moved the `hermes-chat://` handler to Flagstop.
 - Code comments, older ADRs and the repository still say Hermes Chat or `hermes-chat`. The repository name is how people find and install the app, so it stays.
 - The README screenshots show the old H until they are next taken.
