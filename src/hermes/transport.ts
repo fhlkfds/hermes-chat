@@ -466,6 +466,10 @@ export class TitleModelUnavailable extends Error {
   }
 }
 
+/** How a `TitleModelUnavailable` names the model that failed, before its provider, and the setting that picks another. */
+export type UnavailableWords = { runs: string; fix: string };
+export const TEXT_GENERATION_WORDS: UnavailableWords = { runs: "Text generation runs on", fix: "or pick another Text generation model in Settings → Model." };
+
 /**
  * The `TitleModelUnavailable` a failed `llm.oneshot` stands for, if it failed for want of the provider's credentials.
  * The texts are Hermes's own at `c419cf7` (`agent/auxiliary_client.py` `_resolve_call_client`,
@@ -473,23 +477,22 @@ export class TitleModelUnavailable extends Error {
  * any other pinned provider `Provider '<slug>' is set in config.yaml but no API key was found` or `no credentials were
  * found`. A rate limit, a timeout or a busy provider isn't a sign-in problem, so it keeps Hermes's words.
  */
-export function titleModelUnavailable(why: string, profile: string): TitleModelUnavailable | undefined {
+export function titleModelUnavailable(why: string, profile: string, words = TEXT_GENERATION_WORDS): TitleModelUnavailable | undefined {
   const detail = why.replace(/^one-shot generation failed:\s*/, "");
-  const otherSettings = "or pick another Text generation model in Settings → Model.";
   const hermes = `hermes ${profile && profile !== "default" ? `-p ${profile} ` : ""}`;
   if (/Nous Portal runtime credentials unavailable/i.test(detail) && !/rate.?limit|quota|temporarily|retry/i.test(detail))
     return new TitleModelUnavailable(
       "nous",
       detail,
-      `Text generation runs on Nous Portal, and Hermes on the server isn't signed in to Nous Portal. Sign it in there with ` +
-        `\`${hermes}auth add nous\`, ${otherSettings}`,
+      `${words.runs} Nous Portal, and Hermes on the server isn't signed in to Nous Portal. Sign it in there with ` +
+        `\`${hermes}auth add nous\`, ${words.fix}`,
     );
   const pinned = /Provider '([^']+)' is set in config\.yaml but no (?:API key|credentials) (?:was|were) found/.exec(detail);
   if (pinned)
     return new TitleModelUnavailable(
       pinned[1],
       detail,
-      `Text generation runs on ${pinned[1]}, and Hermes on the server has no API key or sign-in for it. Add one there, ${otherSettings}`,
+      `${words.runs} ${pinned[1]}, and Hermes on the server has no API key or sign-in for it. Add one there, ${words.fix}`,
     );
 }
 
@@ -1009,13 +1012,30 @@ export class Hermes {
    * Asks Hermes for an edit of an artifact with legacy `llm.oneshot` (research doc, "Artifacts"): a stateless model call
    * with no tools, which adds nothing to any chat. When the chat that made the file is live in this app, its runtime
    * session lends its own model (`lent`); otherwise Hermes uses the profile's Text generation model, as Regenerate
-   * title does. A missing sign-in for that model's provider is a `TitleModelUnavailable`.
+   * title does. `task` runs it on another helper task's model instead, and `words` names that model when its provider's
+   * sign-in is missing, which is a `TitleModelUnavailable`.
    */
-  async askForEdit(o: { profile: string; chatId?: string; instructions: string; input: string; maxTokens: number }): Promise<{ text: string; lent: boolean }> {
+  async askForEdit(o: {
+    profile: string;
+    chatId?: string;
+    instructions: string;
+    input: string;
+    maxTokens: number;
+    task?: string;
+    words?: UnavailableWords;
+  }): Promise<{ text: string; lent: boolean }> {
     const sid = o.chatId && o.profile === this.profile ? this.snapshot.chats.find((c) => c.id === o.chatId)?.runtimeId : undefined;
-    const params = { profile: o.profile, instructions: o.instructions, input: o.input, max_tokens: o.maxTokens, temperature: 0.2, ...(sid && { session_id: sid }) };
+    const params = {
+      profile: o.profile,
+      instructions: o.instructions,
+      input: o.input,
+      max_tokens: o.maxTokens,
+      temperature: 0.2,
+      ...(o.task && { task: o.task }),
+      ...(sid && { session_id: sid }),
+    };
     const { text } = (await this.request("llm.oneshot", params).catch((e) => {
-      throw (e instanceof RpcError && titleModelUnavailable(e.message, o.profile)) || e;
+      throw (e instanceof RpcError && titleModelUnavailable(e.message, o.profile, o.words)) || e;
     })) as { text?: unknown };
     if (typeof text !== "string") throw new Error("Hermes didn't answer with text.");
     return { text, lent: !!sid };
