@@ -210,6 +210,142 @@ describe("Hermes transport", () => {
     expect(chat(id).items[2]).toMatchObject({ status: "done", durationS: 0.2, result: "92% used", summary: "1 line" });
   });
 
+  describe("a reply's final answer (#615)", () => {
+    async function checkDisk() {
+      const t = await signedIn();
+      const id = await t.hermes.newChat();
+      await t.hermes.send(id, "check disk");
+      const send = (type: string, payload?: Record<string, unknown>) => t.server.event(t.runtime(id), type, payload);
+      send("message.start");
+      return { ...t, id, send, shown: () => t.chat(id).items.map((i) => (i.kind === "assistant" ? i.text : i.kind)) };
+    }
+
+    it("shows an answer a plugin rewrote after the stream, in place of the streamed text", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Checking…" });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      send("message.delta", { text: "Your disk is 92% full, Alice." });
+      send("message.complete", { text: "Your disk is 92% full, [user].", status: "complete", response_transformed: true });
+      expect(shown()).toEqual(["user", "Checking…", "tool", "Your disk is 92% full, [user]."]);
+    });
+
+    it("shows a rewritten answer after a tool call when nothing streamed after it", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Checking…" });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      send("message.complete", { text: "The disk is 92% full.", status: "complete", response_transformed: true });
+      expect(shown()).toEqual(["user", "Checking…", "tool", "The disk is 92% full."]);
+    });
+
+    it("shows a final answer that arrives only in message.complete after streamed text and a tool call", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Checking…" });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      send("message.complete", { text: "The disk is 92% full.", status: "complete" });
+      expect(shown()).toEqual(["user", "Checking…", "tool", "The disk is 92% full."]);
+    });
+
+    it("shows a streamed reply once, with or without a tool call before it", async () => {
+      const plain = await checkDisk();
+      plain.send("message.delta", { text: "The disk is " });
+      plain.send("message.delta", { text: "92% full." });
+      plain.send("message.complete", { text: "The disk is 92% full.", status: "complete" });
+      expect(plain.shown()).toEqual(["user", "The disk is 92% full."]);
+
+      const tooled = await checkDisk();
+      tooled.send("message.delta", { text: "Checking…" });
+      tooled.send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      tooled.send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      tooled.send("message.delta", { text: "The disk is 92% full." });
+      tooled.send("message.complete", { text: "The disk is 92% full.", status: "complete" });
+      expect(tooled.shown()).toEqual(["user", "Checking…", "tool", "The disk is 92% full."]);
+    });
+
+    it("doesn't repeat an answer Hermes reused from text the reply already showed", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "The disk is 92% full." });
+      send("tool.start", { tool_id: "t1", name: "memory", args: {} });
+      send("tool.complete", { tool_id: "t1", name: "memory", result: "saved" });
+      send("message.complete", { text: "The disk is 92% full.", status: "complete", response_reused: true });
+      expect(shown()).toEqual(["user", "The disk is 92% full.", "tool"]);
+    });
+
+    it("doesn't repeat a streamed answer when the owner steered too late for it", async () => {
+      const { hermes, id, send, shown } = await checkDisk();
+      send("message.delta", { text: "The disk is 92% full." });
+      await hermes.steer(id, "and memory?");
+      send("message.complete", { text: "The disk is 92% full.", status: "complete" });
+      expect(shown()).toEqual(["user", "The disk is 92% full.", "user"]);
+    });
+  });
+
+  describe("interim text (message.interim, #615)", () => {
+    async function checkDisk() {
+      const t = await signedIn();
+      const id = await t.hermes.newChat();
+      await t.hermes.send(id, "check disk");
+      const send = (type: string, payload?: Record<string, unknown>) => t.server.event(t.runtime(id), type, payload);
+      send("message.start");
+      return { ...t, id, send, shown: () => t.chat(id).items.map((i) => (i.kind === "assistant" ? i.text : i.kind)) };
+    }
+
+    it("shows commentary that didn't stream before the tool call it goes with", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.interim", { text: "Let me check the disk.", already_streamed: false });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      send("tool.complete", { tool_id: "t1", name: "terminal", result: "92% used" });
+      send("message.delta", { text: "92% full." });
+      send("message.complete", { text: "92% full.", status: "complete" });
+      expect(shown()).toEqual(["user", "Let me check the disk.", "tool", "92% full."]);
+    });
+
+    it("doesn't repeat commentary that already streamed", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Let me check the disk." });
+      send("message.interim", { text: "Let me check the disk.", already_streamed: true });
+      send("tool.start", { tool_id: "t1", name: "terminal", args: { command: "df -h" } });
+      expect(shown()).toEqual(["user", "Let me check the disk.", "tool"]);
+    });
+
+    it("completes commentary whose stream was cut short", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.delta", { text: "Let me check" });
+      send("message.interim", { text: "Let me check the disk.", already_streamed: false });
+      expect(shown()).toEqual(["user", "Let me check the disk."]);
+    });
+
+    it("keeps an answer given before a nudge apart from the answer after it", async () => {
+      const streamed = await checkDisk();
+      streamed.send("message.delta", { text: "Done." });
+      streamed.send("message.interim", { text: "Done.", already_streamed: true });
+      streamed.send("message.delta", { text: "I fixed the two type errors too." });
+      streamed.send("message.complete", { text: "I fixed the two type errors too.", status: "complete" });
+      expect(streamed.shown()).toEqual(["user", "Done.", "I fixed the two type errors too."]);
+
+      const whole = await checkDisk();
+      whole.send("message.interim", { text: "Done.", already_streamed: false });
+      whole.send("message.complete", { text: "I fixed the two type errors too.", status: "complete" });
+      expect(whole.shown()).toEqual(["user", "Done.", "I fixed the two type errors too."]);
+    });
+
+    it("shows an interim answer once when message.complete says it was already shown", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.interim", { text: "The disk is 92% full.", already_streamed: false });
+      send("message.complete", { text: "The disk is 92% full.", status: "complete", response_previewed: true });
+      expect(shown()).toEqual(["user", "The disk is 92% full."]);
+    });
+
+    it("replaces an interim answer with the rewrite message.complete sends", async () => {
+      const { send, shown } = await checkDisk();
+      send("message.interim", { text: "The disk is 92% full.", already_streamed: false });
+      send("message.complete", { text: "Your disk is 92% full; clear ~/.cache to free 40 GB.", status: "complete", response_previewed: true });
+      expect(shown()).toEqual(["user", "Your disk is 92% full; clear ~/.cache to free 40 GB."]);
+    });
+  });
+
   it("keeps each tool call apart when a provider uses the same call id again in a later turn", async () => {
     const { server, hermes, chat, runtime } = await signedIn();
     const id = await hermes.newChat();
