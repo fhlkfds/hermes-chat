@@ -4072,6 +4072,8 @@ export class Hermes {
     }
     // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
     if (type === "error") this.usageFrom.set(session_id!, "unknown");
+    // Its message's turn is over too, so the next turn, such as one Hermes starts when work comes back, isn't taken for it.
+    if (type === "error" && !unprompted) this.turns.delete(this.profile, chat.id);
     // A streamed delta is in the snapshot at once, so the reply's text is always whole and in order, but the app hears of
     // it once a frame: Hermes can send many in one frame, and each would render the reply again (ADR 0068).
     const delta = type === "message.delta" || type === "reasoning.delta";

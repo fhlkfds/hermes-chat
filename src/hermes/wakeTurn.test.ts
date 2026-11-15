@@ -308,4 +308,17 @@ describe("Handed-off work that comes back", () => {
     await until(hermes, () => returned(chat().items).length === 1);
     expect(chat().items.at(-2)).toMatchObject({ kind: "returned", body: "Backups fail because the NAS share is read-only." });
   });
+  it("leaves a message sent during a wake turn that ended in an error its own turn", async () => {
+    const server = new FakeHermes();
+    server.userRowId = 50;
+    const { hermes, runtime, chat } = await opened(server);
+    server.event(runtime, "message.start", { turn_id: "wake-1" });
+    await hermes.send("backup", "Any news?");
+    server.event(runtime, "error", { message: "The model is overloaded." });
+    server.event(runtime, "message.start", { turn_id: "held-1" });
+    server.event(runtime, "message.delta", { text: "Not yet." });
+    server.event(runtime, "message.complete", { text: "Not yet.", status: "complete", persisted_turn: { user_row_id: 50, final_assistant_row_id: 51 } });
+    await until(hermes, () => chat().items.some((i) => i.kind === "user" && i.rowId === 50));
+    expect(chat().items.filter((i) => i.kind === "user").map((i) => i.kind === "user" && i.text)).toEqual(["Research the backup failures", "Any news?"]);
+  });
 });
