@@ -2560,22 +2560,30 @@ pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
     })
 }
 
-/// The Work page's two `POST`s to the dashboard's kanban plugin (ADR 0171): `api/plugins/kanban/tasks` creates a task,
-/// with only the fields New task sets, and `api/plugins/kanban/tasks/{id}/comments` adds a comment, with only its text.
-/// The task id is one segment of letters, digits, `-` and `_`, as the plugin makes them. Its edits and moves are
-/// `PATCH`es, which the relay already takes.
+/// The Work page's `POST`s to the dashboard's kanban plugin (ADR 0171, ADR 0177), each with only the fields the page
+/// sends: `api/plugins/kanban/tasks` creates a task with what New task sets, `api/plugins/kanban/tasks/{id}/comments`
+/// adds a comment with only its text, `api/plugins/kanban/links` links two tasks with exactly `parent_id` and `child_id`,
+/// and `api/plugins/kanban/estimate` (a `title` and an optional `body`) and `api/plugins/kanban/tasks/{id}/estimate`
+/// (no body, or `{}`) ask for a token guess, which writes nothing. A task id is one segment of letters, digits, `-` and
+/// `_`, as the plugin makes them, which Diagnostics' `__hermes_chat_probe__` also is. Edits, moves and removing a link
+/// are `PATCH`es and `DELETE`s, which the relay already takes.
 fn kanban_write(path: &str, body: Option<&str>) -> bool {
-    let Some(rest) = path.strip_prefix("api/plugins/kanban/tasks") else { return false };
+    let Some(rest) = path.strip_prefix("api/plugins/kanban/") else { return false };
     let id_ok = |id: &str| (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    let keys: &[&str] = match rest.strip_prefix('/').map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
-        None if rest.is_empty() => &["title", "body", "assignee", "priority", "idempotency_key"],
-        Some([id, "comments"]) if id_ok(id) => &["body"],
-        _ => return false,
+    let fields = || body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|v| v.as_object().cloned());
+    let only = |keys: &[&str], required: &str| {
+        fields().is_some_and(|f| {
+            f.keys().all(|k| keys.contains(&k.as_str())) && f.get(required).is_some_and(|v| v.is_string()) && f.values().all(|v| v.is_string() || v.is_number())
+        })
     };
-    let Some(fields) = body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|v| v.as_object().cloned()) else {
-        return false;
-    };
-    fields.keys().all(|k| keys.contains(&k.as_str())) && fields.get(if keys == ["body"] { "body" } else { "title" }).is_some_and(|v| v.is_string())
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        ["tasks"] => only(&["title", "body", "assignee", "priority", "idempotency_key"], "title"),
+        ["tasks", id, "comments"] if id_ok(id) => only(&["body"], "body"),
+        ["tasks", id, "estimate"] if id_ok(id) => body.is_none() || fields().is_some_and(|f| f.is_empty()),
+        ["estimate"] => only(&["title", "body"], "title") && fields().is_some_and(|f| f.values().all(|v| v.is_string())),
+        ["links"] => fields().is_some_and(|f| f.len() == 2 && ["parent_id", "child_id"].iter().all(|k| f.get(*k).and_then(|v| v.as_str()).is_some_and(id_ok))),
+        _ => false,
+    }
 }
 
 /// The Automations writes (ADR 0108, Hermes's `/api/webhooks` routes and the `webhooks/1` contract): `POST
@@ -3692,27 +3700,52 @@ mod tests {
             ("api/plugins/kanban/tasks", r#"{"title":"Ship it","priority":0,"idempotency_key":"k"}"#),
             ("api/plugins/kanban/tasks", r#"{"title":"Ship it","body":"b","assignee":"researcher","priority":2,"idempotency_key":"k"}"#),
             ("api/plugins/kanban/tasks/t_0000001a/comments", r#"{"body":"BLOCKED: waiting on keys"}"#),
+            ("api/plugins/kanban/links", r#"{"parent_id":"t_0000001a","child_id":"t_0000001b"}"#),
+            // Diagnostics' check, a link from a task to itself, which Hermes refuses before reading the board.
+            ("api/plugins/kanban/links", r#"{"parent_id":"__hermes_chat_probe__","child_id":"__hermes_chat_probe__"}"#),
+            ("api/plugins/kanban/estimate", r#"{"title":"Ship it","body":"All of it"}"#),
+            ("api/plugins/kanban/estimate", r#"{"title":""}"#),
+            ("api/plugins/kanban/tasks/t_0000001a/estimate", "{}"),
         ] {
             assert!(kanban_write(path, Some(body)), "{path} {body}");
         }
+        assert!(kanban_write("api/plugins/kanban/tasks/t_0000001a/estimate", None));
         for (path, body) in [
             // Only what New task sets: no tenant, workspace or parents.
             ("api/plugins/kanban/tasks", r#"{"title":"x","workspace_path":"/"}"#),
             ("api/plugins/kanban/tasks", r#"{"body":"no title"}"#),
+            ("api/plugins/kanban/tasks", r#"{"title":"x","parents":["t_1"]}"#),
             ("api/plugins/kanban/tasks/t_1/comments", r#"{"body":"x","author":"someone"}"#),
             ("api/plugins/kanban/tasks/t_1/comments", r#"{}"#),
             ("api/plugins/kanban/tasks/t_1", r#"{"status":"done"}"#),
             ("api/plugins/kanban/tasks/t_1/run", r#"{}"#),
+            ("api/plugins/kanban/tasks/t_1/decompose", r#"{}"#),
             ("api/plugins/kanban/tasks/../comments", r#"{"body":"x"}"#),
             ("api/plugins/kanban/tasks/a%2Fb/comments", r#"{"body":"x"}"#),
             ("api/plugins/kanban/tasksx", r#"{"title":"x"}"#),
             ("api/plugins/kanban/boards", r#"{"slug":"x"}"#),
             ("api/plugins/kanban/tasks", "not json"),
             ("api/plugins/kanban/tasks", "[]"),
+            // A link names exactly two tasks, by id.
+            ("api/plugins/kanban/links", r#"{"parent_id":"t_1"}"#),
+            ("api/plugins/kanban/links", r#"{"parent_id":"t_1","child_id":"t_2","board":"other"}"#),
+            ("api/plugins/kanban/links", r#"{"parent_id":"t_1","child_id":"../t_2"}"#),
+            ("api/plugins/kanban/links", r#"{"parent_id":"t_1","child_id":2}"#),
+            ("api/plugins/kanban/links/t_1", r#"{"parent_id":"t_1","child_id":"t_2"}"#),
+            // An estimate takes text only.
+            ("api/plugins/kanban/estimate", r#"{"body":"no title"}"#),
+            ("api/plugins/kanban/estimate", r#"{"title":"x","model":"big"}"#),
+            ("api/plugins/kanban/estimate", r#"{"title":"x","body":3}"#),
+            ("api/plugins/kanban/tasks/t_1/estimate", r#"{"title":"x"}"#),
+            ("api/plugins/kanban/tasks/../estimate", "{}"),
+            ("api/plugins/kanban/dispatch", "{}"),
+            ("api/plugins/kanban/orchestration", r#"{"auto_decompose":false}"#),
         ] {
             assert!(!kanban_write(path, Some(body)), "{path} {body}");
         }
         assert!(!kanban_write("api/plugins/kanban/tasks", None));
+        assert!(!kanban_write("api/plugins/kanban/links", None));
+        assert!(!kanban_write("api/plugins/kanban/estimate", None));
     }
 
     #[test]
