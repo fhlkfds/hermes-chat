@@ -37,6 +37,28 @@ describe("A watched run", () => {
     expect(run).toMatchObject({ source: "watched", start: T, end: T + 4600, outcome: "complete", calls: 2 });
   });
 
+  it("counts a call in the step it ended, though Hermes's counters for it arrive after the next tool finished", () => {
+    // The arrival times a throwaway Hermes bf0203a gave, in ms after `message.start`.
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "tool.start", at: T + 1350, id: "c1", name: "terminal" },
+        { kind: "usage", at: T + 2010, counters: counters(5, 1800, 140) },
+        { kind: "tool.complete", at: T + 2790, id: "c1", name: "terminal", durationS: 1.44 },
+        { kind: "tool.start", at: T + 3630, id: "c2", name: "read_file" },
+        { kind: "tool.complete", at: T + 3830, id: "c2", name: "read_file", durationS: 0.2 },
+        { kind: "usage", at: T + 4010, counters: counters(6, 4200, 180) },
+        { kind: "end", at: T + 4930, status: "complete", counters: counters(7, 6900, 220) },
+      ]),
+      T + 10_000,
+    );
+    expect(run.steps.filter((s) => s.kind === "model").map((s) => s.kind === "model" && [s.calls, s.tokens?.prompt])).toEqual([
+      [1, 800],
+      [1, 2400],
+      [1, 2700],
+    ]);
+  });
+
   it("judges a failed tool from its result, as Hermes does, and keeps a status warning and an error as failed", () => {
     const run = watchedRun(
       turn([

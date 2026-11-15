@@ -273,21 +273,26 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
 }
 
 /**
- * Gives each model step the change in Hermes's counters across it: from the last reading at or before its start to the
- * last before the next model step starts, or the turn's final counters for the last one.
+ * Gives each model step the change in Hermes's counters across it. Hermes counts a call when it ends, just before the
+ * `tool.start` that ends the step, and sends the counters up to a second later, by when the next step may be running
+ * (seen at `bf0203a`). So a step's end is read from the first reading after it ended and before the next step ended,
+ * and the last step's from the turn's final counters. A step whose end has no such reading is left without tokens, and
+ * the step after it is measured from the last reading before it started.
  */
 function attributeTokens(models: Extract<Step, { kind: "model" }>[], heard: Heard[], from: UsageCounters | undefined, final: UsageCounters | undefined) {
   const readings = heard.flatMap((h) => (h.kind === "usage" ? [{ at: h.at, counters: h.counters }] : []));
-  const at = (t: number) => lastOf(readings, (r) => r.at <= t)?.counters;
+  let before = from;
   for (const [i, step] of models.entries()) {
-    const before = i === 0 ? from : at(step.start);
     const next = models[i + 1];
-    const after = next ? at(next.start) : (final ?? at(Infinity));
-    if (!before || !after || after.calls < before.calls) continue;
-    const diff = counterDiff(before, after);
-    if (diff.prompt < 0 || diff.output < 0 || diff.reasoning < 0) continue;
-    step.calls = after.calls - before.calls;
-    step.tokens = diff;
+    const after = next ? readings.find((r) => r.at > step.end && r.at <= next.end)?.counters : (final ?? readings.at(-1)?.counters);
+    if (before && after && after.calls >= before.calls) {
+      const diff = counterDiff(before, after);
+      if (diff.prompt >= 0 && diff.output >= 0 && diff.reasoning >= 0) {
+        step.calls = after.calls - before.calls;
+        step.tokens = diff;
+      }
+    }
+    before = after ?? (next && lastOf(readings, (r) => r.at <= next.start)?.counters);
   }
 }
 
