@@ -214,7 +214,7 @@ describe("Settings → Providers", () => {
     const s = new FakeHermes();
     s.env = undefined;
     await shown({ s });
-    expect(await screen.findByText(/This Hermes server doesn't let Hermes Chat set provider keys \(.*404.*\)\. Set them on the server instead/)).toBeTruthy();
+    expect(await screen.findByText(/This Hermes server doesn't let Flagstop set provider keys \(.*404.*\)\. Set them on the server instead/)).toBeTruthy();
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.queryByLabelText("API key")).toBeNull();
   });
@@ -427,7 +427,7 @@ describe("Settings → Providers for another profile", () => {
     await removeOpenRouter(user);
     await screen.findByText("Removed the OpenRouter key, but the list couldn't be read again to confirm it.");
     expect(savedRow("OpenRouter")).toBeTruthy();
-    expect(screen.queryByText(/doesn't let Hermes Chat set provider keys/)).toBeNull();
+    expect(screen.queryByText(/doesn't let Flagstop set provider keys/)).toBeNull();
 
     s.rest["GET /api/env"] = rows;
     await user.click(screen.getByRole("button", { name: "Try again" }));

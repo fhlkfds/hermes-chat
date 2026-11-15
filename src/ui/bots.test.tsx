@@ -393,7 +393,7 @@ describe("A Hermes without Bot Mode", () => {
         onUnsupported={onUnsupported}
       />,
     );
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/so it has no Bot Mode\. Hermes Chat shows no Bots button for it\.$/));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/so it has no Bot Mode\. Flagstop shows no Bots button for it\.$/));
     expect(onUnsupported).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(document.activeElement?.classList.contains("bots-close")).toBe(true));
     await user.keyboard("{Escape}");

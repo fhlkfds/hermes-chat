@@ -66,7 +66,7 @@ pub(crate) struct AtLimit {
 
 impl std::fmt::Display for AtLimit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Hermes Chat already has {} connections open, the most it keeps open. Disconnect one first.", self.limit)
+        write!(f, "Flagstop already has {} connections open, the most it keeps open. Disconnect one first.", self.limit)
     }
 }
 

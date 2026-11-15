@@ -714,14 +714,14 @@ describe("the copied report", () => {
     });
     await connectAndCheck(t);
     const text = reportText(t.caps.getSnapshot(), {
-      app: "Hermes Chat",
+      app: "Flagstop",
       server: "https://owner:pa55word@hermes.example:9119",
       signIn: "Dashboard username and password",
       headers: 2,
       unsecure: false,
       profile: "default",
     });
-    expect(text).toMatch(/^Hermes Chat connection diagnostics/);
+    expect(text).toMatch(/^Flagstop connection diagnostics/);
     expect(text).toMatch(/Hermes version: 0\.17\.0/);
     expect(text).toMatch(/Protocol: Legacy session protocol/);
     expect(text).toMatch(/Feature flags: per_session_exclusive_submit/);

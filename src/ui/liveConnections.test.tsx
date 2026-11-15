@@ -54,7 +54,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         const limit = (args.liveLimit as number | null) ?? 1;
         // src-tauri live.rs `Slots::evict_for`.
         const others = [...held.entries()].filter(([, h]) => h.saved !== saved);
-        if (limit > 1 && others.length >= limit) throw `Hermes Chat already has ${limit} connections open, the most it keeps open. Disconnect one first.`;
+        if (limit > 1 && others.length >= limit) throw `Flagstop already has ${limit} connections open, the most it keeps open. Disconnect one first.`;
         for (const [a, h] of held) if (limit <= 1 || h.saved === saved) (held.delete(a), h.pipe.close());
         connects.push({ url, password, saved });
         if (passwords[url] !== password) throw "Wrong username or password.";

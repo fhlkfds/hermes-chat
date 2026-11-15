@@ -281,7 +281,7 @@ export function Onboarding({
               {mode === "edit" ? `Edit ${initialName || "the connection"}` : mode === "add" ? "Add a connection" : "Where is your Hermes server?"}
             </h1>
             <p className="muted">
-              Hermes Chat talks to the Hermes dashboard running on your server.
+              Flagstop talks to the Hermes dashboard running on your server.
               {(mode === "add" || mode === "edit") && hermes && " The connection in use carries on until this one is tested and saved."}
               {mode === "edit" && !hermes && " Nothing changes until the connection is tested and saved."}
             </p>
@@ -481,10 +481,10 @@ function Welcome({
   return (
     <div className="setup-body">
       <h1 id={titleId} ref={heading} tabIndex={-1}>
-        {mode === "first-run" ? "Welcome to Hermes Chat" : "Set up Hermes Chat"}
+        {mode === "first-run" ? "Welcome to Flagstop" : "Set up Flagstop"}
       </h1>
       <p className="muted">
-        Hermes Chat is a desktop app for your own Hermes Agent server. {mode === "reconfigure" ? "You can change the connection in use, or give Hermes a model provider's API key." : "Let's connect it."}
+        Flagstop is a desktop app for your own Hermes Agent server. {mode === "reconfigure" ? "You can change the connection in use, or give Hermes a model provider's API key." : "Let's connect it."}
       </p>
       <div className="setup-need">
         <div className="setup-need-title">You'll need</div>
@@ -498,7 +498,7 @@ function Welcome({
             <KeyRound size={13} /> The Hermes dashboard's username and password
           </li>
         </ul>
-        <p className="muted small">Hermes Chat tests the connection before it saves anything.</p>
+        <p className="muted small">Flagstop tests the connection before it saves anything.</p>
       </div>
       <div className="setup-actions">
         {onCancel && (
@@ -566,7 +566,7 @@ export function ServerFields({ d, set }: { d: SignInDetails; set: (patch: Partia
           hint={
             <>
               <Terminal size={12} /> A user and host, or an alias from <code>~/.ssh/config</code>. Uses your ssh-agent; the key must work without
-              a prompt. Hermes Chat reaches the dashboard on the server's port 9119.
+              a prompt. Flagstop reaches the dashboard on the server's port 9119.
             </>
           }
         >
@@ -830,7 +830,7 @@ function ProviderKeys({
         </p>
         {setup.unsupported || !setup.keys.length ? (
           <p className="muted small">
-            This Hermes server doesn't let Hermes Chat set provider keys{setup.unsupported ? ` (${setup.unsupported})` : ""}. Set them on the server
+            This Hermes server doesn't let Flagstop set provider keys{setup.unsupported ? ` (${setup.unsupported})` : ""}. Set them on the server
             instead, for example on the dashboard's Keys page.
           </p>
         ) : (
@@ -860,7 +860,7 @@ function ProviderKeys({
               hint={
                 <>
                   <KeyRound size={12} /> Checked with the provider, then saved by Hermes in the <span className="mono">{hermes.profile}</span> profile's{" "}
-                  <code>.env</code> on the server. Hermes Chat doesn't keep it.
+                  <code>.env</code> on the server. Flagstop doesn't keep it.
                   {pick?.isSet && pick.preview ? (
                     <>
                       {" "}

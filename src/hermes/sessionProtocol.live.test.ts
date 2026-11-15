@@ -134,7 +134,7 @@ describe.skipIf(!BASE)("a real canonical gateway", () => {
     expect(s!.sent).toEqual([]);
     expect(explainSignIn(signInError(failed), { mode: "url", sshTarget: "", url: BASE!, username: "owner", password: "" })).toMatchObject({
       stage: "chat",
-      problem: "Hermes Chat can't talk to this server yet.",
+      problem: "Flagstop can't talk to this server yet.",
     });
   }, 60_000);
 

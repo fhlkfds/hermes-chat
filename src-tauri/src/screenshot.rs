@@ -143,7 +143,7 @@ pub struct Support {
 
 const NO_PORTAL: &str = "No screenshot portal is running. Install xdg-desktop-portal and the backend for your desktop \
 (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr), or on Hyprland and Sway install slurp and grim.";
-const NEEDS_SLURP_AND_GRIM: &str = "On Hyprland, Sway and other wlroots desktops, Hermes Chat picks a region or window \
+const NEEDS_SLURP_AND_GRIM: &str = "On Hyprland, Sway and other wlroots desktops, Flagstop picks a region or window \
 with slurp and grim. Install both (on Arch: sudo pacman -S slurp grim), then try again.";
 const PORTAL_TOO_OLD: &str = "Your desktop's screenshot portal is too old to let you pick a region or window. Update \
 xdg-desktop-portal and its backend for your desktop.";
@@ -384,7 +384,7 @@ pub mod picker {
     //! cancelled, or else says why on stderr.
     use super::CaptureError;
 
-    pub const SUMMARY: &str = "Screenshots use Hermes Chat's own picker: drag to select a region, or click a window. Esc cancels.";
+    pub const SUMMARY: &str = "Screenshots use Flagstop's own picker: drag to select a region, or click a window. Esc cancels.";
     /// The picker's exit code when the owner backed out.
     pub const CANCELLED: i32 = 3;
 
@@ -429,7 +429,7 @@ pub mod picker {
 
     #[cfg(not(windows))]
     pub fn missing() -> Option<String> {
-        Some("Hermes Chat's own screenshot picker is for Windows.".into())
+        Some("Flagstop's own screenshot picker is for Windows.".into())
     }
 
     #[cfg(not(windows))]
@@ -532,7 +532,7 @@ public static class HermesPicker {
             DoubleBuffered = true;
             KeyPreview = true;
             Cursor = Cursors.Cross;
-            Text = "Hermes Chat screenshot";
+            Text = "Flagstop screenshot";
         }
 
         protected override void OnShown(EventArgs e) {
@@ -696,9 +696,9 @@ pub mod portal {
                      (xdg-desktop-portal-gnome, -kde, -hyprland or -wlr), or on Hyprland and Sway install slurp and grim."
                     .into(),
             ),
-            "org.freedesktop.portal.Error.NotAllowed" | "org.freedesktop.DBus.Error.AccessDenied" => CaptureError::Denied(
-                "Your desktop didn't allow Hermes Chat to take a screenshot. Check the screenshot permission in its privacy settings.".into(),
-            ),
+            "org.freedesktop.portal.Error.NotAllowed" | "org.freedesktop.DBus.Error.AccessDenied" => {
+                CaptureError::Denied("Your desktop didn't allow Flagstop to take a screenshot. Check the screenshot permission in its privacy settings.".into())
+            }
             _ => CaptureError::Failed(format!("The screenshot portal failed: {message}")),
         }
     }
@@ -722,7 +722,7 @@ pub mod portal {
             }
             1 => Err(CaptureError::Cancelled),
             _ => Err(CaptureError::Denied(
-                "Your desktop didn't take the screenshot. It may not allow Hermes Chat to take screenshots (check its privacy \
+                "Your desktop didn't take the screenshot. It may not allow Flagstop to take screenshots (check its privacy \
                  settings), or its screenshot tool failed."
                     .into(),
             )),

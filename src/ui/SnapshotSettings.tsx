@@ -30,7 +30,7 @@ const FIELDS: { key: keyof Form; label: string; placeholder: string; hint?: stri
   { key: "bucket", label: "Bucket", placeholder: "my-snapshots" },
   { key: "prefix", label: "Prefix", placeholder: "None", hint: "Every snapshot's name in the bucket starts with this.", optional: true },
   { key: "keyId", label: "Access key ID", placeholder: "AKIA…" },
-  { key: "secret", label: "Secret access key", placeholder: "", hint: "Kept in this computer's keyring with the settings above. Hermes Chat never shows it again." },
+  { key: "secret", label: "Secret access key", placeholder: "", hint: "Kept in this computer's keyring with the settings above. Flagstop never shows it again." },
 ];
 
 /** What a form is missing, in words, or nothing when every required field is filled in. */
@@ -361,9 +361,9 @@ export function SnapshotSettings({ api = tauriSnapshots, copyText = clipboardTex
         case "live":
           return `${created}. Ends ${snapshotTime(s.expires)}.`;
         case "expired":
-          return `${created}. Ended ${snapshotTime(s.expires)}, but Hermes Chat couldn't delete it from the bucket.`;
+          return `${created}. Ended ${snapshotTime(s.expires)}, but Flagstop couldn't delete it from the bucket.`;
         case "changed":
-          return `${created ? `${created}. ` : ""}Something else changed this page in the bucket, so Hermes Chat won't offer its link.`;
+          return `${created ? `${created}. ` : ""}Something else changed this page in the bucket, so Flagstop won't offer its link.`;
         case "unrevoked":
           return "Revoke didn't finish: older copies of this page are still in the bucket.";
       }

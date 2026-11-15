@@ -431,4 +431,4 @@ export function offeredCommands(states: readonly ExtensionState[], taken: (name:
 export const takenName =
   (skills?: readonly SkillCommand[]) =>
   (name: string): string | undefined =>
-    COMMANDS.some((c) => c.name === name) ? `Hermes Chat has its own /${name}.` : skills?.some((s) => s.key === name) ? `This profile has a skill called ${name}.` : undefined;
+    COMMANDS.some((c) => c.name === name) ? `Flagstop has its own /${name}.` : skills?.some((s) => s.key === name) ? `This profile has a skill called ${name}.` : undefined;

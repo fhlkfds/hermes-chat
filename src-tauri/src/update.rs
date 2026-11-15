@@ -100,7 +100,7 @@ impl Pacman {
     }
 }
 
-const CANT_UPDATE: &str = "This copy of Hermes Chat can't update itself.";
+const CANT_UPDATE: &str = "This copy of Flagstop can't update itself.";
 
 /// Running from an AppImage, which the updater replaces in place. A binary pulled out of one has no `APPIMAGE`.
 fn is_appimage() -> bool {

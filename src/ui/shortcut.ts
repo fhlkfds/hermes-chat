@@ -58,13 +58,13 @@ export function checkShortcut(s: string, bindings: Bindings = getBindings()): { 
     return { error: "Add Ctrl, Alt or Super, so typing that key doesn't take a screenshot." };
   const chord = screenshotChord(s);
   const taken = chord && COMMAND_IDS.find((id) => bindings[id].includes(chord));
-  if (taken) return { error: `${label} already runs ${COMMANDS[taken].title} in Hermes Chat (Settings → Keyboard Shortcuts).` };
+  if (taken) return { error: `${label} already runs ${COMMANDS[taken].title} in Flagstop (Settings → Keyboard Shortcuts).` };
   if (mods.has("Ctrl") && !mods.has("Alt") && !mods.has("Super") && EDIT_KEYS[key])
     return { error: `${label} ${EDIT_KEYS[key]} while you type. Pick another shortcut.` };
   if (mods.has("Ctrl") && mods.has("Alt") && /^F(?:[1-9]|1[0-2])$/.test(key)) return { error: `${label} switches to a text console on Linux.` };
   if (mods.has("Alt") && key === "F4") return { error: `${label} closes the window on most desktops.` };
   if (key === "PrintScreen")
-    return { warning: "Print Screen is usually your desktop's own screenshot key, so Hermes Chat may never see it. If pressing it does nothing here, pick another." };
+    return { warning: "Print Screen is usually your desktop's own screenshot key, so Flagstop may never see it. If pressing it does nothing here, pick another." };
   if (mods.has("Super"))
     return { warning: "Desktops often keep Super shortcuts for themselves. If pressing it does nothing here, pick another." };
   return {};

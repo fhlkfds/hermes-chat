@@ -692,7 +692,7 @@ describe("errors and labels", () => {
     [new RestError(409, '{"detail":"Job is already running or was claimed by another scheduler"}'), "busy"],
     [new RestError(400, '{"detail":"Invalid duration: \'banana\'."}'), "refused"],
     [new RestError(500, '{"detail":"boom"}'), "unknown"],
-    [new Error("Hermes Chat doesn't relay POST api/cron/jobs."), "unsupported"],
+    [new Error("Flagstop doesn't relay POST api/cron/jobs."), "unsupported"],
   ])("%s → %s", (e, kind) => expect(cronError(e).kind).toBe(kind));
 
   it("words last statuses", () => {

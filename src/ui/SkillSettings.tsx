@@ -707,7 +707,7 @@ export function SkillSettings({
                   </SettingNote>
                 )}
                 {!view.skills.length ? (
-                  <SettingNote>This profile has no skills yet. The agent can write one during a chat. Installing skills from elsewhere isn't done from Hermes Chat.</SettingNote>
+                  <SettingNote>This profile has no skills yet. The agent can write one during a chat. Installing skills from elsewhere isn't done from Flagstop.</SettingNote>
                 ) : !filtered.length ? (
                   <SettingNote>No skills match “{query.trim()}”.</SettingNote>
                 ) : (
@@ -750,7 +750,7 @@ export function SkillSettings({
                           >
                             {offFor && s.enabled && (
                               <div className="muted">
-                                The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Hermes Chat
+                                The profile's <span className="mono">skills.platform_disabled.{offFor.join("/")}</span> list keeps it off in the chats Flagstop
                                 starts. This switch doesn't change that list.
                               </div>
                             )}
@@ -800,7 +800,7 @@ const effectRows = (
     <SettingRow name="Turning a skill on" hint="New chats list it; one already going can still load it by name." />
     <SettingRow
       name="Undoing a saved edit"
-      hint="Restore previous version, until you sign out or close Hermes Chat; earlier versions aren't kept on the server or on this computer."
+      hint="Restore previous version, until you sign out or close Flagstop; earlier versions aren't kept on the server or on this computer."
     />
   </>
 );
@@ -913,7 +913,7 @@ function SelectBar({
             {ask.op === "move" &&
               `Move ${skillsText(movable)} from ${profile} to ${ask.to}? Each is copied as a new Local skill there and read back, then archived in ${profile}. Only SKILL.md is copied: files under references/, templates/, scripts/ or assets/ stay in ${profile}'s archive. Hermes refuses a name ${ask.to} already has, and then leaves the original where it is.`}
             {ask.op === "archive" &&
-              `Delete ${skillsText(movable)} from ${profile}? Hermes archives each one: it moves the skill's folder into ${profile}'s skills/.archive, so new chats no longer see it, and Hermes refuses to load it in chats already going. Hermes Chat can't bring one back; running hermes -p ${profile} curator restore <name> on the server does.`}
+              `Delete ${skillsText(movable)} from ${profile}? Hermes archives each one: it moves the skill's folder into ${profile}'s skills/.archive, so new chats no longer see it, and Hermes refuses to load it in chats already going. Flagstop can't bring one back; running hermes -p ${profile} curator restore <name> on the server does.`}
           </span>
           <div className="confirm-actions">
             <button className="btn" autoFocus={ask.op === "archive"} onClick={() => onAsk(undefined)}>

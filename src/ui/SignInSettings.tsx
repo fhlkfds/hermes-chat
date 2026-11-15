@@ -222,7 +222,7 @@ export function SignInSettings({
       <SettingNote role="status">
         <Info size={14} />
         <span>
-          This Hermes server doesn't let Hermes Chat sign in to subscription providers{list.unsupported ? ` (${list.unsupported})` : ""}. Sign in on the server instead,
+          This Hermes server doesn't let Flagstop sign in to subscription providers{list.unsupported ? ` (${list.unsupported})` : ""}. Sign in on the server instead,
           with <code>hermes auth add</code>.
         </span>
       </SettingNote>,
@@ -241,7 +241,7 @@ export function SignInSettings({
             {p.flow === "external" && (
               <>
                 {" "}
-                Hermes Chat can't sign in to this one. Run <code>{p.command ?? `hermes auth add ${p.id}`}</code> on the server.
+                Flagstop can't sign in to this one. Run <code>{p.command ?? `hermes auth add ${p.id}`}</code> on the server.
               </>
             )}
             {p.signOutHint && <> {p.signOutHint}</>}

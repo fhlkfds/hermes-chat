@@ -204,7 +204,7 @@ export function Bots({
       )}
       {unsupported && (
         <p className="inbox-note bots-note err" role="alert">
-          {unsupported} Hermes Chat shows no Bots button for it.
+          {unsupported} Flagstop shows no Bots button for it.
         </p>
       )}
       {!unsupported && (error || !connected) && (

@@ -70,7 +70,7 @@ describe("A chat link at launch", () => {
     render(<App links={links} />);
 
     // The first link isn't one: the sign-in screen says so, and it's dropped.
-    expect((await screen.findByRole("alert")).textContent).toMatch(/didn't open that link\. The link's connection isn't one Hermes Chat could have made/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/didn't open that link\. The link's connection isn't one Flagstop could have made/);
     expect(links.getSnapshot()).toBeUndefined();
     await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 

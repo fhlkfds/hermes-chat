@@ -57,7 +57,7 @@ type Row = { kind: "command"; def: CommandDef } | { kind: "skill"; skill: SkillC
 type Note = { title?: string; text: string; error?: boolean };
 
 const SCOPE = {
-  local: { label: "App", title: "An action of Hermes Chat" },
+  local: { label: "App", title: "An action of Flagstop" },
   server: { label: "Hermes", title: "Hermes runs it for this chat" },
 };
 

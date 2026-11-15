@@ -14,7 +14,7 @@ export type ImportFormat = "markdown" | "jsonl";
 
 export const IMPORT_FORMATS: Record<ImportFormat, { label: string; hint: string; extensions: string[] }> = {
   markdown: {
-    label: "Hermes Chat Markdown export",
+    label: "Flagstop Markdown export",
     hint: "A .md file saved with Export in a chat's header. It has no message times, models or attachments.",
     extensions: ["md"],
   },
@@ -242,13 +242,13 @@ function fromMarkdown(text: string, digest: string): { chats: PlannedChat[]; war
   if (!/\n$/.test(text)) throw new ImportFileError("The file stops in the middle of a line, so it was probably cut short.");
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const title = TITLE_RE.exec(lines[0] ?? "");
-  if (!title) throw new ImportFileError(`Line 1: a Hermes Chat export starts with the chat's title ("# …"). This file doesn't.`);
+  if (!title) throw new ImportFileError(`Line 1: a Flagstop export starts with the chat's title ("# …"). This file doesn't.`);
   let n = 1;
   while (n < lines.length && !lines[n].trim()) n++;
   const notes: string[] = [];
   for (; n < lines.length && lines[n].startsWith(">"); n++) notes.push(lines[n]);
   const stamp = notes.map((l) => EXPORTED_RE.exec(l)).find(Boolean);
-  if (!stamp) throw new ImportFileError(`This isn't a Hermes Chat export: its note doesn't say when Hermes Chat exported it ("> Exported from Hermes Chat on …").`);
+  if (!stamp) throw new ImportFileError(`This isn't a Flagstop export: its note doesn't say when Flagstop exported it ("> Exported from Hermes Chat on …").`);
   const [, y, mo, d, h, mi] = stamp.map(Number);
   const exportedAt = Date.UTC(y, mo - 1, d, h, mi) / 1000;
   if (!Number.isFinite(exportedAt) || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59)
@@ -441,7 +441,7 @@ function fromJsonl(text: string): { chats: PlannedChat[]; warnings: string[] } {
           : `${where} isn't a session: it has no "messages" list.`,
       );
     const id = raw.id;
-    if (typeof id !== "string" || !ID_RE.test(id)) throw new ImportFileError(`${where}: the session id ${JSON.stringify(id)?.slice(0, 80)} isn't one Hermes Chat imports.`);
+    if (typeof id !== "string" || !ID_RE.test(id)) throw new ImportFileError(`${where}: the session id ${JSON.stringify(id)?.slice(0, 80)} isn't one Flagstop imports.`);
     if (seen.has(id)) throw new ImportFileError(`${where}: session ${id} is in the file twice.`);
     seen.add(id);
     for (const k of Object.keys(raw)) if (!SESSION_KEEP.has(k) && SESSION_DROPPED_NAMES[k] && raw[k] !== null && raw[k] !== 0 && raw[k] !== false && raw[k] !== "") dropped.add(SESSION_DROPPED_NAMES[k]);
@@ -494,7 +494,7 @@ function fromJsonl(text: string): { chats: PlannedChat[]; warnings: string[] } {
     attachments > 0 && `${plural(attachments, "attachment comes", "attachments come")} in only as far as the file holds ${attachments === 1 ? "it" : "them"}. No file it names is read.`,
     attachmentNames > 0 && `Attachment names aren't imported: Hermes has no place for them in a chat's history (${plural(attachmentNames, "name")} in the file).`,
     compacted > 0 && `${plural(compacted, "message was", "messages were")} compacted away in the original chat and stay${compacted === 1 ? "s" : ""} that way.`,
-    otherRoles > 0 && `${plural(otherRoles, "row has a role", "rows have roles")} Hermes Chat doesn't show; ${otherRoles === 1 ? "it comes" : "they come"} in as ${otherRoles === 1 ? "it is" : "they are"}.`,
+    otherRoles > 0 && `${plural(otherRoles, "row has a role", "rows have roles")} Flagstop doesn't show; ${otherRoles === 1 ? "it comes" : "they come"} in as ${otherRoles === 1 ? "it is" : "they are"}.`,
   ].filter((w): w is string => typeof w === "string");
   return { chats, warnings };
 }
@@ -635,7 +635,7 @@ function refusal(e: RestError): string {
   if (e.status === 413) return "Hermes refused the file and imported nothing: it's larger than Hermes takes at once.";
   if (e.status === 404 && e.body.includes("Profile")) return "Hermes refused the file and imported nothing: the profile isn't on the server any more.";
   if ((e.status === 404 || e.status === 405) && !e.body.includes("Profile"))
-    return "This Hermes can't import transcripts: its dashboard has no session import (Hermes Chat was built against bf0203a).";
+    return "This Hermes can't import transcripts: its dashboard has no session import (Flagstop was built against bf0203a).";
   return `Hermes refused the file and imported nothing: ${e.message}`;
 }
 

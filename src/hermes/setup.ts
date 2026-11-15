@@ -139,7 +139,7 @@ function notReady(frame: string): ProbeFailure | undefined {
   if (f?.method !== "event" || f.params?.type !== "gateway.ready")
     return { stage: "chat", message: "Hermes's first message on the chat connection wasn't gateway.ready." };
   if (f.params.payload?.session_authority)
-    return { stage: "chat", message: "This Hermes server speaks the canonical session protocol, which Hermes Chat doesn't support yet." };
+    return { stage: "chat", message: "This Hermes server speaks the canonical session protocol, which Flagstop doesn't support yet." };
 }
 
 const asFailure = (e: unknown): ProbeFailure =>
@@ -208,7 +208,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
     return out(m, ["Use https:// for an address on the internet, or reach the server over SSH or Tailscale."], null);
   const checkSsh = `Check it from a terminal: ssh -o BatchMode=yes ${d.sshTarget.trim() || "<target>"} true`;
   const turnedAway = () =>
-    out(`Something in front of the dashboard at ${hostOf(d.url)} turned Hermes Chat away.`, [
+    out(`Something in front of the dashboard at ${hostOf(d.url)} turned Flagstop away.`, [
       d.headers?.length
         ? "Check the extra request headers' names and values, on the Server step. A Cloudflare Access service token needs CF-Access-Client-Id and CF-Access-Client-Secret."
         : "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step. A service token needs CF-Access-Client-Id and CF-Access-Client-Secret.",
@@ -226,7 +226,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
     case "address":
       if (ssh) {
         if (has(/Enter an SSH target/)) return out(m, []);
-        if (has(/Couldn't start ssh/)) return out("Hermes Chat couldn't run ssh on this computer.", ["Install OpenSSH: sudo pacman -S openssh"]);
+        if (has(/Couldn't start ssh/)) return out("Flagstop couldn't run ssh on this computer.", ["Install OpenSSH: sudo pacman -S openssh"]);
         if (has(/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/))
           return out("The server's SSH host key doesn't match the one this computer knows.", [
             "Make sure this is the right server. If its key changed on purpose, remove the old one with " +
@@ -234,7 +234,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
           ]);
         if (has(/Permission denied|publickey|Too many authentication failures/))
           return out("The server didn't accept your SSH key.", [
-            "Hermes Chat runs ssh without prompts, so your key has to work without a passphrase prompt. Add it to your SSH agent with ssh-add.",
+            "Flagstop runs ssh without prompts, so your key has to work without a passphrase prompt. Add it to your SSH agent with ssh-add.",
             "Check the user name in the target, for example liam@hermes.",
             checkSsh,
           ]);
@@ -258,7 +258,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
           "Check the host name in the URL.",
           "A Tailscale name, such as hermes, needs Tailscale running on this computer.",
         ]);
-      return out("Hermes Chat couldn't use this address.", ["Check the URL, for example http://hermes:9119."]);
+      return out("Flagstop couldn't use this address.", ["Check the URL, for example http://hermes:9119."]);
 
     case "reach":
       if (has(/didn't answer within/))
@@ -273,7 +273,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
           "Use a certificate from a trusted authority, or connect over SSH, or over Tailscale with http://.",
         ]);
       if (!ssh && has(/another site/))
-        return out(`The dashboard's address sent Hermes Chat on to another site.`, [
+        return out(`The dashboard's address sent Flagstop on to another site.`, [
           "If a gateway such as Cloudflare Access is in front of the dashboard, add the headers it needs under Extra request headers, on the Server step.",
           "Or connect over SSH, which goes straight to the dashboard.",
         ]);
@@ -294,7 +294,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
           "Check the port: the dashboard listens on 9119 unless it was started with another.",
           "Check that hermes dashboard is running, and listening on an address this computer can reach (for example --host 0.0.0.0, or the server's Tailscale address).",
         ]);
-      return out(`Hermes Chat couldn't reach the dashboard at ${hostOf(d.url)}.`, [
+      return out(`Flagstop couldn't reach the dashboard at ${hostOf(d.url)}.`, [
         "Check the address and port, and that this computer can reach the server.",
       ]);
 
@@ -311,7 +311,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
         ], null);
       if (has(/Too many sign-in attempts/)) return out(m, ["Wait a minute, then try again."], null);
       if (d.method !== "token" && status?.authProviders && !status.authProviders.includes(PASSWORD_PROVIDER))
-        return out("This dashboard doesn't offer username and password sign-in, which Hermes Chat uses.", [
+        return out("This dashboard doesn't offer username and password sign-in, which Flagstop uses.", [
           `It offers: ${status.authProviders.join(", ") || "nothing"}.`,
           "Set a dashboard username and password under dashboard.basic_auth in the server's Hermes config, then restart the dashboard.",
         ]);
@@ -321,7 +321,7 @@ export function explain(f: ProbeFailure, d: SignInDetails): TestOutcome & { ok: 
 
     case "chat":
       if (has(/canonical session protocol/))
-        return out("Hermes Chat can't talk to this server yet.", ["This server uses Hermes's newer session protocol. Hermes Chat speaks only the legacy one."], null);
+        return out("Flagstop can't talk to this server yet.", ["This server uses Hermes's newer session protocol. Flagstop speaks only the legacy one."], null);
       if (has(/chat connection failed/))
         return out("Signed in, but the chat connection failed.", [
           "If a reverse proxy sits in front of the dashboard, make sure it passes WebSocket connections to /api/ws.",

@@ -475,7 +475,7 @@ function compactBlocked(chat: Chat, status: ConnectionStatus, api: ContextApi): 
   if (status !== "connected") return "Connect to Hermes to compact this chat.";
   if (api.cannotCompact()) return "This Hermes can't compact a chat from here.";
   if (!chat.runtimeId) return "Open the chat on Hermes to compact it.";
-  if (chat.live?.compactions === undefined) return "Hermes hasn't said it can compact this chat, so Hermes Chat doesn't offer it.";
+  if (chat.live?.compactions === undefined) return "Hermes hasn't said it can compact this chat, so Flagstop doesn't offer it.";
   if (chat.running) return "Hermes compacts only between replies. Wait for this one to finish.";
 }
 
@@ -519,7 +519,7 @@ function CompactAction({ chat, status, api, onCompacted }: { chat: Chat; status:
           <div className="popover-title">Compact this chat now?</div>
           <p className="small">
             Hermes summarizes the older messages into one summary, and the model reads that instead of them from then on. Every message stays in the chat.
-            Hermes uses the profile's compression model, which takes tokens. It can't be undone from Hermes Chat.
+            Hermes uses the profile's compression model, which takes tokens. It can't be undone from Flagstop.
           </p>
           <div className="confirm-actions">
             {/* Cancel takes focus, so a stray Enter doesn't compact. */}
@@ -546,7 +546,7 @@ function CompactAction({ chat, status, api, onCompacted }: { chat: Chat; status:
         </div>
       )}
       {result && <CompactOutcome result={result} />}
-      <p className="muted small">Hermes has no call to rebuild a chat's context, so Hermes Chat doesn't offer one.</p>
+      <p className="muted small">Hermes has no call to rebuild a chat's context, so Flagstop doesn't offer one.</p>
     </section>
   );
 }

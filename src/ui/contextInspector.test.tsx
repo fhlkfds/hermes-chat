@@ -371,7 +371,7 @@ describe("Compact now", () => {
     await tab("Compactions");
     const button = () => screen.getByRole("button", { name: "Compact now…" }) as HTMLButtonElement;
     expect(button().disabled).toBe(true);
-    expect(button().title).toBe("Hermes hasn't said it can compact this chat, so Hermes Chat doesn't offer it.");
+    expect(button().title).toBe("Hermes hasn't said it can compact this chat, so Flagstop doesn't offer it.");
 
     act(() => server.event(runtime, "session.usage", usage({ compressions: 2 })));
     expect(button().disabled).toBe(false);

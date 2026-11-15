@@ -170,7 +170,7 @@ describe("Codex review round 2 regressions", () => {
     expect(frontmatterName(fm("name: 'it''s'"))).toBe("it's");
     for (const key of ['name: x\n"na\\u006de": y', "name: x\n!!str name: y", "name: x\n&k name: y", "name: x\n<<: *base", "name: x\n? name\n: y"]) {
       expect(frontmatterName(fm(key))).toBeNull();
-      expect(skillProblems(fm(key), "x")).toEqual([expect.stringContaining("YAML form Hermes Chat doesn't read")]);
+      expect(skillProblems(fm(key), "x")).toEqual([expect.stringContaining("YAML form Flagstop doesn't read")]);
     }
     expect(frontmatterName("---\n{name: x, description: d}\n---\nBody\n")).toBeNull();
   });

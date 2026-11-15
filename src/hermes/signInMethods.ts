@@ -64,10 +64,10 @@ export function methodLabel(m: SignInMethod, list: SignInMethod[]): string {
 export function methodsNote(methods: Methods | undefined, d: SignInDetails, used: SignInDetails["method"]): string | undefined {
   if (!methods) return undefined;
   // With the password, a guess is what the screen always showed: only a token sign-in needs to know it is one.
-  if (methods.note === "unread" && used === "token") return "Hermes Chat couldn't read which sign-in methods this server offers, so it shows the usual ones.";
+  if (methods.note === "unread" && used === "token") return "Flagstop couldn't read which sign-in methods this server offers, so it shows the usual ones.";
   if (methods.note === "gate-off")
-    return "This dashboard has its sign-in turned off, as it does when it listens only on its own computer. Hermes Chat can't sign in to it that way: start it with a dashboard username and password, or a session token.";
-  if (methods.note === "none-supported") return "This server lists no sign-in method Hermes Chat supports. It may need a dashboard username and password, or a session token.";
+    return "This dashboard has its sign-in turned off, as it does when it listens only on its own computer. Flagstop can't sign in to it that way: start it with a dashboard username and password, or a session token.";
+  if (methods.note === "none-supported") return "This server lists no sign-in method Flagstop supports. It may need a dashboard username and password, or a session token.";
   if (used === "token" && !methods.methods.some((m) => m.method === "token"))
     return "This server doesn't take a token any more: its sign-in no longer lists the session-token provider. Sign in another way.";
   if (used !== "token" && d.provider && !methods.methods.some((m) => m.method === "password" && m.provider === d.provider))

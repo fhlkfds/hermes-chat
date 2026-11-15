@@ -431,7 +431,7 @@ describe("failureOf", () => {
       reason: "Input should be a valid boolean",
     });
     expect(failureOf(new RestError(401, "", "The dashboard sign-in has expired. Sign in again."))).toMatchObject({ status: 401, signedOut: true });
-    expect(failureOf(new Error("Hermes Chat doesn't relay PUT api/x."))).toMatchObject({ notRelayed: true });
+    expect(failureOf(new Error("Flagstop doesn't relay PUT api/x."))).toMatchObject({ notRelayed: true });
     expect(failureOf(new Error("Can't reach the Hermes dashboard: reset"))).toEqual({ reason: "Can't reach the Hermes dashboard: reset" });
   });
 });

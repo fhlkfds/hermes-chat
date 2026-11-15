@@ -223,7 +223,7 @@ export class FakeServerFiles {
     const file = this.picked.get(token);
     if (!file) throw new Error("That file wasn't picked in the Open dialog, or was already sent.");
     this.picked.delete(token);
-    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (isSensitive(path)) throw new Error(`Flagstop doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
     const stopped = new Promise<never>((_, reject) => this.running.set(id, reject));
     try {
       onProgress({ done: 0, total: file.bytes.length, dest: path });
@@ -256,7 +256,7 @@ export class FakeServerFiles {
 
   /** src-tauri `files_save_text`: the edit's text, as UTF-8, through the same upload route. */
   async saveText(path: string, text: string, overwrite: boolean): Promise<string> {
-    if (isSensitive(path)) throw new Error(`Hermes Chat doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
+    if (isSensitive(path)) throw new Error(`Flagstop doesn't relay uploads to ${path}, a credential file Hermes keeps out of reach.`);
     if (this.saveGate) await this.saveGate;
     this.beforeWrite?.(path);
     const lost = this.saveLost;

@@ -8,7 +8,7 @@ import type { DispatchedTask, RosterWork } from "./dispatched";
 export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "other";
 
 export const SOURCE_LABEL: Record<Source, string> = {
-  app: "Hermes Chat",
+  app: "Flagstop",
   telegram: "Telegram",
   discord: "Discord",
   cli: "the command line",

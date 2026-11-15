@@ -29,7 +29,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; reload?: () 
       <div className="restarting-overlay" role="alert">
         <div className="recovery-failed">
           <p>
-            <strong>Hermes Chat ran into an error and couldn't draw the window.</strong>
+            <strong>Flagstop ran into an error and couldn't draw the window.</strong>
           </p>
           <p className="crash-message">{error.message || error.name}</p>
           <details className="crash-details">

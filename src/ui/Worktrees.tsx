@@ -388,7 +388,7 @@ function WorktreeRow({
       : m.chats.length
         ? "Chats work in it: detach them first"
         : m.running
-          ? "Hermes Chat is still working on it"
+          ? "Flagstop is still working on it"
           : blockers[0]?.message;
   const startable = canStartIn(w) && !!onStart && (!m || m.state !== "setup");
   return (
@@ -404,7 +404,7 @@ function WorktreeRow({
         <span className="wt-badges">
           {w.main && <span className="badge">Main checkout</span>}
           {current && <span className="badge">Open here</span>}
-          {m ? <span className="badge">Made here</span> : !w.main && <span className="badge muted">Not made by Hermes Chat</span>}
+          {m ? <span className="badge">Made here</span> : !w.main && <span className="badge muted">Not made by Flagstop</span>}
           {m && m.state !== "ready" && <span className={`badge ${m.running ? "" : "warn"}`}>{STATE_LABEL[m.state] ?? m.state}</span>}
           {m?.protected && (
             <span className="badge">
@@ -502,7 +502,7 @@ function WorktreeRow({
         )}
       </div>
       {m && !removable && removeWhy && <p className="muted small wt-why">Can't be removed: {removeWhy}.</p>}
-      {!m && !w.main && <p className="muted small wt-why">Hermes Chat didn't make this worktree, so it lists it but never removes it.</p>}
+      {!m && !w.main && <p className="muted small wt-why">Flagstop didn't make this worktree, so it lists it but never removes it.</p>}
     </div>
   );
 }

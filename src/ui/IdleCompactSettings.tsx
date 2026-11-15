@@ -29,7 +29,7 @@ export function IdleCompactSettings() {
               message would pay for the whole context anyway. Each idle chat is compacted once, until a new reply measures it again.
             </p>
             <p>
-              It runs only while Hermes Chat is open and connected. Only chats opened in this app since it connected are measured, so only they are
+              It runs only while Flagstop is open and connected. Only chats opened in this app since it connected are measured, so only they are
               compacted. Each compaction is a call to the profile's Compression model (Auxiliary models, on this page). Hermes's own compaction when
               the window fills during a reply works as before.
             </p>
@@ -88,7 +88,7 @@ export function IdleCompactSettings() {
       />
       {unsaved && (
         <SettingNote tone="bad" role="alert">
-          Couldn't save this on this computer; it applies only until Hermes Chat closes.
+          Couldn't save this on this computer; it applies only until Flagstop closes.
         </SettingNote>
       )}
     </SettingsSection>

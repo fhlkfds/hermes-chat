@@ -16,7 +16,7 @@ const TITLE: Record<LeaveWhat, string> = {
   profile: "Switch profile without saving the persona?",
   connection: "Switch connection without saving the persona?",
   signout: "Sign out without saving the persona?",
-  close: "Close Hermes Chat without saving the persona?",
+  close: "Close Flagstop without saving the persona?",
   pick: "Open another profile's persona without saving?",
 };
 const GO: Record<LeaveWhat, string> = { leave: "Leave", profile: "Switch anyway", connection: "Switch anyway", signout: "Sign out", close: "Close anyway", pick: "Open it anyway" };
@@ -57,7 +57,7 @@ export function LeavePersona({
             ? what === "pick"
               ? `They stay on this computer, and Settings → Persona offers them back when you pick ${profile} again.`
               : "They stay on this computer, and Settings → Persona offers them back next time."
-            : "Hermes Chat couldn't write them to this computer's storage, so they last only until the app closes. Copy them first if you need them."}
+            : "Flagstop couldn't write them to this computer's storage, so they last only until the app closes. Copy them first if you need them."}
         </p>
         <div className="confirm-actions">
           <button className="btn" autoFocus onClick={onStay}>

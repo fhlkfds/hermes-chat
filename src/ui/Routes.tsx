@@ -152,7 +152,7 @@ export function RoutesEditor({
       <span className="field-hint block">
         {many
           ? "Tried in this order. The first that reaches Hermes and signs in is used; if it drops, the next takes over."
-          : "How Hermes Chat reaches the server. Add another route, such as Tailscale or SSH, for when this one can't."}
+          : "How Flagstop reaches the server. Add another route, such as Tailscale or SSH, for when this one can't."}
       </span>
       <ol className="route-list">
         {routes.map((r, i) => (

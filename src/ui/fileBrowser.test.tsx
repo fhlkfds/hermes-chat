@@ -475,7 +475,7 @@ describe("Server files: Upload", () => {
     const { user } = await launch(s);
     await openFiles(user);
     await user.click(screen.getByRole("button", { name: /Upload/ }));
-    expect(dialog().getByRole("alert").textContent).toBe("report.txt here is a link to a credential file (/home/liam/.env), so Hermes Chat doesn't upload over it.");
+    expect(dialog().getByRole("alert").textContent).toBe("report.txt here is a link to a credential file (/home/liam/.env), so Flagstop doesn't upload over it.");
     expect(dialog().queryByRole("button", { name: /Upload|Replace/ })).toBeNull();
   });
 

@@ -21,7 +21,7 @@ function RecoveryFailed({ reason }: { reason: string }) {
   return (
     <div className="restarting-overlay" role="alert">
       <div className="recovery-failed">
-        <p>Hermes Chat couldn't finish putting back the drafts it saved when it restarted for an update: {reason}</p>
+        <p>Flagstop couldn't finish putting back the drafts it saved when it restarted for an update: {reason}</p>
         <p className="muted small">They're still saved. Try again; if this keeps happening, move that file somewhere else and they'll stay there.</p>
         <button className="btn" onClick={() => location.reload()}>
           Try again

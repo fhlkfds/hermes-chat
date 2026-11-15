@@ -122,10 +122,10 @@ export async function boot(opts: BootOptions = {}) {
 
   localStorage.setItem("hermes-chat.sign-in", JSON.stringify(SIGN_IN));
   if (opts.signedIn ?? true) rust.keyring.set("password:legacy", password);
-  const frame = Object.assign(document.createElement("iframe"), { title: "Hermes Chat", src: "/e2e/app.html" });
+  const frame = Object.assign(document.createElement("iframe"), { title: "Flagstop", src: "/e2e/app.html" });
   frame.style.cssText = "position: fixed; inset: 0; width: 100%; height: 100%; border: 0";
   document.body.replaceChildren(frame);
-  return { server, rust, app: page.frameLocator(page.getByTitle("Hermes Chat")) };
+  return { server, rust, app: page.frameLocator(page.getByTitle("Flagstop")) };
 }
 
 export async function shot(name: string) {

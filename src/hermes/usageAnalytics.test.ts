@@ -483,7 +483,7 @@ describe("Filters and breakdowns", () => {
     const groups = groupBy([base("a", { source: "gui" }), base("b", { source: "hermes-chat" }), base("c", { source: "tui" }), base("d", { source: "cli" })], "source", ctx);
     expect(groups.map((g) => [g.label, g.totals.chats]).sort()).toEqual([
       ["Command line", 2],
-      ["Hermes Chat", 2],
+      ["Flagstop", 2],
     ]);
   });
 

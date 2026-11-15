@@ -146,7 +146,7 @@ export type Failure = { status?: number; reason: string; signedOut?: boolean; no
 /** Reads a failed call: a dashboard answer (`RestError`), a call the relay refused to send, or neither. */
 export function failureOf(e: unknown): Failure {
   const message = errorText(e);
-  if (!(e instanceof RestError)) return /^Hermes Chat doesn't relay /.test(message) ? { reason: message, notRelayed: true } : { reason: message };
+  if (!(e instanceof RestError)) return /^Flagstop doesn't relay /.test(message) ? { reason: message, notRelayed: true } : { reason: message };
   if (e.status === 401) return { status: 401, reason: message, signedOut: true };
   let reason = e.detail;
   try {

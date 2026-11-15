@@ -20,7 +20,7 @@ pub(super) fn hand_over(request: Option<Request>, inbox: &'static Inbox) -> bool
                 if send(&request).is_ok() {
                     return true;
                 }
-                eprintln!("hermes-chat: the Hermes Chat already running didn't answer, so this one starts too");
+                eprintln!("hermes-chat: the Flagstop already running didn't answer, so this one starts too");
                 serve_into(conn, true, inbox);
             }
             Err(e) => eprintln!("hermes-chat: couldn't ask the session bus for {NAME}: {e}"),
@@ -63,9 +63,9 @@ fn serve_into(conn: Connection, queue: bool, inbox: &'static Inbox) {
             match conn.request_name(NAME, false, false, false) {
                 Ok(RequestNameReply::PrimaryOwner) | Ok(RequestNameReply::AlreadyOwner) => {}
                 Ok(RequestNameReply::InQueue) => {
-                    eprintln!("hermes-chat: another Hermes Chat is running; desktop shortcuts go to it until it closes")
+                    eprintln!("hermes-chat: another Flagstop is running; desktop shortcuts go to it until it closes")
                 }
-                Ok(_) => return eprintln!("hermes-chat: another Hermes Chat is running; desktop shortcuts go to it"),
+                Ok(_) => return eprintln!("hermes-chat: another Flagstop is running; desktop shortcuts go to it"),
                 Err(e) => return eprintln!("hermes-chat: couldn't take {NAME}: {e}"),
             }
         }
@@ -95,12 +95,12 @@ fn serve_into(conn: Connection, queue: bool, inbox: &'static Inbox) {
                             inbox.dispatch(Request::OpenLink { link: link.to_owned(), token });
                             msg.method_return()
                         }
-                        _ => msg.error(&"org.freedesktop.DBus.Error.InvalidArgs".into(), &std::ffi::CString::new("That isn't a Hermes Chat link.").unwrap()),
+                        _ => msg.error(&"org.freedesktop.DBus.Error.InvalidArgs".into(), &std::ffi::CString::new("That isn't a Flagstop link.").unwrap()),
                     },
                     (Some("org.freedesktop.DBus.Peer"), Some("Ping"), _) => msg.method_return(),
                     _ => msg.error(
                         &"org.freedesktop.DBus.Error.UnknownMethod".into(),
-                        &std::ffi::CString::new("Hermes Chat only answers Screenshot, Show, Toggle and OpenLink.").unwrap(),
+                        &std::ffi::CString::new("Flagstop only answers Screenshot, Show, Toggle and OpenLink.").unwrap(),
                     ),
                 };
                 use dbus::channel::Sender;

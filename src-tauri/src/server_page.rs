@@ -65,9 +65,9 @@ pub enum ServerPageError {
     /// A web address, but not on loopback: it opens on this computer, as any web page does.
     #[error("Only localhost, 127.0.0.1 and [::1] addresses open through SSH on the Hermes server.")]
     NotLoopback,
-    #[error("Hermes Chat isn't connected to the Hermes server right now. Try again once it is.")]
+    #[error("Flagstop isn't connected to the Hermes server right now. Try again once it is.")]
     NotConnected,
-    #[error("This sign-in uses a dashboard URL, so Hermes Chat has no SSH target to reach the server's own pages.")]
+    #[error("This sign-in uses a dashboard URL, so Flagstop has no SSH target to reach the server's own pages.")]
     NoSshTarget,
     #[error("{MAX_OPEN} server pages are open already. Close one first.")]
     TooMany,
@@ -865,7 +865,7 @@ impl ServerPages {
     /// still held once this returns, and lets the tunnel go (`give_up`) if it isn't.
     pub fn begin(&self, key: &str, connection: &ConnectionId, target: &str) -> Result<Starting, ServerPageError> {
         if !key_ok(key) {
-            return Err(ServerPageError::Io("That page key isn't one Hermes Chat makes.".into()));
+            return Err(ServerPageError::Io("That page key isn't one Flagstop makes.".into()));
         }
         let target = Target::parse(target).ok_or(ServerPageError::NoSshTarget)?.as_str().to_owned();
         let mut open = self.open.locked();

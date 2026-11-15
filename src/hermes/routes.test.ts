@@ -45,7 +45,7 @@ function routes(server = new FakeHermes()) {
     if (failure) throw new Error(failure);
     const id = servers.get(at) ?? "home-server-id";
     if (opts.expectServer && opts.expectServer !== id)
-      throw new Error("Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password.");
+      throw new Error("Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Flagstop didn't send it the password.");
     const pipe = await server.openPipe(onEvent, profile, signal);
     const route: Route = d.mode === "ssh" ? { kind: "ssh", target: at, server: id } : { kind: "url", url: at, addresses: [], server: id };
     return { ...pipe, route };
@@ -172,7 +172,7 @@ describe("Connecting over routes", () => {
     expect((refused as Error).message).toMatch(/^No token is saved/);
     r.down.set(SSH.target, "SSH failed: ssh: connect to host hermes port 22: Connection refused");
     await expect(connect(routedPipe(signIn([LAN, SSH], token), r.open))).rejects.toThrow(RoutesFailedError);
-    r.down.set(LAN.target, "The dashboard took the token as a basic sign-in, not as its session token, so Hermes Chat didn't sign in with it.");
+    r.down.set(LAN.target, "The dashboard took the token as a basic sign-in, not as its session token, so Flagstop didn't sign in with it.");
     await expect(connect(routedPipe(signIn([LAN, SSH], token), r.open))).rejects.toThrow(/^The dashboard took the token as/);
     expect(r.opened.at(-1)?.at).toBe(LAN.target);
   });

@@ -70,7 +70,7 @@ export function BackupSection({ wiring }: { wiring: BackupWiring }) {
       <SettingRow
         name="Back up this computer's data"
         hint="Drafts, queued messages, templates, tags and settings, in one zip file."
-        more="Keep your drafts, queued messages, templates, tags, project membership and settings when you reinstall or move to another computer. The zip file is saved where you choose. A backup holds only what Hermes Chat keeps on this computer: your chats and the rest stay on your Hermes server, and no password is ever in it."
+        more="Keep your drafts, queued messages, templates, tags, project membership and settings when you reinstall or move to another computer. The zip file is saved where you choose. A backup holds only what Flagstop keeps on this computer: your chats and the rest stay on your Hermes server, and no password is ever in it."
         control={
           <>
             <button ref={exportButton} className="btn" onClick={() => setOpen("export")}>
@@ -191,7 +191,7 @@ export function ExportDialog({ wiring, returnTo, onClose }: { wiring: BackupWiri
       {(step.at === "choose" || step.at === "saving") && (
         <>
           <p>
-            Hermes Chat keeps these on this computer. Hermes keeps your chats, projects, memory and the rest on the server, where a backup doesn't reach:
+            Flagstop keeps these on this computer. Hermes keeps your chats, projects, memory and the rest on the server, where a backup doesn't reach:
             they're there whichever computer you sign in from.
           </p>
           <fieldset className="backup-categories" disabled={step.at === "saving"}>
@@ -254,7 +254,7 @@ export function ExportDialog({ wiring, returnTo, onClose }: { wiring: BackupWiri
           <p role="status">
             Saved the backup to <span className="mono">{step.path}</span>.
           </p>
-          <p className="muted small">To restore it, sign in to Hermes Chat on the other computer first, then open Settings → General → Backup → Restore.</p>
+          <p className="muted small">To restore it, sign in to Flagstop on the other computer first, then open Settings → General → Backup → Restore.</p>
           <div className="confirm-actions">
             <button className="btn primary" autoFocus onClick={onClose}>
               Done
@@ -333,7 +333,7 @@ export function RestoreDialog({ wiring, returnTo, onClose }: { wiring: BackupWir
       {(step.at === "choose" || step.at === "reading") && (
         <>
           <p>
-            Pick a backup Hermes Chat made. It's read and checked whole, and you see what it holds and where each part goes before anything is written.
+            Pick a backup Flagstop made. It's read and checked whole, and you see what it holds and where each part goes before anything is written.
           </p>
           {step.at === "choose" && step.error && (
             <p role="alert" className="files-transfer-error">
@@ -503,7 +503,7 @@ function Preview({
         </tbody>
       </table>
       {backup.unsupported.length > 0 && (
-        <p className="muted small">This version of Hermes Chat doesn't know, and skips: {backup.unsupported.join(", ")}.</p>
+        <p className="muted small">This version of Flagstop doesn't know, and skips: {backup.unsupported.join(", ")}.</p>
       )}
 
       {conflicts > 0 && (
@@ -518,9 +518,9 @@ function Preview({
       <div className="import-warnings">
         <b>Before and after</b>
         <ul>
-          <li>A recovery backup of everything this computer keeps is saved first, in Hermes Chat's data folder. Nothing is written without it.</li>
+          <li>A recovery backup of everything this computer keeps is saved first, in Flagstop's data folder. Nothing is written without it.</li>
           <li>Restored drafts and queued messages are never sent. Queues come back paused until you resume them.</li>
-          <li>Hermes Chat reloads afterwards, and signs in again, to use what was restored.</li>
+          <li>Flagstop reloads afterwards, and signs in again, to use what was restored.</li>
         </ul>
       </div>
       {(problem || busy) && (
@@ -589,7 +589,7 @@ function Report({ report, wrote, onReload, onClose }: { report: RestoreReport; w
       <div className="confirm-actions">
         {wrote ? (
           <button className="btn primary" autoFocus onClick={onReload}>
-            Reload Hermes Chat
+            Reload Flagstop
           </button>
         ) : (
           <button className="btn primary" autoFocus onClick={onClose}>

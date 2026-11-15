@@ -66,7 +66,7 @@ describe("Reading a chat link", () => {
     expect(reason(`${good()}&url=https%3A%2F%2Fevil.example`)).toMatch(/parts a chat link doesn't have/);
     expect(reason(`${good()}&id=other`)).toMatch(/twice/);
     expect(reason(good().replace("v=1&", ""))).toMatch(/version/);
-    expect(reason(good({ v: "2" }))).toMatch(/newer Hermes Chat/);
+    expect(reason(good({ v: "2" }))).toMatch(/newer Flagstop/);
     expect(reason(good().replace(/&id=[^&]*/, ""))).toMatch(/chat id/);
   });
 

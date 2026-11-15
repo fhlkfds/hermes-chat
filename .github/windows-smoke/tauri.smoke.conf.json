@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "Hermes Chat",
+        "title": "Flagstop",
         "create": false,
         "width": 1280,
         "height": 820,

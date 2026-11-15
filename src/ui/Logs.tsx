@@ -136,7 +136,7 @@ export function LogsPanel({
   const exportShown = async () => {
     const now = Date.now();
     const head = [
-      `${titleOf(source)}${remote ? `, profile ${profile}` : ""}, exported ${new Date(now).toISOString()} by Hermes Chat`,
+      `${titleOf(source)}${remote ? `, profile ${profile}` : ""}, exported ${new Date(now).toISOString()} by Flagstop`,
       `Shown: ${min ? `${min} and above` : "every level"}${needle.trim() ? `, containing "${needle.trim()}"` : ""}${frozen ? ", as it was when paused" : ""}.`,
       REDACTION_LIMITS,
       "",
@@ -161,9 +161,9 @@ export function LogsPanel({
 
   const status = (() => {
     if (source === "attempts")
-      return `The last ${KEEP} times Hermes Chat opened a connection, kept on this computer between launches: each route tried, by its kind and id, the steps it reached and how long each took, and the error, with secrets and addresses taken out.`;
+      return `The last ${KEEP} times Flagstop opened a connection, kept on this computer between launches: each route tried, by its kind and id, the steps it reached and how long each took, and the error, with secrets and addresses taken out.`;
     if (!remote) return "This app's own diagnostics since it started: connection changes, failures it showed, uncaught errors and console warnings. Kept in memory only.";
-    if (!connected) return "Not connected to Hermes. Reading starts again once Hermes Chat reconnects.";
+    if (!connected) return "Not connected to Hermes. Reading starts again once Flagstop reconnects.";
     switch (state.kind) {
       case "reading":
         return "Reading…";

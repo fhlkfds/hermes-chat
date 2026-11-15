@@ -206,7 +206,7 @@ class Records:
             raise
         if not isinstance(self.doc.get("v"), int) or self.doc["v"] > RECORD_VERSION:
             self.__exit__()
-            raise Refusal("unsupported", "A newer Hermes Chat wrote this repository's worktree record. Update this app to change it.")
+            raise Refusal("unsupported", "A newer Flagstop wrote this repository's worktree record. Update this app to change it.")
         return self
 
     def save(self):
@@ -443,7 +443,7 @@ def protection(t, rec):
     if t["main"]:
         why.append({"kind": "main", "message": "This is the repository's main checkout."})
     if not rec:
-        why.append({"kind": "unmanaged", "message": "Hermes Chat didn't make this worktree, so it doesn't remove it."})
+        why.append({"kind": "unmanaged", "message": "Flagstop didn't make this worktree, so it doesn't remove it."})
     elif rec.get("protected"):
         why.append({"kind": "marked", "message": "It's marked Protected."})
     locked = t.get("locked")
@@ -984,7 +984,7 @@ def removal_facts(top, rec):
     block.extend(protection(tree, rec))
     state = state_of(rec)
     if rec.get("state") in INTERRUPTED and alive(rec.get("run")):
-        block.append({"kind": "busy", "message": "Hermes Chat is still %s it." % {"creating": "making", "setup": "setting up", "removing": "removing"}[rec["state"]]})
+        block.append({"kind": "busy", "message": "Flagstop is still %s it." % {"creating": "making", "setup": "setting up", "removing": "removing"}[rec["state"]]})
     if rec.get("chats"):
         block.append({"kind": "chats", "message": "%d chat%s work%s in it. Detach them first; a quiet chat still counts." % (
             len(rec["chats"]), "" if len(rec["chats"]) == 1 else "s", "s" if len(rec["chats"]) == 1 else "")})
@@ -1227,7 +1227,7 @@ def op_worktree_forget(req):
         if not rec:
             return {"forgotten": rec_id}
         if rec.get("state") in INTERRUPTED and alive(rec.get("run")):
-            raise Refusal("busy", "Hermes Chat is still working on it.")
+            raise Refusal("busy", "Flagstop is still working on it.")
         if tree_at(list_trees(top), rec["path"]) or os.path.lexists(rec["path"]):
             raise Refusal("exists", "The worktree is still there; remove it instead.")
         if rec.get("chats"):

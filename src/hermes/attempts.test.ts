@@ -46,7 +46,7 @@ const RAW = [
   "Can't reach the Hermes dashboard: error sending request for url (http://192.168.1.10:9119/api/status)",
   "Can't reach the Hermes dashboard: error sending request for url (http://hermes-box.tail1234.ts.net:9119/api/status): dns error: failed to lookup address information: Name or service not known",
   "Plain http:// is only used on this computer, a LAN or Tailscale, and 203.0.113.77 is a public address. Use https:// or SSH to reach it.",
-  "The dashboard sent Hermes Chat on to https://login.example.org/cdn-cgi/access?redirect=hermes.example.com, another site.",
+  "The dashboard sent Flagstop on to https://login.example.org/cdn-cgi/access?redirect=hermes.example.com, another site.",
   "The chat connection failed: IO error: Connection refused (os error 111) at [fd7a:115c:a1e0::1]:9119",
   `The dashboard answered 500: {"echo": {"Cf-Access-Client-Secret": "${HEADER}", "cookie": "session=abc123def456", "password": "${PASSWORD}"}, "token": "${TOKEN}"}`,
   `Authorization: Bearer ${TOKEN}`,
@@ -360,7 +360,7 @@ describe("An attempt the app was closed during", () => {
     await next.load();
     const [entry] = next.getSnapshot().entries;
     expect(entry).toMatchObject({ kind: "line", level: "WARNING" });
-    expect(entry.text).toMatch(/^Didn't finish: Hermes Chat was closed while it was connecting, at status\. LAN route k3x9q2ab: keyring \d+ ms, resolve \d+ ms, status\.$/);
+    expect(entry.text).toMatch(/^Didn't finish: Flagstop was closed while it was connecting, at status\. LAN route k3x9q2ab: keyring \d+ ms, resolve \d+ ms, status\.$/);
   });
 
   it("a write the store refuses is kept again without its texts", async () => {

@@ -174,9 +174,9 @@ export function readImport(text: string, existing: readonly Template[], newId: (
   } catch {
     throw new Error("This file isn't a templates export: it isn't JSON.");
   }
-  if (!isObj(doc) || doc.format !== EXPORT_FORMAT || !Array.isArray(doc.templates)) throw new Error("This file isn't a Hermes Chat templates export.");
+  if (!isObj(doc) || doc.format !== EXPORT_FORMAT || !Array.isArray(doc.templates)) throw new Error("This file isn't a Flagstop templates export.");
   if (!Number.isSafeInteger(doc.version) || (doc.version as number) < 1) throw new Error("This templates export has no version this app can read.");
-  if ((doc.version as number) > EXPORT_VERSION) throw new Error("A newer version of Hermes Chat made this export. Update this one to import it.");
+  if ((doc.version as number) > EXPORT_VERSION) throw new Error("A newer version of Flagstop made this export. Update this one to import it.");
   const out: Imported = { added: [], skipped: 0, renamed: [], overLimit: 0 };
   const taken: { name: string }[] = [...existing];
   for (const raw of doc.templates) {

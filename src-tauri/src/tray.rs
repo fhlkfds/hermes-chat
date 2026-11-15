@@ -200,7 +200,7 @@ pub fn seen<R: Runtime>(app: &AppHandle<R>, hidden: bool) {
 
 fn set_show_label(tray: &Tray, hidden: bool) {
     if let Some(parts) = tray.parts() {
-        let _ = parts.show.set_text(if hidden { "Show Hermes Chat" } else { "Hide Hermes Chat" });
+        let _ = parts.show.set_text(if hidden { "Show Flagstop" } else { "Hide Flagstop" });
     }
 }
 
@@ -280,14 +280,14 @@ pub fn start(app: &AppHandle) {
 fn make(app: &AppHandle) -> tauri::Result<Parts> {
     let plain = Image::from_bytes(TRAY_ICON)?.to_owned();
     let dotted = Image::from_bytes(TRAY_INBOX_ICON)?.to_owned();
-    let show_item = MenuItem::with_id(app, "show", "Hide Hermes Chat", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Hide Flagstop", true, None::<&str>)?;
     let new_chat = MenuItem::with_id(app, "new-chat", "New chat", true, None::<&str>)?;
     let inbox = MenuItem::with_id(app, "inbox", inbox_label(0), true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit Hermes Chat", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit Flagstop", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &new_chat, &inbox, &PredefinedMenuItem::separator(app)?, &quit_item])?;
     let icon = TrayIconBuilder::with_id("hermes-chat")
         .icon(plain.clone())
-        .tooltip("Hermes Chat")
+        .tooltip("Flagstop")
         .menu(&menu)
         .show_menu_on_left_click(host::MENU_ON_LEFT_CLICK)
         .on_tray_icon_event(|icon, event| {
@@ -382,7 +382,7 @@ mod host {
 
     /// Why the icon can't be made at all, if it can't.
     pub fn missing() -> Option<String> {
-        (!indicator_library()).then(|| "libayatana-appindicator isn't installed, so Hermes Chat can't put an icon in the tray.".into())
+        (!indicator_library()).then(|| "libayatana-appindicator isn't installed, so Flagstop can't put an icon in the tray.".into())
     }
 
     /// Whether libayatana-appindicator (or libappindicator) is installed: the icon library panics without one.

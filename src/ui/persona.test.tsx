@@ -120,7 +120,7 @@ describe("Settings → Persona", () => {
     // The file shows from ~, and in full on hover.
     expect(chip("File").textContent).toBe("~/.hermes/SOUL.md");
     expect(chip("File").title).toBe("/home/liam/.hermes/SOUL.md");
-    expect(within(applies()).getByText(/Hermes reads SOUL.md when a chat starts/).textContent).toMatch(/doesn't need to restart, and Hermes Chat never restarts it/);
+    expect(within(applies()).getByText(/Hermes reads SOUL.md when a chat starts/).textContent).toMatch(/doesn't need to restart, and Flagstop never restarts it/);
     // Plain text, never rendered: the Markdown shows as typed.
     expect(document.querySelector(".persona strong")).toBeNull();
     expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
@@ -637,7 +637,7 @@ describe("leaving an unsaved persona edit", () => {
     await waitFor(() => expect(window.ask).toBeDefined());
 
     act(() => window.ask!(window.close));
-    const ask = screen.getByRole("alertdialog", { name: "Close Hermes Chat without saving the persona?" });
+    const ask = screen.getByRole("alertdialog", { name: "Close Flagstop without saving the persona?" });
     await user.click(within(ask).getByRole("button", { name: "Keep editing" }));
     expect(window.close).not.toHaveBeenCalled();
     act(() => window.ask!(window.close));
@@ -679,7 +679,7 @@ describe("editing another profile's persona (#190)", () => {
     expect(chip("File").title).toBe("/home/liam/.hermes/profiles/work/SOUL.md");
     expect(await screen.findByText(/installed from the/)).toBeTruthy();
     expect(screen.getByText(/profile distribution/).textContent).toContain("acme-agents");
-    expect(screen.getByText(/Hermes Chat is using the/).textContent).toMatch(/using the default profile.*chats on the work profile/s);
+    expect(screen.getByText(/Flagstop is using the/).textContent).toMatch(/using the default profile.*chats on the work profile/s);
     expect(within(applies()).getByText(/Hermes reads SOUL.md when a chat starts/).textContent).toContain("use the work profile");
 
     await edit(user, "# Work, edited\n", "work");

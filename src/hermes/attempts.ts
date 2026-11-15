@@ -382,7 +382,7 @@ export function attemptText(a: Attempt, run: string): { text: string; level: Lev
           ? [`Failed after ${duration(a.ms ?? 0)}${reached && !a.routes.at(-1)?.error ? `, at ${reached}` : ""}${a.error ? `: ${a.error}` : ""}`, "ERROR"]
           : a.run === run
             ? ["Connecting", "INFO"]
-            : [`Didn't finish: Hermes Chat was closed while it was connecting${reached ? `, at ${reached}` : ""}`, "WARNING"];
+            : [`Didn't finish: Flagstop was closed while it was connecting${reached ? `, at ${reached}` : ""}`, "WARNING"];
   const sentence = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
   return { text: [head, ...routes].map(sentence).join(" "), level };
 }

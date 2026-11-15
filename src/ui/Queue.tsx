@@ -122,7 +122,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
         </div>
         {queue?.unsaved && (
           <div className="queue-note" role="alert">
-            Couldn't save the queue on this computer: its storage is full. It's kept until Hermes Chat closes.
+            Couldn't save the queue on this computer: its storage is full. It's kept until Flagstop closes.
           </div>
         )}
         <ol className="queue-list">
@@ -150,7 +150,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
             />
           ))}
         </ol>
-        <div className="queue-foot">Hermes Chat sends these itself, one after each reply, only while it's open and connected.</div>
+        <div className="queue-foot">Flagstop sends these itself, one after each reply, only while it's open and connected.</div>
       </section>
     </div>
   );

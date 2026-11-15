@@ -181,8 +181,8 @@ describe("Export and import", () => {
 
   it("refuses files that aren't an export, or come from a newer version", () => {
     expect(() => readImport("{not json", [])).toThrow(/isn't JSON/);
-    expect(() => readImport("[]", [])).toThrow(/isn't a Hermes Chat templates export/);
-    expect(() => readImport(JSON.stringify({ format: "other", templates: [] }), [])).toThrow(/isn't a Hermes Chat/);
+    expect(() => readImport("[]", [])).toThrow(/isn't a Flagstop templates export/);
+    expect(() => readImport(JSON.stringify({ format: "other", templates: [] }), [])).toThrow(/isn't a Flagstop/);
     expect(() => readImport(JSON.stringify({ format: EXPORT_FORMAT, templates: [] }), [])).toThrow(/no version/);
     expect(() => readImport(JSON.stringify({ format: EXPORT_FORMAT, version: 2, templates: [] }), [])).toThrow(/newer version/);
   });

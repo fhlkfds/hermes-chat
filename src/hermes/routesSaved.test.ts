@@ -231,11 +231,11 @@ describe("Explaining a route", () => {
 
   it("names a wrong server, something that isn't Hermes, and plain http over the internet", () => {
     const wrong = explain(
-      { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password." },
+      { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Flagstop didn't send it the password." },
       lan,
     );
     expect(wrong).toMatchObject({ verdict: "wrong server", problem: expect.stringContaining("A different Hermes server answered at 192.168.1.10:9119") });
-    const other = explain({ stage: "reach", message: "Wrong server: something answered at this address, but it isn't a Hermes dashboard. Hermes Chat didn't send it the password." }, lan);
+    const other = explain({ stage: "reach", message: "Wrong server: something answered at this address, but it isn't a Hermes dashboard. Flagstop didn't send it the password." }, lan);
     expect(other).toMatchObject({ verdict: "wrong server", problem: expect.stringContaining("isn't a Hermes dashboard") });
     const plain = explainSignIn(
       new SignInFailure({ stage: "address", message: "Plain http:// is only used on this computer, a LAN or Tailscale, and 203.0.113.7 is a public address. Use https:// or SSH to reach it." }),
@@ -278,7 +278,7 @@ describe("Testing routes", () => {
         const at = d.mode === "ssh" ? d.sshTarget : d.url;
         const server = at === LAN.target ? lanServer : "home";
         if (d.server && d.server !== server)
-          throw { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Hermes Chat didn't send it the password." };
+          throw { stage: "reach", message: "Wrong server: a different Hermes server answered at this address than the one this connection signed in to before. Flagstop didn't send it the password." };
         if (at === WEB.target) throw { stage: "sign-in", message: "Wrong username or password." };
         const route = d.mode === "ssh" ? { kind: "ssh" as const, target: at, server } : { kind: "url" as const, url: at, addresses: [], server };
         return { route, status: '{"version":"0.22.5"}', ready } satisfies Probed;

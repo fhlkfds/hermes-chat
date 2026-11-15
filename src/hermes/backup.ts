@@ -290,7 +290,7 @@ function perDoc(
       const raw = JSON.parse(before.raw) as string | null;
       const doc = parse(raw);
       if (Number.isSafeInteger(doc.v) && (doc.v as number) > version)
-        throw new Error("A newer version of Hermes Chat wrote what this computer keeps for it, so this version didn't change it.");
+        throw new Error("A newer version of Flagstop wrote what this computer keeps for it, so this version didn't change it.");
       // Only the scopes whose records changed are written again; every other one keeps its stored text, fields this
       // version doesn't know included.
       const of = (list: Rec[], scope: string) => stable(list.filter((r) => r.scope === scope));
@@ -625,13 +625,13 @@ export async function readBackup(entries: readonly Entry[]): Promise<Backup> {
   try {
     manifest = JSON.parse(files.get("manifest.json") ?? "");
   } catch {
-    throw new BackupError("It has no readable manifest.json, so it isn't a Hermes Chat backup, or it's damaged.");
+    throw new BackupError("It has no readable manifest.json, so it isn't a Flagstop backup, or it's damaged.");
   }
-  if (!isObj(manifest) || manifest.format !== BACKUP_FORMAT) throw new BackupError("It isn't a Hermes Chat backup.");
+  if (!isObj(manifest) || manifest.format !== BACKUP_FORMAT) throw new BackupError("It isn't a Flagstop backup.");
   let schema = manifest.schema;
   if (!Number.isSafeInteger(schema) || (schema as number) < 1) throw new BackupError("Its manifest has no schema version this app can read.");
   if ((schema as number) > BACKUP_SCHEMA)
-    throw new BackupError(`A newer Hermes Chat made it (backup schema ${schema}); this version reads schema ${BACKUP_SCHEMA}. Update Hermes Chat, then restore it.`);
+    throw new BackupError(`A newer Flagstop made it (backup schema ${schema}); this version reads schema ${BACKUP_SCHEMA}. Update Flagstop, then restore it.`);
   let b: Files = { manifest, files };
   while ((schema as number) < BACKUP_SCHEMA) {
     const step = MIGRATIONS[schema as number];
@@ -821,7 +821,7 @@ export function restoreBlocked(o: {
 }): string | undefined {
   if (o.working) return "A reply is running or an Approval is waiting. Restore once it has finished, or after stopping the reply.";
   if (o.sending) return "A message is still being sent. Restore once it has gone.";
-  if (o.unsaved) return "This computer couldn't save some drafts or queued messages. Free some space or restart Hermes Chat before restoring.";
+  if (o.unsaved) return "This computer couldn't save some drafts or queued messages. Free some space or restart Flagstop before restoring.";
   return undefined;
 }
 

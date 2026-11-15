@@ -659,8 +659,8 @@ export function ModelSettings({
         />
         {saved.subagent.directEndpoint && (
           <SettingNote tone="warn">
-            <TriangleAlert size={12} /> A direct endpoint is set for subagents in Hermes's config, and it takes precedence over the route here. Hermes
-            Chat leaves it as it is.
+            <TriangleAlert size={12} /> A direct endpoint is set for subagents in Hermes's config, and it takes precedence over the route here.
+            Flagstop leaves it as it is.
           </SettingNote>
         )}
         {saved.namedRoutes > 0 && (

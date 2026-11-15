@@ -149,12 +149,12 @@ function stateBadge(j: CronJob) {
 
 /** The upcoming runs Hermes's rules make, from its own next run, with what the next clock change does. */
 function Upcoming({ schedule, zone, first, remaining }: { schedule?: Schedule; zone: JobsZone; first?: number; remaining?: number | null }) {
-  if (!schedule) return <p className="muted small">Hermes Chat can't preview this schedule; Hermes's own next run is shown above.</p>;
+  if (!schedule) return <p className="muted small">Flagstop can't preview this schedule; Hermes's own next run is shown above.</p>;
   const count = Math.min(5, remaining ?? 5);
   const from = first ?? Date.now();
   // A one-shot has its one run; anything else follows Hermes's next run with the ones after it, up to its limit.
   const later = schedule.kind === "once" ? [] : upcomingRuns(schedule, zone.zone, from, first === undefined ? count : count - 1);
-  if (!later) return <p className="muted small">Hermes Chat can't preview this cron expression. Hermes checks it, and works out the runs itself.</p>;
+  if (!later) return <p className="muted small">Flagstop can't preview this cron expression. Hermes checks it, and works out the runs itself.</p>;
   const runs = (schedule.kind === "once" ? [first ?? schedule.runAt] : first === undefined ? later : [first, ...later]).slice(0, Math.max(0, count));
   const note = zone.named ? clockChangeNote(schedule, zone.zone, from) : undefined;
   return (
@@ -307,7 +307,7 @@ export function ScheduledJobs({
               <CalendarClock size={20} /> <span>Scheduled jobs</span>
             </h1>
             <p className="muted">
-              Jobs Hermes runs on the server for the <span className="mono">{profile}</span> profile, at the times set here, also while Hermes Chat is
+              Jobs Hermes runs on the server for the <span className="mono">{profile}</span> profile, at the times set here, also while Flagstop is
               closed.{loaded && <> {zoneSentence(loaded.zone)}</>}
             </p>
           </>
@@ -643,7 +643,7 @@ function JobDetail({
   }, [connected, job.id]);
   const copyNote =
     copies.length > 0 &&
-    `The ${copies.join(" and ")} ${copies.length === 1 ? "profile has a copy" : "profiles have copies"} of this job, with the same id. If this one is deleted in another Hermes client while you change it here, Hermes changes ${copies.length === 1 ? "that copy" : "one of those copies"} instead; Hermes Chat says so if it notices.`;
+    `The ${copies.join(" and ")} ${copies.length === 1 ? "profile has a copy" : "profiles have copies"} of this job, with the same id. If this one is deleted in another Hermes client while you change it here, Hermes changes ${copies.length === 1 ? "that copy" : "one of those copies"} instead; Flagstop says so if it notices.`;
   const zone = loaded.zone;
   const offline = connected ? undefined : "Connect to Hermes to change this job.";
   const paused = !job.enabled || job.state === "paused";
@@ -879,7 +879,7 @@ function JobDetail({
       <section>
         <h2>Schedule</h2>
         <p>
-          {job.schedule ? explainSchedule(job.schedule, zone.zone) : "Hermes Chat can't read this schedule."} <span className="mono faint">{job.scheduleText}</span>
+          {job.schedule ? explainSchedule(job.schedule, zone.zone) : "Flagstop can't read this schedule."} <span className="mono faint">{job.scheduleText}</span>
         </p>
         <p className="muted small">
           {zone.named ? `Schedule time zone: ${zone.label}. ` : `Schedule time zone: not named by Hermes. Times are shown in ${zone.label}. `}
@@ -918,7 +918,7 @@ function JobDetail({
             <CircleAlert size={14} /> {p}
           </p>
         ))}
-        {!loaded.targets && job.deliver !== "local" && <p className="muted small">Hermes Chat couldn't read where this profile can deliver, so it can't check this job's delivery.</p>}
+        {!loaded.targets && job.deliver !== "local" && <p className="muted small">Flagstop couldn't read where this profile can deliver, so it can't check this job's delivery.</p>}
         {kept.length > 0 && (
           <dl className="job-kept">
             {kept.map(([k, v]) => (
@@ -1062,7 +1062,7 @@ function TroublePreview({
       ) : (
         <>
           <p className="small">
-            Hermes Chat starts a new chat in the <span className="mono">{profile}</span> profile, the job's, with the message below. Hermes looks for the
+            Flagstop starts a new chat in the <span className="mono">{profile}</span> profile, the job's, with the message below. Hermes looks for the
             cause and can change this job with its own cron tools; it is asked to say what it changes, and this screen reads the job again when its reply
             ends, to show what changed. The message goes to the model as written: check it, and edit out anything you don't want sent.
           </p>
@@ -1071,7 +1071,7 @@ function TroublePreview({
               {prep.cut.length > 0 && <li>Cut short to fit: {prep.cut.join(", ")}. Hermes can read the whole of it on the server.</li>}
               {prep.hidden.length > 0 && (
                 <li>
-                  Hidden, as it looked like a secret: {prep.hidden.join(", ")}. Hermes Chat recognises common key and token shapes only, so read the
+                  Hidden, as it looked like a secret: {prep.hidden.join(", ")}. Flagstop recognises common key and token shapes only, so read the
                   message before sending.
                 </li>
               )}
@@ -1142,7 +1142,7 @@ function TroublePanel({
         ) : (
           <p className="sign-in-error small" role="alert">
             Hermes's reply in the troubleshooting chat has ended, but the job couldn't be read again
-            {reading?.error ? `: ${reading.error}` : ", since Hermes Chat isn't connected"}. What changed shows once it has been read.
+            {reading?.error ? `: ${reading.error}` : ", since Flagstop isn't connected"}. What changed shows once it has been read.
           </p>
         )
       ) : (
@@ -1305,7 +1305,7 @@ function JobEditor({
     setContext(undefined);
     void readProfile(api, p).then(
       (got) => contextReads.current(n) && take(got),
-      (e) => contextReads.current(n) && setContext(`Hermes Chat couldn't read the ${p} profile's jobs: ${errorText(e)}`),
+      (e) => contextReads.current(n) && setContext(`Flagstop couldn't read the ${p} profile's jobs: ${errorText(e)}`),
     );
   };
 
@@ -1367,7 +1367,7 @@ function JobEditor({
       <h1 className="project-title" ref={heading} tabIndex={-1}>
         <CalendarClock size={20} /> <span>{job ? `Edit ${job.name}` : "New scheduled job"}</span>
       </h1>
-      <p className="muted">Hermes keeps the job on the server and runs it there, so it runs while Hermes Chat is closed.</p>
+      <p className="muted">Hermes keeps the job on the server and runs it there, so it runs while Flagstop is closed.</p>
       <form
         className="job-form"
         noValidate
@@ -1471,7 +1471,7 @@ function JobEditor({
           </select>
           <span className="field-hint" id="job-deliver-help">
             {ctx && !known
-              ? "Hermes Chat couldn't read where this profile can deliver, so only saving on the server is offered."
+              ? "Flagstop couldn't read where this profile can deliver, so only saving on the server is offered."
               : "Only the places this profile's gateway has set up. Nothing is sent to try it: the first delivery is the job's first real run."}
           </span>
           {deliveryProblem && <span className="field-hint err">{deliveryProblem}</span>}
@@ -1503,7 +1503,7 @@ function JobEditor({
               <div>
                 <dt>Runs</dt>
                 <dd>
-                  {explainSchedule(preview, zone.zone)}, {zone.named ? `on the schedule time zone, ${zone.label}` : `shown in ${zone.label}; Hermes Chat can't confirm the ${where} profile's own time zone`}
+                  {explainSchedule(preview, zone.zone)}, {zone.named ? `on the schedule time zone, ${zone.label}` : `shown in ${zone.label}; Flagstop can't confirm the ${where} profile's own time zone`}
                 </dd>
               </div>
               <div>

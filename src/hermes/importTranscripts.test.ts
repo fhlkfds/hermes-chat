@@ -90,14 +90,14 @@ describe("a Hermes Chat Markdown export", () => {
   });
 
   it.each([
-    ["no title", "Hello\n", /Line 1: a Hermes Chat export starts with the chat's title/],
-    ["no export note", "# Chat\n\n**You:**\n\nhi\n", /its note doesn't say when Hermes Chat exported it/],
+    ["no title", "Hello\n", /Line 1: a Flagstop export starts with the chat's title/],
+    ["no export note", "# Chat\n\n**You:**\n\nhi\n", /its note doesn't say when Flagstop exported it/],
     ["a cut-short file", chatMarkdown(chat, EXPORTED).split("nested fence")[0] + "\n", /a code block opens here and never closes/],
     ["text before the first message", "# Chat\n\n> Exported from Hermes Chat on 2026-11-02 09:30 UTC.\n\nstray words\n", /Line 5: expected a message/],
     ["bad tool arguments", chatMarkdown(chat, EXPORTED).replace('"command": "journalctl -n 5"', '"command": '), /arguments of the terminal tool call aren't valid JSON/],
     ["no messages", "# Chat\n\n> Exported from Hermes Chat on 2026-11-02 09:30 UTC.\n", /has no messages/],
     ["a date that isn't one", "# Chat\n\n> Exported from Hermes Chat on 2026-13-40 09:30 UTC.\n\n**You:**\n\nhi\n", /isn't a real date/],
-    ["a JSONL file", '{"id":"a","messages":[]}\n', /Line 1: a Hermes Chat export starts/],
+    ["a JSONL file", '{"id":"a","messages":[]}\n', /Line 1: a Flagstop export starts/],
     ["a cut at a tool call's header", chatMarkdown(chat, EXPORTED).split("Arguments:")[0], /the terminal tool call has no output and no note saying why/],
     ["a cut mid-line", chatMarkdown(chat, EXPORTED).slice(0, -3), /stops in the middle of a line/],
     ["a cut inside an Approval", chatMarkdown(chat, EXPORTED).split("_Approved once_")[0], /an Approval without its command or its outcome/],
@@ -226,7 +226,7 @@ describe("a Hermes session export (JSONL)", () => {
     ["a line that isn't JSON", jsonl(exported()) + "{oops\n", /Line 2 isn't valid JSON/],
     ["a session without messages", jsonl({ id: "a" }), /Line 1 isn't a session: it has no "messages" list/],
     ["a user-prompts export", jsonl({ session_id: "a", prompt: "hi" }), /user-prompts export/],
-    ["an id that is a path", jsonl(exported({ id: "../../etc/passwd" })), /session id "..\/..\/etc\/passwd" isn't one Hermes Chat imports/],
+    ["an id that is a path", jsonl(exported({ id: "../../etc/passwd" })), /session id "..\/..\/etc\/passwd" isn't one Flagstop imports/],
     ["no id", jsonl(exported({ id: undefined })), /session id undefined isn't one/],
     ["the same session twice", jsonl(exported(), exported()), /Line 2: session 20261020_101500_a1b2c3 is in the file twice/],
     ["a message without a role", jsonl(exported({ messages: [{ content: "x" }] })), /Line 1, message 1: it has no role/],
