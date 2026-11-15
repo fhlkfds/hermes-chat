@@ -1,0 +1,36 @@
+# Project instructions are written by a model of their own, kept as `auxiliary.project_instructions`
+
+> **Accepted** (#567). It supersedes ADR 0152's "Which model writes" decision, and nothing else in it.
+
+Issue #567: **Write with AI** and **Improve with AI** on a project's Instructions box (ADR 0152) ran on the profile's **Text generation** model (`auxiliary.title_generation`), the model that also names chats. When the server wasn't signed in to that model's provider, writing instructions failed, and the only fixes were to change the model for chat titles too or to sign the server in. The owner asked for a model they pick only for project instructions, in Settings → Model. From the options on the issue they chose to keep it as `auxiliary.project_instructions` and write it with `PUT /api/config` (option A).
+
+## What Hermes does
+
+These were read in the source at `bf0203a` and `f0d9488`, then run against a throwaway Hermes dashboard for each tree, with a stub model that answers with the model it was asked for. Both trees behave the same.
+
+- **`llm.oneshot` takes a `task`, and reads any task's config.** `run_oneshot` (`agent/oneshot.py`) passes `task` to `call_llm`, and `title_generation` is its default. `_resolve_task_provider_model` (`agent/auxiliary_client.py`) reads `auxiliary.<task>` through `_task_config` (`agent/auxiliary_task_config.py`) for any key, not only the built-in slots. So `task: "project_instructions"` runs on `auxiliary.project_instructions` when that block exists.
+- **An unset task runs on the main model, not on Text generation.** When the block is missing, or its provider is empty or `auto`, the task resolves to `auto`, which is the main model. Empty `base_url`, `api_key` and `key_env` count as unset there (`str(...).strip() or None`). An empty or missing `reasoning_effort` is no override.
+- **The model routes refuse the task.** `POST /api/model/set` with `scope: "auxiliary", task: "project_instructions"` answers 400 `unknown auxiliary task`: `_apply_aux_assignment_sync` (`hermes_cli/web_server_config.py`) accepts only `_aux_task_slots()`, the built-in slots and tasks a plugin registers. `PUT /api/model/auxiliary` answers 405, and `GET /api/model/auxiliary` (`hermes_cli/web_routers/models.py`) lists only the slots.
+- **`PUT /api/config` keeps the block.** `update_config` (`hermes_cli/web_routers/config_env.py`) deep-merges the body over `config.yaml`, so `{config: {auxiliary: {project_instructions: {...}}}}` is kept, and `GET /api/config` returns it. A later `POST /api/model/set` for another slot leaves it alone.
+- **A provider change clears stale endpoint keys on the model route only.** When a slot's provider changes, `_apply_aux_assignment_sync` drops `base_url` and calls `clear_model_endpoint_credentials` (`hermes_cli/config.py`), which drops `api_key`, `api`, `key_env` and `api_mode`. `PUT /api/config` does none of this, and a deep merge can't delete a key.
+
+## Decisions
+
+- **Settings → Model has a Project instructions model.** It is a second row in the Text generation card, under Text generation's own row, with the same picker: provider, model and reasoning effort. It is written as soon as it's picked. While it is set, a reset button, **Follow Text generation**, unsets it. Its help says Hermes keeps it in the profile's config as `auxiliary.project_instructions`, so Hermes's own dashboard doesn't list it.
+- **It is written with `PUT /api/config`**, because `/api/model/set` refuses a task Hermes has no slot for. The app writes the fields that route would write: `provider`, `model`, `reasoning_effort` (`""` for inherit, `none` for Off, else the level), and `base_url` when the catalog gives the provider a URL of its own. When the provider changes, the app writes `""` for `base_url` (unless it has its own URL) and for `api_key`, `api`, `key_env` and `api_mode`, which Hermes reads as unset. It does this for a provider with its own URL too, where `/api/model/set` keeps the old keys, so one provider's key never goes to another's endpoint (the risk `_AUX_ROUTE_KEYS` in `agent/auxiliary_task_config.py` names). Unsetting writes `""` for every one of these keys. The code is `ModelSettingsApi.applyInstructions` in `src/hermes/modelSettings.ts`.
+- **Unset, it follows Text generation.** The app reads the block from `GET /api/config`. It is unset when it is missing, or its provider is empty or `auto`. Hermes would then run `project_instructions` on the main model, so the app sends `task: "title_generation"` instead, and the calls run on Text generation's model as before. That is the default the owner asked for.
+- **Every instructions call sends the task.** The dialog reads the model once when it opens, and every call (each question, each draft, Ask again, and the improve call that starts on open) waits for that read and sends its `task`. If the read fails, the call fails with the read's reason, and the next call reads again. The app never falls back to Text generation on its own. Chat titles, Regenerate title, chat summaries, Artifact edits and commit messages still send no `task`.
+- **The dialog names the model.** It reads "Written by profile X's Project instructions model: provider · model", or, while unset, "…Project instructions model, which follows Text generation: provider · model", with ", the main model" when Text generation itself is on `auto`.
+- **A missing sign-in points at the setting that fixes it.** Set: "Project instructions run on X, … or pick another Project instructions model in Settings → Model." Unset: "Project instructions use the Text generation model, which runs on X, … or pick a Project instructions model in Settings → Model." Both say what Hermes needs, as Regenerate title does (for example `hermes auth add nous`).
+
+## Considered options
+
+- **B: pick which existing helper task's model writes instructions** (for example "Project instructions use: Text generation / Profile descriptions / …"), and send that task's name. Every Hermes supports it. Rejected: the model is shared with that task's real job, so it isn't a model picked for instructions only, which is what the owner asked for.
+- **C: register the task on the server.** A Hermes plugin calling `register_auxiliary_task("project_instructions", inherit_from="title_generation", …)` would make `/api/model/set` accept it, `GET /api/model/auxiliary` list it, and Hermes itself follow Text generation while it's unset. Rejected for now: the app can't install a server plugin, so this is an upstream or server change. If Hermes adds the task, the row can move to `/api/model/set`.
+
+## Consequences
+
+- **No expensive-model guard.** `PUT /api/config` doesn't check the price, so this row never asks "Use anyway", as the Text generation row does.
+- **Only this app shows the setting.** Hermes's own dashboard and `hermes model` don't list `auxiliary.project_instructions`, and Hermes's Reset all (`task: "__reset__"`) doesn't touch it.
+- **The app does the stale-key clearing** that `/api/model/set` does for real slots. If Hermes adds keys to `clear_model_endpoint_credentials`, `applyInstructions` needs them too.
+- The fake dashboard (`src/hermes/fakeHermes.ts`) keeps blocks for tasks with no slot apart from the slots, and resolves an `llm.oneshot`'s model from its task as Hermes does.
