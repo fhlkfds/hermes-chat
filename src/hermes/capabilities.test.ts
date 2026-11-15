@@ -155,6 +155,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       botMode: "supported",
       // Only a chat's own subagent.list can learn this.
       subagents: "unknown",
+      runView: "unknown",
       subagentRoster: "supported",
       // Only answering an Approval can learn this.
       approvalAnswers: "unknown",
@@ -170,6 +171,8 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       authFlows: ["cookie"],
       flags: ["per_session_exclusive_submit"],
       declinesNotShown: false,
+      // This script has no config to read.
+      toolProgress: { why: "Couldn't read the profile's config: Hermes has no such route (it answered 404)." },
     });
     expect(snap.stale).toBe(false);
     expect(snap.checking).toBe(false);
@@ -595,7 +598,7 @@ describe("checking again", () => {
     await connectAndCheck(t, 2);
     const again = t.calls.slice(before);
     // Only the facts, to see whether the build changed.
-    expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC gateway.capabilities"]);
+    expect(again.sort()).toEqual(["GET api/config", "GET api/health", "GET api/status", "RPC gateway.capabilities"]);
     expect(t.caps.getSnapshot().checkedAt).toBe(now);
   });
 

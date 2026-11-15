@@ -171,6 +171,7 @@ describe("parseManifest", () => {
         "botMode",
         "subagents",
         "subagentRoster",
+        "runView",
       ]);
     });
   });

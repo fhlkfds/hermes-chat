@@ -225,6 +225,7 @@ function replyTo(sessionId: string, prompt: string, said?: string, persisted_tur
 }
 
 server.kanban.wakeDelayMs = 2_000;
+server.stepDelayMs = 700;
 server.kanban.wakeWith = (sid, _stored, text, user_row_id) => replyTo(sid, "", text, { user_row_id });
 
 // The subagents a "delegate" prompt started, as `subagent.start` / `subagent.complete` payloads carry them
@@ -452,6 +453,8 @@ http.on("upgrade", async (req, sock: Socket) => {
           else if (/approval/i.test(prompt)) askApproval(session_id);
           else if (/^fail/i.test(prompt)) failReply(session_id);
           else if (/dispatch|background/i.test(prompt)) setTimeout(save, 500);
+          // FakeHermes runs a two-tool turn for it (`toolReply`), for the Run view.
+          else if (/run steps/i.test(prompt)) setTimeout(save, 10 * server.stepDelayMs);
           else replyTo(session_id, prompt);
         }, 0);
       }

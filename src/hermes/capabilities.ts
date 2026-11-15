@@ -23,6 +23,7 @@ import { redactSecrets } from "./secrets";
 import { RestError, type RestMethod } from "./pipe";
 import { errorText, isObj } from "./values";
 import type { AppMethod } from "./canonicalVerbs";
+import { toolProgressOf, type ToolProgress } from "./runs";
 
 /** The features whose server support is tracked. */
 export type CapabilityId =
@@ -45,7 +46,8 @@ export type CapabilityId =
   | "kanban"
   | "botMode"
   | "subagents"
-  | "subagentRoster";
+  | "subagentRoster"
+  | "runView";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -411,6 +413,20 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     probe: { kind: "rpc", method: "subagent.roster", params: (profile) => ({ profile }), shape: (r) => isObj(r) && isList(r.sessions) },
     methods: ["subagent.roster"],
   },
+  {
+    id: "runView",
+    label: "Run view",
+    usedBy: "A reply's Run view: the steps it took, how long each took, and which failed",
+    needs:
+      "The tool.*, message.*, session.usage and status.update events on /api/ws for a reply this app watched, and GET /api/sessions/{id}/messages for one it didn't. No new route: Hermes bf0203a and f0d94882 have them all.",
+    without: "The Run view shows only replies this app watched, and says it couldn't read the stored ones.",
+    anchor: "run-view",
+    // The app reads a chat's stored messages at the end of every turn it sends, so that answer settles this; a probe
+    // would need a real session's id.
+    notChecked: "Known once this app reads a chat's stored messages, as it does when a reply it sent ends.",
+    routes: [/^api\/sessions\/[^/]+\/messages$/],
+    settles: (answer) => isObj(answer) && isList(answer.messages),
+  },
 ];
 
 const SPECS = new Map(CAPABILITIES.map((c) => [c.id, c]));
@@ -445,6 +461,10 @@ export type ServerFacts = {
   versionWhy?: string;
   /** Why the feature flags couldn't be read, if they couldn't. */
   flagsWhy?: string;
+  /** Whether Hermes sends ordinary tool steps for the profile (`display.tool_progress`), as last read for the Run view. */
+  toolProgress?: ToolProgress;
+  /** Whether the last `message.start` heard carried a `turn_id`: Hermes `bf0203a` sends none. */
+  turnIds?: boolean;
 };
 
 export type CapabilitySnapshot = {
@@ -794,7 +814,8 @@ export class CapabilityStore {
     this.run++;
     clearTimeout(this.due);
     // The canonical protocol never gets this far (`ProtocolMismatchError`), so a connection that is up is legacy.
-    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready) }, stale: false });
+    // The tool steps setting is the profile's, and turn ids are the build's: both are learnt again on this connection.
+    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready), toolProgress: undefined, turnIds: undefined }, stale: false });
     this.setCap("chat", { state: "supported", source: "advertised", why: "Hermes speaks the legacy session protocol on this connection." });
     const learnt = (declinesNotShown: boolean, approvals: Pick<Capability, "state" | "why">) => {
       if (!this.current(scope)) return;
@@ -914,6 +935,13 @@ export class CapabilityStore {
     this.setCap(id, cap);
   }
 
+  /** Facts learnt from this connection's own traffic: the profile's tool steps setting, and whether turns carry ids. */
+  learn(gen: number, facts: Pick<ServerFacts, "toolProgress" | "turnIds">) {
+    if (!this.scope || this.scope.gen !== gen || gen !== this.liveGen()) return;
+    if (Object.entries(facts).every(([k, v]) => JSON.stringify(this.snap.facts[k as keyof ServerFacts]) === JSON.stringify(v))) return;
+    this.set({ facts: { ...this.snap.facts, ...facts } });
+  }
+
   /** What a screen found by its own check, such as Settings → Toolsets' write check (ADR 0021). */
   report(gen: number, id: CapabilityId, state: CapabilityState, why: string) {
     if (!this.scope || this.scope.gen !== gen || gen !== this.liveGen()) return;
@@ -946,12 +974,13 @@ export class CapabilityStore {
   private async check(scope: Scope, force: boolean): Promise<void> {
     const run = ++this.run;
     this.set({ checking: true });
-    const facts = await this.readFacts();
+    const facts = await this.readFacts(scope.profile);
     if (!this.current(scope, run)) return;
     // A build is known by its commit when Hermes names one, else by its version: a git checkout has no version.
     const key = facts.commit ?? facts.build ?? facts.version;
     const sameBuild = key !== undefined && key === this.checkedFor;
-    this.set({ facts: { ...facts, protocol: this.snap.facts.protocol, declinesNotShown: this.snap.facts.declinesNotShown } });
+    const { protocol, declinesNotShown, toolProgress, turnIds } = this.snap.facts;
+    this.set({ facts: { ...facts, protocol, declinesNotShown, toolProgress: facts.toolProgress ?? toolProgress, turnIds } });
     // Another build may have other routes: only what this connection learnt stands.
     if (!sameBuild && this.checkedFor !== undefined) {
       const kept = Object.values(this.snap.caps).filter((c) => (c.checkedAt ?? 0) >= this.connectedAt);
@@ -982,13 +1011,21 @@ export class CapabilityStore {
   }
 
   /** The version from `/api/health`, or `/api/status` on a server without it, the sign-in gate, and the feature flags. */
-  private async readFacts(): Promise<ServerFacts> {
-    const read = (path: string) => within(this.io.get(path, FACTS_MAX_BYTES), this.timeoutMs).then((t) => JSON.parse(t) as unknown);
+  private async readFacts(profile: string): Promise<ServerFacts> {
+    const read = (path: string, max = FACTS_MAX_BYTES) => within(this.io.get(path, max), this.timeoutMs).then((t) => JSON.parse(t) as unknown);
     const caught = <T>(p: Promise<T>) => p.catch((e: unknown) => (e instanceof Error ? e : new Error(errorText(e))));
-    const [health, status, flags] = await Promise.all([
+    const [health, status, flags, toolProgress] = await Promise.all([
       caught(read("api/health").then(healthFacts)),
       caught(read("api/status").then(statusFacts)),
       caught(within(this.io.rpc("gateway.capabilities", {}), this.timeoutMs).then(flagsFrom)),
+      // The profile's config, for the Run view's note on tool steps; a config is larger than the other answers.
+      read(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(
+        (c): ToolProgress => {
+          const mode = toolProgressOf(c);
+          return mode ? { mode } : { why: "Hermes answered with something other than a config." };
+        },
+        (e: unknown): ToolProgress => ({ why: redact(`Couldn't read the profile's config: ${stateOfFailure(failureOf(e)).why}`) }),
+      ),
     ]);
     const h = health instanceof Error ? undefined : health;
     const s = status instanceof Error ? undefined : status;
@@ -1001,6 +1038,7 @@ export class CapabilityStore {
       authRequired: h?.authRequired ?? s?.authRequired,
       authProviders: s?.authProviders,
       authFlows: s?.authFlows,
+      toolProgress,
     };
     if (facts.version === undefined && facts.build === undefined && facts.commit === undefined) {
       const why = [health, status].map((r) => (r instanceof Error ? stateOfFailure(failureOf(r)).why : undefined)).find(Boolean);
@@ -1107,6 +1145,8 @@ export function reportText(snap: CapabilitySnapshot, ctx: { app: string; server?
     `Protocol: ${protocolText(f.protocol)}`,
     `Sign-in: ${authLine(f, ctx.signIn)}`,
     `Feature flags: ${f.flags ? (f.flags.length ? f.flags.join(", ") : "none turned on") : (f.flagsWhy ?? "not read yet")}`,
+    `Tool steps (display.tool_progress): ${!f.toolProgress ? "not read yet" : "mode" in f.toolProgress ? f.toolProgress.mode : f.toolProgress.why}`,
+    `Turn ids: ${f.turnIds === undefined ? "not seen yet" : f.turnIds ? "sent" : "not sent"}`,
     `Extra request headers: ${ctx.headers} (values never shown)`,
     `Last checked: ${when(snap.checkedAt)}${snap.stale ? " (not connected now: as last checked)" : ""}`,
     "",

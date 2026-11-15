@@ -911,6 +911,7 @@ export class FakeHermes {
       const prompt = String(r.params.text ?? "");
       if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
       else if (stored && /background/i.test(prompt)) queueMicrotask(() => this.backgroundReply(runtimeId, stored));
+      else if (stored && /run steps/i.test(prompt)) queueMicrotask(() => void this.toolReply(runtimeId, stored));
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
     // at the deployed `bf0203a`). Images join `attached_images`; other files land in the session's
@@ -1515,6 +1516,8 @@ export class FakeHermes {
       delegation: { ...this.modelConfig.delegation },
       terminal: { backend: this.terminalBackend[query.get("profile") || "default"] ?? "local" },
       dashboard: { turn_isolation: this.turnIsolation },
+      // Hermes's defaults name no `display.tool_progress`, which it reads as `all`.
+      ...(this.toolProgress !== undefined && { display: { tool_progress: this.toolProgress } }),
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
       // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
       ...(this.mcp.servers[query.get("profile") || "default"] && { mcp_servers: this.mcp.servers[query.get("profile") || "default"] }),
@@ -2389,6 +2392,57 @@ export class FakeHermes {
   }
   private subagentSeq = 0;
 
+  /** The profile's `display.tool_progress`, as its config would hold it; none by default. */
+  toolProgress?: unknown;
+
+  /** How long `toolReply` waits between its steps, in ms. The stand-in waits, so a Run view has lengths to draw. */
+  stepDelayMs = 0;
+
+  /**
+   * A reply that runs two tools between two model calls, as Hermes `bf0203a` sends it (research doc "Flight recorder"):
+   * `message.start` with no `turn_id`, `session.usage` ticks with the running counters, `tool.start` / `tool.complete`
+   * with Hermes's own `duration_s` and no failure flag (the second tool's result says it failed), and stored rows each
+   * stamped when its step ended, the assistant's `tool_calls` paired to the tool rows by `tool_call_id`. The chat's stored
+   * cost goes up by the turn's.
+   */
+  async toolReply(runtimeId: string, stored: string) {
+    const wait = (n: number) => new Promise((done) => setTimeout(done, n * this.stepDelayMs));
+    const session = this.sessions.find((r) => r.id === stored) ?? Object.values(this.otherProfiles).flat().find((r) => r.id === stored);
+    const base = session?.api_call_count ?? 0;
+    const counters = (calls: number) => ({ model: "stand-in-model", calls: base + calls, input: 1200 * calls, prompt: 1200 * calls, output: 60 * calls, reasoning: 0, total: 1260 * calls });
+    const user_row_id = [...(this.transcripts[stored] ?? [])].reverse().find((m) => m.role === "user")?.row_id;
+    const calls = [
+      { id: `call-${runtimeId}-1`, type: "function", function: { name: "terminal", arguments: JSON.stringify({ command: "ls" }) } },
+      { id: `call-${runtimeId}-2`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.md" }) } },
+    ];
+    this.event(runtimeId, "message.start");
+    await wait(1);
+    const said = "Looking at the folder first. ";
+    this.event(runtimeId, "message.delta", { text: said });
+    this.event(runtimeId, "session.usage", { usage: counters(1) });
+    await wait(1);
+    this.storeMessage(stored, { role: "assistant", text: said, tool_calls: calls });
+    const ls = JSON.stringify({ output: "README.md\nsrc\npackage.json", exit_code: 0 });
+    const missing = JSON.stringify({ error: "File not found: notes.md" });
+    this.event(runtimeId, "tool.start", { tool_id: calls[0].id, name: "terminal", args: { command: "ls" } });
+    this.event(runtimeId, "tool.start", { tool_id: calls[1].id, name: "read_file", args: { path: "notes.md" } });
+    await wait(1);
+    this.event(runtimeId, "tool.complete", { tool_id: calls[1].id, name: "read_file", duration_s: this.stepDelayMs / 1000, result: missing });
+    this.storeMessage(stored, { role: "tool", tool_call_id: calls[1].id, name: "read_file", result: missing });
+    await wait(2);
+    this.event(runtimeId, "tool.complete", { tool_id: calls[0].id, name: "terminal", duration_s: (3 * this.stepDelayMs) / 1000, result: ls });
+    this.storeMessage(stored, { role: "tool", tool_call_id: calls[0].id, name: "terminal", result: ls });
+    await wait(1);
+    const text = "The folder has README.md, src and package.json. There's no notes.md.";
+    this.event(runtimeId, "message.delta", { text });
+    this.event(runtimeId, "session.usage", { usage: counters(2) });
+    await wait(1);
+    this.storeMessage(stored, { role: "assistant", text });
+    const final_assistant_row_id = this.transcripts[stored].at(-1)!.row_id!;
+    if (session) Object.assign(session, { api_call_count: base + 2, input_tokens: (session.input_tokens ?? 0) + 2400, output_tokens: (session.output_tokens ?? 0) + 120, estimated_cost_usd: (session.estimated_cost_usd ?? 0) + 0.0123, cost_status: "estimated" });
+    this.event(runtimeId, "message.complete", { text: said + text, status: "complete", usage: counters(2), persisted_turn: { user_row_id, final_assistant_row_id } });
+  }
+
   approvalInfo(sid: string): Record<string, unknown> {
     if (!this.approvalModes) return {};
     const mode = this.approvalModes[this.runtimeProfile.get(sid) ?? "default"] ?? "smart";
@@ -2713,10 +2767,11 @@ export class FakeHermes {
         _compressed_summary: m.summary ? 1 : null,
         message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
-    if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);
-    return { session_id: id, profile: query.get("profile") ?? "default", messages: rows.slice(offset, offset + limit), pagination: {} };
+    // `latest` pages back from the newest row and still returns its page oldest first (`get_messages` at `bf0203a`).
+    const page = query.get("order") === "latest" ? rows.slice(Math.max(0, rows.length - offset - limit), Math.max(0, rows.length - offset)) : rows.slice(offset, offset + limit);
+    return { session_id: id, profile: query.get("profile") ?? "default", messages: page, pagination: {} };
   }
 
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */

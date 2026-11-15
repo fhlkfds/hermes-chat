@@ -71,7 +71,7 @@ import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
-import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
+import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ChatUsage, type ReplyUsage, type UsageCounters } from "./usage";
 import { toolResultText } from "./toolResult";
 import { num } from "./chatCache";
 import { onLost, onRoster, onSubagentEvent, onUnchecked, parseOutput, type SubagentId, type SubagentOutput } from "./subagents";
@@ -95,6 +95,7 @@ import {
 import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, withoutMarkers, type ReplayKind, type ReplayPreview } from "./replay";
 import { errorText, formatBytes, optionalText } from "./values";
 import { returnedItem } from "./returned";
+import { RUNS_KEPT, record, storedRun, toolProgressOf, watchedRun, type Recording, type RunView, type StoredRunRow, type ToolProgress } from "./runs";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -807,6 +808,10 @@ export class Hermes {
   private turnStart = new Map<string, string | null>();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
   private unprompted = new Set<string>();
+  /** The turn each chat is in, as this app hears it, by profile and chat id (ADR 0177). Kept in memory only. */
+  private recording = new PerProfile<Recording>();
+  /** Each chat's finished runs this app heard, oldest first, at most `RUNS_KEPT`. Kept in memory only. */
+  private recorded = new PerProfile<Recording[]>();
   /** Side questions asked on this connection, so each card has its own id (ADR 0070). */
   private sideAsked = 0;
   /**
@@ -2937,6 +2942,7 @@ export class Hermes {
       if (this.profile !== profile) return;
       const read = chatUsageOf(row, Date.now());
       this.patchChat(chatId, (c) => ({ ...c, usage: newerChatUsage(c.usage, read), usageError: undefined }));
+      if (read) this.runCostRead(profile, chatId, read);
     } catch (e) {
       if (this.profile !== profile || sessionNotFound(e)) return;
       this.patchChat(chatId, (c) => ({ ...c, usageError: `Couldn't read usage from Hermes: ${(e as Error).message}` }));
@@ -3567,6 +3573,9 @@ export class Hermes {
   ): Promise<void> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (this.snapshot.status === "connected" && !chat?.runtimeId) return;
+    // Only how it was answered goes in the run: never a password, secret or Clarify answer.
+    const answered = (change.show(card) as { answer?: unknown }).answer;
+    if (typeof answered === "string") this.noteRun(chatId, "answer", { id: card.id, answer: answered });
     this.patchCard(chatId, card, change.show);
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
@@ -4025,11 +4034,12 @@ export class Hermes {
       void this.sync();
       return;
     }
+    const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
+    if (chat) this.noteRun(chat.id, type, payload);
     if (type === "status.update") {
       if (payload.kind === "process" && typeof payload.text === "string") this.kanbanWatch.nudge(payload.text);
       return;
     }
-    const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
     // A side question's answer is no part of the chat or of a turn running in it.
     if (type === "btw.complete") return this.sideAnswered(chat, textOf(payload.task_id) ?? "", payload.text);
@@ -4087,6 +4097,7 @@ export class Hermes {
     );
     // A tool call that went on, or a turn that ended, may have been waiting on a question another client answered.
     if (type === "tool.complete" || type === "message.complete" || type === "error") this.track(this.settleQuestions(chat.id));
+    if (type === "message.complete" || type === "error") this.endRun(chat.id, from, type === "message.complete" ? ((payload.persisted_turn ?? {}) as PersistedTurn) : undefined);
     if (type === "message.complete") {
       const receipt = (payload.persisted_turn ?? {}) as PersistedTurn;
       this.noteRows(this.profile, chat.id, [receipt.user_row_id, receipt.final_assistant_row_id, ...(Array.isArray(receipt.row_ids) ? receipt.row_ids : [])]);
@@ -4117,6 +4128,103 @@ export class Hermes {
     const start = this.usageFrom.get(runtimeId);
     this.usageFrom.set(runtimeId, end ?? "unknown");
     return end && start && start !== "unknown" ? replyUsage(start, end) : undefined;
+  }
+
+  /**
+   * Adds an event to the run of the turn the chat is in (ADR 0177). `message.start` begins a new run, measured from the
+   * session's counters and the chat's cost as they stand; a run left open by a turn that never ended is dropped. Events
+   * outside a turn belong to no run.
+   */
+  private noteRun(chatId: string, type: string, payload: Record<string, unknown>) {
+    const at = Date.now();
+    if (type === "message.start") {
+      const chat = this.snapshot.chats.find((c) => c.id === chatId);
+      const from = chat?.runtimeId ? this.usageFrom.get(chat.runtimeId) : undefined;
+      const start: Recording = { startedAt: at, events: [], ...(from && from !== "unknown" && { from }), ...(chat?.usage && { costBefore: chat.usage }) };
+      this.recording.set(this.profile, chatId, record(start, type, at, payload));
+      this.capabilities.learn(this.generation, { turnIds: typeof payload.turn_id === "string" });
+      return;
+    }
+    const open = this.recording.get(this.profile, chatId);
+    if (open) this.recording.set(this.profile, chatId, record(open, type, at, payload));
+  }
+
+  /**
+   * Ends the chat's running run, kept with the reply the turn ended with: the last reply or error after `from`, the item
+   * before the turn, and the stored row Hermes says that reply is.
+   */
+  private endRun(chatId: string, from: string | null | undefined, receipt?: PersistedTurn) {
+    const open = this.recording.get(this.profile, chatId);
+    if (!open) return;
+    this.recording.delete(this.profile, chatId);
+    const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
+    const after = from === undefined ? -1 : from === null ? 0 : items.findIndex((i) => i.id === from) + 1;
+    const reply = after < 0 ? undefined : items.slice(after).filter((i) => i.kind === "assistant" || i.kind === "error").at(-1);
+    const rowId = typeof receipt?.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
+    const done: Recording = { ...open, endedAt: Date.now(), ...(reply && { replyId: reply.id }), ...(rowId !== undefined && { rowId }) };
+    this.recorded.set(this.profile, chatId, [...(this.recorded.get(this.profile, chatId) ?? []), done].slice(-RUNS_KEPT));
+  }
+
+  /** The chat's newest finished run without a cost read after it takes this one, made after it ended. */
+  private runCostRead(profile: string, chatId: string, read: ChatUsage) {
+    const runs = this.recorded.get(profile, chatId);
+    const last = runs?.at(-1);
+    if (!runs || !last || last.costAfter || (last.endedAt ?? Infinity) > read.readAt) return;
+    this.recorded.set(profile, chatId, [...runs.slice(0, -1), { ...last, costAfter: read }]);
+  }
+
+  /**
+   * The Run view of a reply (ADR 0177): the run this app watched end with it, else the turn's stored rows, read from
+   * Hermes by the reply's stored row. Rejects when neither is had. Also reads whether Hermes sends ordinary tool steps
+   * for the profile (`display.tool_progress`).
+   */
+  async runOf(chatId: string, itemId: string): Promise<RunView> {
+    const profile = this.profile;
+    const item = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === itemId);
+    if (!item) throw new Error("This reply isn't in the chat any more.");
+    const rowId = "rowId" in item ? item.rowId : undefined;
+    const watched = (this.recorded.get(profile, chatId) ?? []).filter((r) => r.replyId === itemId || (rowId !== undefined && r.rowId === rowId)).at(-1);
+    const toolProgress = this.readToolProgress(profile);
+    if (watched) return { run: watchedRun(watched), toolProgress: await toolProgress };
+    if (rowId === undefined) throw new Error("This app didn't watch this reply, and Hermes hasn't said which stored row it is yet, so its steps can't be read.");
+    const run = await this.storedRunOf(chatId, rowId, profile);
+    return { run, toolProgress: await toolProgress };
+  }
+
+  /**
+   * A stored run, from the turn's rows. Pages back from the newest 500 rows until the reply's row and the message that
+   * began its turn are both read, at most 5,000 rows back.
+   */
+  private async storedRunOf(chatId: string, rowId: number, profile: string) {
+    let rows: StoredRunRow[] = [];
+    for (let offset = 0; offset < 5000; offset += 500) {
+      const query = new URLSearchParams({ profile, order: "latest", limit: "500", offset: String(offset), inline_images: "false" });
+      const res = (await this.rest("GET", `api/sessions/${encodeURIComponent(chatId)}/messages?${query}`)) as { messages?: StoredRunRow[] };
+      if (this.profile !== profile) throw new Error("The profile changed while this reply's steps were read.");
+      const page = Array.isArray(res.messages) ? res.messages : [];
+      rows = [...page, ...rows];
+      const at = rows.findIndex((r) => r.id === rowId);
+      const whole = at >= 0 && (page.length < 500 || rows.slice(0, at + 1).some((r) => r.role === "user"));
+      if (whole || page.length < 500) {
+        const run = storedRun(rows, rowId);
+        if (run) return run;
+        break;
+      }
+    }
+    throw new Error("Hermes's stored history doesn't hold this reply's row, so its steps can't be read.");
+  }
+
+  /** Whether Hermes sends ordinary tool steps for the profile, read from its config, and kept for Diagnostics. */
+  private async readToolProgress(profile: string): Promise<ToolProgress> {
+    const gen = this.generation;
+    try {
+      const mode = toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile })}`));
+      const read: ToolProgress = mode ? { mode } : { why: "Hermes answered with something other than a config." };
+      if (this.profile === profile) this.capabilities.learn(gen, { toolProgress: read });
+      return read;
+    } catch (e) {
+      return { why: `Couldn't read the profile's config: ${errorText(e)}` };
+    }
   }
 
   /**
@@ -4231,6 +4339,8 @@ export class Hermes {
     }
     const sid = textOf(req.params.session_id) ?? "";
     const chat = this.snapshot.chats.find((c) => c.runtimeId === sid);
+    const card = questionCard(req);
+    if (chat && card) this.noteRun(chat.id, "request", { id: card.id, kind: card.kind, ...(card.kind === "approval" && { name: `Approval: ${card.command.slice(0, 120)}` }) });
     if (chat) this.showQuestions(chat.id, [req]);
     else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
   }
