@@ -4639,6 +4639,7 @@ function ChatView({
           : undefined
       }
       variants={variants.size ? { byTurn: variants, onPick: (id, turn) => id !== chat.id && onOpenTurn(id, turn) } : undefined}
+      run={started ? (itemId) => hermes.runOf(chat.id, itemId) : undefined}
       footer={
         <StatusBar
           chat={chat}

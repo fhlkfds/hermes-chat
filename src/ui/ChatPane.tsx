@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { decodeString } from "micromark-util-decode-string";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, QuestionAnswer, SentReference, SideQuestion, Source } from "../hermes/model";
-import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
+import { SOURCE_LABEL, beginsTurn, isOutgoing, isWaiting } from "../hermes/model";
 import { useLocale } from "../i18n/locale";
 import type { SkillCall } from "../hermes/skillCommands";
 import { STEER, typedCommand } from "../hermes/commands";
@@ -47,6 +47,8 @@ import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { linkTarget, previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
+import { RunButton, RunDialog } from "./RunView";
+import type { RunView } from "../hermes/runs";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
@@ -122,8 +124,11 @@ const sameBlock = (a: Block, b: Block) =>
 const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
   a.kind === "side" ? b.kind === "side" && a.question === b.question : b.kind !== "side" && sameBlock(a, b);
 
-/** Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, and where each turn's versions show. */
-type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number> };
+/**
+ * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and
+ * each turn's last reply with text whoever began the turn (`replies`), where the Run view opens (ADR 0177).
+ */
+type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; replies: Set<string> };
 
 /** `next`, or the value returned before when `same` says it holds the same. */
 function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
@@ -135,8 +140,8 @@ function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
 const sameMap = <K, V>(a: Map<K, V>, b: Map<K, V>, same: (x: V, y: V) => boolean = Object.is) =>
   a.size === b.size && [...a].every(([k, v]) => b.has(k) && same(v, b.get(k)!));
 
-const sameTurns = (a: Turns, b: Turns) =>
-  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && a.regenerable.size === b.regenerable.size && [...a.regenerable].every((id) => b.regenerable.has(id));
+const sameSet = <T,>(a: Set<T>, b: Set<T>) => a.size === b.size && [...a].every((id) => b.has(id));
+const sameTurns = (a: Turns, b: Turns) => sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && sameSet(a.regenerable, b.regenerable) && sameSet(a.replies, b.replies);
 
 const sameVersions = (a?: Map<number, Variant[]>, b?: Map<number, Variant[]>) =>
   !!a &&
@@ -390,7 +395,8 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Edit under the owner's messages and Regenerate under each turn's last reply (ADR 0035); `blocked` says why neither
  * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply. Copy is under
  * every sent message and finished reply with text, whatever else is offered. `compare`: the pane is one of two compared
- * panes (ADR 0101), so a send goes to both chats and nothing queues or steers.
+ * panes (ADR 0101), so a send goes to both chats and nothing queues or steers. `run` reads the Run view of a turn's
+ * last reply (ADR 0177), offered under each.
  */
 export function ChatPane({
   chat,
@@ -449,6 +455,7 @@ export function ChatPane({
   branchedFrom,
   replay,
   variants,
+  run,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -528,6 +535,7 @@ export function ChatPane({
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
+  run?: (itemId: string) => Promise<RunView>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const keys = useBindings();
@@ -584,6 +592,9 @@ export function ChatPane({
   const replayRef = useRef(replay?.onReplay);
   replayRef.current = replay?.onReplay;
   const onReplay = useCallback((itemId: string, kind: ReplayKind) => replayRef.current?.(itemId, kind), []);
+  // And the Run view, opened here for one reply at a time.
+  const [runOf, setRunOf] = useState<string>();
+  const onRun = useCallback((itemId: string) => setRunOf(itemId), []);
   const pickRef = useRef(variants?.onPick);
   pickRef.current = variants?.onPick;
   const onPickVariant = useCallback((chatId: string, turn: number) => pickRef.current?.(chatId, turn), []);
@@ -605,8 +616,17 @@ export function ChatPane({
     }
     const anchor = new Map<string, number>();
     for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
-    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
-  }, [chat.items]), sameTurns);
+    const replies = new Set<string>();
+    let reply: string | undefined;
+    for (const i of chat.items) {
+      if (beginsTurn(i) && reply) replies.add(reply);
+      if (beginsTurn(i)) reply = undefined;
+      else if (i.kind === "assistant" && i.text.trim()) reply = i.id;
+    }
+    // The running turn's run isn't over, so its last reply so far has none yet.
+    if (reply && !chat.running) replies.add(reply);
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor, replies };
+  }, [chat.items, chat.running]), sameTurns);
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
@@ -1034,6 +1054,7 @@ export function ChatPane({
               branchBlocked={branch?.blocked}
               onReplay={replay && onReplay}
               replayBlocked={replay?.blocked}
+              onRun={run && onRun}
               turns={turns}
               byTurn={byTurn}
               chatId={chat.id}
@@ -1055,6 +1076,7 @@ export function ChatPane({
         </JumpContext.Provider>
       </div>
 
+      {runOf && run && <RunDialog load={() => run(runOf)} onClose={() => setRunOf(undefined)} />}
       <SubagentsPanel
         tree={chat.subagents}
         api={subagents}
@@ -1153,6 +1175,7 @@ const BlockView = memo(
     branchBlocked,
     onReplay,
     replayBlocked,
+    onRun,
     versions,
     chatId,
     turn,
@@ -1172,6 +1195,7 @@ const BlockView = memo(
     branchBlocked?: string;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
+    onRun?: (itemId: string) => void;
     versions?: Variant[];
     chatId: string;
     turn?: number;
@@ -1237,6 +1261,7 @@ const BlockView = memo(
                 <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+                {onRun && <RunButton onRun={() => onRun(block.id)} />}
               </div>
             </div>
           )}
@@ -1276,6 +1301,7 @@ const BlockView = memo(
     a.branchBlocked === b.branchBlocked &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
+    a.onRun === b.onRun &&
     a.versions === b.versions &&
     a.chatId === b.chatId &&
     a.turn === b.turn &&
@@ -1304,6 +1330,7 @@ const TranscriptChunk = memo(
     branchBlocked,
     onReplay,
     replayBlocked,
+    onRun,
     turns,
     byTurn,
     chatId,
@@ -1325,6 +1352,7 @@ const TranscriptChunk = memo(
     branchBlocked?: string;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
+    onRun?: (itemId: string) => void;
     turns: Turns;
     byTurn?: Map<number, Variant[]>;
     chatId: string;
@@ -1355,6 +1383,7 @@ const TranscriptChunk = memo(
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
+                  onRun={b.kind === "assistant" && turns.replies.has(b.id) ? onRun : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
                   chatId={chatId}
                   turn={turns.anchor.get(b.id)}
@@ -1385,6 +1414,7 @@ const TranscriptChunk = memo(
     a.branchBlocked === b.branchBlocked &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
+    a.onRun === b.onRun &&
     a.turns === b.turns &&
     a.byTurn === b.byTurn &&
     a.chatId === b.chatId &&

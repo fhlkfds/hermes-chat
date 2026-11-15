@@ -3358,6 +3358,52 @@ label.memory-pick { cursor: pointer; }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
 
+/* ---------- Run view (RunView.tsx, ADR 0177) ---------- */
+.leave-overlay .leave-dialog.run-dialog { max-width: min(760px, calc(100% - 32px)); width: 100%; max-height: min(92vh, 900px); overflow-y: auto; }
+.run-dialog > * { flex-shrink: 0; }
+.run-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.run-title svg { color: var(--muted); }
+.run-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.run-error { display: flex; gap: 6px; align-items: flex-start; color: var(--bad); line-height: 1.5; overflow-wrap: anywhere; }
+.run-error svg { flex: none; margin-top: 3px; }
+.run-summary { color: var(--text-2); }
+.run-failed-count, .run-outcome { color: var(--bad); }
+.run-how { font-size: calc(12rem / 14); padding: 0 5px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
+.run-how.measured { color: var(--ok); border-color: rgba(124, 196, 154, 0.35); }
+.run-notes { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: calc(12rem / 14); line-height: 1.45; }
+.run-notes .run-warn { color: var(--warn); list-style: none; margin-left: -16px; display: flex; gap: 6px; align-items: flex-start; }
+.run-notes .run-warn svg { flex: none; margin-top: 3px; }
+.run-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--line-2); border-radius: 8px; padding: 4px; background: var(--code-bg); }
+.run-step {
+  width: 100%; display: grid; grid-template-columns: minmax(120px, 34%) 1fr 128px; gap: 10px; align-items: center;
+  padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; font: inherit; font-size: calc(12.5rem / 14); cursor: pointer;
+}
+.run-step:hover { background: var(--hover-2); }
+.run-step.picked { background: var(--raised-2); }
+.run-name { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.run-name svg { flex: none; color: var(--muted); }
+.run-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-fail-mark { flex: none; color: var(--bad); font-size: calc(12rem / 14); }
+.run-track { position: relative; height: 10px; border-radius: 3px; background: var(--hover-2); }
+.run-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--muted); }
+.run-step.model .run-bar { background: var(--accent); }
+.run-step.tool .run-bar { background: var(--ok); }
+.run-step.question .run-bar { background: var(--warn); }
+.run-step.failed .run-bar, .run-step.error .run-bar { background: var(--bad); }
+.run-length { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.run-detail { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line-2); padding-top: 10px; }
+.run-detail h3 { margin: 0; font-size: calc(13rem / 14); }
+.run-detail h4 { margin: 4px 0 0; font-size: calc(12rem / 14); font-weight: 600; color: var(--text-2); }
+.run-detail .run-length { display: inline-flex; }
+.run-pre {
+  margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; border: 1px solid var(--line-2); border-radius: 8px; background: var(--code-bg);
+  font-family: var(--mono); font-size: var(--mono-size); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .run-step { grid-template-columns: 1fr auto; }
+  .run-track { grid-column: 1 / -1; grid-row: 2; }
+}
+
 /* ---------- Branch from here (Branch.tsx, ADR 0027) ---------- */
 .leave-overlay .leave-dialog.branch-dialog { max-width: min(600px, 100%); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }
 /* It scrolls as a whole, so nothing in it is squeezed to fit. */

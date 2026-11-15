@@ -9,6 +9,7 @@ import {
   type CapabilitySnapshot,
   type CapabilityState,
   type CapabilityStore,
+  type ServerFacts,
   authLine,
   guideUrl,
   protocolText,
@@ -179,6 +180,8 @@ export function DiagnosticsSettings({
             <span className="muted">{f.flagsWhy ?? "Not read yet"}</span>
           )}
         </Fact>
+        <Fact name="Tool steps">{toolStepsLine(f.toolProgress)}</Fact>
+        <Fact name="Turn ids">{turnIdsLine(f.turnIds)}</Fact>
         <Fact name="Extra request headers">{headers ? `${headers}, whose values are never shown` : "None"}</Fact>
       </SettingsSection>
 
@@ -456,4 +459,28 @@ export function CapabilityGate({
       </div>
     </div>
   );
+}
+
+/** Whether Hermes sends ordinary tool steps for the profile, for the Run view (ADR 0177). */
+function toolStepsLine(p: ServerFacts["toolProgress"]): ReactNode {
+  if (!p) return <span className="muted">Not read yet</span>;
+  if ("why" in p) return <span className="muted">{p.why}</span>;
+  if (p.mode === "off")
+    return (
+      <>
+        Not sent: <span className="mono">display.tool_progress</span> is <span className="mono">off</span> for this profile, so the Run view shows only file
+        edits, delegations, questions and a few card tools.
+      </>
+    );
+  return (
+    <>
+      Sent (<span className="mono">display.tool_progress: {p.mode}</span>)
+    </>
+  );
+}
+
+/** Whether Hermes names each turn, for the Run view: a turn's events are paired by order either way. */
+function turnIdsLine(has: boolean | undefined): ReactNode {
+  if (has === undefined) return <span className="muted">Not seen yet: known once a reply starts on this connection</span>;
+  return has ? "Sent with each reply" : "Not sent by this Hermes: the Run view pairs a reply's events by their order";
 }

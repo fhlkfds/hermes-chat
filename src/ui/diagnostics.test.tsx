@@ -95,8 +95,8 @@ describe("Connection diagnostics", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Connect to Hermes to check what it supports/);
     expect((screen.getByRole("button", { name: "Check again" }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(row$("Projects")).getByText("Unknown")).toBeTruthy();
-    // Neither the version nor the feature flags.
-    expect(screen.getAllByText("Not read yet")).toHaveLength(2);
+    // Neither the version, the feature flags nor the tool steps setting.
+    expect(screen.getAllByText("Not read yet")).toHaveLength(3);
   });
 
   it("shows the check under way, then the server and each feature with when it was checked", async () => {
@@ -228,7 +228,7 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
     diagnostics(scriptedStore(NEW), { unsecure: true });
     const server = section("Server");
     const names = [...server.querySelectorAll(".set-card > .set-row .set-name")].map((n) => n.textContent);
-    expect(names).toEqual(["Server", "Profile", "Hermes version", "Protocol", "Sign-in", "Feature flags", "Extra request headers"]);
+    expect(names).toEqual(["Server", "Profile", "Hermes version", "Protocol", "Sign-in", "Feature flags", "Tool steps", "Turn ids", "Extra request headers"]);
     const first = server.querySelector(".set-card > .set-row")!;
     expect(first.querySelector(".set-control .set-value")!.textContent).toMatch(/^https:\/\/hermes\.fixture\.invalid Unsecure$/);
     const features = section("Features");
