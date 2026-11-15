@@ -1,6 +1,6 @@
 # Hermes server compatibility
 
-Hermes Chat works with more than one version of Hermes, but not every version has every feature. This guide lists what each feature needs from the Hermes server, how the app checks for it, and what the app does when the server doesn't have it. The decision record is [ADR 0044](adr/0044-capabilities-are-what-hermes-says-or-answers-checked-only-by-reading.md).
+Flagstop works with more than one version of Hermes, but not every version has every feature. This guide lists what each feature needs from the Hermes server, how the app checks for it, and what the app does when the server doesn't have it. The decision record is [ADR 0044](adr/0044-capabilities-are-what-hermes-says-or-answers-checked-only-by-reading.md).
 
 To see what your server has, open **Settings → Diagnostics**, or **Settings → General → Connection diagnostics**. It shows the server's version, protocol, sign-in and feature flags, and the state of each feature below.
 
@@ -117,19 +117,19 @@ Needs `GET /api/profiles` for Settings → Profiles, checked with that read; wit
 
 ## Provider keys
 
-Settings → Providers and Setup's key step need `GET /api/env`, which lists each provider's key as a row with `provider`, `is_password`, `channel_managed`, `is_set` and a redacted preview. Checked with that `GET`. Without it, both show a note that this server doesn't let Hermes Chat set provider keys, and offer no change; the keys are set on the server instead.
+Settings → Providers and Setup's key step need `GET /api/env`, which lists each provider's key as a row with `provider`, `is_password`, `channel_managed`, `is_set` and a redacted preview. Checked with that `GET`. Without it, both show a note that this server doesn't let Flagstop set provider keys, and offer no change; the keys are set on the server instead.
 
 Adding or replacing a key also needs `POST /api/providers/validate` and `PUT /api/env`. Without the check route, Hermes answers an error and the key isn't saved. A check that can't reach the provider still saves the key, and says so.
 
 ## Subscription sign-ins
 
-Settings → Providers' Subscription sign-ins need `GET /api/providers/oauth?profile=`, checked with that `GET` when the tab opens (ADR 0133). Without it (`404 Not Found` or `405`), the section says this server doesn't let Hermes Chat sign in to subscription providers, and offers no change; sign in on the server with `hermes auth add` instead. Any other failure offers Try again.
+Settings → Providers' Subscription sign-ins need `GET /api/providers/oauth?profile=`, checked with that `GET` when the tab opens (ADR 0133). Without it (`404 Not Found` or `405`), the section says this server doesn't let Flagstop sign in to subscription providers, and offers no change; sign in on the server with `hermes auth add` instead. Any other failure offers Try again.
 
 Signing in needs `POST /api/providers/oauth/{id}/start`, `GET /api/providers/oauth/{id}/poll/{session}` with `wait`, and `DELETE /api/providers/oauth/sessions/{session}` to cancel. Hermes at `bf0203a` runs a device-code sign-in for `nous`, `openai-codex`, `minimax-oauth` and `xai-oauth`. `anthropic`, `claude-code`, `qwen-oauth` and `copilot-acp` are `external`: Hermes has no route to sign in to them, so the screen shows the command to run on the server. A Hermes whose poll answers at once, without waiting, is asked at most every 2 seconds. Signing out needs `DELETE /api/providers/oauth/{id}`, offered only when Hermes lists the provider as `disconnectable`; otherwise the screen shows Hermes's reason.
 
 ## Custom endpoints
 
-Settings → Providers' Custom endpoints need `GET /api/providers/custom-endpoints?profile=`, checked with that `GET` when the tab opens (ADR 0133). Without it, the section says this server doesn't let Hermes Chat manage custom endpoints. Adding one needs `POST /api/providers/custom-endpoints/validate` and `POST /api/providers/custom-endpoints`; using one as the default needs `POST …/{id}/activate`, and removing one `DELETE …/{id}`. The main model's own `base_url` shows in Hermes's list as a `direct-config` row, which these routes can't activate or remove, so the screen leaves it out; Settings → Model shows it.
+Settings → Providers' Custom endpoints need `GET /api/providers/custom-endpoints?profile=`, checked with that `GET` when the tab opens (ADR 0133). Without it, the section says this server doesn't let Flagstop manage custom endpoints. Adding one needs `POST /api/providers/custom-endpoints/validate` and `POST /api/providers/custom-endpoints`; using one as the default needs `POST …/{id}/activate`, and removing one `DELETE …/{id}`. The main model's own `base_url` shows in Hermes's list as a `direct-config` row, which these routes can't activate or remove, so the screen leaves it out; Settings → Model shows it.
 
 Removing a key needs `DELETE /api/env` with `{"key"}`, which Hermes `bf0203a` has. It isn't checked ahead. A Hermes without it answers 405, since `/api/env` still exists for the other methods, and the removal fails with that answer and changes nothing. A 404 is how Hermes says the key isn't set, which counts as removed, and the app reads `GET /api/env` again either way: a key still set is reported as one Hermes still lists.
 
