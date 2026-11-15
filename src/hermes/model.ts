@@ -246,6 +246,12 @@ export type Chat = {
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
   /**
+   * What the files-changed chip needs to know (ADR 0177), checked once for the runtime session `runtimeId`.
+   * `container`: its terminal runs in a container, where Hermes takes no checkpoints. `on`: its profile has checkpoints
+   * on. Either is undefined when Hermes couldn't say. Set by the transport only.
+   */
+  checkpoints?: { runtimeId: string; container?: boolean; on?: boolean };
+  /**
    * Its tokens and cost over its whole life, as Hermes last recorded them (`usage.ts`). Unknown until read from Hermes on
    * this connection. `usageError`: why the latest read failed; `usage` is then the earlier read, if any.
    */

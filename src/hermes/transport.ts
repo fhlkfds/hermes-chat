@@ -50,7 +50,9 @@ import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
-import { CapabilityStore, CapabilityUnsupportedError, RouteMissingError, failureOf, isNoRoute, sharesChats, specOf, type CapabilityId, type ServerFacts } from "./capabilities";
+import { CapabilityStore, CapabilityUnsupportedError, PROBE_NAME, RouteMissingError, checkpointsSettingOf, failureOf, isNoRoute, sharesChats, specOf, type CapabilityId, type ServerFacts } from "./capabilities";
+import { parseCheckpointList, type RelPath } from "./fileChanges";
+import type { Restored, RollbackIO } from "./fileUndo";
 import type { AppMethod } from "./canonicalVerbs";
 import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
 import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
@@ -94,7 +96,7 @@ import {
 } from "./branch";
 import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, withoutMarkers, type ReplayKind, type ReplayPreview } from "./replay";
 import { errorText, formatBytes, optionalText } from "./values";
-import { returnedItem } from "./returned";
+import { displayMetadata, returnedItem } from "./returned";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -741,6 +743,8 @@ export class Hermes {
   private readSinceListRead = new Set<string>();
   /** Resumes in flight, so opening a chat and replying in it share one. */
   private resuming = new Map<string, Promise<string>>();
+  /** The runtime sessions whose checkpoints check (`checkCheckpoints`) has gone out. */
+  private checkpointsChecked = new Set<string>();
   /** Chats that had a reply running or an Approval waiting when the owner switched away from their profile, by
    * profile. Switching back resumes them once the list is read, which brings back what Hermes is still waiting on. */
   private busyIn = new Map<string, string[]>();
@@ -2383,6 +2387,66 @@ export class Hermes {
     const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
     if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
     this.patchChat(chatId, (c) => ({ ...c, folder }));
+  }
+
+  /**
+   * Reading and restoring the checkpoints Hermes keeps for the chat's folder (`rollback.*`, ADR 0177), each on the chat's
+   * live session. A restore names one file, relative to the folder: Hermes then leaves the chat alone, where a
+   * whole-folder restore would drop its newest message.
+   */
+  rollbackIO(chatId: string): RollbackIO {
+    const call = async (method: "rollback.list" | "rollback.diff" | "rollback.restore", params: Record<string, unknown>) => {
+      const profile = this.profile;
+      const sid = await this.resume(chatId);
+      return obj(await this.request(method, { session_id: sid, profile, ...params })) ?? {};
+    };
+    return {
+      list: async () => {
+        const list = parseCheckpointList(await call("rollback.list", {}));
+        if (!list) throw new Error("Hermes answered rollback.list in a way this app doesn't read.");
+        return list;
+      },
+      diff: async (hash) => {
+        const { stat, diff } = await call("rollback.diff", { hash });
+        if (typeof stat !== "string" || typeof diff !== "string") throw new Error("Hermes answered rollback.diff in a way this app doesn't read.");
+        return { stat, diff };
+      },
+      restoreFile: async (hash: string, file: RelPath): Promise<Restored> => {
+        const r = await call("rollback.restore", { hash, file_path: file });
+        return r.success === true ? { restored: true } : { restored: false, error: textOf(r.error) || "Hermes didn't say why." };
+      },
+      readText: async (abs) => {
+        const query = new URLSearchParams({ path: abs, profile: this.profile });
+        const res = obj(await this.rest("GET", `api/fs/read-text?${query}`).catch(() => undefined));
+        return typeof res?.text === "string" && res.truncated === false && res.binary !== true ? res.text : undefined;
+      },
+    };
+  }
+
+  /**
+   * Finds out, once for the chat's live session, whether its terminal runs in a container, where Hermes takes no
+   * checkpoints, and whether its profile has checkpoints on, for the files-changed chip (`Chat.checkpoints`). The
+   * container check is `rollback.diff` of a hash that can't be one: Hermes refuses it for a container before reading
+   * the hash, and otherwise answers an empty diff (`tui_gateway/methods_tools.py:1175` at `bf0203a`).
+   */
+  checkCheckpoints(chatId: string) {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId || this.checkpointsChecked.has(runtimeId)) return;
+    this.checkpointsChecked.add(runtimeId);
+    const profile = this.profile;
+    this.track(
+      (async () => {
+        const [container, on] = await Promise.all([
+          this.request("rollback.diff", { session_id: runtimeId, profile, hash: PROBE_NAME }).then(
+            () => false,
+            (e: unknown) => (e instanceof RpcError && e.code === 5022 && e.message.startsWith("Checkpoints are not taken for terminal.backend=") ? true : undefined),
+          ),
+          this.restGet(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(checkpointsSettingOf).catch(() => undefined),
+        ]);
+        if (this.profile !== profile) return;
+        this.patchChat(chatId, (c) => ({ ...c, checkpoints: { runtimeId, ...(container !== undefined && { container }), ...(on !== undefined && { on }) } }));
+      })(),
+    );
   }
 
   /**
@@ -5631,6 +5695,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
           preview: m.context || undefined,
           status: "done",
           result: typeof m.content === "string" ? m.content : undefined,
+          ...inlineDiffOf(obj(displayMetadata(m.display_metadata)?.tool_result_metadata)?.inline_diff),
         },
       ];
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
@@ -5647,6 +5712,9 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
     return [];
   });
 }
+
+/** A file edit's `inline_diff`, to spread into its tool item. */
+const inlineDiffOf = (v: unknown): { inlineDiff?: string } => (typeof v === "string" && v ? { inlineDiff: v } : {});
 
 /** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
 const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
@@ -5854,7 +5922,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
       const call = items[at];
       if (call?.kind !== "tool") return c;
       // A screenshot inside the result stays on the server (ADR 0061).
-      items[at] = { ...call, status: "done", durationS: num(p.duration_s), result: toolResultText(p.result), summary: optionalText(p.summary) };
+      items[at] = { ...call, status: "done", durationS: num(p.duration_s), result: toolResultText(p.result), summary: optionalText(p.summary), ...inlineDiffOf(p.inline_diff) };
       return { ...c, items };
     }
     // Every second or so while a turn runs.

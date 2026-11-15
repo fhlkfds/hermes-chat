@@ -171,6 +171,9 @@ function sectionPath(section: string): string | undefined {
 /** Whether a name in git's `--stat` names `rel`: the same, or git's `.../tail` for a long path. */
 const statNames = (name: string, rel: string) => name === rel || (name.startsWith(".../") && rel.endsWith(name.slice(3)));
 
+/** The file at `rel` in a diff, when it differs from the checkpoint. */
+export const fileIn = (diff: ParsedRollbackDiff, rel: string) => diff.files.find((f) => statNames(f.path, rel));
+
 /**
  * `rollback.diff`'s stat and diff, as the files that differ from the checkpoint now. Membership is the stat's, which
  * the server doesn't cut; a file's diff section is missing once the 4000-character cut came before it.
@@ -256,7 +259,7 @@ export function planFiles(reply: ReplyFiles, items: Item[], folder: string | und
     const placed = placeIn(folder, path);
     if (!placed) return { state: "outside", path };
     const { rel, abs } = placed;
-    const file = diff.files.find((f) => statNames(f.path, rel));
+    const file = fileIn(diff, rel);
     if (!file) return { state: "unchanged", path, rel, abs };
     const section = file.section !== undefined ? { section: file.section } : {};
     if (file.created) return { state: "created", path, rel, abs, ...section };
