@@ -4181,6 +4181,22 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .ext-view h3 { margin: 4px 0 10px; font-size: calc(15rem / 14); }
 .ext-view .btn { margin-top: 12px; }
 .ext-for { margin: 0 0 10px; font-size: calc(12rem / 14); }
+/* A reply's files in the Preview, and its chip (FileChanges.tsx, ADR 0177). */
+.files-chip { margin-top: 8px; }
+.files-view { flex: 1; overflow: auto; padding: 14px 18px 40px; line-height: 1.55; user-select: text; display: flex; flex-direction: column; gap: 10px; }
+.files-view h3 { margin: 4px 0 0; font-size: calc(15rem / 14); }
+.files-view .btn { align-self: flex-start; }
+.files-file { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.files-file-head { display: flex; align-items: baseline; gap: 8px; overflow-wrap: anywhere; }
+.files-paths { margin: 0; padding-left: 18px; }
+.files-loading { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); }
+.files-choose { display: flex; flex-direction: column; gap: 8px; }
+.files-choose p { margin: 0; }
+.files-choice { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; }
+.files-choice .repo-notice { grid-column: 2; }
+.files-actions { display: flex; gap: 8px; }
+.files-report { margin: 0; padding-left: 18px; font-size: calc(12.5rem / 14); }
+.files-report .warn { color: var(--warn); }
 .ext-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ext-notice { padding: 8px 12px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line-2); }
 .ext-table { border-collapse: collapse; width: 100%; max-width: 480px; font-variant-numeric: tabular-nums; }

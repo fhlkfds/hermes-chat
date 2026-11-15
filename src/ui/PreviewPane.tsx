@@ -63,6 +63,7 @@ import { errorText, formatBytes } from "../hermes/values";
 import { ExtensionView } from "./ExtensionView";
 import { failureText as annotateFailure, type PageWhere, type Still } from "../hermes/annotations";
 import { AnnotationOverlay, type AnnotationDesk } from "./Annotate";
+import { FileChangesView, type FileChangesHost } from "./FileChanges";
 
 /** When a web page that hasn't loaded gets a note that it may never show. */
 const SLOW_PAGE_MS = 15_000;
@@ -103,6 +104,7 @@ export function PreviewPane({
   artifactScope,
   connected = true,
   desk,
+  fileChanges,
 }: {
   history: PreviewHistory;
   onStep: (s: HistoryStep) => void;
@@ -122,6 +124,8 @@ export function PreviewPane({
   connected?: boolean;
   /** Where annotations are staged (the composer on screen), and who hears that the page moved. */
   desk?: AnnotationDesk & { pageMoved(): void };
+  /** The chats whose replies' files the Preview shows (ADR 0177), and their checkpoints. */
+  fileChanges?: FileChangesHost;
 }) {
   const here = history?.here;
   const [note, setNote] = useState<{ text: string; failed: boolean }>();
@@ -245,6 +249,8 @@ export function PreviewPane({
           />
         ) : here.kind === "tool" ? (
           <pre className="preview-pre">{here.text || "(empty)"}</pre>
+        ) : here.kind === "files" ? (
+          fileChanges ? <FileChangesView key={`${here.chatId}:${here.replyId}`} chatId={here.chatId} replyId={here.replyId} host={fileChanges} reloadSeq={history.reloadSeq} connected={connected} /> : null
         ) : here.kind === "extension" ? (
           <ExtensionView key={`${here.id}:${here.view}`} id={here.id} view={here.view} title={here.title} reloadSeq={history.reloadSeq} />
         ) : here.kind === "artifact" ? (
@@ -415,6 +421,12 @@ function Badge({ here, serverLabel, onSwitch }: { here: PreviewTarget | undefine
       return (
         <span className="where where-tool" title="What the tool call returned, as Hermes sent it">
           <Wrench size={12} /> Tool output
+        </span>
+      );
+    case "files":
+      return (
+        <span className="where where-server" title={`Files on the Hermes server (${serverLabel}), as Hermes's checkpoints show them`}>
+          <Server size={12} /> Server
         </span>
       );
     case "extension":

@@ -30,7 +30,9 @@ export type PreviewTarget =
   | { kind: "local"; path: string; name: string }
   | { kind: "tool"; name: string; text: string }
   /** An extension's view (ADR 0126, section 6): a tree the app draws, kept by `Extensions`, never the extension's HTML. */
-  | { kind: "extension"; id: ExtensionId; view: string; title: string };
+  | { kind: "extension"; id: ExtensionId; view: string; title: string }
+  /** The files a reply changed on the server, and undoing them (ADR 0177): `replyId` is the reply's item in chat `chatId`. */
+  | { kind: "files"; chatId: string; replyId: string };
 
 /**
  * A file as the pane shows it. `text`: its first part when `truncated`; `format` picks the view: Markdown and HTML
@@ -68,6 +70,8 @@ export function previewName(t: PreviewTarget): string {
       return `${t.name} output`;
     case "extension":
       return t.title;
+    case "files":
+      return "Files changed";
     case "local":
       return t.name;
     case "server":
@@ -183,6 +187,8 @@ export function addressOf(t: PreviewTarget): string {
       return `${t.name} output`;
     case "extension":
       return `${t.title} (extension)`;
+    case "files":
+      return "Files a reply changed";
   }
 }
 
