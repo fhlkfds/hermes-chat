@@ -680,6 +680,12 @@ function TaskSheet({
                     <p className="work-text">{current.summary}</p>
                   </>
                 )}
+                {current.result && current.result.trim() !== current.summary?.trim() && (
+                  <>
+                    <h3 className="work-sub">Result</h3>
+                    <p className="work-text">{current.result}</p>
+                  </>
+                )}
               </>
             )}
             <h3 className="work-sub">Comments</h3>

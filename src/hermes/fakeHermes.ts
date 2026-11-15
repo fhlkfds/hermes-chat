@@ -3405,6 +3405,8 @@ export type KanbanRow = {
   priority?: number;
   tenant?: string | null;
   latest_summary?: string | null;
+  /** What the task's completion recorded (`tasks.result`, `kanban_db.complete_task`). */
+  result?: string | null;
   comments?: { id: number; author: string; body: string; created_at: number }[];
 };
 
@@ -3605,5 +3607,5 @@ export class FakeKanban {
 
 /** A task as the routes list it: the stored row less what the plugin keeps to itself. */
 function listed({ subscribed: _, comments, ...t }: KanbanRow) {
-  return { body: null, priority: 0, tenant: null, latest_summary: null, ...t, comment_count: comments?.length ?? 0 };
+  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, ...t, comment_count: comments?.length ?? 0 };
 }
