@@ -45,10 +45,10 @@ prerelease=()
 if gh release view "$tag" > /dev/null 2>&1; then
   gh release upload "$tag" "$out/$name" "$out/$name.sha256" --clobber
 else
-  notes="Windows installer for Hermes Chat $version, built by the windows-installer workflow from $tag.
+  notes="Windows installer for Flagstop $version, built by the windows-installer workflow from $tag.
 
 Download $name and run it. It installs for your Windows user only. The installer isn't code-signed, so Windows SmartScreen warns on first run: choose More info, then Run anyway. To update, run a newer installer over the old one."
   gh release create "$tag" "$out/$name" "$out/$name.sha256" --verify-tag \
-    --title "Hermes Chat $version" --notes "$notes" "${prerelease[@]}"
+    --title "Flagstop $version" --notes "$notes" "${prerelease[@]}"
 fi
 echo "Attached $name to $tag"

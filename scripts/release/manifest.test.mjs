@@ -23,7 +23,7 @@ function bundle(files) {
 
 describe("the release manifest", () => {
   it("stages the AppImage and its signature under host-safe names and points the manifest at them", () => {
-    const bundleDir = bundle({ "Hermes Chat_0.2.0_amd64.AppImage": "\x7fELF built", "Hermes Chat_0.2.0_amd64.AppImage.sig": "c2ln\n" });
+    const bundleDir = bundle({ "Flagstop_0.2.0_amd64.AppImage": "\x7fELF built", "Flagstop_0.2.0_amd64.AppImage.sig": "c2ln\n" });
     const out = join(scratch(), "release");
     const manifest = stage(bundleDir, out, "https://github.com/l0cky12/hermes-chat/releases/download/v0.2.0/", "Notes.", new Date("2026-11-05T12:34:56.789Z"));
     expect(manifest).toEqual({
@@ -38,14 +38,14 @@ describe("the release manifest", () => {
   });
 
   it("refuses a bundle without a signature, with two AppImages, or with an unversioned name", () => {
-    expect(() => stage(bundle({ "Hermes Chat_0.2.0_amd64.AppImage": "x" }), join(scratch(), "r"), "https://h/")).toThrow(/\.sig/);
+    expect(() => stage(bundle({ "Flagstop_0.2.0_amd64.AppImage": "x" }), join(scratch(), "r"), "https://h/")).toThrow(/\.sig/);
     expect(() => findAppImage(bundle({ "a_0.2.0_amd64.AppImage": "x", "b_0.3.0_amd64.AppImage": "y" }))).toThrow(/found 2/);
     expect(() => findAppImage(bundle({}))).toThrow(/found 0/);
     expect(() => findAppImage(bundle({ "hermes-chat.AppImage": "x" }))).toThrow(/isn't named/);
   });
 
   it("names the updater target after the bundle's arch", () => {
-    const found = findAppImage(bundle({ "Hermes Chat_1.0.0-beta.1_aarch64.AppImage": "x" }));
+    const found = findAppImage(bundle({ "Flagstop_1.0.0-beta.1_aarch64.AppImage": "x" }));
     expect(found).toMatchObject({ version: "1.0.0-beta.1", target: "linux-aarch64", staged: "hermes-chat_1.0.0-beta.1_aarch64.AppImage" });
   });
 });
