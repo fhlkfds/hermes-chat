@@ -4,5 +4,5 @@
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000" flood-opacity=".2"/></filter>
   </defs>
   <rect x="3" y="2" width="42" height="42" rx="12.5" fill="url(#tile)" filter="url(#shadow)"/>
-  <path d="M15 12h5v9h8v-9h5v22h-5v-9h-8v9h-5z" fill="#19110d"/>
+  <path d="M17 11h5v2h11v7H22v4h8v4h-8v8h-5z" fill="#19110d"/>
 </svg>

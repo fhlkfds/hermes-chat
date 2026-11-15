@@ -6,5 +6,5 @@
   </defs>
   <rect x="48" y="40" width="416" height="416" rx="124" fill="url(#tile)" filter="url(#shadow)"/>
   <rect x="50" y="42" width="412" height="412" rx="122" fill="none" stroke="url(#rim)" stroke-width="4"/>
-  <path d="M160 136h48v88h96v-88h48v224h-48v-96h-96v96h-48z" fill="#19110d"/>
+  <path d="M176 120H224V144H352V208H224V248H320V288H224V376H176z" fill="#19110d"/>
 </svg>
