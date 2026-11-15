@@ -214,8 +214,8 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
       running.delete(h.id);
       if (!step) {
         // Sent with no `tool.start`: with `display.tool_progress` off, Hermes still sends a failed call's completion.
-        closeModel(h.at);
         const ms = h.durationS !== undefined ? h.durationS * 1000 : 0;
+        closeModel(h.at - ms);
         step = { kind: "tool", id: id("t"), name: h.name, callId: h.id, start: h.at - ms, end: h.at, length: { ms, measured: false }, placed: true };
         steps.push(step);
       }

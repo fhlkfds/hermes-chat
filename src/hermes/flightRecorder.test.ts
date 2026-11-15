@@ -101,6 +101,7 @@ describe("A watched run", () => {
   it("places a tool sent with no start, as with tool progress off, back from its measured length", () => {
     const run = watchedRun(turn([{ kind: "start", at: T }, { kind: "tool.complete", at: T + 5000, id: "c1", name: "patch", durationS: 1.5, result: "ok" }]), T + 6000);
     expect(run.steps.find((s) => s.kind === "tool")).toMatchObject({ start: T + 3500, end: T + 5000, length: { ms: 1500, measured: true }, placed: true });
+    expect(run.steps[0]).toMatchObject({ kind: "model", start: T, end: T + 3500 });
     expect(run.outcome).toBe("running");
   });
 
