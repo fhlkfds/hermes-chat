@@ -46,6 +46,8 @@ const NEW: Record<string, unknown> = {
   "GET api/webhooks": { enabled: true, subscriptions: [] },
   "GET api/fs/list": { path: "/", entries: [] },
   "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },
+  // A made-up session isn't live: the method is there (`tui_gateway/methods_tools.py:1123` at `bf0203a`).
+  "RPC rollback.list": new RpcError(4001, "session not found"),
 };
 
 const noRoute = () => answered(404, "Not Found");
@@ -119,7 +121,7 @@ describe("the capability contract", () => {
   });
 
   it("checks only by reading: a GET, or a JSON-RPC method that only reads", () => {
-    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list", "subagent.roster"]);
+    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list", "subagent.roster", "rollback.list"]);
     for (const c of CAPABILITIES) {
       if (!c.probe) continue;
       if (c.probe.kind === "rpc") expect(reads.has(c.probe.method), c.id).toBe(true);
@@ -148,6 +150,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       profiles: "supported",
       skills: "supported",
       serverFiles: "supported",
+      checkpoints: "supported",
       scheduledJobs: "supported",
       automations: "supported",
       outputs: "supported",
@@ -180,7 +183,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
   it("sends nothing that writes", async () => {
     const t = store(NEW);
     await connectAndCheck(t);
-    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster)$/.test(c))).toBe(true);
+    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster|rollback\.list)$/.test(c))).toBe(true);
   });
 });
 
