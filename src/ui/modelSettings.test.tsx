@@ -534,6 +534,7 @@ describe("Project instructions model (ADR 0177)", () => {
         api_key: "",
         api: "",
         key_env: "",
+        api_key_env: "",
         api_mode: "",
       }),
     );

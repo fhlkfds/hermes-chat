@@ -337,7 +337,7 @@ describe("The Project instructions model (ADR 0177)", () => {
         {
           config: {
             auxiliary: {
-              project_instructions: { provider: "openai-codex", model: "gpt-6.1-mini", reasoning_effort: "low", base_url: "", api_key: "", api: "", key_env: "", api_mode: "" },
+              project_instructions: { provider: "openai-codex", model: "gpt-6.1-mini", reasoning_effort: "low", base_url: "", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" },
             },
           },
         },
@@ -362,18 +362,18 @@ describe("The Project instructions model (ADR 0177)", () => {
   it("clears a stale endpoint and key when its provider changes, and points a user-defined endpoint at its own URL", async () => {
     const server = new FakeHermes();
     server.modelConfig.catalog.push({ slug: "custom:lan", name: "LAN box", models: ["qwen-4"], capabilities: {}, api_url: "http://10.0.0.5:8080/v1" });
-    server.modelConfig.unslottedAuxiliary.project_instructions = { provider: "openrouter", model: "deepseek/deepseek-v4-pro", api_key: "sk-or-old", key_env: "OPENROUTER_API_KEY" };
+    server.modelConfig.unslottedAuxiliary.project_instructions = { provider: "openrouter", model: "deepseek/deepseek-v4-pro", api_key: "sk-or-old", key_env: "OPENROUTER_API_KEY", api_key_env: "OPENROUTER_OLD_KEY" };
     const api = (await connect(server.openPipe, "default")).modelSettings;
     const saved = await api.load();
     await api.applyInstructions(saved, { provider: "custom:lan", model: "qwen-4", effort: AUX_INHERIT });
-    expect(stored(server)).toEqual({ provider: "custom:lan", model: "qwen-4", reasoning_effort: "", base_url: "http://10.0.0.5:8080/v1", api_key: "", api: "", key_env: "", api_mode: "" });
+    expect(stored(server)).toEqual({ provider: "custom:lan", model: "qwen-4", reasoning_effort: "", base_url: "http://10.0.0.5:8080/v1", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" });
   });
 
   it("follows Text generation again once unset, with every key it wrote emptied, and a block on auto counts as unset", async () => {
     const { server, api, saved } = await setup();
     await api.applyInstructions(saved, { provider: "nous", model: "hermes-5-70b", effort: "none" });
     await api.applyInstructions(await api.load(), undefined);
-    expect(stored(server)).toEqual({ provider: "", model: "", reasoning_effort: "", base_url: "", api_key: "", api: "", key_env: "", api_mode: "" });
+    expect(stored(server)).toEqual({ provider: "", model: "", reasoning_effort: "", base_url: "", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" });
     expect((await api.load()).instructions).toBeUndefined();
     expect((await api.instructionsModel()).task).toBe("title_generation");
 

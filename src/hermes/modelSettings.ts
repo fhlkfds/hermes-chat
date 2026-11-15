@@ -315,7 +315,7 @@ function instructionsFrom(config: unknown): AuxDraft | undefined {
 }
 
 /** Endpoint keys a provider change leaves stale (`clear_model_endpoint_credentials` at `f0d9488`). */
-const CLEARED_CREDENTIALS = { api_key: "", api: "", key_env: "", api_mode: "" };
+const CLEARED_CREDENTIALS = { api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" };
 
 function auxFrom(res: unknown): AuxTask[] {
   const rows = obj(res).tasks;
