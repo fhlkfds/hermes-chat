@@ -59,6 +59,24 @@ describe("A watched run", () => {
     ]);
   });
 
+  it("counts a call in the step it ended when Hermes's counters for it arrive before the step's tool starts", () => {
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "usage", at: T + 900, counters: counters(5, 1800, 140) },
+        { kind: "tool.start", at: T + 1000, id: "c1", name: "terminal" },
+        { kind: "tool.complete", at: T + 2000, id: "c1", name: "terminal", durationS: 1 },
+        { kind: "usage", at: T + 2900, counters: counters(6, 4200, 180) },
+        { kind: "tool.start", at: T + 3000, id: "c2", name: "read_file" },
+        { kind: "tool.complete", at: T + 3200, id: "c2", name: "read_file", durationS: 0.2 },
+        { kind: "usage", at: T + 4100, counters: counters(7, 6900, 220) },
+        { kind: "end", at: T + 4200, status: "complete", counters: counters(7, 6900, 220) },
+      ]),
+      T + 10_000,
+    );
+    expect(run.steps.filter((s) => s.kind === "model").map((s) => s.kind === "model" && s.calls)).toEqual([1, 1, 1]);
+  });
+
   it("judges a failed tool from its result, as Hermes does, and keeps a status warning and an error as failed", () => {
     const run = watchedRun(
       turn([
