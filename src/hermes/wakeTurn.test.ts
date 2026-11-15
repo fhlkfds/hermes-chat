@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
+import type { Item } from "./model";
 import { localChatCache } from "./chatCache";
 
 const nas = { mode: "ssh" as const, sshTarget: "liam@nas", url: "", username: "liam" };
@@ -170,10 +171,10 @@ describe("A dispatched task's wake turn, against the stand-in's kanban poller", 
     server.event(runtime, "message.start", { turn_id: "held-1" });
     server.event(runtime, "message.delta", { text: "Not since then." });
     server.event(runtime, "message.complete", { text: "Not since then.", status: "complete", persisted_turn: { user_row_id: 50, final_assistant_row_id: 51 } });
-    await until(hermes, () => chat().items.some((i) => i.kind === "user" && i.rowId === 40) && chat().items.some((i) => i.kind === "assistant" && i.rowId === 51));
-    expect(chat().items.filter((i) => i.kind === "user").map((i) => i.kind === "user" && [i.text, i.rowId])).toEqual([
+    await until(hermes, () => chat().items.some((i) => i.kind === "returned" && i.rowId === 40) && chat().items.some((i) => i.kind === "assistant" && i.rowId === 51));
+    expect(chat().items.flatMap((i) => (i.kind === "user" ? [[i.text, i.rowId]] : i.kind === "returned" ? [[i.body, i.rowId]] : []))).toEqual([
       ["Research the backup failures", undefined],
-      ["[IMPORTANT: Background process proc_1 completed]", 40],
+      ["Background process proc_1 completed", 40],
       ["Any news?", 50],
     ]);
   });
@@ -187,8 +188,8 @@ describe("A dispatched task's wake turn, against the stand-in's kanban poller", 
     server.event(runtime, "message.start", { turn_id: "wake-1" });
     server.event(runtime, "message.delta", { text: "Results are in." });
     server.event(runtime, "message.complete", { text: "Results are in.", status: "complete", persisted_turn: { user_row_id: 40 } });
-    await until(hermes, () => chat().items.some((i) => i.kind === "user" && i.rowId === 40));
-    expect(chat().items.slice(-2).map((i) => i.kind === "user" || i.kind === "assistant" ? i.text : i.kind)).toEqual(["[IMPORTANT: Background process proc_1 completed]", "Results are in."]);
+    await until(hermes, () => chat().items.some((i) => i.kind === "returned" && i.rowId === 40));
+    expect(chat().items.slice(-2).map((i) => (i.kind === "returned" ? i.body : i.kind === "assistant" ? i.text : i.kind))).toEqual(["Background process proc_1 completed", "Results are in."]);
   });
 
   it("puts the notice before a wake turn that calls a tool", async () => {
@@ -236,7 +237,7 @@ describe("Handed-off work that comes back", () => {
     display_kind: "async_delegation_complete",
     display_metadata: { display_text: "Subagent Task Completed: audit backups" },
   };
-  const returned = (items: { kind: string }[]) => items.filter((i) => i.kind === "returned");
+  const returned = (items: Item[]) => items.filter((i): i is Extract<Item, { kind: "returned" }> => i.kind === "returned");
   const reopened = async (server: FakeHermes) => {
     const again = await connect(server.openPipe, undefined, localChatCache({ ...nas, sshTarget: "liam@reload" }));
     running.push(again);
@@ -253,6 +254,7 @@ describe("Handed-off work that comes back", () => {
     expect(chat().items.at(-2)).toMatchObject(card);
     expect(shown().at(-1)).toEqual(["assistant", "The NAS share went read-only."]);
     expect(chat().items.some((i) => i.kind === "user" && i.text.includes("ASYNC DELEGATION"))).toBe(false);
+    expect(returned(localChatCache(nas).loadTranscript("default", "backup")?.items ?? [])).toEqual([expect.objectContaining(card)]);
 
     const items = await reopened(server);
     expect(returned(items)).toEqual([expect.objectContaining(card)]);
@@ -281,7 +283,7 @@ describe("Handed-off work that comes back", () => {
     ].join("\n");
     server.returnWork("backup", { text, display_kind: "async_delegation_complete", display_metadata: { display_text: "Subagent Tasks Completed (2 tasks)" } }, "Both done.");
     await until(hermes, () => returned(chat().items).length === 1);
-    const body = (returned(chat().items)[0] as { body: string }).body;
+    const { body } = returned(chat().items)[0];
     expect(body.indexOf("check the NAS")).toBeLessThan(body.indexOf("NAS-RESULT"));
     expect(body.indexOf("NAS-RESULT")).toBeLessThan(body.indexOf("check cron"));
     expect(body.indexOf("check cron")).toBeLessThan(body.indexOf("CRON-RESULT"));

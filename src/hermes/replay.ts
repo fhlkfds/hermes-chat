@@ -6,7 +6,7 @@
 //
 // This module holds what the app works out around those calls: which message a reply answers, the words an Edit
 // starts from, what can't be sent again, which turn a message is, and which chats are versions of one turn.
-import type { Chat, Item } from "./model";
+import { isStoredPrompt, type Chat, type Item } from "./model";
 import type { ModelPick } from "./models";
 import { branchBlocked, excerpt, imageCount, typedText, type BranchLink, type BranchPreview, type IncludedMessage } from "./branch";
 
@@ -27,6 +27,8 @@ export function replayTarget(items: Item[], itemId: string, kind: ReplayKind): {
   for (let i = at - 1; i >= 0; i--) {
     const u = items[i];
     if (u.kind === "user" && !u.outgoing) return { userId: u.id, replyId: item.id };
+    // A reply to returned work answers no message of the owner's.
+    if (u.kind === "returned") break;
   }
   return { error: "This reply doesn't answer a message of yours in this chat, so there's nothing to send again." };
 }
@@ -87,11 +89,17 @@ export const withoutMarkers = <R extends { marker?: boolean }>(spine: R[]) => sp
 export const turnAt = (spine: { role: string; hidden: boolean; marker?: boolean }[], index: number) =>
   spine.slice(0, index).filter((r) => r.role === "user" && !r.hidden && !r.marker).length;
 
-/** Each owner's message of `items` that Hermes has, by turn, from 0: the same numbering as `turnAt`. */
+/**
+ * Each owner's message of `items` that Hermes has, by turn, from 0: the same numbering as `turnAt`, where a Returned
+ * result, a user row to Hermes, takes a number too.
+ */
 export function turnsOf(items: Item[]): Map<string, number> {
   const turns = new Map<string, number>();
   let n = 0;
-  for (const i of items) if (i.kind === "user" && !i.outgoing) turns.set(i.id, n++);
+  for (const i of items) {
+    if (i.kind === "user" && !i.outgoing) turns.set(i.id, n);
+    if (isStoredPrompt(i)) n++;
+  }
   return turns;
 }
 

@@ -178,6 +178,14 @@ function toItem(v: unknown): Item | undefined {
             ...(i.steer === true && { steer: true }),
           };
     }
+    case "returned": {
+      const body = optionalText(i.body);
+      const title = optionalText(i.title);
+      const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
+      return body === undefined
+        ? undefined
+        : { kind: "returned", id, body, process: i.process === true, ...(title && { title }), ...(at !== undefined && { at }), ...(rowId !== undefined && { rowId }) };
+    }
     case "assistant": {
       const rowId = Number.isSafeInteger(i.rowId) ? (i.rowId as number) : undefined;
       const usage = replyUsageOf(i.usage);

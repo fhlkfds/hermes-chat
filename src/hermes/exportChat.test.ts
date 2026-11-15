@@ -443,3 +443,28 @@ describe("Redacting by hand", () => {
     expect(p.picked).toEqual([{ text: "14 Larch Lane", times: 0 }]);
   });
 });
+
+describe("Exporting a Returned result", () => {
+  const items: Item[] = [
+    { kind: "user", id: "u", text: "Audit the backups in the background" },
+    { kind: "returned", id: "w", title: "Subagent Task Completed: audit", body: "The share is **read-only**.", process: false },
+    { kind: "returned", id: "p", body: "Output:\nhello-from-proc", process: true },
+    { kind: "assistant", id: "a", text: "Fixed." },
+  ];
+  const stored = (messages: Record<string, unknown>[]) =>
+    messages.filter((m) => m.role === "user").map(({ content, display_kind, display_metadata }) => ({ content, display_kind, display_metadata }));
+  const asStored = [
+    { content: "Audit the backups in the background", display_kind: undefined, display_metadata: undefined },
+    { content: "The share is **read-only**.", display_kind: "async_delegation_complete", display_metadata: { display_text: "Subagent Task Completed: audit" } },
+    { content: "Output:\nhello-from-proc", display_kind: "process_complete", display_metadata: undefined },
+  ];
+
+  it("is a user row with Hermes's display kind and title in JSON, as Hermes stores it", () => {
+    expect(stored(JSON.parse(chatJson(chat(items), new Date(0)))[0].messages)).toEqual(asStored);
+  });
+
+  it("comes back from a Markdown export the same way", async () => {
+    const p = await planImport("markdown", "Audit.md", chatMarkdown(chat(items), new Date(0)));
+    expect(stored(p.chats[0].session.messages as Record<string, unknown>[])).toEqual(asStored);
+  });
+});

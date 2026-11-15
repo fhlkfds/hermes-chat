@@ -9,7 +9,7 @@ export type ImagePage = {
   caption: string;
   blocks: { who: Who; text: string }[];
 };
-export type Who = "You" | "Hermes" | "Hermes, thinking" | "Tool" | "Approval";
+export type Who = "You" | "Hermes" | "Hermes, thinking" | "Returned" | "Tool" | "Approval";
 export type Measure = (text: string, font: string) => number;
 
 export type ColorToken = "--bg" | "--raised" | "--raised-2" | "--code-bg" | "--accent-soft" | "--text" | "--text-2" | "--text-strong" | "--muted" | "--accent";
@@ -45,6 +45,7 @@ const WHO: Record<Who, { fill: ColorToken; label: ColorToken; text: ColorToken; 
   You: { fill: "--raised-2", label: "--text-strong", text: "--text" },
   Hermes: { fill: "--raised", label: "--accent", text: "--text" },
   "Hermes, thinking": { fill: "--raised", label: "--muted", text: "--muted" },
+  Returned: { fill: "--raised", label: "--accent", text: "--text" },
   Tool: { fill: "--code-bg", label: "--muted", text: "--text-2", mono: true },
   Approval: { fill: "--accent-soft", label: "--accent", text: "--text" },
 };
