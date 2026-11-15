@@ -229,6 +229,35 @@ export function handEdit(current: string | undefined, last: FileEdit): HandEdit 
   return "unknown";
 }
 
+/** The lines a diff adds and takes away, without their sign. A section's `+++ b/` and `--- a/` file lines aren't changes. */
+function changedLines(diff: string): { added: string[]; removed: string[] } {
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (const line of diff.replace(ANSI, "").split("\n")) {
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) continue;
+    if (line.startsWith("+")) added.push(line.slice(1));
+    else if (line.startsWith("-")) removed.push(line.slice(1));
+  }
+  return { added, removed };
+}
+
+/**
+ * Whether every line the file gained or lost since the checkpoint (`section`) is one the bot's own edits since then
+ * added or took away. Undefined when an edit's diff isn't whole, so the bot's changes aren't all known. This sees a
+ * hand edit anywhere in the file, which a patch's hunks alone don't.
+ */
+function botMadeAll(section: string, edits: FileEdit[]): boolean | undefined {
+  const bot = { added: new Set<string>(), removed: new Set<string>() };
+  for (const e of edits) {
+    if (e.inlineDiff === undefined || !hunksAfter(e.inlineDiff)) return undefined;
+    const { added, removed } = changedLines(e.inlineDiff);
+    added.forEach((l) => bot.added.add(l));
+    removed.forEach((l) => bot.removed.add(l));
+  }
+  const now = changedLines(section);
+  return now.added.every((l) => bot.added.has(l)) && now.removed.every((l) => bot.removed.has(l));
+}
+
 /**
  * Where `path` is, given the folder it is relative to: its full path, and its path inside the folder. None for a path
  * outside the folder, a `~` path (whose home is the server's to say), or with no folder to place it in.
@@ -245,6 +274,17 @@ export function placeIn(folder: string | undefined, path: string): { rel: RelPat
   }
   const abs = `/${parts.join("/")}`;
   return abs.startsWith(`${base}/`) ? { rel: abs.slice(base.length + 1) as RelPath, abs } : undefined;
+}
+
+/**
+ * A file the last edit left in part (a `patch`) is as the bot left it only if the diff since the checkpoint is all the
+ * bot's too. A file a `write_file` left whole needs no more than `handEdit`'s exact match.
+ */
+function judged(byLastEdit: HandEdit, last: FileEdit, section: string | undefined, since: FileEdit[]): HandEdit {
+  if (byLastEdit !== "as-left" || (last.tool === "write_file" && last.content !== undefined)) return byLastEdit;
+  if (section === undefined) return "unknown";
+  const all = botMadeAll(section, since);
+  return all === undefined ? "unknown" : all ? "as-left" : "edited";
 }
 
 /**
@@ -265,8 +305,9 @@ export function planFiles(reply: ReplyFiles, items: Item[], folder: string | und
     if (file.created) return { state: "created", path, rel, abs, ...section };
     const ofFile = (t: { edits: FileEdit[] }) => t.edits.filter((e) => fileKey(folder, e.path) === abs);
     const later = turns.slice(at + 1).flatMap(ofFile);
-    const last = later.at(-1) ?? ofFile(reply).at(-1)!;
+    const since = [...ofFile(reply), ...later];
+    const last = since.at(-1)!;
     const laterReply = later.length > 0;
-    return { state: "undoable", path, rel, abs, handEdit: handEdit(current.get(abs), last), laterReply, ...section };
+    return { state: "undoable", path, rel, abs, handEdit: judged(handEdit(current.get(abs), last), last, file.section, since), laterReply, ...section };
   });
 }

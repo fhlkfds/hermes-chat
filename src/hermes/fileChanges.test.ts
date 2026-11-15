@@ -165,7 +165,9 @@ describe("placeIn", () => {
 
 describe("planFiles", () => {
   const stat = "a.txt | 2 +-\n b.txt | 2 +-\n c.txt | 1 +\n 3 files changed";
-  const diff = "diff --git a/c.txt b/c.txt\nnew file mode 100644\n--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1 @@\n+new";
+  const bSection = "diff --git a/b.txt b/b.txt\nindex af0b8cf..ef66662 100644\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-beta original\n+beta patched by the bot";
+  const cSection = "diff --git a/c.txt b/c.txt\nnew file mode 100644\n--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1 @@\n+new";
+  const diff = `${bSection}\n${cSection}`;
 
   it("says what undoing each of a reply's files would do", () => {
     const items = [user("u1", 100), write("t1", "a.txt", "alpha\n"), patch("t2", "b.txt", B_DIFF), write("t3", "c.txt", "new"), write("t4", "d.txt", "same"), write("t5", "/etc/motd", "hi"), reply("r1", 101)];
@@ -176,11 +178,27 @@ describe("planFiles", () => {
     ]);
     expect(planFiles(r, items, FOLDER, parseRollbackDiff(stat, diff), texts)).toEqual([
       { state: "undoable", path: "a.txt", rel: "a.txt", abs: "/tmp/work/a.txt", handEdit: "edited", laterReply: false },
-      { state: "undoable", path: "b.txt", rel: "b.txt", abs: "/tmp/work/b.txt", handEdit: "as-left", laterReply: false },
-      { state: "created", path: "c.txt", rel: "c.txt", abs: "/tmp/work/c.txt", section: diff },
+      { state: "undoable", path: "b.txt", rel: "b.txt", abs: "/tmp/work/b.txt", handEdit: "as-left", laterReply: false, section: bSection },
+      { state: "created", path: "c.txt", rel: "c.txt", abs: "/tmp/work/c.txt", section: cSection },
       { state: "unchanged", path: "d.txt", rel: "d.txt", abs: "/tmp/work/d.txt" },
       { state: "outside", path: "/etc/motd" },
     ]);
+  });
+
+  it("sees a hand edit outside the bot's hunk of a patched file", () => {
+    const items = [user("u1", 100), patch("t1", "b.txt", B_DIFF), reply("r1", 101)];
+    const [r] = replyFiles(items, FOLDER);
+    const texts = new Map([["/tmp/work/b.txt", "beta patched by the bot\na line of mine\n"]]);
+    const mine = `${bSection.replace("@@ -1 +1 @@", "@@ -1 +1,2 @@")}\n+a line of mine`;
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("b.txt | 3 ++-", mine), texts)[0]).toMatchObject({ state: "undoable", handEdit: "edited" });
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("b.txt | 2 +-", bSection), texts)[0]).toMatchObject({ state: "undoable", handEdit: "as-left" });
+  });
+
+  it("can't tell a patched file is as the bot left it when the server cut its diff section", () => {
+    const items = [user("u1", 100), patch("t1", "b.txt", B_DIFF), reply("r1", 101)];
+    const [r] = replyFiles(items, FOLDER);
+    const texts = new Map([["/tmp/work/b.txt", "beta patched by the bot\n"]]);
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("b.txt | 2 +-", ""), texts)[0]).toMatchObject({ state: "undoable", handEdit: "unknown" });
   });
 
   it("judges a hand edit against a later reply's edit of the same file, and says a later reply edited it", () => {
