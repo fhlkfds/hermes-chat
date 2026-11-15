@@ -65,6 +65,7 @@ import type { ChatPin } from "./ui/ChatMenu";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
+import { RunDialog } from "./ui/RunView";
 import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
@@ -3628,6 +3629,7 @@ export function Main({
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
             screen={hermes.screen}
+            toolProgress={() => hermes.toolProgress()}
             logs={logs}
             onClearCache={() => hermes.clearCache()}
             importer={{
@@ -4304,6 +4306,9 @@ function ChatView({
   // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
   const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
   useEffect(() => setReplayFrom(undefined), [chatId, profile]);
+  // The Run view (ADR 0177): the reply it is open for, if any.
+  const [runOf, setRunOf] = useState<string>();
+  useEffect(() => setRunOf(undefined), [chatId, profile]);
   const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
   const listedChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
   const variants = useMemo(() => {
@@ -4609,6 +4614,7 @@ function ChatView({
           : undefined
       }
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
+      onRun={started ? setRunOf : undefined}
       branchedFrom={
         link && (
           <BranchedFrom
@@ -4683,6 +4689,7 @@ function ChatView({
         }}
       />
     )}
+    {runOf && <RunDialog key={`${chat.id}/${runOf}`} api={{ read: () => hermes.run(chat.id, runOf) }} onClose={() => setRunOf(undefined)} />}
     {branchFrom && (
       <BranchDialog
         key={`${chat.id}/${branchFrom}`}

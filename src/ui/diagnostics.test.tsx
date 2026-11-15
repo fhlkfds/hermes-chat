@@ -215,6 +215,20 @@ describe("Connection diagnostics", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Not connected: as last checked/);
     expect(within(row$("Projects")).getByText("Supported")).toBeTruthy();
   });
+
+  it("says whether tool steps are sent for the profile and whether turns are named, for the Run view (ADR 0177)", async () => {
+    const store = scriptedStore(NEW);
+    act(() => store.connected(1, "default", {}, Promise.resolve({ server_requests: ["approval"] })));
+    const toolProgress = vi.fn(async () => "off" as const);
+    diagnostics(store, { toolProgress });
+    const section = () => screen.getByRole("heading", { name: "Flight recorder" }).closest("section")!;
+    await waitFor(() => expect(section().textContent).toContain("Not sent"));
+    expect(section().textContent).toContain("Tool progress is off, so Hermes sends tool steps live only for file edits");
+    expect(section().textContent).toContain("Not seen yet");
+    act(() => store.noteTurnIds(false));
+    expect(section().textContent).toContain("This Hermes doesn't name turns, as at bf0203a");
+    expect(toolProgress).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Diagnostics' layout (#174, ADR 0059)", () => {

@@ -4198,12 +4198,17 @@ export class Hermes {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const reply = chat?.items.find((i) => i.id === itemId);
     if (!chat || reply?.kind !== "assistant") throw new Error("This reply isn't in the chat any more.");
-    const config = this.rest("GET", `api/config?${new URLSearchParams({ profile })}`).then(toolProgressOf, () => undefined);
+    const config = this.toolProgress().catch(() => undefined);
     const watched = this.recorder.find(chatId, reply);
     if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
     if (reply.rowId === undefined) throw new Error("Hermes hasn't stored this reply yet, so its steps can't be read. Try again once the chat has reloaded.");
     const rows = await this.turnRowsOf(profile, chatId, reply.rowId);
     return { run: storedRun(rows), toolProgress: await config };
+  }
+
+  /** The profile's `display.tool_progress`, from `GET /api/config`: whether Hermes sends ordinary tool steps (ADR 0177). */
+  async toolProgress(): Promise<ToolProgress> {
+    return toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
   }
 
   /** The stored rows of the turn holding row `replyRow`, oldest first, read newest first a page at a time. */

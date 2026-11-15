@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type ToolTurnPlan } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";
 import { localChatCache } from "./chatCache";
+import type { Item } from "./model";
 import { judgeFailure, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type RunRow, type Step, type WatchedTurn } from "./flightRecorder";
 
 const counters = (calls: number, prompt: number, output: number) => ({ prompt, output, reasoning: 0, calls });
+const lastReply = (items: Item[]) => [...items].reverse().find((i) => i.kind === "assistant")!;
 const kinds = (steps: Step[]) => steps.map((s) => (s.kind === "tool" ? `tool:${s.name}` : s.kind));
 
 describe("A watched run", () => {
@@ -188,7 +190,7 @@ describe("The Run view against FakeHermes", () => {
     await hermes.send("nas", "How full is the NAS?");
     await server.toolTurn(server.runtimeIdOf("nas")!, PLAN);
     await hermes.idle();
-    const reply = chat().items.findLast((i) => i.kind === "assistant")!;
+    const reply = lastReply(chat().items);
 
     const { run } = await hermes.run("nas", reply.id);
     expect(run.source).toBe("watched");
@@ -203,7 +205,7 @@ describe("The Run view against FakeHermes", () => {
     expect(hermes.capabilities.getSnapshot().facts.turnIds).toBe(false);
 
     const later = await connected(server);
-    const stored = later.chat().items.findLast((i) => i.kind === "assistant")!;
+    const stored = lastReply(later.chat().items);
     const { run: again } = await later.hermes.run("nas", stored.id);
     expect(again.source).toBe("stored");
     expect(kinds(again.steps)).toEqual(["model", "tool:terminal", "model", "tool:read_file", "model"]);
@@ -232,7 +234,7 @@ describe("The Run view against FakeHermes", () => {
     await hermes.send("nas", "hi");
     await server.toolTurn(server.runtimeIdOf("nas")!, { ...PLAN, calls: [] });
     await hermes.idle();
-    const reply = chat().items.findLast((i) => i.kind === "assistant")!;
+    const reply = lastReply(chat().items);
     expect((await hermes.run("nas", reply.id)).toolProgress).toBe("off");
   });
 });

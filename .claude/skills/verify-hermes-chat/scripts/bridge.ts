@@ -8,6 +8,9 @@
 //   a prompt with "dispatch" in it calls `kanban_create` (a task on the stand-in's board, `session_id` the chat's),
 //   says "Research task dispatched (t_…)" and ends its turn. The kanban routes serve the board.
 //   a prompt with "background" in it starts two background subagents and ends its turn while they run.
+//   a prompt that starts with `tools` runs a turn with tool calls as Hermes sends and stores one, in real time: a
+//   `terminal` call, then a `read_file` that fails, each with Hermes's `duration_s`, `session.usage` after each model
+//   call, and stored rows with `timestamp` and `tool_calls` (FakeHermes.toolTurn), for the Run view (ADR 0177).
 //   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
 //   a prompt that starts with "fail" ends its reply with an error, as a provider failure does.
 //   a prompt that starts with "math" gets a reply with inline and display math and a Mermaid diagram (#350), and one
@@ -222,6 +225,26 @@ function replyTo(sessionId: string, prompt: string, said?: string, persisted_tur
     }, 120);
   };
   setTimeout(step, 400);
+}
+
+function toolsReply(sessionId: string) {
+  const sleep = (seconds: number) => new Promise<void>((done) => setTimeout(done, seconds * 1000));
+  return server
+    .toolTurn(
+      sessionId,
+      {
+        calls: [
+          [{ name: "terminal", args: { command: "df -h /srv" }, result: { output: "/dev/sda1  1.8T  1.7T  92% /srv", exit_code: 0 }, seconds: 2.4 }],
+          [{ name: "read_file", args: { path: "/srv/backup/last-run.log" }, result: { error: "File not found: /srv/backup/last-run.log" }, seconds: 0.3 }],
+        ],
+        reply: "The NAS is 92% full. The backup log isn't where I expected it, so I couldn't check the last run.",
+        modelSeconds: 1.2,
+        tokens: { prompt: 1800, output: 90 },
+        costUsd: 0.0031,
+      },
+      sleep,
+    )
+    .then(save);
 }
 
 server.kanban.wakeDelayMs = 2_000;
@@ -451,6 +474,7 @@ http.on("upgrade", async (req, sock: Socket) => {
           if (/delegate/i.test(prompt)) delegate(session_id, /queue/i.test(prompt));
           else if (/approval/i.test(prompt)) askApproval(session_id);
           else if (/^fail/i.test(prompt)) failReply(session_id);
+          else if (/^tools/i.test(prompt)) void toolsReply(session_id);
           else if (/dispatch|background/i.test(prompt)) setTimeout(save, 500);
           else replyTo(session_id, prompt);
         }, 0);
