@@ -136,7 +136,7 @@ describe("A side question", () => {
     await hermes.askSideQuestion("backup", "How long will it take?");
     server.event(runtime, "message.delta", { text: " the repo" });
     server.event(runtime, "tool.start", { tool_id: "t1", name: "terminal", context: "restic unlock" });
-    server.event(runtime, "message.complete", { status: "complete", text: "Unlocking the repo", reasoning: "Unlock first." });
+    server.event(runtime, "message.complete", { status: "complete", text: "Unlocking the repo", reasoning: "Unlock first.", response_reused: true });
     await hermes.idle();
     expect(chat().items.map((i) => i.kind).slice(-3)).toEqual(["thinking", "assistant", "tool"]);
     expect(chat().sideQuestions?.[0].after).toBe(reply.id);
