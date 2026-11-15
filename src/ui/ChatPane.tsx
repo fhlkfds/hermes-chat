@@ -1470,7 +1470,7 @@ function ReturnedCard({ item, query }: { item: Extract<Item, { kind: "returned" 
     <div className={`msg returned${item.process ? " process" : ""}`} data-item={item.id} data-at={item.at}>
       <button className="returned-head" aria-expanded={open} title={open ? l.hide : l.show} onClick={() => setOpen((o) => !o)}>
         <Icon size={14} aria-hidden />
-        <span className="returned-title">{item.title ?? (item.process ? l.process : l.work)}</span>
+        <span className="returned-title">{highlight(item.title ?? (item.process ? l.process : l.work), query)}</span>
         <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} aria-hidden />
       </button>
       {open &&
