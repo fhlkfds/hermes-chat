@@ -40,6 +40,9 @@
 //   or not (a test's control). With `chat`, each `$SESSION` in the body is first replaced by the runtime session id of
 //   that chat, which must be open in the app: `{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start",
 //   "session_id":"$SESSION","payload":{"tool_id":"t1","name":"terminal","preview":5}}}`.
+//   `POST /__return?chat=<chat id>` with a JSON body `{text, display_kind, display_metadata?, reply}` runs the turn Hermes
+//   starts when handed-off work comes back (`FakeHermes.returnWork`): the notice is stored as a user row with that
+//   display kind and metadata, and `reply` streams as the turn's reply, in that chat's live session (a test's control).
 // HV_INBOX=1 gives the `work` profile two Unread chats for the Rail inbox: one last active 3 days ago, one an hour ago.
 // HV_BAD_HISTORY=1 adds `badtool`, "Broken tool row", to `default`: its stored history has a tool row whose `context`
 // is a number and one whose `name` is an object, each between two messages, as a misbehaving server might send.
@@ -394,6 +397,14 @@ const http = createServer(async (req, res) => {
     if (runtime === undefined) return json(400, { detail: `Chat ${chat} isn't open in the app` });
     if (!send) return json(409, { detail: "The app has no WebSocket open" });
     send((body ?? "").replaceAll("$SESSION", runtime));
+    return json(200, { ok: true });
+  }
+  if (url.pathname === "/__return" && req.method === "POST") {
+    const chat = url.searchParams.get("chat") ?? "";
+    if (!server.runtimeIdOf(chat)) return json(400, { detail: `Chat ${chat} isn't open in the app` });
+    const { reply, ...notice } = JSON.parse(body ?? "{}");
+    server.returnWork(chat, notice, String(reply ?? "Results are in."));
+    save();
     return json(200, { ok: true });
   }
   if (url.pathname === "/__ask" && req.method === "POST") {

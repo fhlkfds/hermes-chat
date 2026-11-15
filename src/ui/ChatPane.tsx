@@ -1,12 +1,13 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, type RefObject, useCallback, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArchiveRestore, ArrowUp, AtSign, Brain, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, Columns2, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Share2, Square, Trash2, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, AtSign, Brain, PackageCheck, SquareTerminal, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, Columns2, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Share2, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { decodeString } from "micromark-util-decode-string";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, QuestionAnswer, SentReference, SideQuestion, Source } from "../hermes/model";
 import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
+import { useLocale } from "../i18n/locale";
 import type { SkillCall } from "../hermes/skillCommands";
 import { STEER, typedCommand } from "../hermes/commands";
 import type { ScreenshotDesk } from "../hermes/screenshots";
@@ -110,6 +111,7 @@ function toBlocks(items: Item[], side: SideQuestion[] = []): (Block | SideBlock)
 function mayMatch(block: Block, finds: RegExp) {
   if (block.kind === "assistant")
     return finds.test(block.text) || finds.test(decodeString(block.text)) || block.text.includes("[^");
+  if (block.kind === "returned") return finds.test(`${block.title ?? ""}\n${block.body}`) || finds.test(decodeString(block.body));
   return (block.kind === "user" || block.kind === "thinking") && finds.test(block.text);
 }
 
@@ -597,6 +599,8 @@ export function ChatPane({
     let turn = -1;
     for (const i of chat.items) {
       if (i.kind === "user" && !i.outgoing) turn = ofUser.get(i.id)!;
+      // A reply to returned work answers no message of the owner's, so it has nothing to send again.
+      else if (i.kind === "returned") turn = -1;
       else if (i.kind === "assistant" && turn >= 0 && i.text.trim()) lastReply.set(turn, i.id);
     }
     const anchor = new Map<string, number>();
@@ -617,7 +621,9 @@ export function ChatPane({
   // For the status bar's context inspector: a stored time to the message there, marked as a jump to a tool call is.
   const showInChat = useCallback<ShowInChat>((at) => {
     const first = itemsRef.current.find((i) =>
-      at === undefined ? i.kind === "user" || i.kind === "assistant" || i.kind === "error" : (i.kind === "user" || i.kind === "assistant") && i.at !== undefined && i.at >= at,
+      at === undefined
+        ? i.kind === "user" || i.kind === "returned" || i.kind === "assistant" || i.kind === "error"
+        : (i.kind === "user" || i.kind === "returned" || i.kind === "assistant") && i.at !== undefined && i.at >= at,
     );
     if (first) revealRef.current((b) => b.id === first.id);
     const msgs = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>(".msg[data-item]") ?? []);
@@ -720,7 +726,7 @@ export function ChatPane({
     let el: HTMLElement | null | undefined;
     if (jumping.rowId !== undefined) {
       const rowId = jumping.rowId;
-      const item = chat.items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId);
+      const item = chat.items.find((i) => (i.kind === "user" || i.kind === "returned" || i.kind === "assistant") && i.rowId === rowId);
       el = item && scrollRef.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(item.id)}"]`);
     } else if (jumping.turn !== undefined) {
       const turn = jumping.turn;
@@ -820,7 +826,7 @@ export function ChatPane({
       const { rowId, turn } = jumping;
       const id =
         rowId !== undefined
-          ? chat.items.find((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId)?.id
+          ? chat.items.find((i) => (i.kind === "user" || i.kind === "returned" || i.kind === "assistant") && i.rowId === rowId)?.id
           : [...turns.anchor].find(([, t]) => t === turn)?.[0];
       has = (b) => b.id === id;
     }
@@ -1247,6 +1253,7 @@ const BlockView = memo(
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
+    if (block.kind === "returned") return <ReturnedCard item={block} query={query} />;
     if (block.kind === "approval")
       return <ApprovalCard item={block} offline={offline} movedAt={movedAt} onAnswer={(c, confirmed) => onAnswer(block.id, c, confirmed)} />;
     if (block.kind === "clarify" || block.kind === "sudo" || block.kind === "secret")
@@ -1447,6 +1454,34 @@ function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; que
         <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} />
       </button>
       {open && <div className="thought-body">{highlight(item.text, query)}</div>}
+    </div>
+  );
+}
+
+/**
+ * A Returned result (ADR 0175): open from the start, so the owner sees what came back, and closed or opened again by its
+ * header. A subagent's answer shows as a reply does; a process's output as a log.
+ */
+function ReturnedCard({ item, query }: { item: Extract<Item, { kind: "returned" }>; query: string }) {
+  const l = useLocale().chat.returned;
+  const [open, setOpen] = useState(true);
+  const Icon = item.process ? SquareTerminal : PackageCheck;
+  return (
+    <div className={`msg returned${item.process ? " process" : ""}`} data-item={item.id} data-at={item.at}>
+      <button className="returned-head" aria-expanded={open} title={open ? l.hide : l.show} onClick={() => setOpen((o) => !o)}>
+        <Icon size={14} aria-hidden />
+        <span className="returned-title">{highlight(item.title ?? (item.process ? l.process : l.work), query)}</span>
+        <ChevronRight size={13} className={`chev ${open ? "open" : ""}`} aria-hidden />
+      </button>
+      {open &&
+        (item.process ? (
+          <pre className="returned-body returned-log">{highlight(item.body, query)}</pre>
+        ) : (
+          <div className="returned-body msg assistant">
+            <Markdown text={item.body} query={query} />
+          </div>
+        ))}
+      <StoredTime at={item.at} />
     </div>
   );
 }

@@ -144,6 +144,20 @@ describe("the Work page", () => {
     await waitFor(() => expect(within(column("ready")).getByText("Write the summary")).toBeTruthy());
   });
 
+  it("shows a task's whole result in its sheet, apart from its summary", async () => {
+    const s = server();
+    s.kanban.add("default", { title: "Audit backups", status: "done", latest_summary: "Done", result: "UNIQUE_FINDINGS: the share is read-only" });
+    const hermes = await signIn(s);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Work" }));
+    await user.click(await within(column("done")).findByText("Audit backups"));
+    const sheet = await screen.findByRole("dialog", { name: "Audit backups" });
+    await act(async () => void (await hermes.idle()));
+    await waitFor(() => expect(within(sheet).getByText("UNIQUE_FINDINGS: the share is read-only")).toBeTruthy());
+    expect(within(sheet).getByRole("heading", { name: "Result" })).toBeTruthy();
+    expect(within(sheet).getByText("Done")).toBeTruthy();
+  });
+
   it("keeps focus in a task's sheet from the moment it opens, and closes it on Escape", async () => {
     const { user } = await launch();
     await user.click(card("Research the API"));

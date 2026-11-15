@@ -119,9 +119,10 @@ const TITLE_RE = /^# (.+)$/;
 const EXPORTED_RE = /^> Exported from Hermes Chat on (\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) UTC\.$/;
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const ATTACHED = "_Attached, not included in this file:_ ";
-type BlockKind = "user" | "assistant" | "thinking" | "tool" | "approval";
+type BlockKind = "user" | "returned" | "assistant" | "thinking" | "tool" | "approval";
 const HEADERS: [BlockKind, RegExp][] = [
   ["user", /^\*\*You:\*\*$/],
+  ["returned", /^\*\*Returned( \(process\))?:\*\*(?: (.+))?$/],
   ["assistant", /^\*\*Hermes:\*\*( _\(stopped before it finished\)_)?$/],
   ["thinking", /^\*\*Hermes, thinking:\*\*$/],
   ["tool", /^\*\*Tool:\*\* (.+)$/],
@@ -272,6 +273,22 @@ function fromMarkdown(text: string, digest: string): { chats: PlannedChat[]; war
         if (last.startsWith(ATTACHED)) counts.attachments += codeSpans(last.slice(ATTACHED.length)).length;
         // The note naming its attachments stays in its words: they are all the file has of them.
         rows.push({ role: "user", content: body, ...at });
+        counts.messages++;
+        break;
+      }
+      case "returned": {
+        flushThought();
+        const process = !!b.head[1];
+        const title = b.head[2];
+        const result = process ? fencedText(b.body) : body;
+        if (result === undefined) throw new ImportFileError(`Line ${b.line}: a process's result should be one code block, and here it isn't.`);
+        rows.push({
+          role: "user",
+          content: result,
+          display_kind: process ? "process_complete" : "async_delegation_complete",
+          ...(title && { display_metadata: { display_text: title } }),
+          ...at,
+        });
         counts.messages++;
         break;
       }

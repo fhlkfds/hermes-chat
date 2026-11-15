@@ -104,6 +104,8 @@ export type TranscriptMessage = {
   args?: Record<string, unknown>;
   timestamp?: number;
   display_kind?: string;
+  /** Hermes's display facts for the row, such as a Returned result's title (`display_text`). */
+  display_metadata?: Record<string, unknown>;
   reasoning?: string;
   row_id?: number;
   /** A tool row's whole result as Hermes stores it, which `session.resume` leaves out (`content` is only for edit tools). */
@@ -2573,6 +2575,21 @@ export class FakeHermes {
     (this.transcripts[stored] ??= []).push({ timestamp: Math.floor(now()), ...m, row_id });
   }
 
+  /**
+   * Runs the turn Hermes starts when handed-off work comes back (`tui_gateway/session_notifications.py`): the notice is
+   * stored as a user row with its display kind and title, and the turn's `message.start` carries only the turn's id.
+   */
+  returnWork(stored: string, notice: { text: string; display_kind: string; display_metadata?: Record<string, unknown> }, reply: string) {
+    const runtime = this.runtimeIdOf(stored);
+    if (!runtime) throw new Error(`No runtime session for ${stored}`);
+    this.storeMessage(stored, { role: "user", ...notice });
+    const user_row_id = this.transcripts[stored].at(-1)!.row_id!;
+    this.event(runtime, "message.start", { turn_id: `wake-${user_row_id}` });
+    this.event(runtime, "message.delta", { text: reply });
+    this.storeMessage(stored, { role: "assistant", text: reply });
+    this.event(runtime, "message.complete", { text: reply, status: "complete", persisted_turn: { user_row_id } });
+  }
+
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
@@ -2689,6 +2706,8 @@ export class FakeHermes {
         tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
         timestamp: m.timestamp ?? null,
         display_kind: m.display_kind ?? null,
+        // A TEXT column: the stored row has the JSON text, where `session.history` sends the object.
+        display_metadata: m.display_metadata === undefined ? null : JSON.stringify(m.display_metadata),
         active: m.compacted ? 0 : 1,
         compacted: m.compacted ? 1 : 0,
         _compressed_summary: m.summary ? 1 : null,
@@ -3386,6 +3405,8 @@ export type KanbanRow = {
   priority?: number;
   tenant?: string | null;
   latest_summary?: string | null;
+  /** What the task's completion recorded (`tasks.result`, `kanban_db.complete_task`). */
+  result?: string | null;
   comments?: { id: number; author: string; body: string; created_at: number }[];
 };
 
@@ -3586,5 +3607,5 @@ export class FakeKanban {
 
 /** A task as the routes list it: the stored row less what the plugin keeps to itself. */
 function listed({ subscribed: _, comments, ...t }: KanbanRow) {
-  return { body: null, priority: 0, tenant: null, latest_summary: null, ...t, comment_count: comments?.length ?? 0 };
+  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, ...t, comment_count: comments?.length ?? 0 };
 }

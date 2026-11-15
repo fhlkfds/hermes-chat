@@ -30,7 +30,7 @@ import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { ProfilesApi, toProfileRows } from "./profiles";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isQuestion, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { CheckTimesStore, noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -94,6 +94,7 @@ import {
 } from "./branch";
 import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, withoutMarkers, type ReplayKind, type ReplayPreview } from "./replay";
 import { errorText, formatBytes, optionalText } from "./values";
+import { returnedItem } from "./returned";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -324,6 +325,8 @@ type TranscriptMessage = {
   row_id?: number;
   /** How Hermes shows the row: `steer` for a message that went into a running reply (`session_history.py`). */
   display_kind?: string;
+  /** Hermes's display facts for the row, such as a Returned result's title, as an object or its JSON text. */
+  display_metadata?: unknown;
 };
 
 /** The history rows `raw` holds: a row with no role is left out, and a field of the wrong type is dropped. */
@@ -333,7 +336,7 @@ const transcriptMessages = (raw: unknown): TranscriptMessage[] =>
     const role = optionalText(m?.role);
     if (!m || role === undefined) return [];
     const [text, reasoning, name, context, tool_call_id, display_kind] = [m.text, m.reasoning, m.name, m.context, m.tool_call_id, m.display_kind].map((v) => optionalText(v));
-    return [{ role, text, reasoning, content: m.content, name, context, args: obj(m.args), tool_call_id, timestamp: num(m.timestamp), row_id: num(m.row_id), display_kind }];
+    return [{ role, text, reasoning, content: m.content, name, context, args: obj(m.args), tool_call_id, timestamp: num(m.timestamp), row_id: num(m.row_id), display_kind, display_metadata: m.display_metadata }];
   });
 
 /** Legacy `prompt.submit` result. `user_row_id`: the stored row of the message, when its turn started at once
@@ -2721,7 +2724,7 @@ export class Hermes {
     // whose answer was lost. The owner's messages kept are the ones before it; the copy and anything after it go.
     const shown = spine.filter((r) => r.role === "user" && !r.hidden).length;
     this.patchChat(chatId, (c) => {
-      const at = c.items.map((i) => i.kind === "user" && !i.outgoing).reduce<number[]>((a, u, i) => (u ? [...a, i] : a), [])[shown];
+      const at = c.items.map(isStoredPrompt).reduce<number[]>((a, u, i) => (u ? [...a, i] : a), [])[shown];
       return at === undefined ? c : { ...c, items: c.items.slice(0, at) };
     });
     // A branch left with no messages has no Saved copy: the one kept would show the message taken back.
@@ -4069,6 +4072,8 @@ export class Hermes {
     }
     // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
     if (type === "error") this.usageFrom.set(session_id!, "unknown");
+    // Its message's turn is over too, so the next turn, such as one Hermes starts when work comes back, isn't taken for it.
+    if (type === "error" && !unprompted) this.turns.delete(this.profile, chat.id);
     // A streamed delta is in the snapshot at once, so the reply's text is always whole and in order, but the app hears of
     // it once a frame: Hermes can send many in one frame, and each would render the reply again (ADR 0068).
     const delta = type === "message.delta" || type === "reasoning.delta";
@@ -4134,7 +4139,7 @@ export class Hermes {
    */
   private saveTranscript(chatId: string) {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    const items = chat?.items.filter((i) => (i.kind === "user" && !i.outgoing) || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
+    const items = chat?.items.filter((i) => (i.kind === "user" && !i.outgoing) || i.kind === "returned" || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
     if (items.length) this.cache.saveTranscript(this.profile, chatId, items);
   }
 
@@ -4194,7 +4199,8 @@ export class Hermes {
    * At the end of a turn not started from here, shows the message that began it where the history shows it after a
    * reload: just before the turn. Hermes starts such a turn itself when work a chat dispatched comes back
    * (`tui_gateway/session_notifications.py`), and its `message.start` carries no text, so the stored row the turn's
-   * `persisted_turn` names is read back. Rows the history leaves out stay out (`session_history._history_to_messages`).
+   * `persisted_turn` names is read back. Rows the history leaves out stay out (`session_history._history_to_messages`), and
+   * a row Hermes marks as returned work shows as a Returned result.
    */
   private async showUnsentPrompt(chatId: string, receipt: PersistedTurn, from: string | null | undefined) {
     const rowId = receipt.user_row_id;
@@ -4207,9 +4213,11 @@ export class Hermes {
     const at = storedAt(row.timestamp);
     this.patchChat(chatId, (c) => {
       const start = turnFrom(c.items, from);
-      if (start < 0 || c.items.some((i) => (i.kind === "user" || i.kind === "assistant") && i.rowId === rowId)) return c;
-      const user: Item = { kind: "user", id: nextId(c.items, "w"), text, rowId, ...(at && { at }) };
-      return { ...c, items: [...c.items.slice(0, start), user, ...c.items.slice(start)] };
+      if (start < 0 || c.items.some((i) => (i.kind === "user" || i.kind === "assistant" || i.kind === "returned") && i.rowId === rowId)) return c;
+      const id = nextId(c.items, "w");
+      const back = returnedItem(text, row.display_kind, row.display_metadata);
+      const began: Item = back ? { kind: "returned", id, ...back, rowId, ...(at && { at }) } : { kind: "user", id, text, rowId, ...(at && { at }) };
+      return { ...c, items: [...c.items.slice(0, start), began, ...c.items.slice(start)] };
     });
     this.saveTranscript(chatId);
   }
@@ -5367,7 +5375,7 @@ const TITLE_INSTRUCTIONS = [
 ].join(" ");
 
 /** A row of dashboard REST `GET /api/sessions/{id}/messages`, as far as titling reads it. */
-type StoredMessage = { role?: string; content?: unknown; display_kind?: unknown };
+type StoredMessage = { role?: string; content?: unknown; display_kind?: unknown; display_metadata?: unknown };
 
 /** The text of a stored message: its `content`, or the text parts of a multimodal one. */
 function storedText(content: unknown): string {
@@ -5630,6 +5638,8 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
     const at = storedAt(m.timestamp);
     const rowId = Number.isSafeInteger(m.row_id) ? (m.row_id as number) : undefined;
     if (m.role === "user") {
+      const back = returnedItem(m.text, m.display_kind, m.display_metadata);
+      if (back) return [{ kind: "returned", id, ...back, ...(at && { at }), ...(rowId !== undefined && { rowId }) }];
       const references = storedReferences(m.text).map((r) => r.title);
       return [{ kind: "user", id, text: typedText(m.text), ...(references.length && { references }), ...(at && { at }), ...(rowId !== undefined && { rowId }), ...(m.display_kind === "steer" && { steer: true }) }];
     }

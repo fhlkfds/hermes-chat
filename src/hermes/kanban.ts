@@ -30,6 +30,8 @@ export type BoardTask = {
   tenant?: string;
   /** The latest run's summary: for a blocked task, usually why. The board cuts it to 200 characters; `loadTask` doesn't. */
   summary?: string;
+  /** What the task's completion recorded (`tasks.result`): a worker's whole answer, where `summary` may be a line. */
+  result?: string;
   comments: number;
 };
 export type BoardColumn = { name: string; tasks: BoardTask[] };
@@ -65,6 +67,7 @@ function parseBoardTask(v: unknown, column: string): BoardTask[] {
       priority: typeof v.priority === "number" && Number.isFinite(v.priority) ? v.priority : 0,
       ...(typeof v.tenant === "string" && v.tenant && { tenant: v.tenant }),
       ...(typeof v.latest_summary === "string" && v.latest_summary && { summary: v.latest_summary }),
+      ...(typeof v.result === "string" && v.result.trim() && { result: v.result }),
       comments: typeof v.comment_count === "number" ? v.comment_count : 0,
     },
   ];

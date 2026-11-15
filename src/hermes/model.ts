@@ -66,6 +66,12 @@ export type Item =
    * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
    */
   | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage }
+  /**
+   * A Returned result: the work a chat handed off, come back in the turn Hermes started for it (ADR 0175). `title`:
+   * Hermes's one line for it, when it sent one. `body`: the result without Hermes's notice around it (`returned.ts`).
+   * `process`: a background process's output, shown as a log; otherwise a subagent's answer, shown as Markdown.
+   */
+  | { kind: "returned"; id: string; title?: string; body: string; process: boolean; rowId?: number; at?: number }
   /** The model's reasoning before a reply or a tool call, as Hermes streams or stores it. */
   | { kind: "thinking"; id: string; text: string }
   | {
@@ -147,15 +153,18 @@ export type OutgoingItem = Extract<Item, { kind: "user" }> & { outgoing: Outgoin
 
 export const isOutgoing = (i: Item): i is OutgoingItem => i.kind === "user" && i.outgoing !== undefined;
 
+/** Whether an item is a user row in Hermes's history: a message of the owner's that Hermes has, or a Returned result. */
+export const isStoredPrompt = (i: Item) => (i.kind === "user" && !i.outgoing) || i.kind === "returned";
+
+/** Whether an item began a turn: a message of the owner's that wasn't steered into a running reply, or a Returned result. */
+export const beginsTurn = (i: Item) => (i.kind === "user" && !i.steer) || i.kind === "returned";
+
 /**
- * Where the last turn starts: just after the owner's last message that began one. A steered message goes into the
- * reply already running, so it doesn't begin a turn. 0 when there is no such message.
+ * Where the last turn starts: just after the last item that began one (`beginsTurn`). A steered message goes into the
+ * reply already running, so it doesn't begin a turn. 0 when there is no such item.
  */
 export const turnStart = (items: Item[]) => {
-  for (let n = items.length - 1; n >= 0; n--) {
-    const i = items[n];
-    if (i.kind === "user" && !i.steer) return n + 1;
-  }
+  for (let n = items.length - 1; n >= 0; n--) if (beginsTurn(items[n])) return n + 1;
   return 0;
 };
 

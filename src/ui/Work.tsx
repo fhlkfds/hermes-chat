@@ -514,7 +514,7 @@ function TaskSheet({
 }) {
   // The board's values for the task, by value: every board read hands over a new object. A read of the task taken
   // under other values is stale, and the board's copy shows until the next read lands.
-  const seen = JSON.stringify([task.title, task.body, task.priority, task.assignee, task.summary]);
+  const seen = JSON.stringify([task.title, task.body, task.priority, task.assignee, task.summary, task.result]);
   const [read, setRead] = useState<{ task: BoardTask; seen: string }>();
   const [comments, setComments] = useState<TaskComment[]>();
   const [readErr, setReadErr] = useState<string>();
@@ -678,6 +678,12 @@ function TaskSheet({
                   <>
                     <h3 className="work-sub">Latest summary</h3>
                     <p className="work-text">{current.summary}</p>
+                  </>
+                )}
+                {current.result && current.result.trim() !== current.summary?.trim() && (
+                  <>
+                    <h3 className="work-sub">Result</h3>
+                    <p className="work-text">{current.result}</p>
                   </>
                 )}
               </>

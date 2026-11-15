@@ -36,11 +36,11 @@ import { composing } from "./bits";
 import { useModal } from "./modal";
 import { errorText } from "../hermes/values";
 
-const WHO: Record<string, string> = { user: "You", assistant: "Hermes", thinking: "Hermes, thinking" };
+const WHO: Record<string, string> = { user: "You", returned: "Returned", assistant: "Hermes", thinking: "Hermes, thinking" };
 
 /** A message's first words, on one line. */
 function gist(i: Item): string {
-  const text = "text" in i ? i.text.replace(/\s+/g, " ").trim() : "";
+  const text = (i.kind === "returned" ? (i.title ?? i.body) : "text" in i ? i.text : "").replace(/\s+/g, " ").trim();
   return text ? (text.length > 90 ? `${text.slice(0, 90)}…` : text) : "(no text)";
 }
 

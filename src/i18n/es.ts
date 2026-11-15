@@ -13,6 +13,14 @@ export const es: Catalogue = {
   time: {
     now: "ahora",
   },
+  chat: {
+    returned: {
+      work: "Terminó un trabajo en segundo plano",
+      process: "Terminó un proceso en segundo plano",
+      hide: "Ocultar el resultado",
+      show: "Mostrar el resultado",
+    },
+  },
   settings: {
     title: "Ajustes",
     back: "Volver al chat",

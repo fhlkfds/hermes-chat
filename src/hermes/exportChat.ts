@@ -45,7 +45,7 @@ export const exportFileName = (title: string, extension = "md") =>
   }.${extension}`;
 
 /** The owner's messages, Hermes's replies and its thinking: picked one by one. Tool calls and Approvals go in all or none. */
-export const isMessage = (i: Item) => i.kind === "user" || i.kind === "assistant" || i.kind === "thinking";
+export const isMessage = (i: Item) => i.kind === "user" || i.kind === "returned" || i.kind === "assistant" || i.kind === "thinking";
 
 /** What goes into an export. */
 export type ExportChoice = {
@@ -180,6 +180,8 @@ function imagePage(chat: Chat, exportedAt: Date, choice: Omit<ExportChoice, "red
         const files = choice.attachments && i.attachments?.length ? `\n\nAttached: ${i.attachments.map(text).join(", ")}` : "";
         return [{ who: "You", text: text(i.text) + files }];
       }
+      case "returned":
+        return [{ who: "Returned", text: [i.title, i.body].filter(Boolean).map((t) => text(t!)).join("\n\n") }];
       case "assistant":
         return [{ who: "Hermes", text: text(i.text) + (i.interrupted ? "\n\n(stopped before it finished)" : "") }];
       case "thinking":
@@ -251,6 +253,16 @@ function jsonSession(chat: Chat, exportedAt: Date, choice: Omit<ExportChoice, "r
           ...time(i.at),
           ...(i.steer && { display_kind: "steer" }),
           ...(choice.attachments && i.attachments?.length && { attachments: i.attachments.map(text) }),
+        });
+        break;
+      case "returned":
+        flushThought();
+        messages.push({
+          role: "user",
+          content: text(i.body),
+          ...time(i.at),
+          display_kind: i.process ? "process_complete" : "async_delegation_complete",
+          ...(i.title && { display_metadata: { display_text: text(i.title) } }),
         });
         break;
       case "assistant":
@@ -344,6 +356,8 @@ function block(i: Item, attachments: boolean): string[] {
       const files = attachments && i.attachments?.length ? [`_Attached, not included in this file:_ ${i.attachments.map(code).join(", ")}`] : [];
       return [["**You:**", message(i.text), ...files].filter(Boolean).join("\n\n")];
     }
+    case "returned":
+      return [[`**Returned${i.process ? " (process)" : ""}:**${i.title ? ` ${oneLine(i.title)}` : ""}`, i.process ? fenced(i.body) : message(i.body)].filter(Boolean).join("\n\n")];
     case "assistant":
       return [[`**Hermes:**${i.interrupted ? " _(stopped before it finished)_" : ""}`, message(i.text)].filter(Boolean).join("\n\n")];
     case "thinking":

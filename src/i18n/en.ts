@@ -15,6 +15,15 @@ export const en = {
     /** Under a minute ago, where a short age shows ("5m"). */
     now: "now",
   },
+  chat: {
+    /** A Returned result's card (ADR 0175): its title when Hermes sent none, and its header's tooltip. */
+    returned: {
+      work: "Background work finished",
+      process: "Background process finished",
+      hide: "Hide the result",
+      show: "Show the result",
+    },
+  },
   settings: {
     title: "Settings",
     back: "Back to chat",
