@@ -1,8 +1,9 @@
 // The Work page (issue #595, ADR 0171): the dashboard's kanban board of bot work, laid out and featured as the official
 // Hermes desktop app's Kanban view. It reads the current board, and changes it only on an explicit move, edit, new
-// task or comment. The move rules come from the plugin's own workflow (kanban.ts `canMove`).
+// task or comment. The move rules come from the plugin's own workflow (kanban.ts `canMove`). Its Graph view, links, bot
+// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0177).
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { ArrowLeft, CircleAlert, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
+import { ArrowLeft, CircleAlert, Cpu, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
 import {
   NoKanbanPlugin,
   canMove,
@@ -13,16 +14,40 @@ import {
   type Board,
   type BoardTask,
   type KanbanApi,
+  type LinkedTask,
   type PendingMove,
   type TaskComment,
+  type TaskDetail,
   type TaskFields,
+  type TaskLinks,
   type Workflow,
 } from "../hermes/kanban";
+import { failureOf, stateOfFailure } from "../hermes/capabilities";
 import { errorText, plural } from "../hermes/values";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
+import { BotModelSection, CardFace, DispatchLine, EstimateBox, LinksSection, PICKABLE, type DispatchRead, type WorkFeature } from "./WorkPlan";
+import { WorkGraph, opensOnKey } from "./WorkGraph";
 
-export type WorkApi = Pick<KanbanApi, "loadBoard" | "loadWorkflow" | "loadTask" | "createTask" | "editTask" | "addComment" | "moveTask">;
+export type WorkApi = Pick<
+  KanbanApi,
+  | "loadBoard"
+  | "loadWorkflow"
+  | "loadTask"
+  | "createTask"
+  | "editTask"
+  | "addComment"
+  | "moveTask"
+  | "setModel"
+  | "addLink"
+  | "removeLink"
+  | "assignees"
+  | "profiles"
+  | "modelOptions"
+  | "orchestration"
+  | "estimate"
+  | "estimateTask"
+>;
 
 /** A move waiting on its summary or reason. */
 type Ask = { task: BoardTask; to: string; need: "summary" | "reason" };
@@ -35,8 +60,27 @@ type Draft = { fields: TaskFields; key: string; creating: boolean; unanswered: b
 const blank = (): TaskFields => ({ title: "", body: "", priority: 0, assignee: "" });
 const validFields = (f: TaskFields) => !!f.title.trim() && Number.isInteger(f.priority);
 
-export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkApi; connected: boolean; onClose: () => void; pollMs?: number }) {
+const NONE: ReadonlySet<WorkFeature> = new Set();
+
+/** `lacks`: the parts of the page whose routes the connected Hermes doesn't have, which don't show. */
+export function Work({
+  api,
+  connected,
+  onClose,
+  pollMs = 10_000,
+  lacks = NONE,
+}: {
+  api: WorkApi;
+  connected: boolean;
+  onClose: () => void;
+  pollMs?: number;
+  lacks?: ReadonlySet<WorkFeature>;
+}) {
   const [board, setBoard] = useState<Board>();
+  const [view, setView] = useState<"board" | "graph">("board");
+  // Counts the owner's Refreshes: the graph's link reads and the dispatch line are read again on each.
+  const [refreshes, setRefreshes] = useState(0);
+  const [dispatch, setDispatch] = useState<DispatchRead>({ kind: "reading" });
   const [workflow, setWorkflow] = useState<Workflow>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>();
@@ -66,6 +110,7 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
   apiRef.current = api;
 
   const load = async (force = false) => {
+    if (force) setRefreshes((n) => n + 1);
     const mine = ++seq.current;
     // Refresh clears only the lock it started under, and none mid-move.
     const clearing = force && !now.current.saving ? now.current.pending : undefined;
@@ -98,6 +143,18 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
   useEffect(() => {
     if (connected) void loadRef.current();
   }, [connected]);
+  // Read on open and on each Refresh, not with every poll: the settings change only when someone edits the config.
+  const noDispatch = lacks.has("dispatch");
+  useEffect(() => {
+    if (!connected || noDispatch) return;
+    let live = true;
+    setDispatch((d) => (d.kind === "read" ? d : { kind: "reading" }));
+    apiRef.current.orchestration().then(
+      (o) => live && setDispatch({ kind: "read", o }),
+      (e) => live && setDispatch(stateOfFailure(failureOf(e)).state === "unsupported" ? { kind: "unsupported" } : { kind: "failed", why: errorText(e) }),
+    );
+    return () => void (live = false);
+  }, [connected, refreshes, noDispatch]);
   // The dispatcher moves cards too: read again, but never under a drag, a move or an open prompt.
   useEffect(() => {
     if (!connected) return;
@@ -193,6 +250,13 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
           </h1>
           {board && <span className="muted">{plural(total, "task")} on the current board</span>}
           <span className="work-spacer" />
+          <span className="segmented" role="group" aria-label="View">
+            {(["board", "graph"] as const).map((v) => (
+              <button key={v} aria-pressed={view === v} onClick={() => setView(v)}>
+                {v === "board" ? "Board" : "Graph"}
+              </button>
+            ))}
+          </span>
           <button className="btn primary" disabled={!connected || !board} onClick={() => setDraft({ fields: blank(), key: crypto.randomUUID(), creating: false, unanswered: false })}>
             <Plus size={14} /> New task
           </button>
@@ -200,6 +264,7 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
             <RefreshCw size={14} /> Refresh
           </button>
         </header>
+        {board && !lacks.has("dispatch") && <DispatchLine read={dispatch} />}
         {!connected && (
           <p className="job-banner" role="status">
             <CircleAlert size={14} /> Not connected to Hermes. Bots keep working on the server; reconnect to see or change the board.
@@ -237,7 +302,8 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
             <Spinner /> Loading the board…
           </div>
         )}
-        {board && (
+        {board && view === "graph" && <WorkGraph tasks={tasks} api={api} refreshed={refreshes} onOpen={setOpenId} />}
+        {board && view === "board" && (
           <div className="work-board">
             {board.columns.map((col) => (
               <section
@@ -275,31 +341,9 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
                     }}
                     onDragEnd={endDrag}
                     onClick={() => setOpenId(t.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setOpenId(t.id);
-                      }
-                    }}
+                    onKeyDown={opensOnKey(() => setOpenId(t.id))}
                   >
-                    <div className="work-meta">
-                      <code>{t.id}</code>
-                      {t.priority !== 0 && <span>P{t.priority}</span>}
-                      {t.tenant && <span>{t.tenant}</span>}
-                    </div>
-                    <b className="work-title">{t.title}</b>
-                    {t.status === "blocked" && t.summary ? (
-                      <p className="work-why">
-                        <TriangleAlert size={13} /> {t.summary}
-                      </p>
-                    ) : (
-                      t.body && <p className="work-body">{t.body}</p>
-                    )}
-                    {t.assignee && (
-                      <small className="work-assignee">
-                        <User size={13} /> {t.assignee}
-                      </small>
-                    )}
+                    <CardFace t={t} />
                   </div>
                 ))}
                 {!col.tasks.length && <p className="work-empty">Empty</p>}
@@ -317,6 +361,8 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
           busy={locked}
           err={ask ? undefined : moveErr || (error !== undefined ? errorText(error) : undefined)}
           assignees={board?.assignees ?? []}
+          board={tasks}
+          lacks={lacks}
           onRefresh={() => void load(true)}
           onSaved={() => void load()}
           onMove={(to) => requestMove(open, to)}
@@ -332,6 +378,7 @@ export function Work({ api, connected, onClose, pollMs = 10_000 }: { api: WorkAp
         <NewTask
           draft={draft}
           assignees={board?.assignees ?? []}
+          estimate={lacks.has("estimate") ? undefined : () => apiRef.current.estimate(draft.fields.title, draft.fields.body)}
           onChange={(fields) => setDraft({ ...draft, fields })}
           onSubmit={() => void create(draft)}
           onClose={() => !draft.creating && setDraft(undefined)}
@@ -448,7 +495,22 @@ function FieldsForm({ fields, people, disabled, onChange }: { fields: TaskFields
   );
 }
 
-function NewTask({ draft, assignees, onChange, onSubmit, onClose }: { draft: Draft; assignees: string[]; onChange: (f: TaskFields) => void; onSubmit: () => void; onClose: () => void }) {
+function NewTask({
+  draft,
+  assignees,
+  estimate,
+  onChange,
+  onSubmit,
+  onClose,
+}: {
+  draft: Draft;
+  assignees: string[];
+  /** Asks for a token guess for the fields as they are; none when Hermes has no estimate route. */
+  estimate?: () => ReturnType<WorkApi["estimate"]>;
+  onChange: (f: TaskFields) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
   return (
     <Dialog wide onClose={onClose}>
       {(titleId) => (
@@ -463,6 +525,7 @@ function NewTask({ draft, assignees, onChange, onSubmit, onClose }: { draft: Dra
             New task
           </h2>
           <FieldsForm fields={draft.fields} people={assignees} disabled={draft.creating || draft.unanswered} onChange={onChange} />
+          {estimate && <EstimateBox ask={estimate} text={`${draft.fields.title}\n${draft.fields.body}`} disabled={!draft.fields.title.trim()} />}
           {draft.error && <p className="work-err">{draft.error}</p>}
           <div className="confirm-actions">
             <button type="button" className="btn" disabled={draft.creating} onClick={onClose}>
@@ -492,6 +555,8 @@ function TaskSheet({
   busy,
   err,
   assignees,
+  board,
+  lacks,
   onRefresh,
   onSaved,
   onMove,
@@ -505,6 +570,9 @@ function TaskSheet({
   /** Why the last move or board read failed. */
   err?: string;
   assignees: string[];
+  /** The board's cards, which the task can be linked to. */
+  board: BoardTask[];
+  lacks: ReadonlySet<WorkFeature>;
   onRefresh: () => void;
   onSaved: () => void;
   onMove: (to: string) => void;
@@ -514,8 +582,10 @@ function TaskSheet({
 }) {
   // The board's values for the task, by value: every board read hands over a new object. A read of the task taken
   // under other values is stale, and the board's copy shows until the next read lands.
-  const seen = JSON.stringify([task.title, task.body, task.priority, task.assignee, task.summary, task.result]);
+  const seen = JSON.stringify([task.title, task.body, task.priority, task.assignee, task.summary, task.result, task.status, task.links, task.model, task.provider]);
   const [read, setRead] = useState<{ task: BoardTask; seen: string }>();
+  // The links as last read: a link added or removed changes the board's counts, which reads them again.
+  const [links, setLinks] = useState<{ links: TaskLinks; linked: LinkedTask[] }>();
   const [comments, setComments] = useState<TaskComment[]>();
   const [readErr, setReadErr] = useState<string>();
   const [rev, setRev] = useState(0);
@@ -536,21 +606,23 @@ function TaskSheet({
     return () => void (live.current = false);
   }, []);
 
+  /** Shows a read of the task, from here or from a section's write. */
+  const show = (d: TaskDetail) => {
+    setRead({ task: d.task, seen });
+    setComments(d.comments);
+    setLinks({ links: d.links, linked: d.linked });
+    setReadErr(undefined);
+    const u = unsureNow.current;
+    if (u && ours(d.comments, u.body) > u.had) {
+      setUnsure(undefined);
+      setNote("");
+      setWriteErr(undefined);
+    }
+  };
   useEffect(() => {
     const mine = ++gen.current;
     api.loadTask(task.id).then(
-      (d) => {
-        if (!live.current || mine !== gen.current) return;
-        setRead({ task: d.task, seen });
-        setComments(d.comments);
-        setReadErr(undefined);
-        const u = unsureNow.current;
-        if (u && ours(d.comments, u.body) > u.had) {
-          setUnsure(undefined);
-          setNote("");
-          setWriteErr(undefined);
-        }
-      },
+      (d) => live.current && mine === gen.current && show(d),
       (e) => live.current && mine === gen.current && setReadErr(errorText(e)),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read again when the task, the board's values for it, its comment count or `rev` change; `api` is the same Hermes throughout
@@ -671,6 +743,11 @@ function TaskSheet({
                       <User size={13} /> {current.assignee}
                     </span>
                   )}
+                  {current.model && (
+                    <span>
+                      <Cpu size={13} /> {current.model}
+                    </span>
+                  )}
                   {current.tenant && <span>{current.tenant}</span>}
                 </div>
                 {current.body && <p className="work-text">{current.body}</p>}
@@ -684,6 +761,40 @@ function TaskSheet({
                   <>
                     <h3 className="work-sub">Result</h3>
                     <p className="work-text">{current.result}</p>
+                  </>
+                )}
+                {PICKABLE.has(task.status) && !lacks.has("pickers") && (
+                  <BotModelSection
+                    task={{ ...current, status: task.status }}
+                    api={api}
+                    assignees={assignees}
+                    onRead={(d) => {
+                      gen.current++;
+                      show(d);
+                    }}
+                    onSaved={onSaved}
+                    onWriting={onWriting}
+                  />
+                )}
+                {!lacks.has("links") && (
+                  <LinksSection
+                    task={{ ...current, status: task.status }}
+                    api={api}
+                    links={links?.links}
+                    linked={links?.linked ?? []}
+                    board={board}
+                    onRead={(d) => {
+                      gen.current++;
+                      show(d);
+                    }}
+                    onSaved={onSaved}
+                    onWriting={onWriting}
+                  />
+                )}
+                {!lacks.has("estimate") && (
+                  <>
+                    <h3 className="work-sub">Token guess</h3>
+                    <EstimateBox ask={() => api.estimateTask(task.id)} text={`${current.title}\n${current.body}`} />
                   </>
                 )}
               </>
