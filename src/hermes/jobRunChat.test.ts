@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { inboxEntries } from "./inbox";
 import { jobRunTitle } from "./cronJobs";
@@ -59,6 +59,53 @@ describe("A job run's chat", () => {
     expect(s.server.sessions.find((r) => r.id === RUN)!.last_read_at).toBe(0);
   });
 
+  it("shows the turns a compaction took out of what the model reads, and a summary row as Hermes shows it", async () => {
+    const s = await signedIn();
+    s.server.transcripts[RUN] = [
+      { ...runRows()[0], compacted: true },
+      { role: "assistant", text: "Read the old logs first.", row_id: 105, compacted: true },
+      { role: "user", text: "[CONTEXT COMPACTION] Earlier turns, summed up for the model.", row_id: 106, summary: true, display_content: "" },
+      { role: "assistant", text: "Nothing needs cleaning tonight.", row_id: 107 },
+    ];
+    reveal(s);
+    await s.hermes.open(RUN);
+    expect(s.server.restRequests.find((r) => r.path.endsWith("/messages"))!.query.get("include_compacted")).toBe("true");
+    expect(chat(s)!.items.map((i) => ("text" in i ? i.text : i.kind))).toEqual([
+      `${PREAMBLE}\n\nCheck the disk usage on the server.`,
+      "Read the old logs first.",
+      "Nothing needs cleaning tonight.",
+    ]);
+  });
+
+  it("reads again after a reconnect cut a read short, and finishes loading", async () => {
+    const s = await signedIn();
+    reveal(s);
+    const path = `GET /api/sessions/${RUN}/messages`;
+    let answer!: () => void;
+    const held = new Promise<void>((r) => (answer = r));
+    s.server.rest[path] = () => held.then(() => ({ profile: "default", messages: [] }));
+    const first = s.hermes.open(RUN);
+    s.server.drop();
+    await vi.waitFor(() => expect(s.hermes.getSnapshot().status).toBe("reconnecting"));
+    await vi.waitFor(() => expect(s.hermes.getSnapshot().status).toBe("connected"), { timeout: 10_000 });
+    delete s.server.rest[path];
+    await s.hermes.open(RUN);
+    answer();
+    await first;
+    expect(chat(s)!.items.at(-1)).toMatchObject({ kind: "assistant", text: "Nothing needs cleaning tonight." });
+    expect(chat(s)!.loading).toBe(false);
+  });
+
+  it("takes a run the saved list kept as another platform's chat as a job run once it is picked", async () => {
+    const s = await signedIn();
+    s.hermes.reveal({ chatId: RUN, title: "Disk check", source: "other", settled: true, updatedAt: STARTED * 1000, snippet: [] });
+    reveal(s);
+    await s.hermes.open(RUN);
+    expect(chat(s)!.source).toBe("cron");
+    expect(sent(s, "session.resume")).toEqual([]);
+    expect(writes(s)).toEqual([]);
+  });
+
   it("is read again each time it opens, and keeps no copy on this computer", async () => {
     const s = await signedIn();
     reveal(s);
@@ -111,8 +158,8 @@ describe("A job run's chat", () => {
     await s.hermes.open(RUN);
     const pages = s.server.restRequests.filter((r) => r.path === `/api/sessions/${RUN}/messages`).map((r) => Object.fromEntries(r.query));
     expect(pages).toEqual([
-      { profile: "default", order: "oldest", limit: "500", offset: "0", inline_images: "false" },
-      { profile: "default", order: "oldest", limit: "500", offset: "500", inline_images: "false" },
+      { profile: "default", order: "oldest", limit: "500", offset: "0", include_compacted: "true", inline_images: "false" },
+      { profile: "default", order: "oldest", limit: "500", offset: "500", include_compacted: "true", inline_images: "false" },
     ]);
     expect(chat(s)!.items.find((i) => i.kind === "tool")).toMatchObject({ name: "terminal", preview: "df -h /" });
     expect(chat(s)!.items).toHaveLength(502);

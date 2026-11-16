@@ -76,7 +76,8 @@ export function projectStored(rows: readonly unknown[]): TranscriptMessage[] {
     // Before a hidden row is dropped: its tool rows still show, named from its calls.
     if (role === "assistant") for (const c of callsOf(row.tool_calls)) calls.set(c.id, c);
     if (row.display_kind === "hidden") return [];
-    const text = textOf(row.content);
+    // Hermes keeps a compaction carrier's whole text in `content` and what a person should see in `display_content`.
+    const text = textOf(row.display_content ?? row.content);
     if (role === "user" && text.trimStart().startsWith("[System:")) return [];
     const shared = {
       ...(typeof row.timestamp === "number" && row.timestamp > 0 && { timestamp: row.timestamp }),

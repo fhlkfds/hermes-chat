@@ -121,6 +121,8 @@ export type TranscriptMessage = {
   compacted?: boolean;
   summary?: boolean;
   message_uid?: string;
+  /** What REST shows of a compaction summary row in place of its `content` (`_project_for_display`). */
+  display_content?: string;
 };
 
 /**
@@ -2906,6 +2908,7 @@ export class FakeHermes {
         compacted: m.compacted ? 1 : 0,
         _compressed_summary: m.summary ? 1 : null,
         message_uid: m.message_uid ?? `uid-${m.row_id}`,
+        ...(m.display_content !== undefined && { display_content: m.display_content }),
       }));
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);

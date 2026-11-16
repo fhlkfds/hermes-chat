@@ -2194,7 +2194,13 @@ export class Hermes {
   }
 
   reveal(found: Found) {
-    if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
+    const shown = this.snapshot.chats.find((c) => c.id === found.chatId);
+    // A list saved before job runs had a kind of their own may hold one as another platform's chat, until the next sync.
+    if (shown && shown.source !== "cron" && found.source === "cron") {
+      this.revealed.add(found.chatId);
+      return this.patchChat(found.chatId, (c) => ({ ...c, source: "cron", settled: true }));
+    }
+    if (shown) return;
     const { chatId: id, title, source, settled, archived, updatedAt } = found;
     this.revealed.add(id);
     // A Bot Chat reached from the inbox stays out of the list, as one opened from its bot's row does (ADR 0066).
@@ -2352,10 +2358,11 @@ export class Hermes {
   }
 
   private readStored(chatId: string): Promise<void> {
-    const under = this.readingStored.get(chatId);
-    if (under) return under;
     const profile = this.profile;
     const gen = this.generation;
+    const key = `${profile} ${gen} ${chatId}`;
+    const under = this.readingStored.get(key);
+    if (under) return under;
     const left = () => this.profile !== profile || this.generation !== gen;
     this.patchChat(chatId, (c) => ({ ...c, loading: true }));
     const detail = () =>
@@ -2366,7 +2373,7 @@ export class Hermes {
     const pages = async () => {
       const rows: unknown[] = [];
       for (let page = 0; page < STORED_PAGES; page++) {
-        const query = new URLSearchParams({ profile, order: "oldest", limit: String(HERMES_MESSAGES_PAGE_MAX), offset: String(page * HERMES_MESSAGES_PAGE_MAX), inline_images: "false" });
+        const query = new URLSearchParams({ profile, order: "oldest", limit: String(HERMES_MESSAGES_PAGE_MAX), offset: String(page * HERMES_MESSAGES_PAGE_MAX), include_compacted: "true", inline_images: "false" });
         const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { profile?: unknown; messages?: unknown };
         if (typeof res?.profile === "string" && res.profile !== profile) throw new Error(`Hermes answered for the ${res.profile} profile, not ${profile}.`);
         const got = Array.isArray(res?.messages) ? res.messages : [];
@@ -2395,11 +2402,11 @@ export class Hermes {
         const text = sessionNotFound(e) ? "This run's chat isn't on the server any more." : `Couldn't load this chat: ${(e as Error).message}`;
         this.patchChat(chatId, (c) => ({ ...c, items: [...withoutLoadError(c.items), { kind: "error", id: LOAD_ERROR_ID, text }] }));
       } finally {
-        this.readingStored.delete(chatId);
+        this.readingStored.delete(key);
         if (!left()) this.patchChat(chatId, (c) => ({ ...c, loading: false }));
       }
     })();
-    this.readingStored.set(chatId, reading);
+    this.readingStored.set(key, reading);
     return reading;
   }
 
