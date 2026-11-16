@@ -102,8 +102,8 @@ export class LiveConnections {
   private version = 0;
   /**
    * Runs `read` when one of the app's `BACKGROUND_READS_AT_ONCE` slots is free. Every background read and every
-   * Everywhere read (everywhere.ts) share them, so that many requests at most are in flight across the live
-   * connections (ADR 0125, ADR 0191). Answers and rejects as `read` does.
+   * Everywhere read (everywhere.ts) share them, so that many run at once across the live connections (ADR 0125,
+   * ADR 0191). Answers and rejects as `read` does.
    */
   readonly readInTurn = limiter(BACKGROUND_READS_AT_ONCE);
 

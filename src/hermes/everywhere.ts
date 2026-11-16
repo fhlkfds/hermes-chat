@@ -1,7 +1,7 @@
 // Everywhere search (GLOSSARY.md "Everywhere", ADR 0191, issue #608): the words searched in every profile of every live
 // connection, for a conversation the owner can't place on a bot or a server. Each profile is asked once, with Hermes's
 // own search, and every request goes through the live connections' shared slots (liveConnections.ts `readInTurn`), so
-// no more than four are in flight across the app. It only reads: nothing is put in any list, and no shown profile or
+// no more than four of its requests are in flight at once. It only reads: nothing is put in any list, and no shown profile or
 // composer target changes. Opening a row is App's (`openAt`).
 import { checkedHere, tidyFilter, type ChatFilter } from "./chatFilter";
 import type { Capability } from "./capabilities";
