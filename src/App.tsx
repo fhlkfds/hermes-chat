@@ -4300,6 +4300,7 @@ function ChatView({
         edit: (id, text) => hermes.editQueued(chat.id, id, text),
         remove: (id) => hermes.removeQueued(chat.id, id),
         moveTo: (id, index) => hermes.moveQueued(chat.id, id, index),
+        sendNow: (id) => hermes.sendQueuedNow(chat.id, id),
         pause: () => hermes.pauseQueue(chat.id),
         resume: () => hermes.resumeQueue(chat.id),
         hold: () => hermes.holdQueue(chat.id),

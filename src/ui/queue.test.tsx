@@ -283,17 +283,24 @@ describe("While Hermes replies", () => {
     expect(queuedTexts(queue())).toEqual(["third", "second"]);
   });
 
-  it("goes by Tab from a message to its Edit and Remove, then to the next message", async () => {
+  it("goes by Tab from a message to its Send now, Edit and Remove, then to the next message", async () => {
     const s = await replying();
     for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = queueIn(document.body)!;
     rowsIn(queue)[0].focus();
     const stops: string[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       stops.push((document.activeElement?.getAttribute("aria-label") ?? "").replace(/:.*/, ""));
       await s.user.tab();
     }
-    expect(stops).toEqual(["Queued message 1 of 2", "Edit queued message 1", "Remove queued message 1", "Queued message 2 of 2", "Edit queued message 2"]);
+    expect(stops).toEqual([
+      "Queued message 1 of 2",
+      "Send queued message 1 now, stopping the reply",
+      "Edit queued message 1",
+      "Remove queued message 1",
+      "Queued message 2 of 2",
+      "Send queued message 2 now, stopping the reply",
+    ]);
     expect(within(queue).queryByRole("button", { name: /Move queued message/ })).toBeNull();
   });
 
@@ -320,6 +327,41 @@ describe("While Hermes replies", () => {
     await s.user.click(within(queueIn(document.body)!).getByRole("button", { name: "Resume" }));
     await settle(s.hermes);
     expect(prompts(s.server)).toEqual(["Unlock it", "later"]);
+  });
+
+  it("Send now stops the reply and sends that message next, without pausing the rest", async () => {
+    const s = await replying();
+    for (const t of ["first", "urgent"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    await s.user.click(within(queue()).getByRole("button", { name: "Send queued message 2 now, stopping the reply" }));
+    expect(queuedTexts(queue())).toEqual(["urgent", "first"]);
+    expect(within(rowOf(queue(), "urgent")).getByText("Now")).toBeTruthy();
+    expect(within(queue()).getByText("Stopping the reply to send yours now…")).toBeTruthy();
+    expect(within(queue()).getByRole("button", { name: "Send queued message 1 now, stopping the reply" }).hasAttribute("disabled")).toBe(true);
+    expect(s.server.requests.filter((r) => r.method === "session.interrupt")).toHaveLength(1);
+    expect(prompts(s.server)).toEqual(["Unlock it"]);
+
+    await s.finish({ status: "interrupted", text: "Unlocking" });
+    expect(prompts(s.server)).toEqual(["Unlock it", "urgent"]);
+    expect(queuedTexts(queue())).toEqual(["first"]);
+    expect(within(queue()).queryByText(/was stopped/)).toBeNull();
+    expect(within(queue()).getByText(/goes when this reply finishes/)).toBeTruthy();
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "urgent", "first"]);
+  });
+
+  it("Ctrl+Enter on a message in a paused queue sends it at once, and the rest stay paused", async () => {
+    const s = await replying();
+    for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    await s.user.click(within(queueIn(document.body)!).getByRole("button", { name: "Pause" }));
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it"]);
+    rowOf(queueIn(document.body)!, "second").focus();
+    await s.user.keyboard("{Control>}{Enter}{/Control}");
+    await settle(s.hermes);
+    expect(prompts(s.server)).toEqual(["Unlock it", "second"]);
+    expect(s.server.requests.filter((r) => r.method === "session.interrupt")).toHaveLength(0);
+    expect(within(queueIn(document.body)!).getByText(/Paused\. You paused it\./)).toBeTruthy();
   });
 
   it("Stop stops the reply and pauses the queue, saying so", async () => {

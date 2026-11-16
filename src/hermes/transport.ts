@@ -3157,6 +3157,19 @@ export class Hermes {
     this.setQueue(chatId, { ...q, items });
   }
 
+  /**
+   * Send now (ADR 0182): the queued message goes next, ahead of the rest, as soon as the chat can take it. A running
+   * reply is stopped first, and the stop doesn't pause the queue. Neither a pause nor a Failed message above holds it.
+   * The rest of the queue keeps its place and its pause. Pausing the queue, or a dropped connection, cancels it.
+   */
+  sendQueuedNow(chatId: string, id: string) {
+    const q = this.snapshot.queues[chatId];
+    const item = q?.items.find((i) => i.id === id);
+    if (!q || !item) return;
+    this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
+    void this.stop(chatId);
+  }
+
   /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
   pauseQueue(chatId: string) {
     this.pauseQueueFor(chatId, PAUSED.owner);
@@ -3187,8 +3200,8 @@ export class Hermes {
    * messages queued next wait for the owner's Resume.
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
-    const q = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && q.paused === undefined) this.setQueue(chatId, { ...q, paused: why });
+    const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: q.paused ?? why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
@@ -3196,7 +3209,9 @@ export class Hermes {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
     // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
-    if (next.items.length || next.paused !== undefined) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
+    const rush = next.items.some((i) => i.id === next.rush) && next.rush;
+    if (next.items.length || next.paused !== undefined)
+      queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }), ...(rush && { rush }) };
     else delete queues[chatId];
     this.update({ queues });
     return kept;
@@ -3216,21 +3231,24 @@ export class Hermes {
    * Sends the next queued message of each chat that is ready for it: connected, its queue not paused or being edited,
    * no reply running, nothing loading or sending, no Approval waiting, and no message Hermes didn't take or may have.
    * One Hermes may have is settled first by reading the chat's history back (ADR 0006), which loading the chat does.
+   * A message the owner chose Send now on goes paused or not, and past a message Hermes didn't take (ADR 0182).
    */
   private pump() {
     if (this.closing || this.snapshot.status !== "connected" || restartHold.on || this.role === "background") return;
     for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
-      if (!q.items.length || q.paused !== undefined || this.queueHolds.has(chatId)) continue;
+      const rush = q.items.find((i) => i.id === q.rush);
+      if (!q.items.length || (q.paused !== undefined && !rush) || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(this.profile, chatId)) continue;
-      if (chat.items.some((i) => isOutgoing(i) || isWaiting(i))) continue;
+      if (chat.items.some((i) => (!rush && isOutgoing(i)) || isWaiting(i))) continue;
       const profile = this.profile;
       if (!chat.runtimeId) {
         // Loaded first: that reads whether a reply is running, and settles any message Hermes may have.
         this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, `Couldn't load the chat: ${withoutStop((e as Error).message)}.`));
         continue;
       }
-      const [next, ...rest] = q.items;
+      const next = rush ?? q.items[0];
+      const rest = q.items.filter((i) => i !== next);
       // It enters the outbox and leaves the queue in one step, before anything goes. The outbox is written first, and
       // must be kept on this computer: if storage refuses it, nothing is sent and the queue, untouched, keeps it.
       let kept = true;
@@ -4232,7 +4250,8 @@ export class Hermes {
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
-    if (type === "message.complete" || type === "error") {
+    // A reply stopped for Send now ended as the owner asked: the message they chose goes, and the queue doesn't pause.
+    if ((type === "message.complete" || type === "error") && !this.snapshot.queues[chat.id]?.rush) {
       const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
       if (why) this.pauseQueueFor(chat.id, why);
     }
