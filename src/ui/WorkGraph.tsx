@@ -1,4 +1,4 @@
-// The Work page's Graph view (issue #604, ADR 0177): the current board's cards with an arrow from each card to the
+// The Work page's Graph view (issue #604, ADR 0179): the current board's cards with an arrow from each card to the
 // cards that wait on it. Each linked card's links are read from its task (workGraph.ts says when), and a link to a
 // task not on the board ends at a dashed ghost.
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";

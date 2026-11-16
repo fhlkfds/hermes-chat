@@ -384,7 +384,7 @@ const settle = <T,>(p: Promise<T>): Promise<Settled<T>> =>
   );
 
 /**
- * How the server's kanban dispatcher treats cards (ADR 0177): whether it splits triage cards and makes their cards ready
+ * How the server's kanban dispatcher treats cards (ADR 0179): whether it splits triage cards and makes their cards ready
  * on its own, from `GET orchestration`, and whether a bot reviewer takes review cards first, from the profile's config.
  * Read when the page opens, the profile changes, and on Check again.
  */

@@ -1,4 +1,4 @@
-// Planning on the Work page (issue #604, ADR 0177): a card's face, the dispatch line, the token guess, and the task
+// Planning on the Work page (issue #604, ADR 0179): a card's face, the dispatch line, the token guess, and the task
 // sheet's links and bot and model pickers. Every write here is previewed, refused when the task changed since the sheet
 // showed it, sent once, and read back before the section unlocks (ADR 0014, ADR 0171).
 import { useEffect, useRef, useState } from "react";

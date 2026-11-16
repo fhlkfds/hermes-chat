@@ -1,7 +1,7 @@
 // The Work page (issue #595, ADR 0171): the dashboard's kanban board of bot work, laid out and featured as the official
 // Hermes desktop app's Kanban view. It reads the current board, and changes it only on an explicit move, edit, new
 // task or comment. The move rules come from the plugin's own workflow (kanban.ts `canMove`). Its Graph view, links, bot
-// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0177).
+// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0179).
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowLeft, CircleAlert, Cpu, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
 import {

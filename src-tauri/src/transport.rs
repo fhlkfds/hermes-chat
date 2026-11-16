@@ -2560,7 +2560,7 @@ pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
     })
 }
 
-/// The Work page's `POST`s to the dashboard's kanban plugin (ADR 0171, ADR 0177), each with only the fields the page
+/// The Work page's `POST`s to the dashboard's kanban plugin (ADR 0171, ADR 0179), each with only the fields the page
 /// sends: `api/plugins/kanban/tasks` creates a task with what New task sets, `api/plugins/kanban/tasks/{id}/comments`
 /// adds a comment with only its text, `api/plugins/kanban/links` links two tasks with exactly `parent_id` and `child_id`,
 /// and `api/plugins/kanban/estimate` (a `title` and an optional `body`) and `api/plugins/kanban/tasks/{id}/estimate`

@@ -308,11 +308,11 @@ The rail screen that shows Hermes's kanban board: one column per status, a card 
 _Avoid_: kanban (fine in conversation), job (that is a Scheduled job), ticket
 
 **Link** (between Tasks):
-A Task's dependency on another: the Task **waits on** its parent, and Hermes makes it ready only once every Task it waits on is done or archived. A Task's sheet lists what it waits on and what waits on it (**Then**), and adds or removes a link after saying what that changes; the **Graph** view on the Work page draws the board's links as arrows from parent to child (ADR 0177).
+A Task's dependency on another: the Task **waits on** its parent, and Hermes makes it ready only once every Task it waits on is done or archived. A Task's sheet lists what it waits on and what waits on it (**Then**), and adds or removes a link after saying what that changes; the **Graph** view on the Work page draws the board's links as arrows from parent to child (ADR 0179).
 _Avoid_: dependency edge (fine in code), blocker (a blocked Task is another thing)
 
 **Token guess**:
-Hermes's rough guess, from a model, of how many tokens a Task will take, with a size of S, M or L. It is never a cost, and asking for one writes nothing (ADR 0177).
+Hermes's rough guess, from a model, of how many tokens a Task will take, with a size of S, M or L. It is never a cost, and asking for one writes nothing (ADR 0179).
 _Avoid_: cost, price, estimate (fine in code)
 
 **Office** / **Desk**:

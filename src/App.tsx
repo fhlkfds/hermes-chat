@@ -1292,7 +1292,7 @@ export function Main({
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
-  // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0177). Named in a
+  // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a
   // string so the set changes only when one of them does.
   const workLacking = (
     [

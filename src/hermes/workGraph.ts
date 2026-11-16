@@ -1,4 +1,4 @@
-// The Work page's graph of the current board (issue #604, ADR 0177): which cards wait on which, laid out from the
+// The Work page's graph of the current board (issue #604, ADR 0179): which cards wait on which, laid out from the
 // cards Hermes waits on at the left to the cards that wait on them at the right. No route lists a board's links, so
 // each linked card's own links come from `GET tasks/{id}`, read again only when the board's counts or status for that
 // card change. Everything here is pure; the page does the reads.
