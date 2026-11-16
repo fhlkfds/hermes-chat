@@ -2,7 +2,7 @@
 import { GlobalWorkerOptions, getDocument, type PDFDocumentLoadingTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth/mammoth.browser.js";
-import { DOCX_UNPACKED_MAX_BYTES, zipUnpackedSize } from "../hermes/documents";
+import { DOCX_UNPACKED_MAX_BYTES, zipUnpacked } from "../hermes/documents";
 import { formatBytes } from "../hermes/values";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -25,13 +25,12 @@ export const openPdf = (bytes: Uint8Array): PDFDocumentLoadingTask =>
 
 /**
  * A Word document's body as HTML, its pictures inline as `data:` URLs. mammoth never reads files the document links to
- * (`externalFileAccess` is off by default), and the HTML goes in a sandboxed frame (`sandboxedHtml`). One that says it
- * unpacks to more than `DOCX_UNPACKED_MAX_BYTES` isn't opened.
+ * (`externalFileAccess` is off by default), and the HTML goes in a sandboxed frame (`sandboxedHtml`). One that unpacks
+ * to more than `DOCX_UNPACKED_MAX_BYTES` isn't opened.
  */
 export async function docxHtml(bytes: Uint8Array): Promise<string> {
-  const unpacked = zipUnpackedSize(bytes);
+  const unpacked = await zipUnpacked(bytes, DOCX_UNPACKED_MAX_BYTES);
   if (unpacked === undefined) throw new Error("This file isn't a Word document the preview can read.");
-  if (unpacked > DOCX_UNPACKED_MAX_BYTES)
-    throw new Error(`It unpacks to ${formatBytes(unpacked)}, and the preview opens Word documents up to ${formatBytes(DOCX_UNPACKED_MAX_BYTES)}.`);
+  if (unpacked === "over") throw new Error(`It unpacks to more than ${formatBytes(DOCX_UNPACKED_MAX_BYTES)}, the most the preview opens of a Word document.`);
   return (await mammoth.convertToHtml({ arrayBuffer: copy(bytes) })).value;
 }

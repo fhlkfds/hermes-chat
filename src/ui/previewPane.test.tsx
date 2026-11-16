@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
+import { fakeZip } from "../hermes/fakeZip";
 import { connect, type Hermes } from "../hermes/transport";
 import { getUIPrefs } from "../hermes/uiPrefs";
 import type { FileView, Framing, ViewUrl } from "../hermes/preview";
@@ -51,12 +52,10 @@ const button = (name: string) => within(pane()).getByRole<HTMLButtonElement>("bu
 /** The preview's file reads. The `outputs` capability probe's `GET /api/fs/list` at sign-in may land at any time. */
 const fsReads = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/fs/") && r.path !== "/api/fs/list");
 
-/** A zip, one character per byte, whose first file's central directory entry says it unpacks to `size`. */
-function claimsToUnpackTo(zip: string, size: number) {
-  const at = zip.indexOf("PK\x01\x02") + 24;
-  const le = String.fromCharCode(size & 0xff, (size >>> 8) & 0xff, (size >>> 16) & 0xff, size >>> 24);
-  return zip.slice(0, at) + le + zip.slice(at + 4);
-}
+/** A Word file whose directory says it unpacks to 1,455 bytes, and that unpacks to 101 MB. */
+const bombDocx = fakeZip([{ name: "word/document.xml", data: new Uint8Array(101 * 1024 * 1024), claims: 1455 }]).then((zip) =>
+  Buffer.from(zip).toString("latin1"),
+);
 
 /** A local disk the Open dialog picks from: `pick` is what the owner picks next (null cancels). */
 function localDisk(files: Record<string, FileView | Error>) {
@@ -221,7 +220,7 @@ async function signedIn({ local = localDisk({}), web = theWeb(), pages = theServ
     "/home/liam/app/app.bin": "\x7fELF\0\0\0\0",
     "/home/liam/app/plan.docx": readFileSync("src/ui/fixtures/plan.docx", "latin1"),
     "/home/liam/app/notes.pdf": "<html>not a pdf",
-    "/home/liam/app/bomb.docx": claimsToUnpackTo(readFileSync("src/ui/fixtures/plan.docx", "latin1"), 256 * 1024 * 1024),
+    "/home/liam/app/bomb.docx": await bombDocx,
     "/home/liam/app/.env": "SECRET=1",
   };
   const hermes = await connect(server.openPipe);
@@ -393,10 +392,10 @@ describe("What the pane shows", () => {
     expect((await within(pane()).findByRole("note")).textContent).toBe("No preview for this fileThis file is named like a PDF, but its bytes aren't one. It's 15 B.");
   });
 
-  it("won't unpack a Word file that says it unpacks to more than the preview opens", async () => {
+  it("won't open a Word file that unpacks to more than the preview opens, though its directory says it's small", async () => {
     await openPath("/home/liam/app/bomb.docx");
-    expect((await within(pane()).findByRole("alert")).textContent).toBe(
-      "Couldn't show this documentIt unpacks to 256 MB, and the preview opens Word documents up to 100 MB.",
+    expect((await within(pane()).findByRole("alert", {}, { timeout: 10_000 })).textContent).toBe(
+      "Couldn't show this documentIt unpacks to more than 100 MB, the most the preview opens of a Word document.",
     );
     expect(within(pane()).queryByTitle("Rendered /home/liam/app/bomb.docx")).toBeNull();
   });
