@@ -4,6 +4,7 @@
 // to Hermes; the frames' sandboxes are checked as rendered, since that is what keeps their content away from the app.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
@@ -211,6 +212,8 @@ async function signedIn({ local = localDisk({}), web = theWeb(), pages = theServ
     "/home/liam/app/index.html": '<h1>Hi</h1><script>parent.__TAURI_INTERNALS__.invoke("password_load")</script>',
     "/home/liam/app/logo.png": "\x89PNG\r\n\x1a\nimage",
     "/home/liam/app/app.bin": "\x7fELF\0\0\0\0",
+    "/home/liam/app/plan.docx": readFileSync("src/ui/fixtures/plan.docx", "latin1"),
+    "/home/liam/app/notes.pdf": "<html>not a pdf",
     "/home/liam/app/.env": "SECRET=1",
   };
   const hermes = await connect(server.openPipe);
@@ -362,6 +365,24 @@ describe("What the pane shows", () => {
     await openPath("/home/liam/app/logo.png");
     const img = await within(pane()).findByRole("img", { name: "logo.png" });
     expect(img.getAttribute("src")).toBe(`data:image/png;base64,${btoa("\x89PNG\r\n\x1a\nimage")}`);
+  });
+
+  it("shows a Word document as its text, in a frame that runs nothing (ADR 0186)", async () => {
+    const { server } = await openPath("/home/liam/app/plan.docx");
+    const frame = await within(pane()).findByTitle("Rendered /home/liam/app/plan.docx");
+    expect(frame.getAttribute("sandbox")).toBe("");
+    const doc = frame.getAttribute("srcdoc")!;
+    expect(doc).toMatch(/^<meta http-equiv="Content-Security-Policy" content="default-src 'none';/);
+    expect(doc).toContain("<h1>Quarterly plan</h1>");
+    expect(doc).toContain("<td><p>Review figures</p></td>");
+    expect(within(pane()).getByText(/^Word document · 3\.\d KB$/)).toBeTruthy();
+    expect(fsReads(server).map((r) => r.path)).toEqual(["/api/fs/read-data-url"]);
+    expect(within(pane()).queryByText("No preview for this file")).toBeNull();
+  });
+
+  it("says when a file named like a document isn't one", async () => {
+    await openPath("/home/liam/app/notes.pdf");
+    expect((await within(pane()).findByRole("note")).textContent).toBe("No preview for this fileThis file is named like a PDF, but its bytes aren't one. It's 15 B.");
   });
 
   it("says why it can't show a binary file, a missing one, or one with credentials", async () => {

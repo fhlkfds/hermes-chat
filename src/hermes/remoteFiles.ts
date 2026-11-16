@@ -9,6 +9,7 @@
 import { RestError, statusOf } from "./pipe";
 import { EDIT_MAX_BYTES, decodeForEdit, encodeEdit, revisionOf, type EditableText } from "./textEdit";
 import { errorText, formatBytes, optionalText } from "./values";
+import { DOCUMENT_PREVIEW_MAX_BYTES, documentFormatOf, looksLike, type DocumentFormat } from "./documents";
 
 /** A directory entry as `GET /api/files` lists it (`_managed_file_entry`, `hermes_cli/web_server_files.py` at `bf0203a`). */
 type WireEntry = {
@@ -52,11 +53,14 @@ export type RemoteListing = {
 export type RemotePreview =
   | { kind: "text"; path: string; name: string; size: number; text: string }
   | { kind: "image"; path: string; name: string; size: number; mime: string; dataUrl: string }
+  /** A PDF or Word file whose first bytes say it is one (documents.ts). */
+  | { kind: "document"; path: string; name: string; size: number; mime: string; format: DocumentFormat; bytes: Uint8Array }
   | { kind: "binary"; path: string; name: string; size: number; mime: string };
 
 /** How an entry can be previewed, judged from what the listing says, before reading anything. */
 export type PreviewSupport =
   | { kind: "text" | "image"; max: number }
+  | { kind: "document"; format: DocumentFormat; max: number }
   /** An unknown type: it may be text, so the owner can ask to try. */
   | { kind: "maybe-text"; max: number }
   | { kind: "none"; why: string };
@@ -412,6 +416,8 @@ export function previewSupport(entry: RemoteEntry): PreviewSupport {
   // A link's type is its target's (the server resolves it), so its target's name counts as much as its own.
   const target = entry.linkTarget?.slice(entry.linkTarget.lastIndexOf("/") + 1);
   const ext = extensionOf(target ?? entry.name);
+  const format = documentFormatOf(target ?? entry.name) ?? documentFormatOf(entry.name, mime);
+  if (format) return { kind: "document", format, max: DOCUMENT_PREVIEW_MAX_BYTES };
   if (mime.startsWith("text/") || TEXT_TYPES.has(mime) || mime.endsWith("+json") || mime.endsWith("+xml")) return { kind: "text", max: TEXT_PREVIEW_MAX_BYTES };
   // Checked before the type, since `mimetypes` calls a `.ts` file video/mp2t.
   if ([entry.name, target].some((name) => name && nameSaysText(name))) return { kind: "text", max: TEXT_PREVIEW_MAX_BYTES };
@@ -779,6 +785,7 @@ function parseRead(body: string, entry: RemoteEntry, support: PreviewSupport, as
   } catch {
     throw new RemoteFilesError("The server's answer isn't a file.");
   }
+  if (support.kind === "document" && !asText && looksLike(support.format, bytes)) return { kind: "document", path, name, size, mime, format: support.format, bytes };
   if (looksBinary(bytes)) return { kind: "binary", path, name, size, mime };
   return { kind: "text", path, name, size, text: new TextDecoder("utf-8").decode(bytes) };
 }

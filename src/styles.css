@@ -2012,6 +2012,8 @@ button.settings-search-tab:hover { color: var(--text); }
 }
 .preview-image img { max-width: 100%; max-height: calc(100% - 24px); object-fit: contain; }
 .preview-foot { font-size: calc(12rem / 14); color: var(--faint); }
+.preview-pdf { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--raised); }
+.preview-pdf canvas { display: block; width: 100%; height: auto; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
 .preview-empty { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 64px 24px 20px; text-align: center; overflow-y: auto; }
 .preview-empty-icon {
   width: 54px; height: 46px; flex: none; border-radius: 12px; border: 1px solid var(--line-2); display: grid; place-items: center; color: var(--muted);
@@ -2622,6 +2624,7 @@ label.memory-pick { cursor: pointer; }
 .files-meta dt { color: var(--faint); }
 .files-meta dd { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .files-preview-body { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); }
+.files-preview-body > .preview-text { height: 100%; }
 .files-preview-body > p.muted { padding: 14px 16px; display: flex; align-items: center; gap: 8px; margin: 0; }
 .files-preview-msg { padding: 14px 16px; margin: 0; color: var(--muted); font-size: calc(13rem / 14); }
 .files-preview-msg p { margin: 0 0 10px; }

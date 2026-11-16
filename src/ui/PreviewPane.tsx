@@ -64,6 +64,7 @@ import { ExtensionView } from "./ExtensionView";
 import { failureText as annotateFailure, type PageWhere, type Still } from "../hermes/annotations";
 import { AnnotationOverlay, type AnnotationDesk } from "./Annotate";
 import { FileChangesView, type FileChangesHost } from "./FileChanges";
+import { DocumentView } from "./DocumentView";
 
 /** When a web page that hasn't loaded gets a note that it may never show. */
 const SLOW_PAGE_MS = 15_000;
@@ -700,6 +701,7 @@ function FileBody({ name, load }: { name: string; load: () => Promise<FileView> 
       </div>
     );
   if (v.kind === "image") return <ImageView src={v.src} name={name} size={v.size} />;
+  if (v.kind === "document") return <DocumentView format={v.format} bytes={v.bytes} name={name} size={v.size} />;
   return <TextView view={v} name={name} />;
 }
 

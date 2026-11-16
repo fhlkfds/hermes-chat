@@ -974,6 +974,25 @@ impl PickedFiles {
     }
 
     pub async fn read_image(&self, path: &str) -> Result<Vec<u8>, TransportError> {
+        self.read_checked(path, checked_image).await
+    }
+
+    /// A picked PDF or Word file's bytes, for the preview to draw (documents.ts, ADR 0186).
+    pub async fn read_document(&self, path: &str, format: &str) -> Result<Vec<u8>, TransportError> {
+        let (magic, what): (&[u8], &str) = match format {
+            "pdf" => (b"%PDF-", "it isn't a PDF"),
+            "docx" => (b"PK\x03\x04", "it isn't a Word document"),
+            _ => return Err(TransportError::File("it isn't a document the preview shows".into())),
+        };
+        self.read_checked(path, move |bytes| if bytes.starts_with(magic) { Ok(bytes) } else { Err(TransportError::File(what.into())) }).await
+    }
+
+    /// The whole of a picked file up to `PREVIEW_MAX_BYTES`, passed through `check`.
+    async fn read_checked(
+        &self,
+        path: &str,
+        check: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, TransportError> + Send + 'static,
+    ) -> Result<Vec<u8>, TransportError> {
         let file = self.file(path)?;
         tokio::task::spawn_blocking(move || {
             let size = file.metadata().map_err(|e| TransportError::File(e.to_string()))?.len();
@@ -984,7 +1003,7 @@ impl PickedFiles {
             if bytes.len() as u64 > PREVIEW_MAX_BYTES {
                 return Err(TransportError::FileTooLarge { size: bytes.len() as u64, max: PREVIEW_MAX_BYTES });
             }
-            checked_image(bytes)
+            check(bytes)
         })
         .await
         .map_err(|e| TransportError::File(e.to_string()))?

@@ -1613,6 +1613,12 @@ async fn preview_read_local_image(picked: State<'_, PickedFiles>, path: String) 
     picked.read_image(&path).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+/// A PDF or Word file's bytes from the same retained handle, checked to start as `format` does.
+#[tauri::command]
+async fn preview_read_local_document(picked: State<'_, PickedFiles>, path: String, format: String) -> Result<tauri::ipc::Response, String> {
+    picked.read_document(&path, &format).await.map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
 /// Whether the site at `url` refuses to be shown in the preview's frame, asked the way the frame asks
 /// (`web_page::check`, ADR 0011). `user_agent`: the webview's, which the frame sends.
 #[tauri::command]
@@ -2054,6 +2060,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             preview_pick_local,
             preview_read_local,
             preview_read_local_image,
+            preview_read_local_document,
             preview_check_web,
             preview_https_answers,
             markdown_image_load,

@@ -3544,3 +3544,24 @@ async fn the_relay_never_reads_the_raw_config_or_the_lists_rust_reads_for_the_wi
         assert!(matches!(err, TransportError::NotRelayed(_)), "GET {path}: {err:?}");
     }
 }
+
+#[tokio::test]
+async fn local_document_preview_reads_only_picked_pdf_and_word_files() {
+    let dir = scratch("picked-document");
+    let pdf = dir.join("report.pdf");
+    let docx = dir.join("letter.docx");
+    std::fs::write(&pdf, b"%PDF-1.7\nbody").unwrap();
+    std::fs::write(&docx, b"PK\x03\x04word").unwrap();
+    let picked = transport::PickedFiles::default();
+    assert_eq!(picked.read_document(&path_of(&pdf), "pdf").await.err().unwrap().to_string(), "it wasn't picked in the Open dialog");
+    let pdf = picked.allow(&path_of(&pdf)).unwrap();
+    let docx = picked.allow(&path_of(&docx)).unwrap();
+    assert_eq!(picked.read_document(&pdf, "pdf").await.unwrap(), b"%PDF-1.7\nbody");
+    assert_eq!(picked.read_document(&docx, "docx").await.unwrap(), b"PK\x03\x04word");
+    assert_eq!(picked.read_document(&docx, "pdf").await.err().unwrap().to_string(), "it isn't a PDF");
+    assert_eq!(picked.read_document(&pdf, "docx").await.err().unwrap().to_string(), "it isn't a Word document");
+    assert_eq!(picked.read_document(&pdf, "exe").await.err().unwrap().to_string(), "it isn't a document the preview shows");
+    let f = std::fs::OpenOptions::new().write(true).open(&pdf).unwrap();
+    f.set_len(transport::PREVIEW_MAX_BYTES + 1).unwrap();
+    assert!(matches!(picked.read_document(&pdf, "pdf").await, Err(TransportError::FileTooLarge { .. })));
+}
