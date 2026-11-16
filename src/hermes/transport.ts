@@ -39,7 +39,7 @@ import { failureMark } from "./inbox";
 import { projectsApi, type ProjectsApi } from "./projects";
 import { STEER, askSideQuestion, listServerCommands, runServerCommand, sideAnswer, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { callText, offeredSkills, runSkill, skillInvocationText, type SkillCall, type SkillCommands } from "./skillCommands";
-import { CronApi } from "./cronJobs";
+import { CronApi, jobRunTitle } from "./cronJobs";
 import { followsSession, nextRoster, parseKanbanCreate, sameTask, type DispatchedTask } from "./dispatched";
 import { KanbanApi, KanbanWatch } from "./kanban";
 import { AutomationsApi } from "./automations";
@@ -1977,8 +1977,7 @@ export class Hermes {
     const q = text.trim();
     if (!q) return { found: [], capped: false };
     const profile = this.profile;
-    const raw = rawSources(sources);
-    const query = new URLSearchParams({ q, profile, limit: String(limit), exclude_sources: "cron", ...(raw && { sources: raw }) });
+    const query = new URLSearchParams({ q, profile, limit: String(limit), ...sourceQuery(sources) });
     const [res] = (await Promise.all([this.rest("GET", `api/sessions/search?${query}`), this.knownBotChats()])) as [{ results: SearchRow[] }, void];
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
@@ -1999,7 +1998,7 @@ export class Hermes {
    * of them (`include_pinned`), so one page of one row is enough.
    */
   private async pinnedIds(profile: string): Promise<Set<string>> {
-    const query = new URLSearchParams({ profile, order: "recent", limit: "1", offset: "0", archived: "include", exclude_sources: "cron" });
+    const query = new URLSearchParams({ profile, order: "recent", limit: "1", offset: "0", archived: "include", ...sourceQuery() });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     return new Set(res.sessions.filter((r) => r.pinned).map((r) => r.id));
@@ -2013,7 +2012,7 @@ export class Hermes {
     this.foreground();
     const profile = this.profile;
     await this.knownBotChats();
-    const { rows, more } = await this.readList(profile, archived, -Infinity, rawSources(sources));
+    const { rows, more } = await this.readList(profile, archived, -Infinity, sources);
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the chats came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     const seen = new Set<string>();
@@ -2876,7 +2875,7 @@ export class Hermes {
     const rows: SessionRow[] = [];
     const cutoff = since / 1000 - 3600;
     for (let page = 0; page < BRANCH_LIST_PAGES; page++) {
-      const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), exclude_sources: "cron" });
+      const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), ...sourceQuery() });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       rows.push(...res.sessions);
       // Every page ends with the pinned rows, out of order; only the others say how far back the list has reached.
@@ -5090,10 +5089,9 @@ export class Hermes {
   /**
    * Reads the profile's chats from dashboard REST, most recent first, `archived` ones excluded or only those, until
    * the list passes `cutoff`. Every page also carries all pinned rows, archived or not, out of order; the unpinned
-   * ones follow recency. `sources`: only chats from these, as Hermes stores them. `more`: the list goes on past the
-   * most pages read.
+   * ones follow recency. `sources`: only chats from these. `more`: the list goes on past the most pages read.
    */
-  private async readList(profile: string, archived: "exclude" | "only" | "include", cutoff: number, sources?: string): Promise<{ rows: SessionRow[]; more: boolean; botChats: Set<string> }> {
+  private async readList(profile: string, archived: "exclude" | "only" | "include", cutoff: number, sources?: Source[]): Promise<{ rows: SessionRow[]; more: boolean; botChats: Set<string> }> {
     const rows: SessionRow[] = [];
     /** The Bot Chats the pages held, which the list leaves out (`isBotChatRow`). */
     const botChats = new Set<string>();
@@ -5104,9 +5102,8 @@ export class Hermes {
         order: "recent",
         limit: String(PAGE_SIZE),
         offset: String(offset),
-        exclude_sources: "cron",
+        ...sourceQuery(sources),
         ...(archived !== "exclude" && { archived }),
-        ...(sources && { sources }),
       });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       // A Bot Chat is opened from its bot's row only, never from the list (ADR 0066). Hermes lists them hidden, except
@@ -5124,7 +5121,7 @@ export class Hermes {
    */
   private async unreadIn(profile: string): Promise<{ unread: number; more: boolean; chats: ListedChat[] }> {
     const cutoff = this.cache.olderPulled(profile) ? -Infinity : Date.now() - LIST_WINDOW_MS;
-    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
+    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", ...sourceQuery() });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     const chats = res.sessions
       .filter((r) => !r.archived && !this.deleted.has(profile, r.id) && !this.isBotChatRow(profile, r))
@@ -5670,7 +5667,9 @@ const LIST_MAX_BYTES = 8 * 1024 * 1024;
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
 /** A session's title as the list shows it: an untitled one by its first words. */
-function listTitle(r: Pick<SessionRow, "title" | "preview">, known?: string): string {
+function listTitle(r: Pick<SessionRow, "title" | "preview" | "source" | "started_at">, known?: string): string {
+  // Hermes names a run only once it has ended, and a run's first words are the scheduler's own instructions to the agent.
+  if (r.source === "cron") return r.title || known || jobRunTitle((r.started_at ?? 0) * 1000);
   // Hermes's preview of an untitled chat is its first message on one line, with any attached context after the words.
   const preview = r.preview?.replace(/\s*--- (?:Context Warnings|Attached Context) ---[\s\S]*$/, "").trim();
   return r.title || preview || known || "Untitled chat";
@@ -5725,6 +5724,15 @@ function rawSources(sources?: Source[]): string | undefined {
   return [...raw, ...(sources.some((s) => s === "app" || s === "cli" || s === "desktop") ? ["local"] : [])].join(",");
 }
 
+/**
+ * What a list or search asks Hermes about sources. Job runs are left out of every one (`exclude_sources=cron`) but one
+ * that asks for them: they aren't part of the chat list, and Hermes applies the exclude over `sources`.
+ */
+function sourceQuery(sources?: Source[]): { sources?: string; exclude_sources?: string } {
+  const raw = rawSources(sources);
+  return { ...(raw && { sources: raw }), ...(!sources?.includes("cron") && { exclude_sources: "cron" }) };
+}
+
 /** The surface a `local` chat was started on, when Hermes has stamped one (`_UNSET_CREATED_SOURCES` at `bf0203a`). */
 const localSurface = (created?: string | null) => (created && created !== "unknown" && created !== "local" ? created : undefined);
 
@@ -5742,7 +5750,8 @@ export function toSource(stored = "", created?: string | null): Source {
     case "tui":
       return "cli";
     case "import":
-      return "import";
+    case "cron":
+      return source;
     default:
       return "other";
   }
