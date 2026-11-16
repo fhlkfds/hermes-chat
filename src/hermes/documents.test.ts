@@ -34,6 +34,13 @@ describe("Document formats", () => {
     expect(await zipUnpacked(await fakeZip([{ name: "a.xml", data: big }]), 2999)).toBe("over");
     expect(await zipUnpacked(await fakeZip([{ name: "a.xml", data: big, claims: 10 }]), 2999)).toBe("over");
     expect(await zipUnpacked(await fakeZip([{ name: "a.xml", data: big, claims: 10 }]), 3000)).toBe(3000);
+    // mammoth's unzip reads every directory entry whatever the end record's count says.
+    const uncounted = await fakeZip([{ name: "a.xml", data: big, claims: 10 }]);
+    new DataView(uncounted.buffer).setUint16(uncounted.length - 22 + 10, 0, true);
+    expect(await zipUnpacked(uncounted, 2999)).toBe("over");
+    const misplaced = plan.slice();
+    new DataView(misplaced.buffer).setUint32(misplaced.length - 22 + 12, 1, true);
+    expect(await zipUnpacked(misplaced, 1e6)).toBeUndefined();
     const half = big.slice(0, 2000);
     expect(await zipUnpacked(await fakeZip([{ name: "a.xml", data: half }, { name: "b.xml", data: half }]), 3999)).toBe("over");
   });

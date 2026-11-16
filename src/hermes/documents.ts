@@ -37,9 +37,9 @@ export const DOCX_UNPACKED_MAX_BYTES = 100 * 1024 * 1024;
 
 /**
  * What a zip archive's files unpack to, in all, counted by unpacking them, since its directory's sizes can lie: the
- * number, or `over` as soon as it passes `max`, or undefined when it isn't a zip this can read (no end record, Zip64,
- * or a method other than stored or deflated, which a Word file never uses). Each file is the bytes the zip's directory
- * points at, as mammoth's unzip reads them.
+ * number, or `over` as soon as it passes `max`, or undefined when it isn't a zip this can read (no end record, a
+ * directory that doesn't end where the end record says, Zip64, or a method other than stored or deflated, which a
+ * Word file never uses). Each file is the bytes the zip's directory points at, as mammoth's unzip reads them.
  */
 export async function zipUnpacked(bytes: Uint8Array, max: number): Promise<number | "over" | undefined> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -49,9 +49,12 @@ export async function zipUnpacked(bytes: Uint8Array, max: number): Promise<numbe
   // The end record is the last 22 bytes, unless a comment of up to 64 KB follows it.
   while (end >= Math.max(0, bytes.length - 22 - 0xffff) && u32(end) !== 0x06054b50) end--;
   if (end < 0 || end < bytes.length - 22 - 0xffff) return undefined;
+  let at = u32(end + 16);
+  // mammoth's unzip moves every offset by however far the directory's offset and size miss the end record.
+  if (at + u32(end + 12) !== end) return undefined;
   let total = 0;
-  for (let i = 0, at = u32(end + 16); i < u16(end + 10); i++) {
-    if (at + 46 > bytes.length || u32(at) !== 0x02014b50) return undefined;
+  // Every entry up to the end record, not the count the end record gives, since mammoth's unzip reads them all.
+  for (; at + 46 <= end && u32(at) === 0x02014b50; at += 46 + u16(at + 28) + u16(at + 30) + u16(at + 32)) {
     const [method, packed, local] = [u16(at + 10), u32(at + 20), u32(at + 42)];
     if (local + 30 > bytes.length || u32(local) !== 0x04034b50) return undefined;
     const start = local + 30 + u16(local + 26) + u16(local + 28);
@@ -73,9 +76,8 @@ export async function zipUnpacked(bytes: Uint8Array, max: number): Promise<numbe
       }
     }
     if (total > max) return "over";
-    at += 46 + u16(at + 28) + u16(at + 30) + u16(at + 32);
   }
-  return total;
+  return at === end ? total : undefined;
 }
 
 /** The bytes of a base64 `data:` URL, or undefined when it isn't one. */
