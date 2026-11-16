@@ -19,6 +19,7 @@ export const tauriLocalFiles: LocalFiles = {
         const bytes = await invoke<ArrayBuffer>("preview_read_local_image", { path }).catch(asError);
         return URL.createObjectURL(new Blob([bytes]));
       },
+      readDocument: async (path, format) => new Uint8Array(await invoke<ArrayBuffer>("preview_read_local_document", { path, format }).catch(asError)),
     }),
 };
 

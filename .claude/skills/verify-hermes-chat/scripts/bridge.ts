@@ -67,6 +67,7 @@
 // the app's answers to what the stand-in asked it.
 // The same JSON is rewritten to <state-file> after every change, so it survives the bridge being stopped.
 import { createHash } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -123,7 +124,11 @@ const disk = (dir: string) => {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, e.name);
     if (e.isDirectory()) disk(path);
-    else if (e.isFile()) server.serverFiles[path] = readFileSync(path, "utf8");
+    else if (e.isFile()) {
+      // FakeHermes keeps a file as text, or a binary one as a character per byte (a PDF, a Word file).
+      const bytes = readFileSync(path);
+      server.serverFiles[path] = bytes.toString(isUtf8(bytes) ? "utf8" : "latin1");
+    }
   }
 };
 if (process.env.HV_DISK) disk(process.env.HV_DISK.replace(/\/+$/, ""));

@@ -27,6 +27,7 @@ import { FileEditor } from "./FileEditor";
 import { EDIT_MAX_BYTES } from "../hermes/textEdit";
 import { errorText, formatBytes } from "../hermes/values";
 import { shownName, shownPath } from "../hermes/serverPaths";
+import { DocumentView } from "./DocumentView";
 
 /** A file's preview, from the click until its contents are read. `ask`: its type is unknown, and it may be text. */
 export type Preview =
@@ -744,6 +745,7 @@ export function PreviewPane({
         )}
         {result?.kind === "binary" && <p className="files-preview-msg">This looks like a binary file, so there's no text to show.</p>}
         {result?.kind === "image" && <img className="files-image" src={result.dataUrl} alt={result.name} />}
+        {result?.kind === "document" && <DocumentView format={result.format} bytes={result.bytes} name={result.name} size={result.size} />}
         {result?.kind === "text" && (result.text ? <pre className="files-text">{result.text}</pre> : <p className="files-preview-msg">This file is empty.</p>)}
       </div>
     </aside>

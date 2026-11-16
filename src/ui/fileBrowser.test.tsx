@@ -3,6 +3,7 @@
 // whose `GET /api/files` and `GET /api/files/read` answer as the deployed `bf0203a` does.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
@@ -103,7 +104,7 @@ describe("Server files", () => {
     await waitFor(() => expect(names()).toEqual(["Cargo.toml", "main.rs"]));
   });
 
-  it("previews text and images with their details, and says why others don't", async () => {
+  it("previews text, images and Word documents with their details, and says why others don't", async () => {
     const s = server();
     const { user } = await launch(s);
     await openFiles(user);
@@ -117,6 +118,13 @@ describe("Server files", () => {
     await user.click(row_("photo.png"));
     const img = await screen.findByRole("img", { name: "photo.png" });
     expect(img.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+
+    s.managedFiles.nodes["/home/liam/plan.docx"] = { bytes: readFileSync("src/ui/fixtures/plan.docx", "latin1") };
+    await user.type(screen.getByRole("textbox", { name: "Go to a folder on the server" }), "~{Enter}");
+    await user.click(await screen.findByRole("button", { name: /^plan\.docx/ }));
+    const frame = await screen.findByTitle("Rendered plan.docx");
+    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("srcdoc")).toContain("<h1>Quarterly plan</h1>");
 
     await user.click(row_("huge.log"));
     expect((await screen.findByRole("alert")).textContent).toBe("It's 3.0 MB. Previews go up to 1.0 MB.");

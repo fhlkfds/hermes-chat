@@ -306,6 +306,7 @@ const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", htm
 const FS_MIME: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", svg: "image/svg+xml", py: "text/x-python", md: "text/markdown", html: "text/html",
   txt: "text/plain", json: "application/json", pdf: "application/pdf", ts: "video/mp2t",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
 export class FakeHermes {

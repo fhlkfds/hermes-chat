@@ -236,6 +236,9 @@ describe("What a tool call can preview", () => {
   });
 });
 
+const bytes = (latin1: string) => Uint8Array.from(latin1, (c) => c.charCodeAt(0));
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 /** Signed in to a FakeHermes with `files` on the server's disk. */
 async function server(files: FakeHermes["serverFiles"]) {
   const s = new FakeHermes();
@@ -279,9 +282,27 @@ describe("Reading a Server file", () => {
     expect(s.restRequests.at(-1)!.path).toBe("/api/fs/read-data-url");
   });
 
-  it("won't show a binary file that isn't an image", async () => {
-    const { hermes } = await server({ "/home/liam/report.pdf": "%PDF-1.7\0\0\0binary", "/usr/bin/tool": "\x7fELF\0\0\0" });
-    expect(await hermes.readServerFile("/home/liam/report.pdf")).toEqual({ kind: "unsupported", reason: "The preview can't show PDF files.", size: 17 });
+  it("reads a PDF or Word file's bytes, without reading it as text first", async () => {
+    const { s, hermes } = await server({ "/home/liam/report.pdf": "%PDF-1.7\0\0\0binary", "/home/liam/Plan.DOCX": "PK\x03\x04word" });
+    expect(await hermes.readServerFile("/home/liam/report.pdf")).toEqual({ kind: "document", format: "pdf", bytes: bytes("%PDF-1.7\0\0\0binary"), size: 17 });
+    expect(await hermes.readServerFile("/home/liam/Plan.DOCX")).toEqual({ kind: "document", format: "docx", bytes: bytes("PK\x03\x04word"), size: 8 });
+    expect(s.restRequests.filter((r) => r.path.startsWith("/api/fs/")).map((r) => r.path)).toEqual(["/api/fs/read-data-url", "/api/fs/read-data-url"]);
+  });
+
+  it("knows a document by the type Hermes gives when its name doesn't say", async () => {
+    const { s, hermes } = await server({ "/home/liam/download": "PK\x03\x04\0word" });
+    const readText = s.rest["GET /api/fs/read-text"];
+    s.rest["GET /api/fs/read-text"] = (req) => ({ ...(readText(req) as object), mimeType: DOCX_MIME });
+    expect(await hermes.readServerFile("/home/liam/download")).toMatchObject({ kind: "document", format: "docx" });
+  });
+
+  it("won't show a document whose bytes aren't one, or a binary file that isn't an image or a document", async () => {
+    const { hermes } = await server({ "/home/liam/fake.pdf": "<html>", "/usr/bin/tool": "\x7fELF\0\0\0" });
+    expect(await hermes.readServerFile("/home/liam/fake.pdf")).toEqual({
+      kind: "unsupported",
+      reason: "This file is named like a PDF, but its bytes aren't one.",
+      size: 6,
+    });
     expect(await hermes.readServerFile("/usr/bin/tool")).toEqual({ kind: "unsupported", reason: "The preview can't show binary files.", size: 7 });
   });
 
@@ -315,6 +336,16 @@ describe("Reading a Local file", () => {
   const io = (t: Partial<LocalText>) => ({
     readText: async () => ({ size: 5, truncated: false, binary: false, text: "hello", ...t }),
     readImage: async (path: string) => `blob:${path}`,
+    readDocument: async (path: string, format: string) => bytes(format === "pdf" ? "%PDF-1.4" : path.endsWith("fake.docx") ? "text" : "PK\x03\x04"),
+  });
+
+  it("reads a PDF or Word file's bytes", async () => {
+    expect(await readLocalFile({ path: "/home/liam/a.pdf", name: "a.pdf" }, io({}))).toEqual({ kind: "document", format: "pdf", bytes: bytes("%PDF-1.4"), size: 8 });
+    expect(await readLocalFile({ path: "/home/liam/b.docx", name: "b.docx" }, io({}))).toMatchObject({ kind: "document", format: "docx" });
+    expect(await readLocalFile({ path: "/home/liam/fake.docx", name: "fake.docx" }, io({}))).toMatchObject({
+      kind: "unsupported",
+      reason: "This file is named like a Word document, but its bytes aren't one.",
+    });
   });
 
   it("reads an image as an object URL, and text as text", async () => {
