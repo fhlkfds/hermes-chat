@@ -169,16 +169,29 @@ export type SheetApi = Pick<KanbanApi, "loadTask" | "addLink" | "removeLink" | "
 
 /**
  * `child` waits on `parent`; the sheet's task is one of the two. `seen`: its links as the sheet showed them. `starts`:
- * the confirm said that removing the link makes `child` ready, so the dispatcher may start it.
+ * what the confirm said removing the link does to `child`.
  */
-type LinkChange = { op: "add" | "remove"; parent: string; child: string; seen: TaskLinks; starts?: boolean };
+type LinkChange = { op: "add" | "remove"; parent: string; child: string; seen: TaskLinks; starts?: Starts };
 
 /**
- * Whether removing `parent` makes a todo card ready at once: Hermes's `recompute_ready` promotes it when every other
- * card it waits on is done or archived. A card missing from `linked` is gone, and holds nothing up.
+ * What removing a link does to the card that waited: `ready`, a todo card goes ready at once; `maybe`, a blocked card
+ * may too, unless someone blocked it (Hermes keeps a block someone made, and may lift one it made itself after failures,
+ * which only the task's events tell apart); `no`, it still waits on an open card, or it isn't waiting at all.
  */
-const startsOnRemove = (childStatus: string, parents: string[], linked: LinkedTask[], parent: string) =>
-  childStatus === "todo" && !parents.some((p) => p !== parent && isOpen(linked.find((l) => l.id === p)?.status ?? "done"));
+type Starts = "ready" | "maybe" | "no";
+
+/**
+ * Hermes's `recompute_ready` promotes a todo card, and a blocked one whose block it may lift, once every other card it
+ * waits on is done or archived. A card missing from `linked` is gone, and holds nothing up.
+ */
+const startsOnRemove = (childStatus: string, parents: string[], linked: LinkedTask[], parent: string): Starts =>
+  parents.some((p) => p !== parent && isOpen(linked.find((l) => l.id === p)?.status ?? "done"))
+    ? "no"
+    : childStatus === "todo"
+      ? "ready"
+      : childStatus === "blocked"
+        ? "maybe"
+        : "no";
 
 /** Whether the task's read links show `c` done, from the side of the sheet's task `id`. */
 const shows = (c: LinkChange, id: string, links: TaskLinks) => {
@@ -226,11 +239,15 @@ export function LinksSection({
 
   const removePreview = (c: LinkChange) => [
     `${title(c.child)} stops waiting on ${title(c.parent)}.`,
-    ...(c.starts
+    ...(c.starts === "ready"
       ? [
           `${title(c.child)} waits on nothing else after this. Hermes makes it ready at once, and the dispatcher starts it on its next tick, about a minute, if it has a bot or this server sets kanban.default_assignee.`,
         ]
-      : []),
+      : c.starts === "maybe"
+        ? [
+            `${title(c.child)} waits on nothing else after this. It stays blocked if someone blocked it. If Hermes blocked it itself after failed runs, Hermes may make it ready at once, and the dispatcher may then start it on its next tick.`,
+          ]
+        : []),
   ];
 
   const confirm = async (op: "add" | "remove", parent: string, child: string) => {
@@ -276,7 +293,7 @@ export function LinksSection({
         const child = change.child === task.id ? before : await api.loadTask(change.child);
         if (!live.current) return;
         const starts = startsOnRemove(child.task.status, child.links.parents, child.linked, change.parent);
-        if (starts !== !!change.starts) {
+        if (starts !== (change.starts ?? "no")) {
           const now = { ...change, starts };
           return setW({ kind: "confirming", change: now, preview: [...removePreview(now), "This changed since you confirmed, so nothing was sent yet."] });
         }
@@ -412,7 +429,8 @@ function WriteStatus<C>({ w, verb, onConfirm, onCancel }: { w: Write<C>; verb: (
 export const PICKABLE = new Set(["triage", "todo", "ready", "blocked"]);
 
 /** A pick: a bot (`""` unassigns), or a model (none for the bot's own). */
-type BotModelChange = { kind: "bot"; bot: string; was: string } | { kind: "model"; pick?: ModelPick; was?: ModelPick };
+/** `status`: the card's status when the pick was previewed, which decides what the preview says will start. */
+type BotModelChange = ({ kind: "bot"; bot: string; was: string } | { kind: "model"; pick?: ModelPick; was?: ModelPick }) & { status?: string };
 
 const modelOf = (t: BoardTask): ModelPick | undefined => (t.model ? { model: t.model, ...(t.provider && { provider: t.provider }) } : undefined);
 const sameModel = (a?: ModelPick, b?: ModelPick) => a?.model === b?.model && (a?.provider ?? "") === (b?.provider ?? "");
@@ -456,7 +474,8 @@ export function BotModelSection({ task, api, onRead, onSaved, onWriting, assigne
       onRead(before);
       if (has(change, before.task)) return setW({ kind: "idle", note: "That's already set." });
       const now = change.kind === "bot" ? before.task.assignee === change.was : sameModel(modelOf(before.task), change.was);
-      if (!now) return setW({ kind: "failed", why: "This card changed since the sheet showed it, so nothing was sent. Here it is now." });
+      if (!now || before.task.status !== change.status)
+        return setW({ kind: "failed", why: "This card changed since the sheet showed it, so nothing was sent. Here it is now." });
       sent = true;
       const saved = change.kind === "bot" ? await api.editTask(task.id, { assignee: change.bot }) : await api.setModel(task.id, change.pick);
       if (!live.current) return;
@@ -476,7 +495,7 @@ export function BotModelSection({ task, api, onRead, onSaved, onWriting, assigne
   };
 
   const locked = !choices || busy(w) || w.kind === "confirming";
-  const ask = (change: BotModelChange) => setW({ kind: "confirming", change, preview: preview(task, change, choices) });
+  const ask = (change: BotModelChange) => setW({ kind: "confirming", change: { ...change, status: task.status }, preview: preview(task, change, choices) });
   const bots = choices ? [...new Set([...(task.assignee ? [task.assignee] : []), ...choices.bots])] : [];
   const botModel = (name: string) => choices?.profiles.find((p) => p.name === name)?.model;
   const current = modelOf(task);

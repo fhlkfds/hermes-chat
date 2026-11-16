@@ -36,30 +36,44 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
     setReads(new Map());
     setFailed(new Map());
   }, [refreshed]);
+  useEffect(() => () => void gen.current++, []);
 
   // A card whose read failed waits for its counts or status to change, or for Refresh.
   const failing = tasks.filter((t) => failed.get(t.id)?.key === readKey(t));
-  const due = toRead(tasks, reads).filter((id) => !failing.some((t) => t.id === id));
-  const dueKey = due.join(" ");
+  const due = toRead(tasks, reads)
+    .filter((id) => !failing.some((t) => t.id === id))
+    .map((id) => ({ id, key: readKey(tasks.find((t) => t.id === id)!) }));
+  const dueKey = due.map((d) => `${d.id}@${d.key}`).join(" ");
+
+  // One queue for the whole view, at most `AT_ONCE` reads out and one per card. A card whose counts or status change
+  // while its read is out is read again once that read ends, under its new values.
+  const queue = useRef<{ id: string; key: string }[]>([]);
+  /** Each card with a read out, and the values it was asked under. */
+  const out = useRef(new Map<string, string>());
+  const pump = () => {
+    while (out.current.size < AT_ONCE) {
+      const next = queue.current.findIndex((q) => !out.current.has(q.id));
+      if (next < 0) return;
+      const [{ id, key }] = queue.current.splice(next, 1);
+      const mine = gen.current;
+      out.current.set(id, key);
+      apiRef.current
+        .loadTask(id)
+        .then(
+          (d) => mine === gen.current && setReads((r) => new Map(r).set(id, { key, links: d.links, linked: d.linked })),
+          (e) => mine === gen.current && setFailed((f) => new Map(f).set(id, { key, why: errorText(e) })),
+        )
+        .finally(() => {
+          out.current.delete(id);
+          queue.current = queue.current.filter((q) => q.id !== id || q.key !== key);
+          pump();
+        });
+    }
+  };
   useEffect(() => {
-    if (!due.length) return;
-    const mine = gen.current;
-    const keys = new Map(due.map((id) => [id, readKey(tasks.find((t) => t.id === id)!)]));
-    const queue = [...keys.keys()];
-    const one = async (): Promise<void> => {
-      const id = queue.shift();
-      if (!id) return;
-      const key = keys.get(id)!;
-      try {
-        const d = await apiRef.current.loadTask(id);
-        if (mine === gen.current) setReads((r) => new Map(r).set(id, { key, links: d.links, linked: d.linked }));
-      } catch (e) {
-        if (mine === gen.current) setFailed((f) => new Map(f).set(id, { key, why: errorText(e) }));
-      }
-      return one();
-    };
-    void Promise.all(Array.from({ length: AT_ONCE }, one));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `dueKey` names the cards to read; the rest is read as of now
+    queue.current = due.filter((d) => out.current.get(d.id) !== d.key);
+    pump();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `dueKey` names each card to read and the values it's read under
   }, [dueKey, refreshed]);
 
   const g = graphOf(tasks, reads);

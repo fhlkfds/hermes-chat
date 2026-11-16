@@ -247,6 +247,34 @@ describe("planning on the Work page (issue #604)", () => {
     await waitFor(() => expect(within(column("ready")).getByText("Build it")).toBeTruthy());
   });
 
+  it("says a blocked card may become ready when it stops waiting, since Hermes may lift a block it made itself", async () => {
+    const { user, s } = await openPlanned();
+    const parked = s.kanban.add("default", { title: "Parked card", status: "blocked" });
+    const gate = s.kanban.add("default", { title: "Gate", status: "todo" });
+    s.kanban.links.push({ parent: gate.id, child: parked.id });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const sheet = await sheetOf(user, "Parked card");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Gate" }));
+    expect(within(links).getByRole("group", { name: "Confirm the change" }).textContent).toContain(
+      "It stays blocked if someone blocked it. If Hermes blocked it itself after failed runs, Hermes may make it ready at once, and the dispatcher may then start it on its next tick.",
+    );
+    expect(s.kanban.writes).toEqual([]);
+  });
+
+  it("sends no bot or model pick when the card's status changed after the preview", async () => {
+    const { user, s, build } = await openPlanned();
+    const sheet = await sheetOf(user, "Build it");
+    const picks = within(sheet).getByRole("region", { name: "Bot and model" });
+    const bot = within(picks).getByRole("combobox", { name: "Bot" });
+    await waitFor(() => expect(within(bot).getByRole("option", { name: "researcher (claude-sonnet-5-5)" })).toBeTruthy());
+    await user.selectOptions(bot, "researcher");
+    s.kanban.find(build.id)!.status = "running";
+    await user.click(within(picks).getByRole("button", { name: "Save" }));
+    expect(await within(picks).findByText("This card changed since the sheet showed it, so nothing was sent. Here it is now.")).toBeTruthy();
+    expect(s.kanban.writes).toEqual([]);
+  });
+
   it("doesn't warn when the card still waits on another open card", async () => {
     const { user, s, build } = await openPlanned();
     const other = s.kanban.add("default", { title: "Review the API", status: "todo" });
