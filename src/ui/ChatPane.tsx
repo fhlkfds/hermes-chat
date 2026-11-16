@@ -882,6 +882,7 @@ export function ChatPane({
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.find(isWaiting);
   const policy = policyOf(chat);
+  const { jobId } = chat;
   // The streaming block is the chat's last item, so it is in the last chunk that holds more than side questions.
   let liveChunk = chunks.length - 1;
   while (liveChunk > 0 && chunks[liveChunk].every((b) => b.kind === "side")) liveChunk--;
@@ -1134,8 +1135,8 @@ export function ChatPane({
             This chat is a run of a scheduled job, so it's read-only here. Hermes runs only its job in it and won't take a reply. Start a
             new chat to follow up.
           </span>
-          {chat.jobId && onOpenJob && (
-            <button type="button" className="btn small-btn" onClick={() => onOpenJob(chat.jobId!)}>
+          {jobId && onOpenJob && (
+            <button type="button" className="btn small-btn" onClick={() => onOpenJob(jobId)}>
               Open the job
             </button>
           )}
