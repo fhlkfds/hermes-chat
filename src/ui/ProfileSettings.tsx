@@ -109,6 +109,8 @@ export function failureText(l: Locale, f: ProfileFailure, name: string): string 
       return w.form.contended;
     case "noCheck":
       return w.form.noCheck;
+    case "pictureUnconfirmed":
+      return w.form.pictureUnconfirmed;
   }
 }
 

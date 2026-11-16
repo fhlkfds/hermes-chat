@@ -409,6 +409,7 @@ export const es: Catalogue = {
       pictureUnread: "No se pudo leer ese archivo.",
       contended: "Hermes siguió cambiando este bot mientras se guardaba, así que no se escribió nada. Inténtalo de nuevo.",
       noCheck: "Este Hermes no puede comprobar si los ajustes de un bot cambiaron en otro sitio, así que no se envió nada. Actualizar Hermes añade la comprobación.",
+      pictureUnconfirmed: "Hermes guardó la imagen sin confirmarlo, así que el bot aún no dice que la tiene. Vuelve a guardar.",
     },
     del: {
       title: (name) => `¿Borrar el perfil «${name}»?`,

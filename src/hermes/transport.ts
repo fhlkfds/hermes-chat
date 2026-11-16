@@ -2302,7 +2302,7 @@ export class Hermes {
     const wanted = pictureEdit && { cleared: pictureEdit.to === null };
     const keysMissing = wanted && (back ? lacksPictureKeys(back.block, wanted) : !!pictureKeysFailure);
     if (wanted && keysMissing && fields.picture?.kind === "saved")
-      fields.picture = failed(pictureKeysFailure ?? { kind: "lost", message: "Hermes stored the picture but didn't confirm it, so the bot doesn't say it has one yet. Save again." });
+      fields.picture = failed(pictureKeysFailure ?? { kind: "pictureUnconfirmed" });
     return { fields, ...(now && { now }) };
   }
 

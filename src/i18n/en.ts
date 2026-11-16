@@ -426,6 +426,7 @@ export const en = {
       pictureUnread: "Couldn't read that file.",
       contended: "Hermes kept changing this bot while it saved, so nothing was written. Try again.",
       noCheck: "This Hermes can't check a bot's settings for changes made elsewhere, so nothing was sent. Updating Hermes adds the check.",
+      pictureUnconfirmed: "Hermes stored the picture without confirming it, so the bot doesn't say it has one yet. Save again.",
     },
     del: {
       title: (name: string) => `Delete profile “${name}”?`,

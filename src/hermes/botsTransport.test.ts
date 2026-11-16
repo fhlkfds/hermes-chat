@@ -588,7 +588,7 @@ describe("Editing a bot (ADR 0188)", () => {
     vi.useRealTimers();
     expect(server.botAvatars.scribe).toBe(MINE);
     expect(stored(server).imageKind).toBeUndefined();
-    expect(first.fields.picture?.kind).toBe("failed");
+    expect(first.fields).toEqual({ picture: { kind: "failed", failure: { kind: "pictureUnconfirmed" } } });
 
     server.handlers["profiles.set_asset"] = setAsset;
     const second = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });

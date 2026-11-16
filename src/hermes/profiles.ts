@@ -139,6 +139,8 @@ export const PROFILE_ROUTES: Record<ProfileAction, string> = {
  * `lost`: no answer came, or Hermes failed partway (a timeout, a dropped connection, a 5xx), so it may or may not have
  * happened. `contended`: Hermes kept changing the bot's Bot Mode settings through every attempt, so nothing was
  * written. `noCheck`: this Hermes reports no revision to check a Bot Mode write against, so nothing was sent.
+ * `pictureUnconfirmed`: Hermes stored a bot's picture without confirming it, so its Bot Mode settings don't say it
+ * has one yet; Save again writes them.
  */
 export type ProfileFailure =
   | { kind: "unsent"; message: string }
@@ -147,7 +149,8 @@ export type ProfileFailure =
   | { kind: "refused"; status: number; detail: string }
   | { kind: "lost"; message: string }
   | { kind: "contended" }
-  | { kind: "noCheck" };
+  | { kind: "noCheck" }
+  | { kind: "pictureUnconfirmed" };
 
 function failureWords(f: ProfileFailure): string {
   switch (f.kind) {
@@ -164,6 +167,8 @@ function failureWords(f: ProfileFailure): string {
       return "Hermes kept changing this bot while it saved, so nothing was written.";
     case "noCheck":
       return "This Hermes can't check a bot's settings for changes made elsewhere, so nothing was sent.";
+    case "pictureUnconfirmed":
+      return "Hermes stored the picture without confirming it, so the bot doesn't say it has one yet.";
   }
 }
 
