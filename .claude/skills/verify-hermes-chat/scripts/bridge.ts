@@ -8,7 +8,7 @@
 //   a prompt with "dispatch" in it calls `kanban_create` (a task on the stand-in's board, `session_id` the chat's),
 //   says "Research task dispatched (t_…)" and ends its turn. The kanban routes serve the board.
 //   a prompt with "background" in it starts two background subagents and ends its turn while they run.
-//   a prompt with "edit two files" in it runs FakeHermes's file turn in the chat's folder (ADR 0177): a write Hermes
+//   a prompt with "edit two files" in it runs FakeHermes's file turn in the chat's folder (ADR 0180): a write Hermes
 //   refuses, then a write of a.txt and a patch of b.txt, with a checkpoint before them, so the reply gets the
 //   "2 files changed" chip. Checkpoints are on unless HV_CHECKPOINTS=off, which gives the chip's "checkpoints are off".
 //   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
@@ -183,7 +183,7 @@ server.memoryProviders.add(honcho, { ...RETAINDB });
 server.memoryProviders.active = { default: "honcho", work: "" };
 
 // MCP servers as each profile's config holds them; the `.env` (tokens) stays out.
-// Each checkpointed folder's files now, and every restore the app asked for (ADR 0177).
+// Each checkpointed folder's files now, and every restore the app asked for (ADR 0180).
 const dump = () =>
   JSON.stringify(
     {

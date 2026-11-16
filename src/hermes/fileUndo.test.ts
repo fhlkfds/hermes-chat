@@ -1,4 +1,4 @@
-// Undoing a reply's files against a fake Hermes that keeps checkpoints as Hermes `bf0203a` does (ADR 0177).
+// Undoing a reply's files against a fake Hermes that keeps checkpoints as Hermes `bf0203a` does (ADR 0180).
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import { replyFiles, type UndoableFile } from "./fileChanges";

@@ -14,4 +14,4 @@ Real desktop app (`verify-hermes-chat`) against a throwaway Hermes `bf0203a` das
 
 - Hermes `bf0203a` in a Python 3.14 venv (`uv sync --frozen --extra web`), run by `setup/dash.sh` on `127.0.0.2:26011` with a fresh `HOME` and `HERMES_HOME` under `/tmp/hermes601`. `CHECKPOINTS=false setup/dash.sh` turns checkpoints off.
 - `setup/stub_model.py` is the OpenAI-compatible model. A prompt with "edit two files" patches `a.txt` and `b.txt`.
-- `setup/probe.mjs` (with `setup/rpc.mjs`) calls `rollback.list`, `rollback.diff` and `rollback.restore` directly, and settled the facts ADR 0177 cites. One of them is that a one-file restore of a file the bot created fails with "pathspec … did not match".
+- `setup/probe.mjs` (with `setup/rpc.mjs`) calls `rollback.list`, `rollback.diff` and `rollback.restore` directly, and settled the facts ADR 0180 cites. One of them is that a one-file restore of a file the bot created fails with "pathspec … did not match".

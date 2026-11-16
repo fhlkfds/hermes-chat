@@ -31,7 +31,7 @@ export type PreviewTarget =
   | { kind: "tool"; name: string; text: string }
   /** An extension's view (ADR 0126, section 6): a tree the app draws, kept by `Extensions`, never the extension's HTML. */
   | { kind: "extension"; id: ExtensionId; view: string; title: string }
-  /** The files a reply changed on the server, and undoing them (ADR 0177): `replyId` is the reply's item in chat `chatId`. */
+  /** The files a reply changed on the server, and undoing them (ADR 0180): `replyId` is the reply's item in chat `chatId`. */
   | { kind: "files"; chatId: string; replyId: string };
 
 /**

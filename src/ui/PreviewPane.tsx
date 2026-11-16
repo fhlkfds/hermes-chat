@@ -124,7 +124,7 @@ export function PreviewPane({
   connected?: boolean;
   /** Where annotations are staged (the composer on screen), and who hears that the page moved. */
   desk?: AnnotationDesk & { pageMoved(): void };
-  /** The chats whose replies' files the Preview shows (ADR 0177), and their checkpoints. */
+  /** The chats whose replies' files the Preview shows (ADR 0180), and their checkpoints. */
   fileChanges?: FileChangesHost;
 }) {
   const here = history?.here;

@@ -1,5 +1,5 @@
 // The checkpoints a fake Hermes keeps for a folder (`tools/checkpoint_manager.py` at `bf0203a`, measured on a real
-// Hermes on 2026-11-15, ADR 0177): each one the folder's files as they were, newest first, with the time to the whole
+// Hermes on 2026-11-15, ADR 0180): each one the folder's files as they were, newest first, with the time to the whole
 // second. `rollback.diff` compares one with the files now, in git's format, cut at 4000 characters. A one-file restore
 // checks that file out of it; either restore first takes a "pre-rollback snapshot". The files are FakeHermes's
 // `serverFiles`, so `GET /api/fs/read-text` reads what a restore wrote.

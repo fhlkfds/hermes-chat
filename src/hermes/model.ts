@@ -247,7 +247,7 @@ export type Chat = {
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
   /**
-   * What the files-changed chip needs to know (ADR 0177), checked once for the runtime session `runtimeId`.
+   * What the files-changed chip needs to know (ADR 0180), checked once for the runtime session `runtimeId`.
    * `container`: its terminal runs in a container, where Hermes takes no checkpoints. `on`: its profile has checkpoints
    * on. Either is undefined when Hermes couldn't say. Set by the transport only.
    */

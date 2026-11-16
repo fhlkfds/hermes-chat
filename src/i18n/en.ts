@@ -23,7 +23,7 @@ export const en = {
       hide: "Hide the result",
       show: "Show the result",
     },
-    /** The chip under a reply that edited files on the server, and the Preview it opens (ADR 0177). */
+    /** The chip under a reply that edited files on the server, and the Preview it opens (ADR 0180). */
     files: {
       changed: (n: number) => (n === 1 ? "1 file changed" : `${n} files changed`),
       off: "checkpoints are off",

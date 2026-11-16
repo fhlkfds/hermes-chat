@@ -532,7 +532,7 @@ export function ChatPane({
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
   /**
-   * Asks once for what a reply's files-changed chip needs (`Hermes.checkCheckpoints`, ADR 0177). None: no chip, as for
+   * Asks once for what a reply's files-changed chip needs (`Hermes.checkCheckpoints`, ADR 0180). None: no chip, as for
    * a Hermes without the checkpoint methods.
    */
   onCheckpoints?: () => void;
@@ -618,7 +618,7 @@ export function ChatPane({
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
   // How many files each finished reply changed, by its reply. The chips show once the chat's checkpoints check found
-  // its terminal isn't in a container, where Hermes takes no checkpoints (ADR 0177).
+  // its terminal isn't in a container, where Hermes takes no checkpoints (ADR 0180).
   const filesOn = !!onCheckpoints;
   const changedFiles = useStable(
     useMemo(() => new Map(filesOn ? replyFiles(chat.items, chat.folder).map((r) => [r.replyId, r.paths.length]) : []), [filesOn, chat.items, chat.folder]),
@@ -1202,7 +1202,7 @@ const BlockView = memo(
     chatId: string;
     turn?: number;
     onPickVariant: (chatId: string, turn: number) => void;
-    /** For a finished reply that edited files: how many (ADR 0177). `checkpointsOff`: its profile takes no checkpoints. */
+    /** For a finished reply that edited files: how many (ADR 0180). `checkpointsOff`: its profile takes no checkpoints. */
     filesChanged?: number;
     checkpointsOff?: boolean;
   }) {

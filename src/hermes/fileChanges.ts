@@ -1,4 +1,4 @@
-// The files a reply changed on the server, and what undoing them one at a time would do (issue #601, ADR 0177). Hermes
+// The files a reply changed on the server, and what undoing them one at a time would do (issue #601, ADR 0180). Hermes
 // ties a checkpoint to nothing but its time, and `rollback.diff` compares a checkpoint with the files as they are now,
 // so everything here is worked out from the transcript and those two reads. No I/O: `fileUndo.ts` does the reading.
 import type { Item } from "./model";

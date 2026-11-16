@@ -1,4 +1,4 @@
-// Undoing a reply's files one at a time (issue #601, ADR 0177), as every restore here goes (ADR 0110, ADR 0024): a
+// Undoing a reply's files one at a time (issue #601, ADR 0180), as every restore here goes (ADR 0110, ADR 0024): a
 // preview, a refusal if the server changed since it, the writes, and a read back. Only one-file restores are sent: a
 // whole-folder restore also drops the chat's newest message, whatever checkpoint it restores.
 import { checkpointBefore, fileIn, parseRollbackDiff, planFiles, type Checkpoint, type FilePlan, type RelPath, type ReplyFiles, type RollbackDiff, type UndoableFile } from "./fileChanges";

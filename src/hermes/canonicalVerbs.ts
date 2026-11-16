@@ -271,7 +271,7 @@ export const APP_VERBS: AppVerb[] = [
   { method: "slash.exec", params: (s) => ({ command: "/context", session_id: s.sid }), route: "authority", answer: "ok" },
   { method: "prompt.btw", params: (s) => ({ session_id: s.sid, text: "A side question" }), route: "authority", answer: "ok" },
 
-  // Checkpoints (issue #601, ADR 0177): the authority answers all three for a live session
+  // Checkpoints (issue #601, ADR 0180): the authority answers all three for a live session
   // (`gateway/session_tui_ops.py:205` at `bf0203a`), in the same shapes as the legacy handlers.
   { method: "rollback.list", params: (s) => ({ session_id: s.sid, profile: s.profile }), route: "authority", answer: "ok", unprobed: CHECKPOINTS },
   { method: "rollback.diff", params: (s) => ({ session_id: s.sid, profile: s.profile, hash: "0a1b2c3d" }), route: "authority", answer: "ok", unprobed: CHECKPOINTS },

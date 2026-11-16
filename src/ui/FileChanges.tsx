@@ -1,5 +1,5 @@
 // The chip under a reply that edited files on the server, and the Preview it opens: which files, the diff from the
-// checkpoint Hermes took before the reply, and undoing them one file at a time (issue #601, ADR 0177).
+// checkpoint Hermes took before the reply, and undoing them one file at a time (issue #601, ADR 0180).
 import { useEffect, useRef, useState } from "react";
 import { FileDiff } from "lucide-react";
 import { replyFiles, type FilePlan, type UndoableFile } from "../hermes/fileChanges";

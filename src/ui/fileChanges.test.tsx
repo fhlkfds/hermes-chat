@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The files-changed chip under a reply and the Preview it opens (issue #601, ADR 0177), driven as the owner would,
+// The files-changed chip under a reply and the Preview it opens (issue #601, ADR 0180), driven as the owner would,
 // against a fake Hermes that keeps checkpoints as Hermes `bf0203a` does. Each test checks what is on screen and what
 // reached Hermes.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

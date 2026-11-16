@@ -1331,7 +1331,7 @@ export class FakeHermes {
       this.respond(r.id, { ...this.sessionInfo, cwd });
     },
     "session.close": (r) => this.respond(r.id, { closed: true }),
-    // `tui_gateway/methods_tools.py:1123-1183` at `bf0203a`, as measured on a real Hermes (ADR 0177).
+    // `tui_gateway/methods_tools.py:1123-1183` at `bf0203a`, as measured on a real Hermes (ADR 0180).
     "rollback.list": (r) =>
       this.rollback(r, (folder) => this.respond(r.id, this.checkpoints.on ? { enabled: true, checkpoints: this.checkpoints.list(folder) } : { enabled: false, checkpoints: [] })),
     "rollback.diff": (r) =>

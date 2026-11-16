@@ -2415,7 +2415,7 @@ export class Hermes {
   }
 
   /**
-   * Reading and restoring the checkpoints Hermes keeps for the chat's folder (`rollback.*`, ADR 0177), each on the chat's
+   * Reading and restoring the checkpoints Hermes keeps for the chat's folder (`rollback.*`, ADR 0180), each on the chat's
    * live session. A restore names one file, relative to the folder: Hermes then leaves the chat alone, where a
    * whole-folder restore would drop its newest message.
    */
