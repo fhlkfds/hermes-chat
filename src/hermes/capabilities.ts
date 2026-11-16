@@ -73,10 +73,11 @@ export type Capability = {
 };
 
 /**
- * A change a screen makes through one route of its own, which an older Hermes may lack without the screen lacking
- * everything (Settings → Profiles' rename, say). `shown`: the route as Hermes's router declares it.
+ * A change a screen makes through one route or JSON-RPC method of its own, which an older Hermes may lack without the
+ * screen lacking everything (Settings → Profiles' rename, say). `shown`: the route as Hermes's router declares it, or
+ * the method's name.
  */
-export type CapabilityAction = { name: string; method: RestMethod; route: RegExp; shown: string };
+export type CapabilityAction = { name: string; shown: string } & ({ method: RestMethod; route: RegExp } | { rpc: AppMethod });
 
 /** A check that only reads: a dashboard GET, or a JSON-RPC request whose method only reads. */
 /**
@@ -347,10 +348,10 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
   {
     id: "profiles",
     label: "Profiles",
-    usedBy: "Settings → Profiles",
+    usedBy: "Settings → Profiles, and the Bots view's Edit bot, Pin and Hide",
     needs:
-      "GET /api/profiles, and to change them POST /api/profiles, PATCH and DELETE /api/profiles/{name}, and PUT /api/profiles/{name}/description, POST /api/profiles/{name}/describe-auto and PUT /api/profiles/{name}/model.",
-    without: "Settings → Profiles explains what is missing, and reads or writes nothing. A server with the list but not one of the changes disables only that change, and says which route it lacks.",
+      "GET /api/profiles, and to change them POST /api/profiles, PATCH and DELETE /api/profiles/{name}, and PUT /api/profiles/{name}/description, POST /api/profiles/{name}/describe-auto and PUT /api/profiles/{name}/model. For a bot's name, colour, picture, Pin and Hide, profiles.configure and profiles.set_asset on /api/ws.",
+    without: "Settings → Profiles explains what is missing, and reads or writes nothing. A server with the list but not one of the changes disables only that change, and says which route or method it lacks.",
     anchor: "profiles",
     probe: { kind: "rest", path: () => "api/profiles", maxBytes: 2 * 1024 * 1024, shape: (b) => isObj(b) && isList(b.profiles) },
     routes: [/^api\/profiles$/],
@@ -363,6 +364,10 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
       { name: "describeAuto", method: "POST", route: /^api\/profiles\/[^/]+\/describe-auto$/, shown: "POST /api/profiles/{name}/describe-auto" },
       { name: "setModel", method: "PUT", route: /^api\/profiles\/[^/]+\/model$/, shown: "PUT /api/profiles/{name}/model" },
       { name: "remove", method: "DELETE", route: /^api\/profiles\/[^/]+$/, shown: "DELETE /api/profiles/{name}" },
+      // The Bots view's writes (ADR 0189). Actions here, not `botMode` write methods: a Hermes without one of them
+      // still has its bots and their Bot Chats.
+      { name: "botLook", rpc: "profiles.configure", shown: "profiles.configure" },
+      { name: "botPicture", rpc: "profiles.set_asset", shown: "profiles.set_asset" },
     ],
   },
   {
@@ -862,10 +867,13 @@ export class RouteMissingError extends Error {
   }
 }
 
-/** The capability action a dashboard write is, by its method and path; none for a write that isn't one. */
-const actionOf = (method: string, path: string): [CapabilitySpec, CapabilityAction] | undefined => {
+/** A write as the transport names it: a dashboard method and path (`api/…`, no query), or a JSON-RPC method. */
+type WriteCall = { rest: string; path: string } | { rpc: string };
+
+/** The capability action a write is, by its dashboard method and path or its JSON-RPC method; none for a write that isn't one. */
+const actionOf = (call: WriteCall): [CapabilitySpec, CapabilityAction] | undefined => {
   for (const c of CAPABILITIES) {
-    const a = c.actions?.find((a) => a.method === method && a.route.test(path));
+    const a = c.actions?.find((a) => ("rpc" in a ? "rpc" in call && a.rpc === call.rpc : "rest" in call && a.method === call.rest && a.route.test(call.path)));
     if (a) return [c, a];
   }
   return undefined;
@@ -1060,7 +1068,7 @@ export class CapabilityStore {
     if (state !== "unsupported") return;
     const path = "route" in call ? call.route.split("?")[0] : undefined;
     // One of a capability's own actions: only that action goes, and the capability stays as its reads show.
-    const action = path !== undefined && "verb" in call && call.verb ? actionOf(call.verb, path) : undefined;
+    const action = "method" in call ? actionOf({ rpc: call.method }) : "verb" in call && call.verb ? actionOf({ rest: call.verb, path: path! }) : undefined;
     if (action) {
       const [spec, a] = action;
       const names = this.lackingActions.get(spec.id) ?? new Set<string>();
@@ -1118,9 +1126,9 @@ export class CapabilityStore {
     return owners.find((c) => this.snap.caps[c.id].state === "unsupported")?.id;
   }
 
-  /** The route of a capability action this write is, when Hermes was found to lack it: the write is refused here. */
-  lacks(call: { rest: string; path: string }): string | undefined {
-    const action = actionOf(call.rest, call.path.split("?")[0]);
+  /** The route or method of a capability action this write is, when Hermes was found to lack it: the write is refused here. */
+  lacks(call: WriteCall): string | undefined {
+    const action = actionOf("rest" in call ? { rest: call.rest, path: call.path.split("?")[0] } : call);
     return action && this.lackingActions.get(action[0].id)?.has(action[1].name) ? action[1].shown : undefined;
   }
 

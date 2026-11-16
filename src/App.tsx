@@ -52,7 +52,7 @@ import { type ChatLink, type ConnectionRefs, checkConnection, connectionKey, con
 import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
-import { BotList, Bots, BOTS_REFRESH_MS } from "./ui/Bots";
+import { BotList, Bots, BOTS_REFRESH_MS, type BotEditWiring } from "./ui/Bots";
 import { Office } from "./ui/Office";
 import { EMPTY_OFFICE_MEMORY } from "./ui/OfficeBuilding";
 import { officeRooms, type Desk, type Room } from "./hermes/office";
@@ -1334,6 +1334,7 @@ export function Main({
   const [showMemory, setShowMemory] = useState<object>();
   /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  const [showProfile, setShowProfile] = useState<{ name: string; tab: "profiles" | "persona" }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
   // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a
@@ -1751,6 +1752,7 @@ export function Main({
     setShowDiagnostics(undefined);
     setShowVoice(undefined);
     setShowSnapshots(undefined);
+    setShowProfile(undefined);
     setSettingsOpen(true);
   };
   openVoiceSettings.current = () => {
@@ -1765,6 +1767,12 @@ export function Main({
   const openDiagnostics = (id: CapabilityId) => {
     openSettings();
     setShowDiagnostics({ id });
+  };
+  /** Opens Settings → Profiles on profile `name`, or Settings → Persona on it, from a bot's menu in the Bots view. */
+  const openProfileSettings = (name: string, tab: "profiles" | "persona") => {
+    setBotsOpen(false);
+    openSettings();
+    setShowProfile({ name, tab });
   };
   /** Opens a page of the compatibility guide in the owner's browser. */
   const openGuide = (url: string) =>
@@ -2335,6 +2343,7 @@ export function Main({
   // A bot's row opens its Bot Chat, in the bot's own profile (ADR 0066): another profile is switched to first, as the
   // switcher does, and once its list has loaded the Bot Chat is looked up by title and opened in the active pane. It isn't
   // remembered for the next launch: what reopens a Bot Chat is its bot's row. The pen starts an ordinary chat there.
+  const botEdit = useMemo<BotEditWiring>(() => ({ look: (name) => hermes.botLook(name), edit: (name, edits) => hermes.editBot(name, edits) }), [hermes]);
   const loadBots = useCallback(() => hermes.bots(), [hermes]);
   const activityOf = (b: Bot, roster: readonly Bot[]) => {
     const ids = b.botChat ? [b.botChat.id, b.botChat.resolvedId] : [];
@@ -3363,12 +3372,12 @@ export function Main({
                 activity={activityOf}
                 profile={profile}
                 current={profile}
-                leaving={leavingNote(profile, chats)}
+                leaving={leavingNote(profile, chats, words.profiles.leaving)}
                 onOpen={(b) => openBot(b, "open")}
                 onNewChat={(b) => openBot(b, "new")}
               />
             ) : (
-              <div className="empty-hint">Reading the bots…</div>
+              <div className="empty-hint">{words.bots.reading}</div>
             ))
           }
             projectSwitcher={
@@ -3478,12 +3487,14 @@ export function Main({
           pictures={botPictures}
           load={loadBots}
           activity={activityOf}
-          leaving={leavingNote(profile, chats)}
+          leaving={leavingNote(profile, chats, words.profiles.leaving)}
           onOpen={(b) => openBot(b, "open")}
           onNewChat={(b) => openBot(b, "new")}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setBotsOpen(false)}
           profiles={profilesWiring}
+          botEdit={botEdit}
+          onProfileSettings={openProfileSettings}
         />
       )}
       {inboxOpen && (
@@ -3707,6 +3718,7 @@ export function Main({
             capabilities={hermes.capabilities}
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
+            showProfile={showProfile}
             screen={hermes.screen}
             toolProgress={() => hermes.toolProgress()}
             work={hermes.kanban}

@@ -57,8 +57,10 @@ export const APP_METHODS = [
   "learning.frames",
   "llm.oneshot",
   "model.options",
+  "profiles.configure",
   "profiles.get_asset",
   "profiles.list",
+  "profiles.set_asset",
   "projects.add_folder",
   "projects.create",
   "projects.delete",
@@ -256,6 +258,21 @@ export const APP_VERBS: AppVerb[] = [
   { method: "config.set", shape: "the profile's approval mode", params: (s) => ({ session_id: s.sid, profile: s.profile, key: "approvals.mode", value: "manual" }), route: "authority", answer: "ok" },
   { method: "profiles.list", params: () => ({}), route: "authority", answer: "ok" },
   { method: "profiles.get_asset", params: (s) => ({ name: s.profile, asset: "avatar" }), route: "fallback", answer: "ok" },
+  // A bot's look (ADR 0189). Both rows are sent with params that can't write, so probing them later can't blank a bot.
+  {
+    method: "profiles.configure",
+    params: (s) => ({ name: s.profile, ui_meta: { "hermes-bots": {} }, ui_meta_expected_revisions: { "hermes-bots": -1 } }),
+    route: "fallback",
+    answer: "ok",
+    unprobed: "a write, added after the gateway was recorded; a revision of -1 is always a conflict, which Hermes answers as a result",
+  },
+  {
+    method: "profiles.set_asset",
+    params: (s) => ({ name: s.profile, asset: "avatar", data: "!" }),
+    route: "fallback",
+    answer: { code: 4068, message: "data is not valid base64" },
+    unprobed: "a write, added after the gateway was recorded; \"!\" is refused as not base64 before anything is stored",
+  },
   { method: "llm.oneshot", params: (s) => ({ profile: s.profile, instructions: "Answer briefly.", input: "Say hi", max_tokens: 16 }), route: "authority", answer: "ok" },
 
   // Commands.

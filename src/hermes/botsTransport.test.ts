@@ -7,8 +7,12 @@ import { BOT_CHAT_TITLE, BotModeUnsupportedError } from "./bots";
 import { connect, type Hermes } from "./transport";
 
 const running: Hermes[] = [];
+const servers: FakeHermes[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(running.splice(0).map((h) => h.close()));
+  // No test here may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0189).
+  for (const server of servers.splice(0)) expect(server.uncheckedConfigures()).toEqual([]);
 });
 
 /** Signed in to a server with the default profile and Scribe, whose Bot Chat holds one exchange. */
@@ -26,6 +30,7 @@ async function signedIn(server = new FakeHermes(), setup: (server: FakeHermes) =
   server.profileMeta = { scribe: { description: "Writes release notes", ui_meta: { "hermes-bots": { title: "Scribe", color: "#44aa77" } } } };
   server.botAvatars = { scribe: "data:image/png;base64,iVBORw0KGgo=" };
   setup(server);
+  servers.push(server);
   const hermes = await connect(server.openPipe);
   running.push(hermes);
   await hermes.sync();
@@ -317,5 +322,338 @@ describe("keeping Bot Chats out of the list and search", () => {
     server.sessions.push(row("old-bot", 5, { title: BOT_CHAT_TITLE, hidden: true, archived: true }), row("old-side", 5, { title: "Old", archived: true }));
     const { found } = await hermes.browse({ archived: "only" });
     expect(found.map((f) => f.chatId)).toEqual(["old-side"]);
+  });
+});
+
+describe("Editing a bot (ADR 0189)", () => {
+  const png = (tail: string) => `data:image/png;base64,${btoa(`\x89PNG\r\n\x1a\n${tail}`)}`;
+  const SHOWN = png("shown");
+  const MINE = png("mine");
+  const THEIRS = png("theirs");
+
+  /** Signed in, with Scribe's Bot Mode block as Hermes's desktop left it at revision 3, and its picture. */
+  const editing = (block: Record<string, unknown> = { title: "Scribe", color: "#112233", shape: "blob", sectionId: "s1" }, setup: (server: FakeHermes) => void = () => {}) =>
+    signedIn(new FakeHermes(), (server) => {
+      server.profileMeta.scribe = { description: "Writes release notes", ui_meta: { "hermes-bots": block } };
+      server.uiMetaRevisions.scribe = { "hermes-bots": 3 };
+      server.botAvatars.scribe = SHOWN;
+      setup(server);
+    });
+  const stored = (server: FakeHermes, profile = "scribe") => server.profileMeta[profile]?.ui_meta?.["hermes-bots"] as Record<string, unknown>;
+  /** Another client's save arriving while ours is on its way: it lands as the server takes our first write. */
+  const meanwhile = (server: FakeHermes, patch: Record<string, unknown>) => {
+    server.beforeConfigure = () => {
+      server.beforeConfigure = undefined;
+      server.writeBotAsOtherClient("scribe", patch);
+    };
+  };
+
+  it("never overwrites a title another client saved between its read and its write", async () => {
+    const { server, hermes } = await editing();
+    meanwhile(server, { title: "Quill" });
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    expect(stored(server).title).toBe("Quill");
+    expect(saved.fields).toEqual({ title: { kind: "changedElsewhere", theirs: "Quill" } });
+    expect(saved.now).toMatchObject({ title: "Quill" });
+    expect(stored(server)).toMatchObject({ color: "#112233", shape: "blob", sectionId: "s1" });
+    expect(hermes.getSnapshot().bots?.roster.find((b) => b.profile === "scribe")?.name).toBe("Quill");
+  });
+
+  it("never overwrites a title another client saved after Edit opened", async () => {
+    const { server, hermes } = await editing();
+    const opened = await hermes.botLook("scribe");
+    expect(opened).toEqual({ title: "Scribe", color: "#112233", pinned: false, hidden: false, picture: SHOWN });
+    server.writeBotAsOtherClient("scribe", { title: "Quill" });
+    const saved = await hermes.editBot("scribe", { title: { from: opened!.title, to: "Writer" } });
+    expect(stored(server).title).toBe("Quill");
+    expect(saved.fields).toEqual({ title: { kind: "changedElsewhere", theirs: "Quill" } });
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+  });
+
+  it("a second Save after a shown conflict is still refused when Hermes moved again, and writes once the owner has seen it", async () => {
+    const { server, hermes } = await editing();
+    server.writeBotAsOtherClient("scribe", { title: "Quill" });
+    await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    // The dialog showed "Quill", so that is what the owner saw. Another client writes again before the second Save.
+    server.writeBotAsOtherClient("scribe", { title: "Ink" });
+    const second = await hermes.editBot("scribe", { title: { from: "Quill", to: "Writer" } });
+    expect(stored(server).title).toBe("Ink");
+    expect(second.fields).toEqual({ title: { kind: "changedElsewhere", theirs: "Ink" } });
+    const third = await hermes.editBot("scribe", { title: { from: "Ink", to: "Writer" } });
+    expect(stored(server).title).toBe("Writer");
+    expect(third.fields).toEqual({ title: { kind: "saved" } });
+  });
+
+  it("keeps a colour changed elsewhere while it saves a new title", async () => {
+    const { server, hermes } = await editing();
+    meanwhile(server, { color: "#abcdef", sectionId: "s2" });
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    expect(saved.fields).toEqual({ title: { kind: "saved" } });
+    expect(stored(server)).toEqual({ title: "Writer", color: "#abcdef", shape: "blob", sectionId: "s2" });
+    expect(saved.now).toMatchObject({ title: "Writer", color: "#abcdef" });
+  });
+
+  it("keeps every Bot Mode key it doesn't edit, and sends Hermes only the block and the revision it read", async () => {
+    const others = {
+      sectionId: "s1",
+      sectionName: "Writers",
+      groups: ["drafts", "notes"],
+      group: "drafts",
+      shape: "blob",
+      created: 1794000000,
+      screenAutoOpen: true,
+      chat: "legacy-chat",
+      custom: true,
+      imageKind: "photo",
+      futureKey: { from: "a newer desktop", n: [1, 2] },
+    };
+    const { server, hermes } = await editing({ title: "Scribe", color: "#112233", hidden: false, ...others });
+    const saved = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(saved.fields).toEqual({ pinned: { kind: "saved" } });
+    expect(stored(server)).toEqual({ title: "Scribe", color: "#112233", hidden: false, pinned: true, ...others });
+    expect(rpc(server, "profiles.configure").map((r) => r.params)).toEqual([
+      { name: "scribe", ui_meta: { "hermes-bots": { title: "Scribe", color: "#112233", hidden: false, pinned: true, ...others } }, ui_meta_expected_revisions: { "hermes-bots": 3 } },
+    ]);
+    expect(server.uiMetaRevisions.scribe).toEqual({ "hermes-bots": 4 });
+    expect(hermes.getSnapshot().bots?.roster.find((b) => b.profile === "scribe")?.pinned).toBe(true);
+  });
+
+  it("writes a bot's first block against revision 0", async () => {
+    const { server, hermes } = await signedIn();
+    const saved = await hermes.editBot("default", { hidden: { from: false, to: true } });
+    expect(saved.fields).toEqual({ hidden: { kind: "saved" } });
+    expect(stored(server, "default")).toEqual({ hidden: true });
+    expect(rpc(server, "profiles.configure")[0].params.ui_meta_expected_revisions).toEqual({ "hermes-bots": 0 });
+  });
+
+  it("pins without writing when another client already pinned it", async () => {
+    const { server, hermes } = await editing();
+    server.writeBotAsOtherClient("scribe", { pinned: true });
+    const saved = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(saved.fields).toEqual({ pinned: { kind: "saved" } });
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+    expect(stored(server).pinned).toBe(true);
+  });
+
+  it("writes a cleared colour and an emptied name as Hermes's desktop does", async () => {
+    const { server, hermes } = await editing();
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "  " }, color: { from: "#112233", to: null } });
+    expect(saved.fields).toEqual({ title: { kind: "saved" }, color: { kind: "saved" } });
+    expect(stored(server)).toEqual({ title: "", shape: "blob", sectionId: "s1", custom: true });
+    expect(saved.now).toMatchObject({ title: "", color: null });
+  });
+
+  it("writes nothing to a Hermes that can't check for changes", async () => {
+    const { server, hermes } = await editing(undefined, (s) => (s.uiMetaCas = false));
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" }, picture: { from: SHOWN, to: MINE } });
+    expect(saved.fields).toEqual({ title: { kind: "failed", failure: { kind: "noCheck" } }, picture: { kind: "failed", failure: { kind: "noCheck" } } });
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+    expect(rpc(server, "profiles.set_asset")).toEqual([]);
+    expect(stored(server).title).toBe("Scribe");
+    expect(server.botAvatars.scribe).toBe(SHOWN);
+  });
+
+  it("gives up after three conflicts in a row, with nothing written", async () => {
+    const { server, hermes } = await editing();
+    let n = 0;
+    server.beforeConfigure = () => server.writeBotAsOtherClient("scribe", { sectionId: `moved-${++n}` });
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    expect(saved.fields).toEqual({ title: { kind: "failed", failure: { kind: "contended" } } });
+    expect(rpc(server, "profiles.configure")).toHaveLength(3);
+    expect(stored(server)).toMatchObject({ title: "Scribe", sectionId: "moved-3" });
+  });
+
+  it("a lost answer counts as saved once the read-back has it", async () => {
+    const { server, hermes } = await editing();
+    const configure = server.handlers["profiles.configure"];
+    // Hermes writes the block, and its answer never arrives.
+    server.handlers["profiles.configure"] = (r) => {
+      const respond = server.respond;
+      server.respond = () => {};
+      configure(r);
+      server.respond = respond;
+    };
+    vi.useFakeTimers();
+    const saving = hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    await vi.advanceTimersByTimeAsync(121_000);
+    const saved = await saving;
+    expect(stored(server).title).toBe("Writer");
+    expect(saved.fields).toEqual({ title: { kind: "saved" } });
+  });
+
+  it("says a write Hermes refused wasn't saved, in Hermes's words", async () => {
+    const { server, hermes } = await editing();
+    server.handlers["profiles.configure"] = (r) => server.fail(r.id, 4000, "invalid params for profiles.configure: ui_meta: too deep");
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" } });
+    expect(saved.fields).toEqual({ title: { kind: "failed", failure: { kind: "refused", status: 4000, detail: "invalid params for profiles.configure: ui_meta: too deep" } } });
+    expect(stored(server).title).toBe("Scribe");
+  });
+
+  it("says so when the block is over Hermes's 64 KB limit, which Hermes refuses without a reason", async () => {
+    const { server, hermes } = await editing({ title: "Scribe", image: "x".repeat(70_000) });
+    const saved = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(saved.fields).toEqual({ pinned: { kind: "failed", failure: { kind: "refused", status: 0, detail: "" } } });
+    expect(stored(server).pinned).toBeUndefined();
+    expect(rpc(server, "profiles.configure")).toHaveLength(1);
+  });
+
+  it("is gone for a profile Hermes no longer has, such as one renamed elsewhere, and its block and picture follow the rename", async () => {
+    const { server, hermes } = await editing();
+    await hermes.manageProfiles.rename("scribe", "quill");
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" }, picture: { from: SHOWN, to: MINE } });
+    expect(saved.fields).toEqual({ title: { kind: "failed", failure: expect.objectContaining({ kind: "gone" }) }, picture: { kind: "failed", failure: expect.objectContaining({ kind: "gone" }) } });
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+    expect(rpc(server, "profiles.set_asset")).toEqual([]);
+    expect(await hermes.botLook("scribe")).toBeUndefined();
+    expect(await hermes.botLook("quill")).toEqual({ title: "Scribe", color: "#112233", pinned: false, hidden: false, picture: SHOWN });
+    expect(await hermes.editBot("quill", { pinned: { from: false, to: true } })).toMatchObject({ fields: { pinned: { kind: "saved" } } });
+    expect(server.uiMetaRevisions).toEqual({ quill: { "hermes-bots": 4 } });
+  });
+
+  it("a picture changed elsewhere is left alone, and a new one shows without reconnecting", async () => {
+    const { server, hermes } = await editing();
+    await hermes.idle();
+    expect(hermes.getSnapshot().botPictures).toEqual({ scribe: SHOWN });
+    server.botAvatars.scribe = THEIRS;
+    const first = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    expect(first.fields).toEqual({ picture: { kind: "changedElsewhere", theirs: THEIRS } });
+    expect(server.botAvatars.scribe).toBe(THEIRS);
+    expect(rpc(server, "profiles.set_asset")).toEqual([]);
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+
+    const second = await hermes.editBot("scribe", { picture: { from: THEIRS, to: MINE } });
+    expect(second.fields).toEqual({ picture: { kind: "saved" } });
+    expect(server.botAvatars.scribe).toBe(MINE);
+    expect(rpc(server, "profiles.set_asset").map((r) => r.params)).toEqual([{ name: "scribe", asset: "avatar", data: MINE }]);
+    // Hermes's desktop draws a picture only for a block that says it has one.
+    expect(stored(server)).toEqual({ title: "Scribe", color: "#112233", shape: "blob", sectionId: "s1", custom: true, imageKind: "photo" });
+    expect(hermes.getSnapshot().botPictures).toEqual({ scribe: MINE });
+  });
+
+  it("takes a picture Hermes relabelled as saved, and clears one", async () => {
+    const { server, hermes } = await editing();
+    // Hermes sniffs the bytes: a PNG sent as a JPEG is stored, and read back, as a PNG.
+    const mislabelled = MINE.replace("image/png", "image/jpeg");
+    const saved = await hermes.editBot("scribe", { picture: { from: SHOWN, to: mislabelled } });
+    expect(server.botAvatars.scribe).toBe(MINE);
+    expect(saved).toMatchObject({ fields: { picture: { kind: "saved" } }, now: { picture: MINE } });
+
+    const cleared = await hermes.editBot("scribe", { picture: { from: MINE, to: null } });
+    expect(cleared).toMatchObject({ fields: { picture: { kind: "saved" } }, now: { picture: null } });
+    expect(rpc(server, "profiles.set_asset").at(-1)!.params).toEqual({ name: "scribe", asset: "avatar", clear: true });
+    expect(server.botAvatars).toEqual({});
+    expect(stored(server)).toMatchObject({ custom: true, imageKind: "shape" });
+    expect(hermes.getSnapshot().botPictures).toEqual({});
+  });
+
+  it("says a picture Hermes refused wasn't saved, and leaves the block alone", async () => {
+    const { server, hermes } = await editing();
+    const saved = await hermes.editBot("scribe", { picture: { from: SHOWN, to: `data:image/png;base64,${btoa("GIF89a not a png")}` } });
+    expect(saved.fields).toEqual({ picture: { kind: "failed", failure: { kind: "refused", status: 4070, detail: "unsupported image format (PNG/JPEG/WebP only)" } } });
+    expect(server.botAvatars.scribe).toBe(SHOWN);
+    expect(rpc(server, "profiles.configure")).toEqual([]);
+  });
+
+  it("a picture that saved before a refused block write gets its imageKind on the next Save", async () => {
+    const { server, hermes } = await editing();
+    const configure = server.handlers["profiles.configure"];
+    server.handlers["profiles.configure"] = (r) => server.respond(r.id, { ok: false, applied: { ui_meta: false } });
+    const first = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    expect(server.botAvatars.scribe).toBe(MINE);
+    expect(stored(server).imageKind).toBeUndefined();
+    // Not done yet: the picture stays an edit, so the dialog stays open on it.
+    expect(first.fields).toEqual({ picture: { kind: "failed", failure: { kind: "refused", status: 0, detail: "" } } });
+
+    server.handlers["profiles.configure"] = configure;
+    const second = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    expect(second.fields).toEqual({ picture: { kind: "saved" } });
+    expect(rpc(server, "profiles.set_asset")).toHaveLength(1);
+    expect(stored(server)).toMatchObject({ custom: true, imageKind: "photo", title: "Scribe", sectionId: "s1" });
+  });
+
+  it("a picture whose answer was lost isn't done until its block says it has one", async () => {
+    const { server, hermes } = await editing();
+    const setAsset = server.handlers["profiles.set_asset"];
+    // Hermes stores the picture, and its answer never arrives.
+    server.handlers["profiles.set_asset"] = (r) => {
+      const respond = server.respond;
+      server.respond = () => {};
+      setAsset(r);
+      server.respond = respond;
+    };
+    vi.useFakeTimers();
+    const saving = hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    await vi.advanceTimersByTimeAsync(121_000);
+    const first = await saving;
+    vi.useRealTimers();
+    expect(server.botAvatars.scribe).toBe(MINE);
+    expect(stored(server).imageKind).toBeUndefined();
+    expect(first.fields).toEqual({ picture: { kind: "failed", failure: { kind: "pictureUnconfirmed" } } });
+
+    server.handlers["profiles.set_asset"] = setAsset;
+    const second = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    expect(second.fields).toEqual({ picture: { kind: "saved" } });
+    expect(stored(server)).toMatchObject({ custom: true, imageKind: "photo", title: "Scribe", sectionId: "s1" });
+  });
+
+  it("a Hermes without profiles.configure loses only Pin, Hide and the look fields", async () => {
+    const { server, hermes } = await editing();
+    server.handlers["profiles.configure"] = (r) => server.fail(r.id, -32601, "unknown method: profiles.configure");
+    const first = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(first.fields).toEqual({ pinned: { kind: "failed", failure: { kind: "noRoute", action: "botLook" } } });
+    expect(hermes.capabilities.lacksAction("profiles", "botLook")).toBe(true);
+    expect(hermes.capabilities.lacksAction("profiles", "botPicture")).toBe(false);
+    expect(hermes.capabilities.get("profiles").lacking).toEqual(["profiles.configure"]);
+    expect(hermes.capabilities.get("botMode").state).toBe("supported");
+    // The next one is refused here, and nothing more is sent.
+    const second = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(second.fields).toEqual({ pinned: { kind: "failed", failure: { kind: "noRoute", action: "botLook" } } });
+    expect(rpc(server, "profiles.configure")).toHaveLength(1);
+    expect((await hermes.bots()).map((b) => b.profile)).toEqual(["default", "scribe"]);
+  });
+
+  it("a Hermes without profiles.set_asset loses only the picture", async () => {
+    const { server, hermes } = await editing();
+    server.handlers["profiles.set_asset"] = (r) => server.fail(r.id, -32601, "unknown method: profiles.set_asset");
+    const saved = await hermes.editBot("scribe", { title: { from: "Scribe", to: "Writer" }, picture: { from: SHOWN, to: MINE } });
+    expect(saved.fields).toEqual({ title: { kind: "saved" }, picture: { kind: "failed", failure: { kind: "noRoute", action: "botPicture" } } });
+    expect(hermes.capabilities.lacksAction("profiles", "botPicture")).toBe(true);
+    expect(hermes.capabilities.lacksAction("profiles", "botLook")).toBe(false);
+    expect(stored(server)).toEqual({ title: "Writer", color: "#112233", shape: "blob", sectionId: "s1" });
+  });
+});
+
+describe("the stand-in Hermes's Bot Mode writes, as f0d94882 answers them", () => {
+  const send = async (method: "profiles.configure" | "profiles.set_asset", params: Record<string, unknown>) => {
+    const { server, hermes } = await signedIn();
+    servers.pop();
+    const answer = await hermes["request"](method, params).then(
+      (result) => ({ result }),
+      (e: { code: number; message: string }) => ({ code: e.code }),
+    );
+    return { server, answer };
+  };
+
+  it("refuses a param the method doesn't have, and writes nothing", async () => {
+    const { server, answer } = await send("profiles.configure", { name: "scribe", ui_meta: { "hermes-bots": { title: "X" } }, ui_meta_expected_revisions: { "hermes-bots": 0 }, asset: "avatar" });
+    expect(answer).toEqual({ code: 4000 });
+    expect(server.profileMeta.scribe.ui_meta).toEqual({ "hermes-bots": { title: "Scribe", color: "#44aa77" } });
+    expect((await send("profiles.set_asset", { name: "scribe", asset: "avatar", clear: true, mime: "image/png" })).answer).toEqual({ code: 4000 });
+  });
+
+  it("answers a stale, mistyped or missing expected revision as a conflict, and replaces the block whole without one", async () => {
+    for (const expected of [{ "hermes-bots": 1 }, { "hermes-bots": "0" }, {}]) {
+      const { server, answer } = await send("profiles.configure", { name: "scribe", ui_meta: { "hermes-bots": { title: "X" } }, ui_meta_expected_revisions: expected });
+      expect(answer).toMatchObject({ result: { ok: false, applied: { ui_meta: false, ui_meta_conflicts: { "hermes-bots": { actual: 0 } }, ui_meta_revisions: { "hermes-bots": 0 } } } });
+      expect(server.profileMeta.scribe.ui_meta).toEqual({ "hermes-bots": { title: "Scribe", color: "#44aa77" } });
+    }
+    const blind = await send("profiles.configure", { name: "scribe", ui_meta: { "hermes-bots": { title: "X" } } });
+    expect(blind.answer).toEqual({ result: { ok: true, applied: { ui_meta: true, ui_meta_revisions: { "hermes-bots": 1 } } } });
+    expect(blind.server.profileMeta.scribe.ui_meta).toEqual({ "hermes-bots": { title: "X" } });
+  });
+
+  it("answers 4064 for a profile it doesn't have", async () => {
+    expect((await send("profiles.configure", { name: "nope", ui_meta: {} })).answer).toEqual({ code: 4064 });
+    expect((await send("profiles.set_asset", { name: "nope", asset: "avatar", clear: true })).answer).toEqual({ code: 4064 });
   });
 });
