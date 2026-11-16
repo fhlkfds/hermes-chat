@@ -19,6 +19,7 @@
 //   (400). It can answer `ok` with `settlement_pending: true` and a `retry_command`: the folder is gone, but Hermes
 //   hasn't finished settling the profile's identity, and a second delete would 404.
 import { CapabilityUnsupportedError, RouteMissingError } from "./capabilities";
+import { plan, settle, type EditResult, type Edits, type FieldOutcome, type Outcomes, type Same } from "./fieldMerge";
 import { deadline } from "./persona";
 import { RestError, type RestMethod } from "./pipe";
 import { isObj } from "./values";
@@ -206,6 +207,27 @@ export function profileFailure(e: unknown, action: ProfileAction): ProfileFailur
  */
 export const PROFILE_TIMEOUTS = { readMs: 30_000, createMs: 120_000, renameMs: 60_000, writeMs: 30_000, describeAutoMs: 90_000, removeMs: 60_000 };
 
+/**
+ * The profile fields Edit saves through REST: the description, and the main model. `model` is null for a profile with
+ * none; a row with only one of the pair keeps it, the other as "".
+ */
+export type ProfileFields = { description: string; model: { provider: string; model: string } | null };
+
+/**
+ * Hermes keeps a description with its outer whitespace trimmed and nothing else changed. A model is compared as
+ * `GET /api/profiles` reports it: `PUT …/model` stores the provider under its canonical id, whatever spelling it took.
+ */
+export const PROFILE_FIELDS_SAME: Same<ProfileFields> = {
+  description: (a, b) => a.trim() === b.trim(),
+  model: (a, b) => (a?.provider.trim() ?? "") === (b?.provider.trim() ?? "") && (a?.model.trim() ?? "") === (b?.model.trim() ?? ""),
+};
+
+/** A listed profile's description and model, as `ProfilesApi.edit` compares them. */
+export const profileFieldsOf = (row: Pick<ProfileRow, "description" | "model" | "provider">): ProfileFields => ({
+  description: row.description,
+  model: row.provider || row.model ? { provider: row.provider ?? "", model: row.model ?? "" } : null,
+});
+
 /** What a create answered. `modelError`: why Hermes didn't set the model it was given, in its words. */
 export type Created = { name: string; answered: boolean; modelSet: boolean; modelError?: string };
 
@@ -312,6 +334,44 @@ export class ProfilesApi {
   /** Sets `name`'s main model, whichever profile the app shows. */
   async setModel(name: string, provider: string, model: string): Promise<void> {
     await this.call("setModel", "PUT", this.path(name, "/model"), { provider, model }, this.timeouts.writeMs, `setting ${name}'s model`);
+  }
+
+  /**
+   * Saves `edits` to `name`'s description and model, each only where Hermes still has what the owner was shown
+   * (fieldMerge.ts `plan`, ADR 0187). It reads the list first and again after, and writes through `describe` and
+   * `setModel`. Hermes has no compare-and-swap on these routes, so a change that lands between that read and the write
+   * is overwritten, as with the persona (ADR 0014). Never rejects: a failure is that field's outcome.
+   */
+  async edit(name: string, edits: Edits<ProfileFields>): Promise<EditResult<ProfileFields>> {
+    const failed = <V>(failure: ProfileFailure): FieldOutcome<V> => ({ kind: "failed", failure });
+    const all = (failure: ProfileFailure): EditResult<ProfileFields> => ({
+      fields: { ...(edits.description && { description: failed(failure) }), ...(edits.model && { model: failed(failure) }) },
+    });
+    const held = (rows: ProfileRow[]) => rows.find((r) => r.name === name);
+    let row: ProfileRow | undefined;
+    try {
+      row = held(await this.list());
+    } catch (e) {
+      return all(profileFailure(e, "describe"));
+    }
+    if (!row) return all({ kind: "gone", detail: `Hermes lists no profile named ${name}.` });
+    const { write, settled } = plan(edits, profileFieldsOf(row), PROFILE_FIELDS_SAME);
+    const fields: Outcomes<ProfileFields> = { ...settled };
+    const saved = { kind: "saved" } as const;
+    if (write.description !== undefined)
+      fields.description = await this.describe(name, write.description).then(
+        () => saved,
+        (e: unknown) => failed(profileFailure(e, "describe")),
+      );
+    if (write.model)
+      fields.model = await this.setModel(name, write.model.provider, write.model.model.trim()).then(
+        () => saved,
+        (e: unknown) => failed(profileFailure(e, "setModel")),
+      );
+    else if (write.model === null) fields.model = failed({ kind: "unsent", message: "Hermes has no route that takes a profile's model away." });
+    const back = await this.list().then(held, () => undefined);
+    const now = back && profileFieldsOf(back);
+    return { fields: settle(fields, edits, now, PROFILE_FIELDS_SAME, ["model"]), ...(now && { now }) };
   }
 
   /**

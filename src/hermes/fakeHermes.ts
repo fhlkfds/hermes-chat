@@ -399,6 +399,15 @@ export class FakeHermes {
   profileRenameError?: string | Error;
   /** While set, `PATCH /api/profiles/{name}` renames, then fails with this message, as a connection lost before the answer. */
   profileRenameLost?: string;
+  /** While set, `PUT /api/profiles/{name}/description` and `…/model` save, then fail with this message, as a connection lost before the answer. */
+  profileFieldLost?: string;
+  /**
+   * The canonical id Hermes stores for a provider sent under another spelling, by that spelling. `PUT …/model` echoes
+   * the provider as sent and `GET /api/profiles` reports the id (probed on `f0d94882`: `Stub` is stored as `custom:stub`).
+   */
+  providerIds: Record<string, string> = {};
+  /** Runs as each `PUT /api/profiles/{name}/description` or `…/model` arrives, before it writes: another client's change meanwhile. */
+  beforeProfileField?: (name: string, field: "description" | "model") => void;
   /**
    * Scheduled jobs by profile, as `cron/jobs.json` holds them, and how the cron routes behave
    * (`hermes_cli/web_routers/cron.py` at the deployed `bf0203a`, as probed with a throwaway HERMES_HOME).
@@ -2292,15 +2301,19 @@ export class FakeHermes {
       if (name !== "default" && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) throw new RestError(400, JSON.stringify({ detail: `'${name}' is not a valid profile name.` }));
       if (name !== "default" && !(name in this.otherProfiles)) throw new RestError(404, JSON.stringify({ detail: `Profile '${name}' does not exist.` }));
       if (field === "description") {
+        this.beforeProfileField?.(name, field);
         const text = typeof body.description === "string" ? body.description.trim() : "";
         this.profileMeta[name] = { ...this.profileMeta[name], description: text, description_auto: false };
+        if (this.profileFieldLost) throw new Error(this.profileFieldLost);
         return { ok: true, description: text, description_auto: false };
       }
       if (field === "model") {
+        this.beforeProfileField?.(name, field);
         const provider = typeof body.provider === "string" ? body.provider.trim() : "";
         const model = typeof body.model === "string" ? body.model.trim() : "";
         if (!provider || !model) throw new RestError(400, JSON.stringify({ detail: "provider and model are required" }));
-        this.profileModel[name] = { ...(this.profileModel[name] ?? { reasoning_effort: "medium", fast: false }), model, provider };
+        this.profileModel[name] = { ...(this.profileModel[name] ?? { reasoning_effort: "medium", fast: false }), model, provider: this.providerIds[provider] ?? provider };
+        if (this.profileFieldLost) throw new Error(this.profileFieldLost);
         return { ok: true, provider, model };
       }
       if (this.describeAutoGate) return this.describeAutoGate.then(() => this.describeAutoAnswer(name));
