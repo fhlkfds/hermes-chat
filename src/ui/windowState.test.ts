@@ -8,23 +8,12 @@ const rust = vi.hoisted(() => ({
   hidden: false,
   handler: undefined as undefined | ((e: { payload: { hidden: boolean } }) => void),
   beforeAnswer: undefined as undefined | (() => void),
-  focused: true,
-  onFocus: undefined as undefined | ((e: { payload: boolean }) => void),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (_: string, fn: typeof rust.handler) => {
     rust.handler = fn;
     return () => {};
   },
-}));
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    onFocusChanged: async (fn: typeof rust.onFocus) => {
-      rust.onFocus = fn;
-      return () => {};
-    },
-    isFocused: async () => rust.focused,
-  }),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async () => {
