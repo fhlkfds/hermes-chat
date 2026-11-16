@@ -179,6 +179,28 @@ describe("Settings → Profiles", { timeout: 30_000 }, () => {
     expect(server.profileMeta.coder.description).toBe("Ships code");
   });
 
+  it("Edit never writes a model over one Hermes changed while the owner's model was only half picked", async () => {
+    const { server, user, list } = await launch();
+    await user.click(within(option(list, "work")).getByRole("button", { name: "Edit work" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit profile: work" });
+    // Another client changes both the description and the model; this dialog has seen neither.
+    server.profileMeta.work = { description: "Reviews pull requests" };
+    server.profileModel.work = { ...server.profileModel.work, model: "gpt-6.1-mini" };
+    const description = within(dialog).getByLabelText("Description");
+    await user.clear(description);
+    await user.type(description, "Ships code");
+    const model = within(dialog).getByLabelText("Model name");
+    await user.clear(model);
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    expect(await within(dialog).findByText(/Hermes has “Reviews pull requests” now/)).toBeTruthy();
+
+    await user.type(model, "gpt-7");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    expect(await within(dialog).findByText(/Hermes has “gpt-6\.1-mini · openai” now/)).toBeTruthy();
+    expect(server.profileModel.work.model).toBe("gpt-6.1-mini");
+    expect(writes(server)).toEqual(["PUT /api/profiles/work/description"]);
+  });
+
   it("Edit takes Hermes's model with Use Hermes's, leaving nothing to save", async () => {
     const { server, user, list } = await launch();
     await user.click(within(option(list, "work")).getByRole("button", { name: "Edit work" }));

@@ -975,12 +975,14 @@ export function ProfileForm({
     const profileNext = rebase(base.profile, formProfile, savedProfile);
     if (live.current) {
       setDescription(profileNext.form.description);
-      // A model half picked wasn't sent, and stays as the owner left it.
-      if (!modelTouched || modelChanged) {
+      // A model half picked wasn't sent, and stays as the owner left it, and so does what it was picked against: a
+      // model Hermes reads back that the inputs don't show isn't one the owner has seen.
+      const halfPicked = modelTouched && !modelChanged;
+      if (!halfPicked) {
         setProvider(profileNext.form.model?.provider ?? "");
         setModel(profileNext.form.model?.model ?? "");
       }
-      setBase((b) => ({ ...b, profile: profileNext.base }));
+      setBase((b) => ({ ...b, profile: halfPicked ? { ...profileNext.base, model: b.profile.model } : profileNext.base }));
     }
     show();
     const savedLook: EditResult<BotLook> = bot && lookChanged ? await bot.edit(row.name, lookEdits) : { fields: {} };
