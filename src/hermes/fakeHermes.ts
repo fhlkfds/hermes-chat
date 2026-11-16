@@ -1456,6 +1456,30 @@ export class FakeHermes {
         daily: [], by_model: [], period_days: days, skills: [], tools: [],
       };
     },
+    // `_get_models_analytics` (`hermes_cli/web_routers/analytics.py` at the deployed `bf0203a`): each model's usage in
+    // sessions started in the last `days` days, by model and provider. Hermes groups its per-call rows; this fake's
+    // sessions each used one model, so their own rows stand in. Costs are `COALESCE(SUM, 0)`, so an unpriced model
+    // sums to 0, and there is no cache-write count.
+    "GET /api/analytics/models": ({ query }) => {
+      if (this.modelsRefused) throw new RestError(this.modelsRefused.status, JSON.stringify({ detail: this.modelsRefused.detail }));
+      const days = Number(query.get("days") ?? 30);
+      const cutoff = now() - days * DAY;
+      const rows = this.storeOrFail(query.get("profile")).filter((s) => s.started_at > cutoff && s.model);
+      const groups = new Map<string, SessionRow[]>();
+      for (const s of rows) {
+        const key = `${s.model}\n${s.billing_provider ?? ""}`;
+        groups.set(key, [...(groups.get(key) ?? []), s]);
+      }
+      const sum = (of: SessionRow[], k: keyof SessionRow) => of.reduce((n, s) => n + (Number(s[k]) || 0), 0);
+      const models = [...groups.values()].map((of) => ({
+        model: of[0].model, provider: of[0].billing_provider ?? "",
+        input_tokens: sum(of, "input_tokens"), output_tokens: sum(of, "output_tokens"), cache_read_tokens: sum(of, "cache_read_tokens"),
+        reasoning_tokens: sum(of, "reasoning_tokens"), estimated_cost: sum(of, "estimated_cost_usd"), actual_cost: sum(of, "actual_cost_usd"),
+        sessions: of.length, api_calls: sum(of, "api_call_count"), tool_calls: 0, last_used_at: Math.max(...of.map((s) => s.started_at)),
+        avg_tokens_per_session: (sum(of, "input_tokens") + sum(of, "output_tokens")) / of.length, capabilities: {},
+      }));
+      return { models, totals: { total_sessions: rows.length }, period_days: days };
+    },
     // `search_sessions` in `hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`: one row per chat, archived
     // ones too. Message hits come first, then title matches. FTS5 matches a message holding every word of the query,
     // each as a prefix; its `snippet()` marks the matched words between `>>>` and `<<<`. Message hits carry the
@@ -1699,6 +1723,8 @@ export class FakeHermes {
   helperUsage: Record<string, Record<string, unknown>[]> = {};
   /** While set, `GET /api/analytics/usage` answers with this status, as a Hermes without the route answers 404. */
   analyticsRefused?: { status: number; detail: unknown };
+  /** While set, `GET /api/analytics/models` answers with this status, as a Hermes without the route answers 404. */
+  modelsRefused?: { status: number; detail: unknown };
 
   private onEvent?: (e: PipeEvent) => void;
   private imagesStaged = 0;

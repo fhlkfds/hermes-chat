@@ -12,6 +12,7 @@
 // - `uiPrefs`: the chat to reopen and the model pick, kept per profile (`prefScope`), and templates tied to a project.
 // A test (profileLocalData.test.ts) reads every storage key the app's source names and fails on one that isn't listed
 // here or in `NOT_PER_PROFILE`.
+import { BUDGETS_KEY } from "./budgetWatch";
 import { BRANCH_PREFIX, HELD_PREFIX, LIST_PREFIX, OUTBOX_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, QUEUE_PREFIX, REPLY_TIMES_PREFIX, TRANSCRIPT_PREFIX, moveLiveChatData } from "./chatCache";
 import { type ScopeSource, connectionScope, inScope, isPrefOf, prefScope, scopeParts } from "./connections";
 import { DRAFT_PREFIX, type Drafts } from "./drafts";
@@ -64,6 +65,7 @@ export const SCOPED_DOCS: readonly string[] = [
   IMPORTS_KEY,
   WORKTREE_CHATS_KEY,
   CONTEXT_LEDGER_KEY,
+  BUDGETS_KEY,
 ];
 
 /**
