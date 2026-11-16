@@ -4,8 +4,8 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BudgetWatch, budgetShelves, type BudgetIo } from "../hermes/budgetWatch";
-import { BUDGET_NOTES } from "../hermes/budgets";
+import { BudgetWatch, budgetShelves, type BudgetIo, type WatchDeps } from "../hermes/budgetWatch";
+import { BUDGET_NOTES, type BudgetId } from "../hermes/budgets";
 import { UsageAnalytics } from "./UsageAnalytics";
 
 const NOW = Date.parse("2026-11-18T12:00:00Z");
@@ -29,9 +29,10 @@ const chat = (id: string, title: string, usd: number | null, tokens: number) => 
   estimated_cost_usd: usd,
 });
 
-function setup(rows: Record<string, unknown>[]) {
+function setup(rows: Record<string, unknown>[], { ops = [], projects = () => ({ chats: {}, known: [] }) }: { ops?: Record<string, unknown>[]; projects?: WatchDeps["projects"] } = {}) {
+  const of = (profile: string) => (profile === "default" ? rows : profile === "ops" ? ops : []);
   const io: BudgetIo = {
-    page: async (profile) => ({ rows: profile === "default" ? rows : [], total: profile === "default" ? rows.length : 0 }),
+    page: async (profile) => ({ rows: of(profile), total: of(profile).length }),
     session: vi.fn(),
     hermesTotals: vi.fn(),
     models: async () => ({ models: [] }),
@@ -45,7 +46,7 @@ function setup(rows: Record<string, unknown>[]) {
     connected: () => true,
     watchStatus: () => () => {},
     listProfiles: async () => ["default", "ops"],
-    projects: () => ({ chats: {}, known: [] }),
+    projects,
     now: () => NOW,
   });
   const onOpenChat = vi.fn();
@@ -111,6 +112,32 @@ describe("Usage → Budgets", () => {
     const card = await screen.findByRole("article", { name: "Profile default, daily budget" });
     await waitFor(() => expect(within(card).getByText("Nothing Hermes could price yet, so no forecast.")).toBeTruthy());
     expect(within(card).getByText("$0.00+ of $10.00")).toBeTruthy();
+  });
+
+  it("makes the token budget for another profile's project in that profile", async () => {
+    budgetShelves(localStorage, connection).save({
+      id: "p" as BudgetId,
+      scope: { kind: "project", profile: "ops", project: "web" },
+      period: { every: "day", zone: "UTC" },
+      limit: { unit: "usd", amount: 10 },
+      createdAt: 0,
+    });
+    setup([], {
+      ops: [chat("x", "Site build", null, 50_000)],
+      projects: (p) => ({
+        chats: Object.fromEntries(p === "ops" ? [["web", ["x"]]] : []),
+        known: p === "ops" ? [{ id: "web", name: "Website", folders: [], archived: false }] : [],
+      }),
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Budgets" }));
+    const card = await screen.findByRole("article", { name: "Project Website in ops, daily budget" });
+    await user.click(await within(card).findByRole("button", { name: "Add a token budget for this" }));
+    expect((screen.getByRole("combobox", { name: "Project in ops" }) as HTMLSelectElement).value).toBe("web");
+    await user.type(screen.getByRole("textbox", { name: "Limit" }), "1M");
+    await user.click(within(screen.getByRole("form", { name: "New budget" })).getByRole("button", { name: "Add budget" }));
+    await waitFor(() => expect(budgetShelves(localStorage, connection).load().budgets).toHaveLength(2));
+    expect(budgetShelves(localStorage, connection).load().budgets[1]).toMatchObject({ scope: { kind: "project", profile: "ops", project: "web" }, limit: { unit: "tokens", amount: 1_000_000 } });
   });
 
   it("says plainly when it checks, how Hermes counts, and that its figures are a lower bound", async () => {

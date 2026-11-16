@@ -95,7 +95,7 @@ import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { UsageAnalytics, type UsageTab } from "./ui/UsageAnalytics";
-import { BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
+import { BudgetOpener, BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
 import { Work } from "./ui/Work";
 import type { WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
@@ -296,8 +296,8 @@ const keepDraft = (key: string, text: string) => {
 };
 const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
-/** What a budget notification's click does, by connection: the Main showing it opens Usage → Budgets (ADR 0187). */
-const budgetOpeners = new Map<string, () => void>();
+/** Where a budget notification's click goes: Usage → Budgets on its connection, made the one shown first (ADR 0187). */
+const budgetOpener = new BudgetOpener();
 /** A budget watch per live connection (budgetWatch.ts), kept in step with them by `Screens`. */
 const budgetWatches = new BudgetWatches((id) => {
   const m = liveConnections().get(id);
@@ -307,7 +307,7 @@ const budgetWatches = new BudgetWatches((id) => {
     io: m.hermes.usageIo(),
     shelves: budgetShelves(localStorage, c),
     notify: notifyFor(c),
-    open: () => () => budgetOpeners.get(id)?.(),
+    open: () => () => budgetOpener.open(id),
     connected: () => m.hermes.getSnapshot().status === "connected",
     watchStatus: m.hermes.subscribe,
     listProfiles: () => m.hermes.profiles(),
@@ -845,6 +845,16 @@ function Screens({ links }: { links: LinkInbox }) {
   // own notifications are Main's.
   const openElsewhereRef = useRef(openElsewhere);
   openElsewhereRef.current = openElsewhere;
+  // A budget notification from a background connection makes it the target; its Budgets open once it shows.
+  const switchToRef = useRef(switchTo);
+  switchToRef.current = switchTo;
+  useEffect(() => {
+    budgetOpener.switchTo = (id) => {
+      const m = registry.get(id);
+      if (m) void switchToRef.current(m.connection);
+    };
+    return () => void (budgetOpener.switchTo = undefined);
+  }, [registry]);
   useEffect(() => {
     const stops = registry.list().map((m) =>
       m.hermes.onNoticeOpen((card) => {
@@ -1406,7 +1416,7 @@ export function Main({
   useEffect(() => {
     if (!connection.id) return;
     const id = connection.id;
-    budgetOpeners.set(id, () =>
+    return budgetOpener.showing(id, () =>
       guardRef.current(() => {
         setProjectOpen(false);
         setSettingsOpen(false);
@@ -1417,7 +1427,6 @@ export function Main({
         setUsageOpen(true);
       }),
     );
-    return () => void budgetOpeners.delete(id);
   }, [connection.id]);
   // The Work page, the kanban board of bot work (Work.tsx, ADR 0171), covers the chat panes too.
   const [workOpen, setWorkOpen] = useState(false);

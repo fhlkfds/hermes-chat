@@ -61,6 +61,7 @@ function BudgetsOf({ watch, profile, listProfiles, projects, connected, onOpenCh
   const [profiles, setProfiles] = useState<string[]>([profile]);
   const [form, setForm] = useState<Form>();
   const [formError, setFormError] = useState<string>();
+  const [removeError, setRemoveError] = useState<string>();
 
   // Fresh figures on opening the tab: a check younger than half a minute answers it.
   useEffect(() => void watch.check(), [watch]);
@@ -98,14 +99,16 @@ function BudgetsOf({ watch, profile, listProfiles, projects, connected, onOpenCh
         : form.kind === "profile"
           ? { kind: "profile", profile: form.profile }
           : form.kind === "project"
-            ? { kind: "project", profile, project: form.project }
+            ? { kind: "project", profile: form.profile, project: form.project }
             : { kind: "model", model: form.model };
     const old = form.id ? board.budgets.find((b) => b.id === form.id) : undefined;
     const d = draftOf({ scope, every: form.every, zone: old?.period.zone ?? zone, unit: form.unit, amount: form.amount, id: form.id });
     if ("error" in d) return setFormError(d.error);
-    setForm(undefined);
+    // A save storage refuses keeps the form open, with why.
     try {
-      await watch.save(d);
+      const checked = watch.save(d);
+      setForm(undefined);
+      await checked;
     } catch (err) {
       setFormError(errorText(err));
     }
@@ -152,12 +155,18 @@ function BudgetsOf({ watch, profile, listProfiles, projects, connected, onOpenCh
           profiles={profiles}
           profile={profile}
           projects={projects}
+          projectName={watch.projectName}
           onChange={(f) => setForm({ ...form, ...f })}
           onSave={save}
           onCancel={() => setForm(undefined)}
         />
       )}
 
+      {removeError && (
+        <p className="usage-error" role="alert">
+          Couldn't remove the budget: {removeError}
+        </p>
+      )}
       {!board.budgets.length && !form && <div className="empty-hint jobs-empty">No budgets yet. Add one to set a daily, weekly or monthly limit.</div>}
       <ul className="budget-list">
         {board.budgets.map((b) => {
@@ -171,8 +180,23 @@ function BudgetsOf({ watch, profile, listProfiles, projects, connected, onOpenCh
                 shownProfile={profile}
                 projectName={watch.projectName}
                 onEdit={() => edit(b)}
-                onRemove={() => watch.remove(b.id)}
-                onTokenBudget={() => open({ kind: b.scope.kind, ...(b.scope.kind === "profile" && { profile: b.scope.profile }), ...(b.scope.kind === "model" && { model: b.scope.model }), ...(b.scope.kind === "project" && { project: b.scope.project }), every: b.period.every, unit: "tokens" })}
+                onRemove={() => {
+                  try {
+                    watch.remove(b.id);
+                  } catch (err) {
+                    setRemoveError(errorText(err));
+                  }
+                }}
+                onTokenBudget={() =>
+                  open({
+                    kind: b.scope.kind,
+                    ...((b.scope.kind === "profile" || b.scope.kind === "project") && { profile: b.scope.profile }),
+                    ...(b.scope.kind === "model" && { model: b.scope.model }),
+                    ...(b.scope.kind === "project" && { project: b.scope.project }),
+                    every: b.period.every,
+                    unit: "tokens",
+                  })
+                }
                 onOpenChat={onOpenChat}
               />
             </li>
@@ -203,6 +227,7 @@ function BudgetForm({
   profiles,
   profile,
   projects,
+  projectName,
   onChange,
   onSave,
   onCancel,
@@ -212,6 +237,7 @@ function BudgetForm({
   profiles: string[];
   profile: string;
   projects: Project[];
+  projectName: (profile: string, project: string) => string | undefined;
   onChange: (f: Partial<Form>) => void;
   onSave: (e: FormEvent) => void;
   onCancel: () => void;
@@ -222,7 +248,12 @@ function BudgetForm({
       <div className="usage-filters">
         <label>
           <span>For</span>
-          <select value={form.kind} disabled={editing} onChange={(e) => onChange({ kind: e.target.value as ScopeKind })}>
+          {/* A project is picked from the shown profile's, so it is that profile's project. */}
+          <select
+            value={form.kind}
+            disabled={editing}
+            onChange={(e) => onChange({ kind: e.target.value as ScopeKind, ...(e.target.value === "project" && { profile, project: projects.find((p) => !p.archived)?.id ?? "" }) })}
+          >
             <option value="server">This server</option>
             <option value="profile">A profile</option>
             <option value="project">A project</option>
@@ -239,7 +270,15 @@ function BudgetForm({
             </select>
           </label>
         )}
-        {form.kind === "project" && (
+        {form.kind === "project" && form.profile !== profile && (
+          <label>
+            <span>Project in {form.profile}</span>
+            <select value={form.project} disabled>
+              <option value={form.project}>{projectName(form.profile, form.project) ?? form.project}</option>
+            </select>
+          </label>
+        )}
+        {form.kind === "project" && form.profile === profile && (
           <label>
             <span>Project in {profile}</span>
             <select value={form.project} disabled={editing} onChange={(e) => onChange({ project: e.target.value })}>

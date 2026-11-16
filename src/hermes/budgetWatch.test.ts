@@ -1,7 +1,7 @@
 // The budget watch (budgetWatch.ts, ADR 0187): one read serves every budget, each threshold is announced once per
 // period however many windows check, an edit re-arms, and the budgets follow a profile's rename on this computer.
 import { describe, expect, it, vi } from "vitest";
-import { BUDGETS_KEY, BudgetWatch, BudgetWatches, budgetShelves, type BudgetIo, type WatchDeps } from "./budgetWatch";
+import { BUDGETS_KEY, BudgetOpener, BudgetStorageError, BudgetWatch, BudgetWatches, budgetShelves, type BudgetIo, type WatchDeps } from "./budgetWatch";
 import { draftOf, type BudgetDraft, type BudgetScope } from "./budgets";
 import { renameProfileLocally } from "./profileLocalData";
 
@@ -83,7 +83,7 @@ describe("BudgetWatch", () => {
     expect(r).toMatchObject({ state: "read", level: 100, top: { chats: [{ chat: { id: "a" } }] } });
   });
 
-  it("announces a threshold once when two windows check the same budget", async () => {
+  it("announces a threshold once when a second watch of the connection checks the same budget, as after a reload", async () => {
     const storage = memoryStorage();
     const { io } = hermes({ usd: 9 });
     const one = deps(io, storage);
@@ -105,6 +105,22 @@ describe("BudgetWatch", () => {
     w.remove(b.id);
     expect(w.getSnapshot().budgets).toEqual([]);
     expect(JSON.parse(storage.getItem(BUDGETS_KEY)!).scopes).toEqual({});
+  });
+
+  it("announces a threshold once while the app runs even when storage refuses its mark, and says a refused save", async () => {
+    const storage = memoryStorage();
+    const { io } = hermes({ usd: 6 });
+    const d = deps(io, storage);
+    const w = new BudgetWatch(d);
+    await w.save(draft("10"));
+    // The storage is full from here on.
+    storage.setItem = () => {
+      throw new DOMException("full", "QuotaExceededError");
+    };
+    expect(() => w.remove(w.getSnapshot().budgets[0].id)).toThrow(BudgetStorageError);
+    expect(() => w.save(draft("20"))).toThrow(BudgetStorageError);
+    for (let i = 0; i < 3; i++) await w.check({ force: true });
+    expect(d.notify).toHaveBeenCalledTimes(1);
   });
 
   it("checks as soon as the connection comes back", async () => {
@@ -155,5 +171,26 @@ describe("BudgetWatches", () => {
     const second = ws.of("c2");
     ws.sync([{ id: "c2", instance: {} }]);
     expect(ws.of("c2")).not.toBe(second);
+  });
+});
+
+describe("BudgetOpener", () => {
+  it("opens Budgets where the connection shows, or makes a background connection the one shown first", () => {
+    const o = new BudgetOpener();
+    const shown = vi.fn();
+    const other = vi.fn();
+    o.switchTo = vi.fn();
+    const stop = o.showing("c1", shown);
+    o.open("c1");
+    expect(shown).toHaveBeenCalledTimes(1);
+    o.open("c2");
+    expect(o.switchTo).toHaveBeenCalledWith("c2");
+    // The switch lands: c2 shows, and its Budgets open.
+    stop();
+    o.showing("c2", other);
+    expect(other).toHaveBeenCalledTimes(1);
+    o.open("c1");
+    expect(shown).toHaveBeenCalledTimes(1);
+    expect(o.switchTo).toHaveBeenCalledWith("c1");
   });
 });

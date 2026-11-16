@@ -48,14 +48,21 @@ const FINISHED_KEPT = 5_000;
 /** `UsageIo` and the one read budgets add: `GET /api/analytics/models?days=&profile=` (transport.ts `usageIo`). */
 export type BudgetIo = UsageIo & { models(profile: string, days: number): Promise<unknown> };
 
-/** One connection's budgets and fired marks on this computer. */
+/** This computer's storage refused a change to the budgets (full, say): nothing of it was kept. */
+export class BudgetStorageError extends Error {
+  constructor() {
+    super("This computer's storage refused the change, so it wasn't kept. Free some space and try again.");
+  }
+}
+
+/** One connection's budgets and fired marks on this computer. Changes throw `BudgetStorageError` when not kept. */
 export type BudgetShelves = {
-  /** Every budget and mark of the connection, from every shelf, read fresh (another window may have written). */
+  /** Every budget and mark of the connection, from every shelf, as stored now. */
   load(): { budgets: Budget[]; fired: Record<string, FiredMark> };
   /**
    * Records `mark` for budget `id` unless a mark already there covers it, reading the stored document first. False
-   * when another window got there first, or the budget is gone: then this one doesn't notify. Claim precedes notify,
-   * so an alert fires at most once.
+   * when a stored mark covers it, or the budget is gone: then nothing is announced. Claim precedes notify, so an
+   * alert fires at most once across reloads and relaunches.
    */
   claim(id: BudgetId, mark: FiredMark): boolean;
   save(budget: Budget): void;
@@ -94,7 +101,7 @@ export function budgetShelves(storage: Pick<Storage, "getItem" | "setItem">, c: 
     try {
       storage.setItem(BUDGETS_KEY, JSON.stringify({ ...doc, v: Math.max(BUDGETS_VERSION, doc.v) }));
     } catch {
-      // Not kept: the next check reads what is stored.
+      throw new BudgetStorageError();
     }
   };
   /** Changes one shelf's saved form, keeping fields a newer app wrote, and drops it when empty. */
@@ -194,6 +201,11 @@ export class BudgetWatch {
   private unwatch?: () => void;
   private wasConnected = false;
   private stopped = false;
+  /**
+   * The marks this watch announced, kept here too: when storage refuses one, the threshold is still announced only
+   * once while the app runs.
+   */
+  private told = new Map<string, FiredMark>();
   /** Finished compression segments read by earlier checks (usageAnalytics.ts `collectUsage` `finished`). */
   private finished = new Map<string, ChatUsage | undefined>();
   private now: () => number;
@@ -222,7 +234,11 @@ export class BudgetWatch {
     this.publish({ budgets, readings: this.board.readings.filter((r) => ids.has(r.budget.id)) });
   }
 
-  /** Saves a new or edited budget, then checks at once so its reading (and any alert it is owed) follows. */
+  /**
+   * Saves a new or edited budget, then checks at once so its reading (and any alert it is owed) follows: the save is
+   * done when this returns, and the promise is the check. Throws `BudgetStorageError`, before any check, when this
+   * computer's storage refuses it.
+   */
   save(draft: BudgetDraft): Promise<void> {
     const old = draft.id ? this.board.budgets.find((b) => b.id === draft.id) : undefined;
     // A budget's scope never changes: an edit changes its terms only.
@@ -232,6 +248,7 @@ export class BudgetWatch {
     return this.check({ force: true });
   }
 
+  /** Throws `BudgetStorageError` when this computer's storage refuses the change. */
   remove(id: BudgetId): void {
     this.deps.shelves.remove(id);
     this.reload();
@@ -311,7 +328,13 @@ export class BudgetWatch {
       const fired = shelves.load().fired;
       for (const r of readings) {
         const due = dueAlert(r, fired[r.budget.id]);
-        if (!due || !shelves.claim(r.budget.id, due.mark)) continue;
+        if (!due || !dueAlert(r, this.told.get(r.budget.id))) continue;
+        try {
+          if (!shelves.claim(r.budget.id, due.mark)) continue;
+        } catch {
+          // Storage refused the mark: `told` keeps it for this run, so the alert still goes out once.
+        }
+        this.told.set(r.budget.id, due.mark);
         void this.deps.notify(crossingNotice(due, this.projectName), { open: this.deps.open(r.budget.id) }).catch(() => {});
       }
       this.publish({ budgets: current, readings, readAt: now, state: "idle" });
@@ -384,5 +407,33 @@ export class BudgetWatches {
 
   of(connectionId: string): BudgetWatch | undefined {
     return this.watches.get(connectionId)?.watch;
+  }
+}
+
+/**
+ * Where a budget notification's click goes: the screen showing that connection opens Usage → Budgets. A background
+ * connection's notification makes it the one shown first (`switchTo`), and Budgets opens once it shows.
+ */
+export class BudgetOpener {
+  private shown = new Map<string, () => void>();
+  private awaiting?: string;
+  /** Makes live connection `id` the one shown; set by the screen that can. */
+  switchTo?: (id: string) => void;
+
+  /** The screen showing connection `id` opens Budgets with `open`, until the returned function is called. */
+  showing(id: string, open: () => void): () => void {
+    this.shown.set(id, open);
+    if (this.awaiting === id) {
+      this.awaiting = undefined;
+      open();
+    }
+    return () => void (this.shown.get(id) === open && this.shown.delete(id));
+  }
+
+  open(id: string): void {
+    const shown = this.shown.get(id);
+    if (shown) return shown();
+    this.awaiting = id;
+    this.switchTo?.(id);
   }
 }
