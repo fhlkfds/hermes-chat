@@ -57,6 +57,35 @@ const writesSent = (server: FakeHermes) => server.restRequests.filter((r: RestRe
 const rpcSent = (server: FakeHermes, method: string) => server.requests.filter((r) => r.method === method);
 
 describe("capabilities over the transport", () => {
+  it("learns chat search by a search of nothing, and from a search's own answer that Hermes has no such route", { timeout: 10_000 }, async () => {
+    const server = new FakeHermes();
+    server.sessions = [row("a", 1)];
+    const hermes = await signedIn(server);
+    await checked(hermes);
+    expect(hermes.capabilities.get("chatSearch")).toMatchObject({ state: "supported", source: "probed" });
+    expect(server.restRequests.filter((r) => r.path === "/api/sessions/search").map((r) => r.query.get("q"))).toEqual([""]);
+
+    delete server.rest["GET /api/sessions/search"];
+    await expect(hermes.searchIn("default", "deploy")).rejects.toThrow();
+    await expectSoon(() => hermes.capabilities.get("chatSearch").state === "unsupported");
+    expect(hermes.capabilities.get("chatSearch").why).toMatch(/no chat search.*answered 404/);
+
+    // A search that fails for a reason of the route's own, such as a profile Hermes doesn't have, shows the route is there.
+    server.rest["GET /api/sessions/search"] = () => {
+      throw new RestError(404, `{"detail":"Profile 'nope' does not exist."}`);
+    };
+    await expect(hermes.searchIn("nope", "deploy")).rejects.toThrow(/nope/);
+    await expectSoon(() => hermes.capabilities.get("chatSearch").state === "supported");
+  });
+
+  it("finds no chat search on a Hermes older than the route, which answers the check as it answers for a chat's id", { timeout: 10_000 }, async () => {
+    const server = new FakeHermes();
+    delete server.rest["GET /api/sessions/search"];
+    const hermes = await signedIn(server);
+    await checked(hermes);
+    expect(hermes.capabilities.get("chatSearch")).toMatchObject({ state: "unsupported", source: "probed" });
+  });
+
   it("learns what a new Hermes has, reading only", { timeout: 10_000 }, async () => {
     const server = new FakeHermes();
     server.sessions = [row("a", 1)];

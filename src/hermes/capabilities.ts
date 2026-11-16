@@ -50,7 +50,8 @@ export type CapabilityId =
   | "workEstimate"
   | "botMode"
   | "subagents"
-  | "subagentRoster";
+  | "subagentRoster"
+  | "chatSearch";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -126,6 +127,11 @@ export type CapabilitySpec = {
   routes?: RegExp[];
   /** JSON-RPC methods whose answers settle it. */
   methods?: string[];
+  /**
+   * For a failed read of one of `routes` that Hermes answered with a reason of its own: why it still shows the route is
+   * missing, when a neighbouring route with a path parameter answers in its place. None when it shows no such thing.
+   */
+  missing?: (f: Failure) => string | undefined;
   /** Which of those answers show it works, when an answer can come back without proving that. Any answer otherwise. */
   settles?: (answer: unknown) => boolean;
   /** Dashboard routes whose `POST`, `PUT`, `PATCH` or `DELETE` is refused here while the capability is unsupported. */
@@ -518,6 +524,19 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     probe: { kind: "rpc", method: "subagent.roster", params: (profile) => ({ profile }), shape: (r) => isObj(r) && isList(r.sessions) },
     methods: ["subagent.roster"],
   },
+  {
+    id: "chatSearch",
+    label: "Chat search",
+    usedBy: "Search (Ctrl+K), in the profile on screen and Everywhere",
+    needs: "GET /api/sessions/search.",
+    without: "Search in the profile on screen says Hermes has no such route. Everywhere leaves this server's profiles out and says why.",
+    anchor: "chat-search",
+    // Hermes answers a blank `q` with no results before it reads its store, so the check searches nothing.
+    probe: { kind: "rest", path: (profile) => `api/sessions/search?${new URLSearchParams({ q: "", profile })}`, maxBytes: 64 * 1024, shape: (b) => isObj(b) && isList(b.results) },
+    routes: [/^api\/sessions\/search$/],
+    // A Hermes older than the route reads "search" as a chat's id, and answers as `GET /api/sessions/{id}` does.
+    missing: (f) => (f.status === 404 && f.reason === "Session not found" ? 'Hermes has no chat search: it read "search" as a chat\'s id (it answered 404).' : undefined),
+  },
 ];
 
 const SPECS = new Map(CAPABILITIES.map((c) => [c.id, c]));
@@ -632,6 +651,12 @@ export function stateOfFailure(f: Failure): { state: CapabilityState; why: strin
   // An answer past the size limit is still an answer: the route is there.
   if (/over the \d+ MB limit/.test(f.reason)) return { state: "supported", why: "Hermes answered, with more than the check reads." };
   return { state: "unreachable", why: f.reason };
+}
+
+/** What a failed read of one of `spec`'s own routes or methods means for it, with why. */
+function stateOfReadFailure(spec: CapabilitySpec, f: Failure): { state: CapabilityState; why: string } {
+  const missing = spec.missing?.(f);
+  return missing ? { state: "unsupported", why: missing } : stateOfFailure(f);
 }
 
 /**
@@ -986,7 +1011,7 @@ export class CapabilityStore {
         this.found(spec.id, key, { state: "supported", source: "observed", why: "Hermes answered this app's own request." });
         continue;
       }
-      const { state, why } = stateOfFailure(failureOf(error));
+      const { state, why } = stateOfReadFailure(spec, failureOf(error));
       // Only a sure answer from the screens' traffic replaces what a check found. A timeout or refusal there says
       // nothing new about the route.
       if (state === "supported" || state === "unsupported") this.found(spec.id, key, { state, source: "observed", why });
@@ -1170,7 +1195,7 @@ export class CapabilityStore {
             : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
       }
     } catch (e) {
-      result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
+      result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfReadFailure(spec, failureOf(e))) };
     }
     // A screen's own answer that came in meanwhile is newer, and stands.
     if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.found(spec.id, probeKey(spec), result);
