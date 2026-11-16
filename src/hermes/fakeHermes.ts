@@ -2896,7 +2896,8 @@ export class FakeHermes {
         content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
         tool_name: m.role === "tool" ? (m.name ?? null) : null,
         tool_call_id: m.tool_call_id ?? null,
-        tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
+        // Parsed back into its list, as v0.23.1 answers (`_parse_tool_calls`); the column holds its JSON text.
+        tool_calls: m.tool_calls ?? null,
         timestamp: m.timestamp ?? null,
         display_kind: m.display_kind ?? null,
         // A TEXT column: the stored row has the JSON text, where `session.history` sends the object.
@@ -2923,7 +2924,16 @@ export class FakeHermes {
   private sessionDetail(id: string, profile: string | null) {
     const s = this.storeOrFail(profile).find((r) => r.id === id);
     if (!s) throw new RestError(404, `{"detail":"Session not found"}`);
-    return { ...s, archived: s.archived ? 1 : 0, pinned: s.pinned ? 1 : 0, runtime_revision: s.runtime_revision ?? 0, profile: profile ?? "default" };
+    // Only the detail row names a cron session's job (`cron_run_of`); a list row never does.
+    const job = Object.entries(this.cron.runs).find(([, runs]) => runs.some((r) => r.id === id))?.[0];
+    return {
+      ...s,
+      archived: s.archived ? 1 : 0,
+      pinned: s.pinned ? 1 : 0,
+      runtime_revision: s.runtime_revision ?? 0,
+      profile: profile ?? "default",
+      ...(s.source === "cron" && { cron_job_id: job ?? null, cron_execution_id: null }),
+    };
   }
 
   /**
