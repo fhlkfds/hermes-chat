@@ -2,8 +2,9 @@
 // The Bots view in the running app, against a fake Hermes as the deployed f0d94882 (ADR 0066): what each bot's row
 // shows, that a row opens the bot's Bot Chat in its profile and keeps it out of the chat list, that the pen starts an
 // ordinary chat there, that /new in a Bot Chat compacts it, that the chat list panel shows the bots while a Bot Chat is
-// open (bot mode), and that a Hermes without Bot Mode shows no Bots button.
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// open (bot mode), that a Hermes without Bot Mode shows no Bots button, and each row's menu (ADR 0187): Edit bot,
+// Clone, Pin, Hide, Delete and Open in Settings → Profiles.
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
@@ -22,10 +23,13 @@ beforeAll(() => {
 });
 
 const running: Hermes[] = [];
+const servers: FakeHermes[] = [];
 afterEach(async () => {
   cleanup();
   await Promise.all(running.splice(0).map((h) => h.close()));
   localStorage.clear();
+  // Nothing the view does may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0187).
+  for (const server of servers.splice(0)) expect(server.uncheckedConfigures()).toEqual([]);
 });
 
 let launches = 0;
@@ -52,6 +56,7 @@ async function launch(setup: (server: FakeHermes) => void = () => {}) {
   server.profileMeta = { scribe: { description: "Writes release notes", ui_meta: { "hermes-bots": { title: "Scribe", color: "#44aa77" } } } };
   server.liveSessions = [{ id: "rt-s", session_key: "scribe-bot", status: "working", last_active: nowS() - 5 }];
   setup(server);
+  servers.push(server);
   const hermes = await connect(server.openPipe, undefined, memoryCache());
   running.push(hermes);
   render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: `liam@hermes-${++launches}`, url: "", username: "liam" }} onSignOut={async () => {}} />);
@@ -296,6 +301,300 @@ describe("New bot in the Bots view", () => {
     expect(screen.queryByRole("dialog", { name: "New bot" })).toBeNull();
     expect(bots()).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "New bot" }));
+  });
+});
+
+describe("A bot's menu in the Bots view", { timeout: 30_000 }, () => {
+  const rowOf = (profile: string) => bots().querySelector<HTMLElement>(`.bots-row[data-profile="${profile}"]`)!;
+  const names = () => botRows().map((r) => r.querySelector(".bots-name")?.textContent);
+  const block = (server: FakeHermes, profile = "scribe") => server.profileMeta[profile]?.ui_meta?.["hermes-bots"] as Record<string, unknown>;
+  const writes = (server: FakeHermes) => server.restRequests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`);
+  const sent = (server: FakeHermes, method: string) => server.requests.filter((r) => r.method === method);
+  const menuOf = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    await user.click(within(bots()).getByRole("button", { name: `More for ${name}` }));
+    return screen.getByRole("menu", { name: `More for ${name}` });
+  };
+  const pickFrom = async (user: ReturnType<typeof userEvent.setup>, name: string, entry: string) => user.click(within(await menuOf(user, name)).getByRole("menuitem", { name: entry }));
+  /** Scribe's block as Hermes's desktop keeps it, with keys this app never edits. */
+  const DESKTOP_KEYS = { sectionId: "s1", groups: ["drafts"], shape: "blob", futureKey: { n: 1 } };
+  const withDesktopKeys = (s: FakeHermes) => {
+    s.profileMeta.scribe = { description: "Writes release notes", ui_meta: { "hermes-bots": { title: "Scribe", color: "#44aa77", ...DESKTOP_KEYS } } };
+    s.uiMetaRevisions.scribe = { "hermes-bots": 2 };
+  };
+  const editBot = async (user: ReturnType<typeof userEvent.setup>) => {
+    await pickFrom(user, "Scribe", "Edit bot…");
+    return screen.findByRole("dialog", { name: "Edit bot: Scribe" });
+  };
+
+  it("opens from the ⋯ button, a right-click, Shift+F10 and the Menu key, and Escape closes the menu alone", async () => {
+    const { user } = await launch();
+    await openBots(user);
+    const menu = await menuOf(user, "Scribe");
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Edit bot…", "Clone…", "Pin", "Hide", "Open in Settings → Profiles", "Delete bot…"]);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(bots()).toBeTruthy();
+    for (const open of [
+      () => user.pointer({ keys: "[MouseRight]", target: botRows()[1] }),
+      async () => (botRows()[1].focus(), await user.keyboard("{Shift>}{F10}{/Shift}")),
+      async () => (within(rowOf("scribe")).getByRole("button", { name: "New chat with Scribe" }).focus(), await user.keyboard("{ContextMenu}")),
+    ]) {
+      await open();
+      expect(screen.getByRole("menu", { name: "More for Scribe" })).toBeTruthy();
+      // The menu works from the keyboard: Down moves on from its first entry.
+      expect(document.activeElement?.textContent).toBe("Edit bot…");
+      await user.keyboard("{ArrowDown}");
+      expect(document.activeElement?.textContent).toBe("Clone…");
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(bots()).toBeTruthy();
+    }
+  });
+
+  it("has no menu in the chat list panel's bots", async () => {
+    const { user } = await launch();
+    await openBots(user);
+    await user.click(botRows()[1]);
+    await waitFor(() => expect(document.querySelector(".sb-bots .bots-row")).toBeTruthy());
+    expect(document.querySelector(".sb-bots .bots-more")).toBeNull();
+  });
+
+  it("pins and unpins a bot in Hermes, moving its row, and keeps what Hermes's desktop wrote beside it", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    expect(names()).toEqual(["Hermes", "Scribe"]);
+    await pickFrom(user, "Scribe", "Pin");
+    await waitFor(() => expect(names()).toEqual(["Scribe", "Hermes"]));
+    expect(block(server)).toEqual({ title: "Scribe", color: "#44aa77", ...DESKTOP_KEYS, pinned: true });
+    await pickFrom(user, "Scribe", "Unpin");
+    await waitFor(() => expect(names()).toEqual(["Hermes", "Scribe"]));
+    expect(block(server)).toEqual({ title: "Scribe", color: "#44aa77", ...DESKTOP_KEYS, pinned: false });
+  });
+
+  it("hides a bot behind Hidden in Hermes, with focus on that fold, and shows it again", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    await pickFrom(user, "Scribe", "Hide");
+    const fold = await within(bots()).findByRole("button", { name: "Hidden in Hermes (1)" });
+    expect(names()).toEqual(["Hermes"]);
+    expect(block(server)).toEqual({ title: "Scribe", color: "#44aa77", ...DESKTOP_KEYS, hidden: true });
+    await waitFor(() => expect(document.activeElement).toBe(fold));
+    await user.click(fold);
+    await pickFrom(user, "Scribe", "Show");
+    await waitFor(() => expect(within(bots()).queryByRole("button", { name: /Hidden in Hermes/ })).toBeNull());
+    expect(names()).toEqual(["Hermes", "Scribe"]);
+    expect(block(server).hidden).toBe(false);
+  });
+
+  it("turns off only Pin and Hide on a Hermes without profiles.configure, and says which method is missing", async () => {
+    const { server, user } = await launch();
+    server.handlers["profiles.configure"] = (r) => server.fail(r.id, -32601, "unknown method: profiles.configure");
+    await openBots(user);
+    await pickFrom(user, "Scribe", "Pin");
+    const why = "This Hermes server can't do this: it has no route for profiles.configure. Updating Hermes adds it.";
+    expect((await within(bots()).findByRole("status")).textContent).toBe(`Scribe wasn't changed. ${why}`);
+    const menu = await menuOf(user, "Scribe");
+    const disabled = within(menu).getAllByRole("menuitem").filter((i) => i.getAttribute("aria-disabled") === "true");
+    expect(disabled.map((i) => i.textContent)).toEqual(["Pin", "Hide"]);
+    expect(within(menu).getAllByText(why)).toHaveLength(2);
+    await user.click(within(menu).getByRole("menuitem", { name: "Pin" }));
+    expect(sent(server, "profiles.configure")).toHaveLength(1);
+    expect(names()).toEqual(["Hermes", "Scribe"]);
+  });
+
+  it("Edit bot changes the name, color and description, each read back into the row", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    const dialog = await editBot(user);
+    const name = within(dialog).getByLabelText("Name in Bot Mode");
+    expect(document.activeElement).toBe(name);
+    await user.clear(name);
+    await user.type(name, "Writer");
+    fireEvent.change(within(dialog).getByLabelText("Color"), { target: { value: "#ff8800" } });
+    await user.clear(within(dialog).getByLabelText("Description"));
+    await user.type(within(dialog).getByLabelText("Description"), "Drafts the changelog");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull());
+    expect(block(server)).toEqual({ title: "Writer", color: "#ff8800", ...DESKTOP_KEYS, custom: true });
+    expect(server.profileMeta.scribe.description).toBe("Drafts the changelog");
+    expect(writes(server)).toEqual(["PUT /api/profiles/scribe/description"]);
+    await waitFor(() => expect(names()).toEqual(["Hermes", "Writer"]));
+    expect(within(rowOf("scribe")).getByText("Drafts the changelog")).toBeTruthy();
+    expect(rowOf("scribe").querySelector<HTMLElement>(".bots-face")!.style.background).toBe("rgb(255, 136, 0)");
+    expect(within(bots()).getByRole("status").textContent).toBe("Saved scribe.");
+  });
+
+  it("Edit bot shows Hermes's new name and stays open when the name changed elsewhere", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    const dialog = await editBot(user);
+    server.writeBotAsOtherClient("scribe", { title: "Quill" });
+    const name = within(dialog).getByLabelText("Name in Bot Mode");
+    await user.clear(name);
+    await user.type(name, "Writer");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    expect(await within(dialog).findByText("Changed elsewhere since you opened this. Hermes has “Quill” now. Save again to replace it.")).toBeTruthy();
+    expect(block(server).title).toBe("Quill");
+    expect(sent(server, "profiles.configure")).toEqual([]);
+    expect(name).toHaveProperty("value", "Writer");
+    expect(screen.getByRole("dialog", { name: "Edit bot: Scribe" })).toBeTruthy();
+    // The row behind the dialog already shows what Hermes has.
+    expect(names()).toEqual(["Hermes", "Quill"]);
+
+    await user.click(within(dialog).getByRole("button", { name: "Use Hermes's" }));
+    expect(name).toHaveProperty("value", "Quill");
+    expect(within(dialog).queryByText(/Changed elsewhere/)).toBeNull();
+    // Nothing is left to save, so the dialog closes without a question and nothing is written.
+    expect(within(dialog).getByRole("button", { name: /Save changes/ })).toHaveProperty("disabled", true);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull();
+    expect(sent(server, "profiles.configure")).toEqual([]);
+    expect(block(server)).toEqual({ title: "Quill", color: "#44aa77", ...DESKTOP_KEYS });
+  });
+
+  it("Edit bot replaces a name changed elsewhere only on a second Save, once the owner has seen it", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    const dialog = await editBot(user);
+    server.writeBotAsOtherClient("scribe", { title: "Quill", sectionId: "s2" });
+    await user.clear(within(dialog).getByLabelText("Name in Bot Mode"));
+    await user.type(within(dialog).getByLabelText("Name in Bot Mode"), "Writer");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await within(dialog).findByText(/Hermes has “Quill” now/);
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull());
+    expect(block(server)).toEqual({ title: "Writer", color: "#44aa77", ...DESKTOP_KEYS, sectionId: "s2" });
+  });
+
+  it("Edit bot sets and removes the bot's picture, shown in its row", async () => {
+    const { server, user } = await launch(withDesktopKeys);
+    await openBots(user);
+    const dialog = await editBot(user);
+    const bytes = Uint8Array.from("\x89PNG\r\n\x1a\nface", (c) => c.charCodeAt(0));
+    const url = `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`;
+    await user.upload(within(dialog).getByLabelText("Choose a picture…", { selector: "input" }), new File([bytes], "face.png", { type: "image/png" }));
+    await waitFor(() => expect(dialog.querySelector(".profile-picture img")?.getAttribute("src")).toBe(url));
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull());
+    expect(server.botAvatars.scribe).toBe(url);
+    expect(block(server)).toEqual({ title: "Scribe", color: "#44aa77", ...DESKTOP_KEYS, custom: true, imageKind: "photo" });
+    await waitFor(() => expect(rowOf("scribe").querySelector("img")?.getAttribute("src")).toBe(url));
+
+    const again = await editBot(user);
+    await user.click(within(again).getByRole("button", { name: "Remove picture" }));
+    await user.click(within(again).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull());
+    expect(server.botAvatars).toEqual({});
+    expect(block(server).imageKind).toBe("shape");
+    await waitFor(() => expect(rowOf("scribe").querySelector("img")).toBeNull());
+  });
+
+  it("Edit bot refuses a picture Hermes wouldn't store, before sending it", async () => {
+    const { server, user } = await launch();
+    await openBots(user);
+    const dialog = await editBot(user);
+    const input = within(dialog).getByLabelText("Choose a picture…", { selector: "input" });
+    fireEvent.change(input, { target: { files: [new File(["GIF89a"], "face.gif", { type: "image/gif" })] } });
+    expect(await within(dialog).findByText("Hermes takes PNG, JPEG or WebP pictures.")).toBeTruthy();
+    fireEvent.change(input, { target: { files: [new File([new Uint8Array(2_000_001)], "big.png", { type: "image/png" })] } });
+    expect(await within(dialog).findByText("That picture is over 2 MB, the most Hermes stores.")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: /Save changes/ })).toHaveProperty("disabled", true);
+    expect(sent(server, "profiles.set_asset")).toEqual([]);
+  });
+
+  it("Edit bot renames the profile last, as Settings → Profiles does, and its row follows with its look", async () => {
+    // A profile with a reply running can't be renamed, so Scribe is idle here.
+    const { server, hermes, user } = await launch((s) => {
+      withDesktopKeys(s);
+      s.liveSessions = [];
+    });
+    await openBots(user);
+    const dialog = await editBot(user);
+    await user.clear(within(dialog).getByLabelText("Name in Bot Mode"));
+    await user.type(within(dialog).getByLabelText("Name in Bot Mode"), "Writer");
+    await user.clear(within(dialog).getByLabelText("Profile name"));
+    await user.type(within(dialog).getByLabelText("Profile name"), "quill");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull());
+    // The look is written under the old name, then the profile is renamed.
+    expect(sent(server, "profiles.configure").map((r) => r.params.name)).toEqual(["scribe"]);
+    expect(writes(server)).toEqual(["PATCH /api/profiles/scribe"]);
+    expect(block(server, "quill")).toEqual({ title: "Writer", color: "#44aa77", ...DESKTOP_KEYS });
+    await waitFor(() => expect(rowOf("quill")).toBeTruthy());
+    expect(names()).toEqual(["Hermes", "Writer"]);
+    expect(within(bots()).getByRole("status").textContent).toBe("Renamed scribe to quill.");
+    await waitFor(() => expect(document.activeElement).toBe(within(rowOf("quill")).getByRole("button", { name: /^Writer/ })));
+    expect(hermes.profile).toBe("default");
+  });
+
+  it("Edit bot says so when Hermes no longer has the profile, and opens nothing", async () => {
+    const { server, user } = await launch();
+    await openBots(user);
+    delete server.otherProfiles.scribe;
+    await pickFrom(user, "Scribe", "Edit bot…");
+    expect((await within(bots()).findByRole("status")).textContent).toBe("Hermes no longer has scribe. Another client may have renamed or deleted it.");
+    expect(screen.queryByRole("dialog", { name: /Edit bot/ })).toBeNull();
+    await waitFor(() => expect(names()).toEqual(["Hermes"]));
+  });
+
+  it("Clone… opens the Clone dialog with this bot as the source", async () => {
+    const { user } = await launch();
+    await openBots(user);
+    await pickFrom(user, "Scribe", "Clone…");
+    const dialog = await screen.findByRole("dialog", { name: "Clone a profile" });
+    await waitFor(() => expect(within(dialog).getByLabelText("From")).toHaveProperty("value", "scribe"));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Clone a profile" })).toBeNull());
+    expect(bots()).toBeTruthy();
+  });
+
+  it("Delete bot… deletes through Settings → Profiles' question, and default can't be deleted", async () => {
+    const { server, user } = await launch();
+    await openBots(user);
+    const hermesMenu = await menuOf(user, "Hermes");
+    const del = within(hermesMenu).getByRole("menuitem", { name: "Delete bot…" });
+    expect(del.getAttribute("aria-disabled")).toBe("true");
+    expect(within(hermesMenu).getByText("Hermes's built-in profile can't be deleted.")).toBeTruthy();
+    await user.click(del);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await user.keyboard("{Escape}");
+
+    await pickFrom(user, "Scribe", "Delete bot…");
+    const question = await screen.findByRole("alertdialog", { name: /Delete profile “scribe”\?/ });
+    const confirm = within(question).getByRole("button", { name: /Delete profile/ });
+    expect(confirm).toHaveProperty("disabled", true);
+    await user.type(within(question).getByLabelText("Type scribe to confirm"), "scribe");
+    await user.click(confirm);
+    await waitFor(() => expect(names()).toEqual(["Hermes"]));
+    expect(writes(server)).toEqual(["DELETE /api/profiles/scribe"]);
+    expect(server.otherProfiles.scribe).toBeUndefined();
+    expect(within(bots()).getByRole("status").textContent).toBe("Deleted scribe.");
+    expect(bots().contains(document.activeElement)).toBe(true);
+  });
+
+  it("Delete bot… switches to default first when the bot's profile is the one in use", async () => {
+    const { server, hermes, user } = await launch();
+    await pickProfile(user, "scribe");
+    await waitFor(() => expect(hermes.profile).toBe("scribe"));
+    await openBots(user);
+    await pickFrom(user, "Scribe", "Delete bot…");
+    const question = await screen.findByRole("alertdialog", { name: /Delete profile “scribe”\?/ });
+    expect(within(question).getByText("You're using this profile. Highwing will switch to default first.")).toBeTruthy();
+    await user.type(within(question).getByLabelText("Type scribe to confirm"), "scribe");
+    await user.click(within(question).getByRole("button", { name: /Delete profile/ }));
+    await waitFor(() => expect(server.otherProfiles.scribe).toBeUndefined());
+    expect(hermes.profile).toBe("default");
+    await waitFor(() => expect(names()).toEqual(["Hermes"]));
+  });
+
+  it("Open in Settings → Profiles opens Settings on that bot's profile", async () => {
+    const { user } = await launch();
+    await openBots(user);
+    await pickFrom(user, "Scribe", "Open in Settings → Profiles");
+    expect(screen.queryByRole("dialog", { name: /Bots/ })).toBeNull();
+    const list = await screen.findByRole("listbox", { name: "Profiles" });
+    await waitFor(() => expect(within(list).getAllByRole("option").find((o) => o.getAttribute("aria-selected") === "true")?.getAttribute("data-profile")).toBe("scribe"));
+    expect(screen.getByRole("tab", { name: "Profiles" }).getAttribute("aria-selected")).toBe("true");
   });
 });
 
