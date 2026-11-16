@@ -31,7 +31,7 @@ export const STATE_LABEL: Record<ChatState, string> = {
   all: "All, archived too",
 };
 
-const SOURCES: readonly Source[] = ["app", "telegram", "discord", "cli", "desktop", "other"];
+const SOURCES: readonly Source[] = ["app", "telegram", "discord", "cli", "desktop", "cron", "other"];
 const STATES: readonly ChatState[] = ["active", "settled", "archived", "all"];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 

@@ -57,6 +57,7 @@ import { Office } from "./ui/Office";
 import { EMPTY_OFFICE_MEMORY } from "./ui/OfficeBuilding";
 import { officeRooms, type Desk, type Room } from "./hermes/office";
 import type { SubagentId } from "./hermes/subagents";
+import { policyOf } from "./hermes/chatKind";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { blocksRestore, inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxAcks, type InboxEntry } from "./hermes/inbox";
 import { LiveConnections, attention as attentionOf, withoutServer, type LiveSummary } from "./hermes/liveConnections";
@@ -1712,8 +1713,8 @@ export function Main({
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
-  // A Bot Chat opened from the Bots view is in `chats`, for its pane, but never in the list (ADR 0066).
-  const inList = chats.filter((c) => !isBotChat(c));
+  // A chat can be in `chats`, for its pane, and never in the list: a Bot Chat opened from the Bots view (ADR 0066).
+  const inList = chats.filter((c) => policyOf(c).listed);
   const listed = inShown ? inList.filter((c) => inShown.has(c.id)) : inList;
   const unreadChats = inList.filter((c) => c.unread && !c.archived);
   const projectUnread: ProjectUnread = {
@@ -1797,7 +1798,7 @@ export function Main({
   // the chat to reopen at the next launch as it was.
   const rememberChat = (id: string | null) => {
     const chat = id === null ? undefined : hermes.getSnapshot().chats.find((c) => c.id === id);
-    if (chat && isBotChat(chat)) return;
+    if (chat && !policyOf(chat).listed) return;
     rememberOpenChat(pref, id);
     shown?.set(pref, id);
   };
@@ -4138,6 +4139,7 @@ function ChatView({
   const shownDraft = draftOf(chatId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const stillIn = () => hermes.profile === profile;
+  const policy = policyOf(chat);
 
   // A new chat takes each value from what the owner chose for it here, then the shown project's defaults, then the
   // profile (projectDefaults.ts). A pick here also stays the composer's Model pick, as before.
@@ -4659,7 +4661,7 @@ function ChatView({
         )
       }
       replay={
-        started && chat.source !== "import"
+        started && policy.replay
           ? { blocked: replayBlocked(chat, status === "connected"), onReplay: (itemId, kind) => setReplayFrom({ itemId, kind }) }
           : undefined
       }

@@ -54,6 +54,7 @@ import { CapabilityStore, CapabilityUnsupportedError, PROBE_NAME, RouteMissingEr
 import { parseCheckpointList, type RelPath } from "./fileChanges";
 import type { Restored, RollbackIO } from "./fileUndo";
 import type { AppMethod } from "./canonicalVerbs";
+import { policyOf } from "./chatKind";
 import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
 import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
 import { projectContextFiles, type ChatContext, type ProjectContextFiles } from "./projectContextFiles";
@@ -5147,8 +5148,8 @@ export class Hermes {
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      // A Bot Chat isn't part of the list, so it isn't kept as part of it (ADR 0066).
-      chats.filter((c) => !isBotChat(c)).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
+      // A chat that isn't part of the list, such as a Bot Chat (ADR 0066), isn't kept as part of it.
+      chats.filter((c) => policyOf(c).listed).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
         id,
         title,
         source,
@@ -5710,6 +5711,7 @@ const RAW_SOURCES: Record<Exclude<Source, "other">, string[]> = {
   desktop: ["desktop"],
   cli: ["cli", "tui"],
   import: ["import"],
+  cron: ["cron"],
 };
 
 /**

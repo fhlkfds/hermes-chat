@@ -17,6 +17,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Menu, PinItem, type ChatPin } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
+import { policyOf } from "../hermes/chatKind";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ExportChatDialog, type ExportMode } from "./ExportChat";
 import { QueuePanel, type QueueApi } from "./Queue";
@@ -284,6 +285,7 @@ function MoreMenu({
   const [at, setAt] = useState<{ x: number; y: number }>();
   const close = useCallback(() => setAt(undefined), []);
   const button = useRef<HTMLButtonElement>(null);
+  const { manage, link } = policyOf(chat);
   const [askDelete, setAskDelete] = useState(false);
   const [exporting, setExporting] = useState<ExportMode>();
   const noDelete = !onDelete;
@@ -309,7 +311,7 @@ function MoreMenu({
       <button
         ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title={isBotChat(chat) ? "More actions: export, share" : `More actions: export, share, copy link, ${pin ? "pin, " : ""}settle, archive${onDelete ? ", delete" : ""}`}
+        title={`More actions: ${["export", "share", link && "copy link", manage && pin && "pin", manage && "settle", manage && "archive", manage && onDelete && "delete"].filter(Boolean).join(", ")}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -331,16 +333,16 @@ function MoreMenu({
           {onExport && onSnapshotSettings && item("Share snapshot…", <Share2 size={15} />, () => setExporting("share"), "Publish a copy of this chat that anyone with its link can read")}
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
-          {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Highwing on this computer")}
-          {pin && !isBotChat(chat) && !chat.archived && <PinItem pin={pin} onClose={close} />}
-          {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
+          {onCopyLink && link && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Highwing on this computer")}
+          {pin && manage && !chat.archived && <PinItem pin={pin} onClose={close} />}
+          {onSettle && manage && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
-            !isBotChat(chat) &&
+            manage &&
             !chat.running &&
             (chat.archived
               ? item("Restore", <RotateCcw size={15} />, () => onArchive(false))
               : item("Archive", <EyeOff size={15} />, () => onArchive(true), "Hide in every Hermes client, keeping its history"))}
-          {onDelete && !isBotChat(chat) && (
+          {onDelete && manage && (
             <>
               <div className="menu-sep" role="separator" />
               {item("Delete chat…", <Trash2 size={15} />, () => setAskDelete(true), "Delete this chat in every Hermes client. This can't be undone.", true)}
@@ -1102,7 +1104,7 @@ export function ChatPane({
         }}
       />
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
-      {chat.source === "import" ? (
+      {policyOf(chat).readOnly === "imported" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
           <FileInput size={14} aria-hidden /> This is an imported transcript, so it's read-only here. Hermes has its words, not

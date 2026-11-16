@@ -16,7 +16,7 @@ import { errorText } from "../hermes/values";
 /** Typing this long without a pause sends the search. */
 const PAUSE_MS = 200;
 
-const SOURCE_NAME: Record<Source, string> = { ...SOURCE_LABEL, cli: "Command line", desktop: "Hermes desktop app", import: "Imported transcripts", other: "Other platforms" };
+const SOURCE_NAME: Record<Source, string> = { ...SOURCE_LABEL, cli: "Command line", desktop: "Hermes desktop app", import: "Imported transcripts", cron: "Scheduled jobs", other: "Other platforms" };
 
 /** Each part of a filter but its words, as the owner reads it, with what clears it. */
 function filterParts(f: ChatFilter, tags: ScopeTags): { key: string; label: string; clear: ChatFilter }[] {

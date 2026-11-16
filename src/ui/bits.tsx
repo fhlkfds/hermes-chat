@@ -1,6 +1,6 @@
 // Small shared UI bits, ported from the prototype.
 import { useEffect, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Check, Copy, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
+import { Archive, ArchiveRestore, CalendarClock, Check, Copy, EyeOff, FileInput, Globe, Monitor, RotateCcw, Send, Terminal } from "lucide-react";
 import type { ConnectionStatus, Source } from "../hermes/model";
 import type { Route } from "../hermes/pipe";
 import { SOURCE_LABEL } from "../hermes/model";
@@ -28,11 +28,13 @@ export function SourceIcon({ source, size = 12 }: { source: Source; size?: numbe
       <Monitor size={size} strokeWidth={2.4} />
     ) : source === "import" ? (
       <FileInput size={size} strokeWidth={2.4} />
+    ) : source === "cron" ? (
+      <CalendarClock size={size} strokeWidth={2.4} />
     ) : (
       <Globe size={size} strokeWidth={2.4} />
     );
   return (
-    <span className={`src src-${source}`} title={`Imported from ${SOURCE_LABEL[source]}`}>
+    <span className={`src src-${source}`} title={source === "cron" ? "Run by a scheduled job" : `Imported from ${SOURCE_LABEL[source]}`}>
       {icon}
     </span>
   );

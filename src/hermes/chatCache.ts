@@ -8,7 +8,7 @@
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
 // drafts, outboxes, appearance or display preferences (uiPrefs.ts).
 import { type ScopeSource, connectionScope, inScope } from "./connections";
-import type { Attachment, Chat, ChatQueue, Item, Outgoing, OutgoingItem, Queued, SentReference, Source } from "./model";
+import { SOURCE_LABEL, type Attachment, type Chat, type ChatQueue, type Item, type Outgoing, type OutgoingItem, type Queued, type SentReference, type Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
@@ -132,7 +132,7 @@ export function clearCachedChats() {
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
 
-const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "import", "other"];
+const SOURCES = Object.keys(SOURCE_LABEL) as Source[];
 export const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
 /** A saved list row as a Chat, or undefined if it isn't one. The transcript is never in the list. */
