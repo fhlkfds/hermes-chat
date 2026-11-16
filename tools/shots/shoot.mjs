@@ -30,6 +30,12 @@ const menuOn = (chat) =>
   `(() => { const el = document.querySelector('.row-open[data-chat="${chat}"]'); const r = el.getBoundingClientRect();
      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 80, clientY: r.top + 20 })); })()`;
 const hd = { width: 1920, height: 1080 };
+// The Work page's Graph view, once every link is drawn.
+const workGraph = [
+  click("button[aria-label='Work']"),
+  click("button", "Graph"),
+  `new Promise((done, fail) => { const t0 = Date.now(); (function poll() { if (document.querySelectorAll("[data-edge]").length >= 12) done(); else if (Date.now() - t0 > 5000) fail(new Error("the graph never drew its links")); else setTimeout(poll, 50); })(); })`,
+];
 const openSettings = key(",", { ctrlKey: true });
 // Types into Settings' search box the way a person does, so React sees the change.
 const typeSearch = (text) =>
@@ -177,6 +183,14 @@ const scenes = {
   work: { query: "", ...hd, steps: [click("button[aria-label='Work']")] },
   "work-task": { query: "", steps: [click("button[aria-label='Work']"), click(".work-card", "Compare three NAS backup tools")] },
   "work-new": { query: "", steps: [click("button[aria-label='Work']"), click(".btn", "New task")] },
+  // Every card in the Graph view reads in full: id, title, body and bot, none clipped into the next.
+  "work-graph": { query: "?graph=1", ...hd, steps: workGraph },
+  // At the largest interface size the cards and the gaps between them grow with the text (appearance.ts sets both).
+  "work-graph-20px": {
+    query: "?graph=1",
+    ...hd,
+    steps: [`document.documentElement.style.fontSize = "20px"; document.documentElement.style.setProperty("--ui-scale", String(20 / 14))`, ...workGraph],
+  },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
   "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },

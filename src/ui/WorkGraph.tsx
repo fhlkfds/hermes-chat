@@ -10,6 +10,9 @@ import { CardFace } from "./WorkPlan";
 /** How many tasks are read at once. */
 const AT_ONCE = 4;
 
+/** A length in the graph's own pixels, grown with the interface size as the cards' text is. */
+const scaled = (n: number) => `calc(${n}px * var(--ui-scale, 1))`;
+
 /** Enter and Space open a card that is a `div` with the button role. */
 export const opensOnKey = (open: () => void) => (e: KeyboardEvent) => {
   if (e.key === "Enter" || e.key === " ") {
@@ -102,8 +105,8 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
       )}
       {g.nodes.length ? (
         <div className="work-graph-scroll">
-          <div className="work-graph" style={{ width, height }}>
-            <svg className="work-edges" width={width} height={height} aria-hidden="true">
+          <div className="work-graph" style={{ width: scaled(width), height: scaled(height) }}>
+            <svg className="work-edges" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
               <defs>
                 <marker id={marker} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" />
@@ -119,7 +122,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
               const waits = g.edges.filter((e) => e.child === id).map((e) => titleOf(e.parent));
               const then = g.edges.filter((e) => e.parent === id).map((e) => titleOf(e.child));
               const said = [waits.length && `Waits on ${waits.join(", ")}.`, then.length && `Then ${then.join(", ")}.`].filter(Boolean).join(" ");
-              const style = { left: pos.x, top: pos.y, width: NODE.width, height: NODE.height };
+              const style = { left: scaled(pos.x), top: scaled(pos.y), width: scaled(NODE.width), height: scaled(NODE.height) };
               return n.task ? (
                 <div key={id} className="work-card work-node" role="button" tabIndex={0} style={style} title={n.task.body || n.task.title} onClick={() => onOpen(id)} onKeyDown={opensOnKey(() => onOpen(id))}>
                   <CardFace t={n.task} />

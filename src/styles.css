@@ -4285,13 +4285,21 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-graph-view { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
 .work-graph-scroll { flex: none; overflow: auto; padding: 4px; }
 .work-graph { position: relative; }
-.work-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; }
+.work-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .work-edges marker path { fill: var(--line-3); stroke: none; }
-.settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 2px; padding: 8px 10px; }
-.settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+/* A graph card has the fixed size NODE gives it (workGraph.ts), so each row keeps its own height and cuts its text
+   short, rather than shrinking into the row above: the id line, a title of up to two lines, one line of body, and the
+   bot at the foot. A fixed line height keeps that true in every interface font. */
+.settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 3px; padding: 8px 10px; line-height: 1.35; }
+.settings .work-card.work-node > * { flex: none; min-width: 0; }
+.work-node .work-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; padding-right: calc(60rem / 14); }
+.settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .settings .work-card.work-node p { -webkit-line-clamp: 1; line-clamp: 1; }
-.work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); }
+.work-node .work-assignee { margin-top: auto; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+.work-node .work-assignee > :not(svg) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.work-node .work-assignee > svg { flex: none; }
+.work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); line-height: 1.35; }
 .settings .work-card.ghost { cursor: default; border-style: dashed; background: transparent; color: var(--muted); }
 .settings .work-card.ghost:hover { border-color: var(--line-2); }
 .settings section.work-loose { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--sidebar); }

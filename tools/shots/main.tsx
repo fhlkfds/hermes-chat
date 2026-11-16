@@ -88,6 +88,34 @@ server.kanban.boards.default.tasks[2].comments = [
   { id: 1, author: "researcher", body: "Started with restic: first backup of tank/media took 3 h 10 min.", created_at: ago(90) },
   { id: 2, author: "dashboard", body: "Include restore times for a single file too.", created_at: ago(30) },
 ];
+// The Work page's Graph view (ADR 0179): `?graph=1` swaps in a planning board of linked cards with long titles, bodies
+// and bot names, several pairs that fan into later steps (synthetic).
+if (new URLSearchParams(location.search).get("graph")) {
+  const k = server.kanban;
+  k.boards.default.tasks = [];
+  const card = (title: string, status: string, assignee: string, body: string, priority = 0) => k.add("default", { title, status, assignee, body, priority }).id;
+  const pairs = [
+    ["Build and validate the backup restore drill", "Revise the restore drill after the dry run", "infrastructure-tester"],
+    ["Draft the onboarding guide for new staff", "Correct the onboarding guide's network section", "prompt-engineer"],
+    ["Inventory every switch and access point", "Explain the inventory's gaps to the owner", "work-email-manager"],
+    ["Author twenty copy-ready status updates", "Revise the status updates for a plain tone", "frontend-engineer"],
+    ["Assess the chat client's release readiness", "Revise the release checklist from the assessment", "threat-detection-engineer"],
+  ];
+  const seconds: string[] = [];
+  pairs.forEach(([a, b, who], i) => {
+    const first = card(a, i === 0 ? "blocked" : "done", who, "Context: the request, what was tried, and what is left to do before this can close.", 5);
+    const second = card(b, i < 2 ? "todo" : "done", who, "Take the first step's output and rework it into the form the owner asked for.", 5);
+    k.links.push({ parent: first, child: second });
+    seconds.push(second);
+  });
+  k.boards.default.tasks[0].latest_summary = "Revised HTML needs the owner's sign-off before the drill can run.";
+  const synth = card("Synthesize the audit findings into one report", "done", "orchestrator", "Combine the outputs of every step above into one report with a single list of actions.");
+  const wire = card("Integrate the components and run the end-to-end check", "done", "frontend-engineer", "Wire together all of the reviewed pieces and prove the whole flow works.");
+  const ship = card("Phase two: agent fleet rollout plan", "done", "prompt-engineer", "Objective: build the rollout plan from the report and the integration results.", 3);
+  for (const s of seconds) k.links.push({ parent: s, child: s === seconds[4] ? wire : synth });
+  k.links.push({ parent: synth, child: ship }, { parent: wire, child: ship });
+  for (const t of k.boards.default.tasks) t.status === "blocked" && (t.body = null);
+}
 // Settings → Persona (ADR 0014, 0117): `?profiles=1` adds two more profiles, each with its own SOUL.md (synthetic).
 server.souls = {
   default: "# Persona\n\nYou are Hermes, a terse home-lab assistant. Answer in plain words, and say what you changed.\n",

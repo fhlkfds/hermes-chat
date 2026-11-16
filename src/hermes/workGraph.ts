@@ -96,8 +96,12 @@ export function layout(ids: readonly string[], edges: readonly Edge[]): string[]
   return layers.filter(Boolean);
 }
 
-/** A card's size and the gaps between cards in the drawn graph, in CSS pixels. */
-export const NODE = { width: 184, height: 84, gapX: 44, gapY: 16 };
+/**
+ * A card's size and the gaps between cards in the drawn graph, in CSS pixels at the default 14 px interface size. The
+ * view multiplies them by `--ui-scale`, as the card's text grows with it. The height holds the card's four rows with
+ * the title on two lines (styles.css, `.work-node`).
+ */
+export const NODE = { width: 184, height: 118, gapX: 44, gapY: 16 };
 
 /** Where each card sits, its top left corner, and the size of the whole drawing. */
 export function place(layers: readonly string[][]): { at: Map<string, { x: number; y: number }>; width: number; height: number } {
