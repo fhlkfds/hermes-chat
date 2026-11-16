@@ -94,7 +94,8 @@ import { useWindowTitle, windowTitle } from "./ui/windowTitle";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
-import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { UsageAnalytics, type UsageTab } from "./ui/UsageAnalytics";
+import { BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
 import { Work } from "./ui/Work";
 import type { WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
@@ -295,6 +296,27 @@ const keepDraft = (key: string, text: string) => {
 };
 const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
+/** What a budget notification's click does, by connection: the Main showing it opens Usage → Budgets (ADR 0187). */
+const budgetOpeners = new Map<string, () => void>();
+/** A budget watch per live connection (budgetWatch.ts), kept in step with them by `Screens`. */
+const budgetWatches = new BudgetWatches((id) => {
+  const m = liveConnections().get(id);
+  if (!m) return undefined;
+  const c = m.connection;
+  return {
+    io: m.hermes.usageIo(),
+    shelves: budgetShelves(localStorage, c),
+    notify: notifyFor(c),
+    open: () => () => budgetOpeners.get(id)?.(),
+    connected: () => m.hermes.getSnapshot().status === "connected",
+    watchStatus: m.hermes.subscribe,
+    listProfiles: () => m.hermes.profiles(),
+    projects: (profile) => {
+      const s = savedProjects.read(projectScope(c, profile));
+      return { chats: s.chats, known: s.known };
+    },
+  };
+});
 const savedContextLedger = contextLedger(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
@@ -473,6 +495,12 @@ function Screens({ links }: { links: LinkInbox }) {
   // The live connections (ADR 0125). The target's `Hermes` is `hermes`; the others carry on in the background.
   const registry = liveConnections();
   useSyncExternalStore(registry.subscribe, registry.getSnapshot);
+  // Each live connection's budgets are checked while it is live, the target's and the background ones' alike.
+  useEffect(() => {
+    const sync = () => budgetWatches.sync(registry.list().map((m) => ({ id: m.connection.id, instance: m.hermes })));
+    sync();
+    return registry.subscribe(sync);
+  }, [registry]);
   const overview = registry.overview();
   // A message to open a chat on another live connection once it is the target: an inbox entry or a chat link for it.
   const [opening, setOpening] = useState<{ link: ChatLink; at: number; connection: string; reveal?: LinkReveal }>();
@@ -1372,6 +1400,25 @@ export function Main({
   const [filesPath, setFilesPath] = useState<string>();
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
+  const [usageTab, setUsageTab] = useState<UsageTab>("spending");
+  const budgets = useSyncExternalStore(budgetWatches.subscribe, () => budgetWatches.of(connection.id));
+  // A budget notification's click opens Usage → Budgets here, as the rail's Usage would.
+  useEffect(() => {
+    if (!connection.id) return;
+    const id = connection.id;
+    budgetOpeners.set(id, () =>
+      guardRef.current(() => {
+        setProjectOpen(false);
+        setSettingsOpen(false);
+        setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
+        setRepoOpen(false);
+        setWorkOpen(false);
+        setUsageTab("budgets");
+        setUsageOpen(true);
+      }),
+    );
+    return () => void budgetOpeners.delete(id);
+  }, [connection.id]);
   // The Work page, the kanban board of bot work (Work.tsx, ADR 0171), covers the chat panes too.
   const [workOpen, setWorkOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
@@ -3716,6 +3763,9 @@ export function Main({
         ) : usageOpen ? (
           <UsageAnalytics
             key={profile}
+            budgets={budgets}
+            tab={usageTab}
+            onTab={setUsageTab}
             io={usageIo}
             profile={profile}
             listProfiles={listProfiles}

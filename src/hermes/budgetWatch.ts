@@ -348,7 +348,7 @@ export class BudgetWatch {
 
 /** The watches of the live connections, kept in step with them (App.tsx syncs it from `LiveConnections`). */
 export class BudgetWatches {
-  private watches = new Map<string, BudgetWatch>();
+  private watches = new Map<string, { watch: BudgetWatch; instance: object }>();
   private listeners = new Set<() => void>();
 
   constructor(private make: (connectionId: string) => WatchDeps | undefined) {}
@@ -358,28 +358,31 @@ export class BudgetWatches {
     return () => void this.listeners.delete(fn);
   };
 
-  /** Starts a watch for each live connection that has none, and stops those whose connection went. */
-  sync(liveIds: readonly string[]): void {
+  /**
+   * Starts a watch for each live connection that has none, and stops those whose connection went. `instance`: the
+   * connection's `Hermes`; a connection opened again with another (signed in afresh) gets a new watch.
+   */
+  sync(live: readonly { id: string; instance: object }[]): void {
     let changed = false;
     for (const [id, w] of this.watches)
-      if (!liveIds.includes(id)) {
-        w.stop();
+      if (!live.some((l) => l.id === id && l.instance === w.instance)) {
+        w.watch.stop();
         this.watches.delete(id);
         changed = true;
       }
-    for (const id of liveIds) {
+    for (const { id, instance } of live) {
       if (this.watches.has(id)) continue;
       const deps = this.make(id);
       if (!deps) continue;
-      const w = new BudgetWatch(deps);
-      this.watches.set(id, w);
-      w.start();
+      const watch = new BudgetWatch(deps);
+      this.watches.set(id, { watch, instance });
+      watch.start();
       changed = true;
     }
     if (changed) this.listeners.forEach((fn) => fn());
   }
 
   of(connectionId: string): BudgetWatch | undefined {
-    return this.watches.get(connectionId);
+    return this.watches.get(connectionId)?.watch;
   }
 }

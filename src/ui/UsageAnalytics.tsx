@@ -1,7 +1,7 @@
 // Usage analytics (GLOSSARY.md "Usage analytics", ADR 0026): where tokens and recorded cost add up, across chats,
 // models, projects and profiles, from the totals Hermes stored for each chat. Nothing here prices anything: each cost
 // is what Hermes recorded, labelled by how it got it, and every total says how much of the usage it covers.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, BarChart3, ChevronDown, ChevronUp, CircleAlert, Download, RefreshCw } from "lucide-react";
 import type { Project } from "../hermes/projects";
 import { offsetAt, offsetLabel } from "../hermes/schedule";
@@ -45,6 +45,8 @@ import {
   type UsageIo,
 } from "../hermes/usageAnalytics";
 import { Spinner } from "./bits";
+import { Budgets } from "./Budgets";
+import type { BudgetWatch } from "../hermes/budgetWatch";
 import { useLocale, type Formats } from "../i18n/locale";
 import { errorText, lengthText } from "../hermes/values";
 import { REPLY_TIMES_KEPT, replyTimeStats, type ReplyTimeStats } from "../hermes/replyTimes";
@@ -99,7 +101,101 @@ export type UsageAnalyticsProps = {
   now?: () => number;
 };
 
-export function UsageAnalytics({ io, profile, listProfiles, projects, projectChats, connected, onOpenChat, saveCsv, onClose, now = Date.now }: UsageAnalyticsProps) {
+export type UsageTab = "spending" | "budgets";
+const TABS: { id: UsageTab; label: string }[] = [
+  { id: "spending", label: "Spending" },
+  { id: "budgets", label: "Budgets" },
+];
+
+/**
+ * The Usage screen: Spending, where tokens and recorded cost add up (ADR 0026), and Budgets, the limits kept for this
+ * connection and how far each has got (ADR 0187).
+ */
+export function UsageAnalytics({
+  budgets,
+  budgetZone,
+  tab: asked,
+  onTab: setAsked,
+  ...props
+}: UsageAnalyticsProps & {
+  /** This connection's budget watch; none while it isn't live. */
+  budgets?: BudgetWatch;
+  /** The tab shown, when the caller keeps it (so a budget notification can open Budgets); kept here otherwise. */
+  tab?: UsageTab;
+  onTab?: (t: UsageTab) => void;
+  /** The clock a new budget runs on; this computer's zone by default. */
+  budgetZone?: string;
+}) {
+  const [own, setOwn] = useState<UsageTab>("spending");
+  const tab = asked ?? own;
+  const onTab = setAsked ?? setOwn;
+  const screenRef = useRef<HTMLDivElement>(null);
+  const move = (e: KeyboardEvent<HTMLButtonElement>, t: UsageTab) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const next = TABS[(TABS.findIndex((x) => x.id === t) + 1) % TABS.length].id;
+    onTab(next);
+    document.getElementById(`usage-tab-${next}`)?.focus();
+  };
+  return (
+    <div className="settings usage-screen" ref={screenRef}>
+      <div className="settings-inner usage-inner">
+        <button className="back" onClick={props.onClose}>
+          <ArrowLeft size={15} /> Back to chat
+        </button>
+        <h1 className="project-title">
+          <BarChart3 size={20} /> <span>Usage</span>
+        </h1>
+        <div className="usage-tabs" role="tablist" aria-label="Usage">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              id={`usage-tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`usage-panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
+              className={`usage-tab ${tab === t.id ? "on" : ""}`}
+              onClick={() => onTab(t.id)}
+              onKeyDown={(e) => move(e, t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id={`usage-panel-${tab}`} aria-labelledby={`usage-tab-${tab}`}>
+          {tab === "spending" ? (
+            <Spending {...props} screenRef={screenRef} />
+          ) : (
+            <Budgets
+              watch={budgets}
+              profile={props.profile}
+              listProfiles={props.listProfiles}
+              projects={props.projects}
+              connected={props.connected}
+              onOpenChat={props.onOpenChat}
+              now={props.now}
+              zone={budgetZone}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Spending({
+  io,
+  profile,
+  listProfiles,
+  projects,
+  projectChats,
+  connected,
+  onOpenChat,
+  saveCsv,
+  now = Date.now,
+  screenRef,
+}: UsageAnalyticsProps & { screenRef: RefObject<HTMLDivElement | null> }) {
   const { fmt } = useLocale();
   const [range, setRange] = useState<RangeChoice>({ kind: "rolling", days: 30 });
   const [zone, setZone] = useState(HERE);
@@ -118,7 +214,6 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   const [exportNote, setExportNote] = useState<string>();
   const exporting = useRef(false);
   const drillHeading = useRef<HTMLHeadingElement>(null);
-  const screenRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!connected) return;
@@ -229,14 +324,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
   const partial = !!data && (unreadChats || data.missingSegments > 0);
 
   return (
-    <div className="settings usage-screen" ref={screenRef}>
-      <div className="settings-inner usage-inner">
-        <button className="back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back to chat
-        </button>
-        <h1 className="project-title">
-          <BarChart3 size={20} /> <span>Usage</span>
-        </h1>
+    <>
         <p className="muted">
           Tokens and cost as Hermes stored them for each chat, added up for the chats started in the period. Highwing keeps no prices of its own: a cost
           is only what Hermes recorded.
@@ -460,8 +548,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
           <p className="usage-note">Hermes's own sums, and its helper tasks' usage, cover only a period ending now: pick one of the "Last …" periods to see them.</p>
         )}
         {data && !data.unsupported && <Notes />}
-      </div>
-    </div>
+    </>
   );
 }
 

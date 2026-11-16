@@ -49,6 +49,7 @@ const NEW: Record<string, unknown> = {
   "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },
   "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
   "GET api/plugins/kanban/model-options": { providers: [] },
+  "GET api/analytics/models": { models: [], totals: { total_sessions: 0 }, period_days: 1 },
   // A made-up session isn't live: the method is there (`tui_gateway/methods_tools.py:1123` at `bf0203a`).
   "RPC rollback.list": new RpcError(4001, "session not found"),
 };
@@ -168,6 +169,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       // Only a chat's own subagent.list can learn this.
       subagents: "unknown",
       subagentRoster: "supported",
+      modelUsage: "supported",
       // Only answering an Approval can learn this.
       approvalAnswers: "unknown",
     });

@@ -142,10 +142,18 @@ describe("BudgetWatches", () => {
   it("starts a watch per live connection and stops it when the connection goes", () => {
     const { io } = hermes({ usd: 0 });
     const ws = new BudgetWatches(() => deps(io, memoryStorage()));
-    ws.sync(["c1", "c2"]);
+    const [a, b] = [{}, {}];
+    ws.sync([
+      { id: "c1", instance: a },
+      { id: "c2", instance: b },
+    ]);
     const first = ws.of("c1");
     expect(first && ws.of("c2")).toBeTruthy();
-    ws.sync(["c2"]);
+    ws.sync([{ id: "c2", instance: b }]);
     expect(ws.of("c1")).toBeUndefined();
+    // Signed in afresh: another Hermes for the same connection gets a watch of its own.
+    const second = ws.of("c2");
+    ws.sync([{ id: "c2", instance: {} }]);
+    expect(ws.of("c2")).not.toBe(second);
   });
 });

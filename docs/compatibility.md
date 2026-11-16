@@ -188,6 +188,10 @@ Needs the `subagent.*` events on a chat's session (`spawn_requested`, `start`, `
 
 Needs `subagent.roster` on `/api/ws`, which counts the background subagents and background processes running for each chat of a profile, with no chat open. Hermes `f0d94882` has it, and 0.16.0 doesn't. Checked with `subagent.roster`. The app reads it with `session.active_list`, so a chat not opened since launch stays in Working while its background subagents run (ADR 0096). Without it, only a chat opened on the connection stays in Working while they run. Any other chat goes to the Inbox when its reply ends, as before.
 
+## Budgets
+
+Usage → Budgets needs nothing new for a budget on the server, a profile or a project: it adds up the chat totals Usage analytics already reads from `GET /api/sessions` (ADR 0026). A budget on a model also needs `GET /api/analytics/models`, Hermes's spending for each model it called, counted per call. Hermes `bf0203a` and `f0d9488` have it. Checked with `GET /api/analytics/models?days=1`. Without it, a model budget shows no figure and sends no alert, and says why. The route takes only whole days back from now, so a model budget counts the last 24 hours, 7 days or 30 days. Its sums include Hermes's helper tasks and subagent runs, have no cache-write count, and count a model Hermes can't price as $0 (ADR 0187).
+
 ## Run view
 
 The Run view under a reply draws its turn as steps (ADR 0178). It needs nothing the app doesn't already read: the session events on `/api/ws` (`message.start`, `message.delta`, `reasoning.delta`, `tool.start`, `tool.complete`, `session.usage`, `status.update`, `request.cancel`, `approval.cancelled`, `message.complete`, `error`), the Approval and Question requests, `GET /api/sessions/{id}` for the chat's cost, `GET /api/sessions/{id}/messages` for a reply the app didn't watch, and `GET /api/config` for `display.tool_progress`. Hermes `bf0203a` and `f0d9488` have all of them, so it adds no capability of its own. Settings → Diagnostics shows two facts for it under Flight recorder.
