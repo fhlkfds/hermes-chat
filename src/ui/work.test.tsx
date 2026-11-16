@@ -658,6 +658,22 @@ describe("a running card's bot (issue #604)", () => {
     expect(within(sheet).getByText("done", { selector: ".work-status" })).toBeTruthy();
   });
 
+  it("completes a card its sheet already shows in Review the way Review is completed, though the board still shows it running", async () => {
+    const { s, k, task } = atWork();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    render(<Work api={hermes.kanban} connected onClose={() => {}} pollMs={60_000} watchMs={30} />);
+    await screen.findByText("Dispatch");
+    const user = userEvent.setup();
+    const { sheet } = await runOf(user, "Research the API");
+    k.move(task.id, "review");
+    await waitFor(() => expect(within(sheet).getByText("review", { selector: ".work-status" })).toBeTruthy());
+    expect(within(column("running")).getByText("Research the API")).toBeTruthy();
+    await user.click(within(sheet).getByRole("button", { name: "Complete" }));
+    await waitFor(() => expect(k.writes).toEqual([`PATCH ${task.id} {"status":"done"}`]));
+    expect(screen.queryByRole("dialog", { name: /Complete|Summary/i })).toBeNull();
+  });
+
   it("hides only Reclaim on a plugin without terminate, and only Stop and Reassign on one without reassign, where blocking says the bot works on", async () => {
     const { s, k } = atWork();
     k.without.add("terminate");

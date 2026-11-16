@@ -208,9 +208,10 @@ export function Work({
     if (!live.current) return;
     setSaving(false);
   };
-  const requestMove = (task: BoardTask, to: string) => {
+  /** `from`: the status the owner saw, which the sheet's own read can know before the board does. */
+  const requestMove = (task: BoardTask, to: string, from = task.status) => {
     setMoveErr(undefined);
-    const need = moveNeeds(task.status, to);
+    const need = moveNeeds(from, to);
     if (need) setAsk({ task, to, need });
     else void move(task, to);
   };
@@ -377,7 +378,7 @@ export function Work({
           defaultAssignee={dispatch.kind === "read" ? dispatch.o.defaultAssignee : undefined}
           onRefresh={() => void load(true)}
           onSaved={() => void load()}
-          onMove={(to) => requestMove(open, to)}
+          onMove={(to, from) => requestMove(open, to, from)}
           onWriting={(w) => (sheetWriting.current = w)}
           onClose={() => {
             sheetWriting.current = false;
@@ -595,7 +596,7 @@ function TaskSheet({
   defaultAssignee?: string;
   onRefresh: () => void;
   onSaved: () => void;
-  onMove: (to: string) => void;
+  onMove: (to: string, from: string) => void;
   /** Whether an edit or a comment is on its way, so the board isn't read under it. */
   onWriting: (writing: boolean) => void;
   onClose: () => void;
@@ -924,7 +925,7 @@ function TaskSheet({
                   value=""
                   onChange={(e) => {
                     const to = e.target.value;
-                    if (to) onMove(to);
+                    if (to) onMove(to, current.status);
                   }}
                 >
                   <option value="">Move to…</option>
@@ -936,17 +937,17 @@ function TaskSheet({
                 </select>
                 <span className="work-spacer" />
                 {current.status === "blocked" && can("ready") && (
-                  <button className="btn" disabled={busy} onClick={() => onMove("ready")}>
+                  <button className="btn" disabled={busy} onClick={() => onMove("ready", current.status)}>
                     Unblock
                   </button>
                 )}
                 {can("blocked") && (
-                  <button className="btn" disabled={busy} onClick={() => onMove("blocked")}>
+                  <button className="btn" disabled={busy} onClick={() => onMove("blocked", current.status)}>
                     Block…
                   </button>
                 )}
                 {can("done") && (
-                  <button className="btn primary" disabled={busy} onClick={() => onMove("done")}>
+                  <button className="btn primary" disabled={busy} onClick={() => onMove("done", current.status)}>
                     Complete
                   </button>
                 )}
