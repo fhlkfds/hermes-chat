@@ -133,7 +133,7 @@ export function SearchPalette({
   const [bot, setBot] = useState("");
   const farFilter: EverywhereFilter = { text: tidy.text ?? "", ...(bot.trim() && { bot: bot.trim() }), ...(tidy.model && { model: tidy.model }), ...(tidy.from && { from: tidy.from }), ...(tidy.to && { to: tidy.to }) };
   const farKey = JSON.stringify(farFilter);
-  const [far, setFar] = useState<{ key: string; text?: string; outcome?: EverywhereOutcome }>({ key: "" });
+  const [far, setFar] = useState<{ key: string; filter?: EverywhereFilter; outcome?: EverywhereOutcome }>({ key: "" });
   const [error, setError] = useState<string>();
   // The selected row by its key, not its place, so rows that land above it don't move it. None: the first row.
   const [selKey, setSelKey] = useState<string>();
@@ -176,7 +176,7 @@ export function SearchPalette({
     setError(undefined);
     if (!farFilter.text) return;
     const stop = new AbortController();
-    const show = (outcome: EverywhereOutcome) => void (stop.signal.aborted || setFar({ key: farKey, text: farFilter.text, outcome }));
+    const show = (outcome: EverywhereOutcome) => void (stop.signal.aborted || setFar({ key: farKey, filter: farFilter, outcome }));
     const timer = setTimeout(() => {
       setSelKey(undefined);
       everywhere.run(farFilter, stop.signal, show).then(show, (e) => stop.signal.aborted || setError(`Couldn't search: ${errorText(e)}`));
@@ -206,8 +206,8 @@ export function SearchPalette({
     ? shownFar.rows.map((r) => ({ key: `${r.ref.connection}\n${r.ref.profile}\n${r.ref.chatId}`, hit: r.hit, where: `${r.server} · ${r.ref.profile}`, open: () => everywhere?.onPick(r) }))
     : found.map((f) => ({ key: f.chatId, hit: f, badge: badgeOf(f), open: () => onPick(f) }));
   const sel = Math.max(0, rows.findIndex((r) => r.key === selKey));
-  const matched = (wide ? far.text : results.text) ?? "";
-  const notes = shownFar ? everywhereNotes(shownFar, farFilter) : shownOutcome ? outcomeNotes(shownOutcome) : [];
+  const matched = (wide ? far.filter?.text : results.text) ?? "";
+  const notes = shownFar && far.filter ? everywhereNotes(shownFar, far.filter) : shownOutcome ? outcomeNotes(shownOutcome) : [];
   const set = (patch: Partial<ChatFilter>) => {
     setNote(undefined);
     setFilter((f) => ({ ...f, ...patch }));

@@ -3886,13 +3886,14 @@ export function Main({
           everywhere={
             everywhere && {
               run: everywhere.run,
-              onPick: (row) => {
-                setSearchOpen(false);
-                // A row on this connection goes straight to the link job, which asks before it leaves anything. One on
-                // another connection asks first, as an inbox entry from there does: switching drops this screen.
-                if (row.ref.connection === connection.id) everywhere.open(row);
-                else guard(() => everywhere.open(row));
-              },
+              onPick: (row) =>
+                guard(
+                  () => {
+                    setSearchOpen(false);
+                    everywhere.open(row);
+                  },
+                  row.ref.connection !== connection.id ? "connection" : row.ref.profile !== profile ? "profile" : "leave",
+                ),
             }
           }
         />
