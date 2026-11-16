@@ -3223,8 +3223,9 @@ export class Hermes {
    * takes it, then leaves the queue, and the reply and the rest of the queue carry on. Otherwise, or when Hermes had no
    * reply to steer, it goes next, ahead of the rest, as soon as the chat can take it: a reply it can't be steered into
    * is stopped for it, and that stop doesn't pause the queue. Neither a pause nor a Failed message above holds it. The
-   * rest keeps its place and its pause. Pausing the queue, removing the message, or a dropped connection cancels it.
-   * While a steer waits for Hermes's answer, Send now in that chat does nothing. While a queued message is being
+   * rest keeps its place and its pause. Pausing the queue, removing the message, or a dropped connection cancels it,
+   * except that a pause can't cancel a steer Hermes hasn't answered, which holds the queue until the answer comes, and
+   * Send now in that chat does nothing meanwhile. While a queued message is being
    * edited, a message that would be steered goes next instead, once the reply ends and the edit closes.
    * `cantSteer`: why /steer can't run in the chat now, if it can't. Resolves with why Hermes refused the steer, which
    * leaves the message where it was, unmarked; never rejects.
