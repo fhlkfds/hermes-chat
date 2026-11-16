@@ -4240,7 +4240,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .settings .work-card p { margin: 0; font-size: calc(12.5rem / 14); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .settings .work-card p.work-why { color: var(--warn); }
 .work-why svg { vertical-align: -2px; }
-.work-assignee { display: flex; align-items: center; gap: 5px; font-size: calc(12rem / 14); color: var(--text-2); }
+.work-assignee { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; font-size: calc(12rem / 14); color: var(--text-2); }
 .settings p.work-empty { margin: 4px 2px; font-size: calc(12.5rem / 14); color: var(--faint); }
 .leave-overlay .leave-dialog.work-dialog { max-width: min(480px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); }
 .leave-overlay .leave-dialog.work-dialog.wide { max-width: min(640px, calc(100% - 32px)); padding: 0; }
@@ -4271,6 +4271,41 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-add { display: flex; gap: 8px; align-items: flex-end; }
 .work-add textarea { flex: 1; }
 .work-sheet-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+/* Planning (issue #604): the dispatch line, the Graph view, and the sheet's links, pickers and token guess. */
+.settings p.work-dispatch { margin: 0; font-size: calc(12.5rem / 14); color: var(--text-2); }
+.work-dispatch b { margin-right: 4px; color: var(--text); }
+.work-dispatch small { display: block; margin-top: 2px; font-size: calc(12rem / 14); }
+.work-model { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--muted); }
+.work-model > :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-assignee > .work-model:not(:first-child) { margin-left: 4px; }
+.settings .work-loose h2.work-column-head { text-transform: none; }
+.work-graph-view { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
+.work-graph-scroll { flex: none; overflow: auto; padding: 4px; }
+.work-graph { position: relative; }
+.work-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; }
+.work-edges marker path { fill: var(--line-3); stroke: none; }
+.settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 2px; padding: 8px 10px; }
+.settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.settings .work-card.work-node p { -webkit-line-clamp: 1; line-clamp: 1; }
+.work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); }
+.settings .work-card.ghost { cursor: default; border-style: dashed; background: transparent; color: var(--muted); }
+.settings .work-card.ghost:hover { border-color: var(--line-2); }
+.settings section.work-loose { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--sidebar); }
+.work-loose-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.settings section.work-plan { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; }
+.work-plan select, .work-plan input { background: var(--bg); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 9px; color: var(--text); outline: none; font: inherit; min-width: 0; }
+.work-plan select:focus, .work-plan input:focus { border-color: var(--line-3); }
+.work-plan label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; color: var(--muted); font-size: calc(12.5rem / 14); }
+.work-plan .muted { margin: 0; }
+.work-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.work-links li { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.work-link-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.work-confirm { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--sidebar); }
+.work-confirm .confirm-actions { margin: 0; }
+.work-model-typed { display: flex; flex: 1 1 240px; align-items: flex-end; gap: 6px; }
+.work-estimate { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; }
+.work-estimate > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; }
 @media (max-width: 640px) {
   .work-inner { padding: 14px 16px 12px; }
   .settings section.work-column { flex-basis: 78vw; }

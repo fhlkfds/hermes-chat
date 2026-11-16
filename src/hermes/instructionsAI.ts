@@ -1,7 +1,9 @@
 // Writing a project's instructions with Hermes (issue #536, ADR 0152): what each stateless `llm.oneshot` call is told
 // and given, and how its answer is read. No I/O here. The calls add nothing to any chat, and nothing is saved: a draft
 // only fills the Instructions box, and Save defaults decides (ADR 0017).
+import type { WriterModel } from "./modelSettings";
 import { INSTRUCTIONS_MAX } from "./projectDefaults";
+import type { UnavailableWords } from "./transport";
 
 /** The project a draft is for, as context for Hermes. */
 export type ProjectFacts = { name: string; folders: string[] };
@@ -108,6 +110,13 @@ export function questionCall(project: ProjectFacts, answers: Answered[]): Call {
     input: [...facts(project), "", `Questions asked so far: ${answers.length} of at most ${MAX_QUESTIONS}.`, qa(answers)].join("\n"),
     maxTokens: QUESTION_TOKENS,
   };
+}
+
+/** How a missing sign-in names the model that writes the instructions, and the setting that picks another (ADR 0177). */
+export function unavailableWords(m: WriterModel): UnavailableWords {
+  return m.follows
+    ? { runs: "Project instructions use the Text generation model, which runs on", fix: "or pick a Project instructions model in Settings → Model." }
+    : { runs: "Project instructions run on", fix: "or pick another Project instructions model in Settings → Model." };
 }
 
 /** Hermes's answer as a draft; throws if it holds no text. The `<instructions>` tags come off if it echoed them. */

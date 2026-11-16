@@ -5,6 +5,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row, type FakeProject } from "../hermes/fakeHermes";
+import { RestError } from "../hermes/pipe";
 import { connect, type Hermes } from "../hermes/transport";
 import { projectScope } from "../hermes/projectLinks";
 import { savedDefaults } from "../hermes/projectDefaults";
@@ -105,11 +106,12 @@ describe("Improve with AI, when the box has text", () => {
     await user.click(screen.getByRole("button", { name: "Improve with AI" }));
     const d = await dialog(/Improve the instructions with AI/);
     expect(await within(d).findByText("openrouter · deepseek-v4-flash")).toBeTruthy();
-    expect(d.textContent).toContain("profile default's Text generation model");
+    expect(d.textContent).toContain("profile default's Project instructions model, which follows Text generation: openrouter · deepseek-v4-flash.");
     expect((await draft()).textContent).toBe("USE METRIC UNITS.");
     expect(within(d).getByLabelText("Your instructions").textContent).toBe("Use metric units.");
     const call = oneshots(s)[0];
-    expect(call).toMatchObject({ profile: "default", instructions: IMPROVE_INSTRUCTIONS });
+    // Unset, the Project instructions model follows Text generation: the call sends its task.
+    expect(call).toMatchObject({ profile: "default", instructions: IMPROVE_INSTRUCTIONS, task: "title_generation" });
     expect(call.input).toContain("Project name: Budget Tracker");
     expect(call.input).toContain("Folders on the server: /srv/budget");
 
@@ -121,6 +123,7 @@ describe("Improve with AI, when the box has text", () => {
     await user.click(within(d).getByRole("button", { name: "Ask again" }));
     await user.click(within(d).getByRole("button", { name: "Side by side" }));
     await waitFor(async () => expect((await draft()).textContent).toBe("USE METRIC UNITS. (again: shorter)"));
+    expect(oneshots(s)[1]).toMatchObject({ task: "title_generation" });
     expect(oneshots(s)[1].input).toContain("<previous_draft>USE METRIC UNITS.</previous_draft>");
 
     await user.click(within(d).getByRole("button", { name: "Use this" }));
@@ -182,7 +185,10 @@ describe("Write with AI, when the box is empty", () => {
 
     s.oneshotFailure = "Provider 'openrouter' is set in config.yaml but no API key was found";
     await user.click(within(d).getByRole("button", { name: "Write instructions" }));
-    expect((await within(d).findByRole("alert")).textContent).toContain("Text generation runs on openrouter, and Hermes on the server has no API key");
+    expect((await within(d).findByRole("alert")).textContent).toContain(
+      "Hermes couldn't write the instructions: Project instructions use the Text generation model, which runs on openrouter, and Hermes on the server " +
+        "has no API key or sign-in for it. Add one there, or pick a Project instructions model in Settings → Model.",
+    );
     expect((within(d).getByRole("textbox", { name: "About the project" }) as HTMLTextAreaElement).value).toBe("A Rust CLI. Always run cargo test.");
     expect(box.value).toBe("");
 
@@ -219,6 +225,7 @@ describe("Write with AI, when the box is empty", () => {
     expect((await draft()).textContent).toBe("You work on Budget Tracker.\n- Tracking household spending\n- React and SQLite");
     const calls = oneshots(s);
     expect(calls.map((c) => c.instructions)).toEqual([ASK_INSTRUCTIONS, ASK_INSTRUCTIONS, ASK_INSTRUCTIONS, ASK_INSTRUCTIONS, WRITE_INSTRUCTIONS]);
+    expect(calls.map((c) => c.task)).toEqual(Array(5).fill("title_generation"));
     expect(calls[2].input).toContain(`<qa><question>${QUESTIONS[0]}</question><answer>Tracking household spending</answer></qa>`);
     expect(calls[2].input).toContain(`<qa><question>${QUESTIONS[1]}</question><skipped/></qa>`);
     await user.click(within(d).getByRole("button", { name: "Use this" }));
@@ -324,5 +331,90 @@ describe("Write with AI, when the box is empty", () => {
     expect((within(d).getByRole("textbox", { name: "About the project" }) as HTMLTextAreaElement).value).toBe("A budget app.");
     await user.click(within(d).getByRole("button", { name: "Cancel" }));
     expect((screen.getByRole("button", { name: "Write with AI" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("The Project instructions model (ADR 0177)", () => {
+  /** Text generation on Nous Portal, which Hermes isn't signed in to, and Project instructions on a model that works. */
+  function picked() {
+    const s = server();
+    s.modelConfig.auxiliary.title_generation = { provider: "nous", model: "hermes-5-70b" };
+    s.signedOut.add("nous");
+    s.modelConfig.unslottedAuxiliary.project_instructions = { provider: "openai-codex", model: "gpt-6.1-mini", reasoning_effort: "" };
+    return s;
+  }
+
+  it("improves on it, from the call made as the dialog opens, through Ask again, while Text generation can't run", async () => {
+    const s = picked();
+    s.oneshotAnswer = (c) => `${model(c)} [${c.model}]`;
+    const { user } = await openDefaults(s, "Use metric units.");
+    await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+    const d = await dialog(/Improve/);
+    expect((await draft()).textContent).toBe("USE METRIC UNITS. [gpt-6.1-mini]");
+    await within(d).findByText("openai-codex · gpt-6.1-mini");
+    expect(d.textContent).toContain("profile default's Project instructions model: openai-codex · gpt-6.1-mini. Each step");
+    expect(d.textContent).not.toContain("follows");
+    await user.click(within(d).getByRole("button", { name: "Ask again" }));
+    await waitFor(async () => expect((await draft()).textContent).toBe("USE METRIC UNITS. (again) [gpt-6.1-mini]"));
+    expect(oneshots(s).map((c) => c.task)).toEqual(["project_instructions", "project_instructions"]);
+  });
+
+  it("asks its questions and writes the draft on it", async () => {
+    const s = picked();
+    const { user } = await openDefaults(s);
+    await user.click(screen.getByRole("button", { name: "Write with AI" }));
+    const d = await dialog(/Write the instructions/);
+    await user.click(within(d).getByRole("button", { name: /Let Hermes ask me questions/ }));
+    await within(d).findByText(QUESTIONS[0]);
+    await user.type(within(d).getByRole("textbox", { name: "Your answer" }), "Tracking household spending");
+    await user.click(within(d).getByRole("button", { name: "Write it now" }));
+    expect((await draft()).textContent).toBe("You work on Budget Tracker.\n- Tracking household spending");
+    expect(oneshots(s).map((c) => [c.instructions, c.task])).toEqual([
+      [ASK_INSTRUCTIONS, "project_instructions"],
+      [WRITE_INSTRUCTIONS, "project_instructions"],
+    ]);
+  });
+
+  it("says how to fix a missing sign-in for it, pointing at its own setting", async () => {
+    const s = picked();
+    s.modelConfig.unslottedAuxiliary.project_instructions = { provider: "nous", model: "hermes-5-405b" };
+    const { user } = await openDefaults(s, "Use metric units.");
+    await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+    const d = await dialog(/Improve/);
+    expect((await within(d).findByRole("alert")).textContent).toBe(
+      " Hermes couldn't write the instructions: Project instructions run on Nous Portal, and Hermes on the server isn't signed in to Nous Portal. " +
+        "Sign it in there with `hermes auth add nous`, or pick another Project instructions model in Settings → Model. The box keeps what it had.",
+    );
+  });
+
+  it("names the main model when Text generation, which it follows, is on auto", async () => {
+    const s = server();
+    s.modelConfig.auxiliary.title_generation = { provider: "auto", model: "" };
+    const { user } = await openDefaults(s, "Use metric units.");
+    await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+    const d = await dialog(/Improve/);
+    await within(d).findByText("openrouter · glm-5.3-flash, the main model");
+    expect(d.textContent).toContain("Project instructions model, which follows Text generation: openrouter · glm-5.3-flash, the main model. Each step");
+    await draft();
+    expect(oneshots(s).map((c) => c.task)).toEqual(["title_generation"]);
+  });
+
+  it("asks nothing when the model can't be read, never falling back to Text generation, and reads it again on Try again", async () => {
+    const s = picked();
+    const { user } = await openDefaults(s, "Use metric units.");
+    const config = s.rest["GET /api/config"];
+    s.rest["GET /api/config"] = () => {
+      throw new RestError(503, "config busy");
+    };
+    await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+    const d = await dialog(/Improve/);
+    expect((await within(d).findByRole("alert")).textContent).toContain("Hermes couldn't write the instructions:");
+    expect(oneshots(s)).toEqual([]);
+    expect(d.textContent).not.toContain("gpt-6.1-mini");
+    s.rest["GET /api/config"] = config;
+    await user.click(within(d).getByRole("button", { name: "Try again" }));
+    await draft();
+    expect(oneshots(s).map((c) => c.task)).toEqual(["project_instructions"]);
+    expect(within(d).getByText("openai-codex · gpt-6.1-mini")).toBeTruthy();
   });
 });

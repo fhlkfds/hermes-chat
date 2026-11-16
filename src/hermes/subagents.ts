@@ -20,10 +20,11 @@ const ENDED = new Set<SubagentState>(["completed", "failed", "error", "timeout",
 export const hasEnded = (s: SubagentState) => ENDED.has(s);
 export const isFailure = (s: SubagentState) => s === "failed" || s === "error" || s === "timeout";
 
-/** One thing a subagent did. `seq`: its tool call's number, which Hermes counts per subagent. */
-export type SubagentActivity =
-  | { kind: "tool"; at: number; seq?: number; tool: string; preview?: string }
-  | { kind: "ended"; at: number; text: string };
+/** One thing a subagent did, as an event or the roster tells it. `seq`: its tool call's number, which Hermes counts per subagent. */
+type Heard = { kind: "tool"; at: number; seq?: number; tool: string; preview?: string } | { kind: "ended"; at: number; text: string };
+
+/** One thing a subagent did. `id` names it among its subagent's activity, wherever later news slots in around it. */
+export type SubagentActivity = Heard & { id: number };
 
 export type Subagent = {
   id: SubagentId;
@@ -100,7 +101,7 @@ function stateOf(v: unknown, fallback: SubagentState): SubagentState {
 }
 
 /** What an event or roster row says about a subagent, before it meets the tree. */
-type Report = Partial<Omit<Subagent, "id" | "activity">> & { id: SubagentId; activity?: SubagentActivity };
+type Report = Partial<Omit<Subagent, "id" | "activity">> & { id: SubagentId; activity?: Heard };
 
 function identity(p: Record<string, unknown>, id: SubagentId): Report {
   const parent = nonBlankText(p.parent_id);
@@ -182,13 +183,14 @@ const blank = (id: SubagentId): Subagent => ({ id, depth: 0, goal: "", state: "u
  * Keeps the activity in order, once each: a tool call Hermes numbered goes in its place, a repeat is dropped, and
  * the end stays last, since anything heard after it happened before it.
  */
-function withActivity(log: SubagentActivity[], a: SubagentActivity): SubagentActivity[] {
+function withActivity(log: SubagentActivity[], a: Heard): SubagentActivity[] {
   const end = log.findIndex((x) => x.kind === "ended");
-  if (a.kind === "ended") return end >= 0 ? log : [...log, a].slice(-ACTIVITY_MAX);
+  if (a.kind === "ended" && end >= 0) return log;
   if (a.kind === "tool" && a.seq !== undefined && log.some((x) => x.kind === "tool" && x.seq === a.seq)) return log;
   const later = a.kind === "tool" && a.seq !== undefined ? log.findIndex((x) => x.kind === "tool" && x.seq !== undefined && x.seq > a.seq!) : -1;
   const at = later >= 0 ? later : end >= 0 ? end : log.length;
-  return [...log.slice(0, at), a, ...log.slice(at)].slice(-ACTIVITY_MAX);
+  const id = log.reduce((next, x) => Math.max(next, x.id + 1), 0);
+  return [...log.slice(0, at), { ...a, id }, ...log.slice(at)].slice(-ACTIVITY_MAX);
 }
 
 /**

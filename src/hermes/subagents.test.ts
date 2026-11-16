@@ -104,6 +104,26 @@ describe("The subagent tree from Hermes's events", () => {
     expect(c.activity.map((a) => (a.kind === "tool" ? a.tool : a.kind))).toEqual(["read_file", "grep", "terminal", "ended"]);
   });
 
+  it("never gives a line it has shown's id to another, while the cap drops old lines and late ones slot in", () => {
+    let t: SubagentTree | undefined;
+    const named = new Map<number, string>();
+    const call = (tool: string, seq: number) => {
+      t = onSubagentEvent(t, "subagent.tool", who("a", "Busy", { tool_name: tool, tool_count: seq }), seq);
+      for (const a of t!.subagents[0].activity) {
+        if (a.kind !== "tool") continue;
+        expect(named.get(a.id) ?? a.tool).toBe(a.tool);
+        named.set(a.id, a.tool);
+      }
+    };
+    for (let n = 1; n <= ACTIVITY_MAX; n++) call(`t${n * 10}`, n * 10);
+    // Older than everything kept: slotted in first, so the cap drops it at once.
+    call("before-all", 5);
+    // Slotted in second, then pushed to the front and dropped by the calls after it.
+    call("late", 25);
+    for (let n = ACTIVITY_MAX + 1; n <= ACTIVITY_MAX + 3; n++) call(`t${n * 10}`, n * 10);
+    expect(t!.subagents[0].activity.map((a) => a.kind === "tool" && a.tool).slice(0, 2)).toEqual(["t40", "t50"]);
+  });
+
   it("keeps at most so much activity per subagent, and so many subagents, letting the oldest ended ones go", () => {
     let t: SubagentTree | undefined;
     for (let n = 1; n <= ACTIVITY_MAX + 5; n++) t = onSubagentEvent(t, "subagent.tool", who("a", "Busy", { tool_name: `t${n}`, tool_count: n }), n);
