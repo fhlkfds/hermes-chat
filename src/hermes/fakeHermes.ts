@@ -336,6 +336,14 @@ export class FakeHermes {
   profileMeta: Record<string, { description?: string; description_auto?: boolean; display_name?: string; ui_meta?: Record<string, unknown> }> = {};
   /** Each profile's avatar, as a data URL (`profiles.get_asset`). */
   botAvatars: Record<string, string> = {};
+  /** Each profile's `ui_meta` revisions, by top-level key (`profile.yaml` `_ui_meta_revisions`). A key left out is at 0. */
+  uiMetaRevisions: Record<string, Record<string, number>> = {};
+  /** False: a Hermes older than the `ui_meta` compare-and-swap. Its rows report no `ui_meta_revisions`, and every `profiles.configure` writes blind. */
+  uiMetaCas = true;
+  /** Runs as each `profiles.configure` arrives, before its check, e.g. to write the block as another client would meanwhile. */
+  beforeConfigure?: (params: Record<string, unknown>) => void;
+  /** Runs as each `profiles.set_asset` arrives, before it writes. */
+  beforeSetAsset?: (params: Record<string, unknown>) => void;
   /** Runs as each `session.list` arrives, with its profile, e.g. to make a Bot Chat as another client would meanwhile. */
   beforeTitleLookup?: (profile: string) => void;
   /** Answers each `session.list` by title with this JSON-RPC error. */
@@ -809,6 +817,8 @@ export class FakeHermes {
       const data = this.botAvatars[String(r.params.name ?? "")];
       this.respond(r.id, data ? { found: true, mime: data.slice(5, data.indexOf(";")), size: data.length, data } : { found: false });
     },
+    "profiles.configure": (r) => this.configureProfile(r),
+    "profiles.set_asset": (r) => this.setProfileAsset(r),
     "session.create": (r) => {
       const n = this.requests.filter((q) => q.method === "session.create").length;
       const runtimeId = `rt-${n}`;
@@ -2262,6 +2272,8 @@ export class FakeHermes {
     move(this.profileEnv);
     move(this.profileModel);
     move(this.profileMeta);
+    move(this.uiMetaRevisions);
+    move(this.botAvatars);
     move(this.memory);
     move(this.distributions);
     move(this.skills.folders);
@@ -2312,6 +2324,8 @@ export class FakeHermes {
     delete this.profileEnv[name];
     delete this.profileModel[name];
     delete this.profileMeta[name];
+    delete this.uiMetaRevisions[name];
+    delete this.botAvatars[name];
     delete this.memory[name];
     delete this.skills.folders[name];
     this.skills.profiles.delete(name);
@@ -2831,6 +2845,132 @@ export class FakeHermes {
     return { path, name, size: typeof f === "string" ? f.length : f.size };
   }
 
+  /**
+   * What Hermes's desktop does when it saves a bot (`persistBotMetaPatch`): the Bot Mode block becomes
+   * `{...block, ...patch}`, a key patched to `undefined` goes, and the block's revision moves up by one. A test that
+   * changed `profileMeta` directly would leave the revision where it was, so no save could ever conflict.
+   */
+  writeBotAsOtherClient(profile: string, patch: Record<string, unknown>) {
+    const meta = this.profileMeta[profile] ?? {};
+    const block = meta.ui_meta?.["hermes-bots"];
+    const next = JSON.parse(JSON.stringify({ ...(typeof block === "object" && block !== null ? block : {}), ...patch })) as Record<string, unknown>;
+    this.profileMeta[profile] = { ...meta, ui_meta: { ...meta.ui_meta, "hermes-bots": next } };
+    const revisions = this.uiMetaRevisions[profile] ?? {};
+    this.uiMetaRevisions[profile] = { ...revisions, "hermes-bots": (revisions["hermes-bots"] ?? 0) + 1 };
+  }
+
+  /**
+   * The `profiles.configure` requests received that could have written over another client's change: one without a
+   * whole-number expected revision for the Bot Mode block, or one that names another `ui_meta` key. A test of the
+   * app's own writes expects none.
+   */
+  uncheckedConfigures(): Request[] {
+    const obj = (v: unknown) => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+    return this.requests.filter(
+      (r) => r.method === "profiles.configure" && (Object.keys(obj(r.params.ui_meta)).join() !== "hermes-bots" || !Number.isInteger(obj(r.params.ui_meta_expected_revisions)["hermes-bots"])),
+    );
+  }
+
+  /** A param the method's contract doesn't have is refused with 4000 before the handler runs, and nothing is written (probed on `f0d94882`). */
+  private extraParam(r: Request, allowed: string[]): boolean {
+    const extra = Object.keys(r.params ?? {}).find((k) => !allowed.includes(k));
+    if (extra) this.fail(r.id, 4000, `invalid params for ${r.method}: ${extra}: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions); run \`hermes update\` and restart both`);
+    return !!extra;
+  }
+
+  /**
+   * `profiles.configure` at `f0d94882` (`tui_gateway/methods_profiles.py`), its `ui_meta` section only, which is all
+   * this app sends: 4063 without a name, 4064 for a profile Hermes doesn't have, then `_configure_ui_meta`.
+   */
+  private configureProfile(r: Request) {
+    const allowed = ["profile", "name", "ui_meta", "ui_meta_expected_revisions", "soul", "description", "model", "provider", "confirm_expensive_model", "disabled_skills", "enabled_toolsets", "enabled_mcp_servers"];
+    if (this.extraParam(r, allowed)) return;
+    this.beforeConfigure?.(r.params);
+    const name = String(r.params.name ?? "").trim();
+    if (!name) return this.fail(r.id, 4063, "name required");
+    if (!this.profileNames().includes(name)) return this.fail(r.id, 4064, `profile '${name}' not found`);
+    const applied: Record<string, unknown> = {};
+    const incoming = r.params.ui_meta;
+    if (typeof incoming === "object" && incoming !== null && !Array.isArray(incoming)) this.configureUiMeta(name, incoming as Record<string, unknown>, r.params.ui_meta_expected_revisions, applied);
+    this.respond(r.id, { ok: Object.values(applied).every(Boolean), applied });
+  }
+
+  /**
+   * `_configure_ui_meta`: each top-level key of `incoming` replaces that key whole (`null` deletes it) and moves its
+   * revision up by one, revisions outliving a deleted key. With expected revisions, every incoming key is checked
+   * first, a key left out or not a whole number counting as a mismatch, and any mismatch rejects the whole write as a
+   * successful answer with `ui_meta: false` and `ui_meta_conflicts`. Without them the write is blind. Over 64 KB of
+   * JSON it is `ui_meta: false` alone (Hermes measures Python's `json.dumps`, a little longer than this).
+   */
+  private configureUiMeta(name: string, incoming: Record<string, unknown>, expected: unknown, applied: Record<string, unknown>) {
+    applied.ui_meta = false;
+    if (JSON.stringify(incoming).length > 65536) return;
+    const checked = this.uiMetaCas && expected !== undefined && expected !== null;
+    if (checked && (typeof expected !== "object" || Array.isArray(expected))) return;
+    const revisions = { ...this.uiMetaRevisions[name] };
+    if (checked) {
+      const conflicts: Record<string, { expected: unknown; actual: number }> = {};
+      for (const key of Object.keys(incoming)) {
+        const wanted = (expected as Record<string, unknown>)[key];
+        const actual = revisions[key] ?? 0;
+        if (typeof wanted !== "number" || !Number.isInteger(wanted) || wanted < 0 || wanted !== actual) conflicts[key] = { expected: wanted ?? null, actual };
+      }
+      if (Object.keys(conflicts).length) {
+        applied.ui_meta_conflicts = conflicts;
+        applied.ui_meta_revisions = Object.fromEntries(Object.keys(incoming).map((key) => [key, revisions[key] ?? 0]));
+        return;
+      }
+    }
+    const { ui_meta: held, ...meta } = this.profileMeta[name] ?? {};
+    const current = { ...held };
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value === null) delete current[key];
+      else current[key] = structuredClone(value);
+      revisions[key] = (revisions[key] ?? 0) + 1;
+    }
+    this.profileMeta[name] = { ...meta, ...(Object.keys(current).length > 0 && { ui_meta: current }) };
+    this.uiMetaRevisions[name] = revisions;
+    applied.ui_meta = true;
+    applied.ui_meta_revisions = Object.fromEntries(Object.keys(incoming).map((key) => [key, revisions[key]]));
+  }
+
+  /**
+   * `profiles.set_asset` at `f0d94882`: stores the profile's avatar from a data URL or bare base64, or clears it. The
+   * format is sniffed from the bytes, never taken from the data URL's label, and `profiles.get_asset` answers with the
+   * sniffed type. 4063 no name, 4066 another asset, 4064 no such profile, 4067 no data, 4068 not base64, 4069 over
+   * 2 MB, 4070 not PNG, JPEG or WebP.
+   */
+  private setProfileAsset(r: Request) {
+    if (this.extraParam(r, ["profile", "name", "asset", "data", "clear"])) return;
+    this.beforeSetAsset?.(r.params);
+    const name = String(r.params.name ?? "").trim();
+    const asset = String(r.params.asset || "avatar").trim().toLowerCase();
+    if (!name) return this.fail(r.id, 4063, "name required");
+    if (asset !== "avatar") return this.fail(r.id, 4066, `unknown asset '${asset}' (supported: avatar)`);
+    if (!this.profileNames().includes(name)) return this.fail(r.id, 4064, `profile '${name}' not found`);
+    if (r.params.clear === true || (typeof r.params.clear === "string" && ["1", "true", "yes", "on"].includes(r.params.clear.trim().toLowerCase()))) {
+      const removed = name in this.botAvatars ? 1 : 0;
+      delete this.botAvatars[name];
+      return this.respond(r.id, { ok: true, asset, size: 0, removed });
+    }
+    const data = typeof r.params.data === "string" ? r.params.data : "";
+    if (!data) return this.fail(r.id, 4067, "data required (data URL or base64)");
+    const payload = /^data:image\/(?:png|jpeg|webp);base64,([\s\S]*)$/.exec(data)?.[1] ?? data;
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(payload)) return this.fail(r.id, 4068, "data is not valid base64");
+    const bytes = atob(payload);
+    if (bytes.length > 2_000_000) return this.fail(r.id, 4069, `asset too large (${bytes.length} bytes; max 2MB)`);
+    const mime = bytes.startsWith("\x89PNG\r\n\x1a\n")
+      ? "image/png"
+      : bytes.startsWith("\xff\xd8\xff")
+        ? "image/jpeg"
+        : bytes.startsWith("RIFF") && bytes.slice(8, 12) === "WEBP"
+          ? "image/webp"
+          : undefined;
+    if (!mime) return this.fail(r.id, 4070, "unsupported image format (PNG/JPEG/WebP only)");
+    this.botAvatars[name] = `data:${mime};base64,${payload}`;
+    this.respond(r.id, { ok: true, asset, size: bytes.length });
+  }
+
   /** Every profile, default first. */
   private profileNames(): string[] {
     return ["default", ...Object.keys(this.otherProfiles)];
@@ -2866,7 +3006,7 @@ export class FakeHermes {
       last_session: last ? { id: last.id, title: last.title ?? "", preview: last.preview, started_at: last.started_at, last_active: recent(last), message_count: last.message_count } : null,
       worker_session: null,
       ...(this.botMode === "full" && { canonical_session: canonical }),
-      ui_meta_revisions: meta.ui_meta ? { "hermes-bots": 1 } : {},
+      ...(this.uiMetaCas && { ui_meta_revisions: { ...this.uiMetaRevisions[name] } }),
       ...(meta.ui_meta && { ui_meta: structuredClone(meta.ui_meta) }),
       has_avatar: name in this.botAvatars,
     };
