@@ -178,6 +178,13 @@ kbd {
 .settled-drawer { flex: none; display: flex; flex-direction: column; max-height: 50%; padding: 0 10px 8px; border-top: 1px solid var(--line); }
 .settled-drawer > .section-toggle { padding-top: 10px; }
 .settled-list { overflow-y: auto; min-height: 0; }
+/* Under the drawer's rows while more Settled chats wait (ADR 0185): a full-width row of its own, quieter than a chat. */
+.settled-more {
+  display: block; width: 100%; height: 30px; margin-top: 2px; padding-left: 10px; border-radius: 9px; text-align: left;
+  font-size: calc(12.5rem / 14); color: var(--muted); font-weight: 500;
+}
+.settled-more:hover { color: var(--text-2); background: var(--hover); }
+.settled-more:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .settled-drawer.drop,
 .sb-scroll[data-drop="inbox"] .row[data-section="inbox"],
 .sb-scroll[data-drop="inbox"] [data-section-head="inbox"],
