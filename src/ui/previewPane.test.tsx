@@ -51,6 +51,13 @@ const button = (name: string) => within(pane()).getByRole<HTMLButtonElement>("bu
 /** The preview's file reads. The `outputs` capability probe's `GET /api/fs/list` at sign-in may land at any time. */
 const fsReads = (s: FakeHermes) => s.restRequests.filter((r) => r.path.startsWith("/api/fs/") && r.path !== "/api/fs/list");
 
+/** A zip, one character per byte, whose first file's central directory entry says it unpacks to `size`. */
+function claimsToUnpackTo(zip: string, size: number) {
+  const at = zip.indexOf("PK\x01\x02") + 24;
+  const le = String.fromCharCode(size & 0xff, (size >>> 8) & 0xff, (size >>> 16) & 0xff, size >>> 24);
+  return zip.slice(0, at) + le + zip.slice(at + 4);
+}
+
 /** A local disk the Open dialog picks from: `pick` is what the owner picks next (null cancels). */
 function localDisk(files: Record<string, FileView | Error>) {
   const local: LocalFiles & { next: { path: string; name: string } | null } = {
@@ -214,6 +221,7 @@ async function signedIn({ local = localDisk({}), web = theWeb(), pages = theServ
     "/home/liam/app/app.bin": "\x7fELF\0\0\0\0",
     "/home/liam/app/plan.docx": readFileSync("src/ui/fixtures/plan.docx", "latin1"),
     "/home/liam/app/notes.pdf": "<html>not a pdf",
+    "/home/liam/app/bomb.docx": claimsToUnpackTo(readFileSync("src/ui/fixtures/plan.docx", "latin1"), 256 * 1024 * 1024),
     "/home/liam/app/.env": "SECRET=1",
   };
   const hermes = await connect(server.openPipe);
@@ -383,6 +391,14 @@ describe("What the pane shows", () => {
   it("says when a file named like a document isn't one", async () => {
     await openPath("/home/liam/app/notes.pdf");
     expect((await within(pane()).findByRole("note")).textContent).toBe("No preview for this fileThis file is named like a PDF, but its bytes aren't one. It's 15 B.");
+  });
+
+  it("won't unpack a Word file that says it unpacks to more than the preview opens", async () => {
+    await openPath("/home/liam/app/bomb.docx");
+    expect((await within(pane()).findByRole("alert")).textContent).toBe(
+      "Couldn't show this documentIt unpacks to 256 MB, and the preview opens Word documents up to 100 MB.",
+    );
+    expect(within(pane()).queryByTitle("Rendered /home/liam/app/bomb.docx")).toBeNull();
   });
 
   it("says why it can't show a binary file, a missing one, or one with credentials", async () => {

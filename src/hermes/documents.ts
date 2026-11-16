@@ -32,6 +32,32 @@ export const looksLike = (format: DocumentFormat, bytes: Uint8Array) => FORMATS[
 /** Why bytes named as `format` can't be shown as it. */
 export const notA = (format: DocumentFormat) => `This file is named like ${FORMATS[format].what}, but its bytes aren't one.`;
 
+/** The most a Word file may unpack to before mammoth opens it: a small zip can unpack to gigabytes. */
+export const DOCX_UNPACKED_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * What a zip archive says its files unpack to, in all, from its central directory; undefined when it isn't a zip this
+ * can read (no end record, or a Zip64 archive, whose sizes are elsewhere).
+ */
+export function zipUnpackedSize(bytes: Uint8Array): number | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = bytes.length - 22;
+  // The end record is the last 22 bytes, unless a comment of up to 64 KB follows it.
+  while (end >= Math.max(0, bytes.length - 22 - 0xffff) && view.getUint32(end, true) !== 0x06054b50) end--;
+  if (end < 0 || end < bytes.length - 22 - 0xffff) return undefined;
+  const count = view.getUint16(end + 10, true);
+  let at = view.getUint32(end + 16, true);
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    if (at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50) return undefined;
+    const size = view.getUint32(at + 24, true);
+    if (size === 0xffffffff) return undefined;
+    total += size;
+    at += 46 + view.getUint16(at + 28, true) + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+  }
+  return total;
+}
+
 /** The bytes of a base64 `data:` URL, or undefined when it isn't one. */
 export function dataUrlBytes(url: string): Uint8Array | undefined {
   const m = /^data:[^,]*;base64,/.exec(url);
