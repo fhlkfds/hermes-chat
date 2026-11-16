@@ -1,4 +1,4 @@
-// The budget watch (ADR 0188): one per live connection. It is the only thing that reads Hermes for budgets, the only
+// The budget watch (ADR 0190): one per live connection. It is the only thing that reads Hermes for budgets, the only
 // writer of the connection's budgets and their fired marks, and the one place a crossing turns into a notification.
 // The Budgets tab holds no copy of any of it: it subscribes to the board and asks the watch to change things.
 //
