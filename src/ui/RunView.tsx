@@ -2,7 +2,7 @@
 // with how long it took and whether it failed. Every figure the app inferred, rather than Hermes measured, is marked.
 import { useEffect, useId, useRef, useState } from "react";
 import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Wrench } from "lucide-react";
-import { questionName, type Length, type Run, type Step, type ToolProgress } from "../hermes/flightRecorder";
+import { isCompaction, questionName, type Length, type Run, type Step, type ToolProgress } from "../hermes/flightRecorder";
 import { tokens, usd } from "../hermes/usage";
 import { errorText, lengthText, plural } from "../hermes/values";
 import { Spinner } from "./bits";
@@ -50,7 +50,7 @@ function stepName(s: Step): string {
     case "question":
       return questionName(s.what);
     case "status":
-      return s.status === "compacting" || s.status === "compressing" ? "Compaction" : s.status === "warn" ? "Warning" : "Status";
+      return isCompaction(s.status) ? "Compaction" : s.status === "warn" ? "Warning" : "Status";
     case "error":
       return "Error";
   }
@@ -91,6 +91,7 @@ function StepDetail({ step, run }: { step: Step; run: Run }) {
         Started {offset} into the run{run.source === "stored" ? ", worked out from the stored row before it" : ", as this app heard it"}.
         {step.kind === "tool" && step.placed && " Hermes sent no start for it, so it is placed back from its measured length."}
         {step.kind === "tool" && step.together && " It ran beside other tools, so its stored gap isn't its own length."}
+        {step.kind === "status" && step.end > step.start && (step.done ? " Ended when Hermes said the compaction was complete." : " Ended at its last progress line this app heard.")}
       </p>
       {step.failed && (
         <p className="run-bad">
