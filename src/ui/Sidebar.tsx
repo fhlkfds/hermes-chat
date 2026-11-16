@@ -998,12 +998,12 @@ function SettledList({ chats, selectedId, row }: { chats: Chat[]; selectedId: st
   const list = useRef<HTMLDivElement>(null);
   // A keyboard press moves focus to the first row it drew, so the keyboard carries on down the list once the button
   // goes. A pointer click doesn't: a focused row shows its buttons, as a hovered one does.
-  const [focusFrom, setFocusFrom] = useState<number>();
+  const [focusOn, setFocusOn] = useState<string>();
   useEffect(() => {
-    if (focusFrom === undefined) return;
-    list.current?.querySelectorAll<HTMLElement>(".row-open")[focusFrom]?.focus();
-    setFocusFrom(undefined);
-  }, [focusFrom]);
+    if (focusOn === undefined) return;
+    list.current?.querySelector<HTMLElement>(`.row-open[data-chat="${CSS.escape(focusOn)}"]`)?.focus();
+    setFocusOn(undefined);
+  }, [focusOn]);
   return (
     <div className="settled-list" ref={list}>
       {chats.slice(0, upTo).map(row)}
@@ -1012,7 +1012,7 @@ function SettledList({ chats, selectedId, row }: { chats: Chat[]; selectedId: st
           className="settled-more"
           onClick={(e) => {
             setShown(upTo + SETTLED_PAGE);
-            if (e.detail === 0) setFocusFrom(upTo);
+            if (e.detail === 0) setFocusOn(chats[upTo].id);
           }}
         >
           Show {Math.min(SETTLED_PAGE, rest)} more

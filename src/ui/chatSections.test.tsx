@@ -233,6 +233,22 @@ describe("The Settled drawer, in the list", () => {
     expect(document.activeElement?.closest(".row")).toBeNull();
   });
 
+  it("moves focus to the first new row on a keyboard press while a row above is being renamed", async () => {
+    const user = userEvent.setup();
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany.slice(0, 11)} />);
+    const s5 = drawer()!.querySelector<HTMLElement>('.row-open[data-chat="s5"]')!;
+    await user.pointer({ keys: "[MouseRight]", target: s5 });
+    await user.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    // An edited title keeps the rename box open when focus leaves it, so s5 has no row button meanwhile.
+    await user.type(screen.getByRole("textbox", { name: "Chat title" }), " edited");
+    more()!.focus();
+    expect(screen.getByRole("textbox", { name: "Chat title" })).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(more()).toBeNull();
+    expect(document.activeElement?.getAttribute("data-chat")).toBe("s11");
+  });
+
   it("has Working right above it, the scroll's last section, whether Archived shows or not", () => {
     const chats = [...mix, chat("nap")];
     const all = ["pinned", "inbox", "snoozed", "archived", "working", "settled"] as const;
