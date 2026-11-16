@@ -1,4 +1,4 @@
-// Budgets (#605, GLOSSARY.md "Budget", ADR 0188): a limit on what a server, a profile, a project or a model may spend
+// Budgets (#605, GLOSSARY.md "Budget", ADR 0190): a limit on what a server, a profile, a project or a model may spend
 // per day, week or month, in dollars or tokens, kept on this computer per connection. This module is pure: no
 // storage, no Hermes, no timers. Everything is a function of the budgets, the facts one check read, and `now`.
 //

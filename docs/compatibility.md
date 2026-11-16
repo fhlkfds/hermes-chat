@@ -204,7 +204,7 @@ Needs `subagent.roster` on `/api/ws`, which counts the background subagents and 
 
 ## Budgets
 
-Usage → Budgets needs nothing new for a budget on the server, a profile or a project: it adds up the chat totals Usage analytics already reads from `GET /api/sessions` (ADR 0026). A budget on a model also needs `GET /api/analytics/models`, Hermes's spending for each model it called, counted per call. Hermes `bf0203a` and `f0d9488` have it. Checked with `GET /api/analytics/models?days=1`. Without it, a model budget shows no figure and sends no alert, and says why. The route takes only whole days back from now, so a model budget counts the last 24 hours, 7 days or 30 days. Its sums include Hermes's helper tasks and subagent runs, have no cache-write count, and count a model Hermes can't price as $0 (ADR 0188).
+Usage → Budgets needs nothing new for a budget on the server, a profile or a project: it adds up the chat totals Usage analytics already reads from `GET /api/sessions` (ADR 0026). A budget on a model also needs `GET /api/analytics/models`, Hermes's spending for each model it called, counted per call. Hermes `bf0203a` and `f0d9488` have it. Checked with `GET /api/analytics/models?days=1`. Without it, a model budget shows no figure and sends no alert, and says why. The route takes only whole days back from now, so a model budget counts the last 24 hours, 7 days or 30 days. Its sums include Hermes's helper tasks and subagent runs, have no cache-write count, and count a model Hermes can't price as $0 (ADR 0190).
 
 ## Run view
 

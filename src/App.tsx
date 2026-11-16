@@ -297,7 +297,7 @@ const keepDraft = (key: string, text: string) => {
 };
 const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
-/** Where a budget notification's click goes: Usage → Budgets on its connection, made the one shown first (ADR 0188). */
+/** Where a budget notification's click goes: Usage → Budgets on its connection, made the one shown first (ADR 0190). */
 const budgetOpener = new BudgetOpener();
 /** A budget watch per live connection (budgetWatch.ts), kept in step with them by `Screens`. */
 const budgetWatches = new BudgetWatches((id) => {

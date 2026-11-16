@@ -1,4 +1,4 @@
-// The budget watch (budgetWatch.ts, ADR 0188): one read serves every budget, each threshold is announced once per
+// The budget watch (budgetWatch.ts, ADR 0190): one read serves every budget, each threshold is announced once per
 // period however many windows check, an edit re-arms, and the budgets follow a profile's rename on this computer.
 import { describe, expect, it, vi } from "vitest";
 import { BUDGETS_KEY, BudgetOpener, BudgetStorageError, BudgetWatch, BudgetWatches, budgetShelves, type BudgetIo, type WatchDeps } from "./budgetWatch";
