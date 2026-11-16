@@ -1990,7 +1990,7 @@ button.settings-search-tab:hover { color: var(--text); }
 }
 .pctx-text-dialog textarea:focus { border-color: var(--line-3); }
 .leave-overlay .leave-dialog.pctx-preview-dialog { max-width: min(860px, calc(100% - 32px)); width: 100%; height: min(680px, calc(100% - 32px)); padding: 0; display: flex; }
-.pctx-preview-dialog .files-preview { width: 100%; border-left: 0; background: none; }
+.pctx-preview-dialog .files-preview { width: 100%; flex: 1; border-left: 0; background: none; }
 
 /* ---------- preview pane (PreviewPane.tsx, ADR 0007) ---------- */
 .preview {
