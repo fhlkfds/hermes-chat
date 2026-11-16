@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Run view (RunView.tsx, ADR 0177): opened from a turn's last reply, it draws the steps and shows one's details.
+// The Run view (RunView.tsx, ADR 0178): opened from a turn's last reply, it draws the steps and shows one's details.
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";

@@ -1,4 +1,4 @@
-// The Run view (ADR 0177): one reply's turn drawn as a timeline of steps, each with how long it took and whether it
+// The Run view (ADR 0178): one reply's turn drawn as a timeline of steps, each with how long it took and whether it
 // failed. Research doc `docs/research/fleet-features-server-support.md`, "Flight recorder".
 //
 // Two sources, never mixed:

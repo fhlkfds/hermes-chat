@@ -127,7 +127,7 @@ const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
 /**
  * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and
  * each turn's last reply with text whoever began the turn, or its last error when it has none (`replies`), where the Run
- * view opens (ADR 0177).
+ * view opens (ADR 0178).
  */
 type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; replies: Set<string> };
 
@@ -397,7 +397,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply. Copy is under
  * every sent message and finished reply with text, whatever else is offered. `compare`: the pane is one of two compared
  * panes (ADR 0101), so a send goes to both chats and nothing queues or steers. `run` reads the Run view of a turn's
- * last reply (ADR 0177), offered under each.
+ * last reply (ADR 0178), offered under each.
  */
 export function ChatPane({
   chat,

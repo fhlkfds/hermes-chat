@@ -461,7 +461,7 @@ export function CapabilityGate({
   );
 }
 
-/** Whether Hermes sends ordinary tool steps for the profile, for the Run view (ADR 0177). */
+/** Whether Hermes sends ordinary tool steps for the profile, for the Run view (ADR 0178). */
 function toolStepsLine(p: ServerFacts["toolProgress"]): ReactNode {
   if (!p) return <span className="muted">Not read yet</span>;
   if ("why" in p) return <span className="muted">{p.why}</span>;

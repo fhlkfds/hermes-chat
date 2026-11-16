@@ -3358,7 +3358,7 @@ label.memory-pick { cursor: pointer; }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
 
-/* ---------- Run view (RunView.tsx, ADR 0177) ---------- */
+/* ---------- Run view (RunView.tsx, ADR 0178) ---------- */
 .leave-overlay .leave-dialog.run-dialog { max-width: min(760px, calc(100% - 32px)); width: 100%; max-height: min(92vh, 900px); overflow-y: auto; }
 .run-dialog > * { flex-shrink: 0; }
 .run-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

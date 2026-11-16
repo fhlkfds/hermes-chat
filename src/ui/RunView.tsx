@@ -1,4 +1,4 @@
-// The Run view (ADR 0177): the button under a reply, and the dialog that draws the reply's turn as a waterfall of
+// The Run view (ADR 0178): the button under a reply, and the dialog that draws the reply's turn as a waterfall of
 // steps, each with how long it took and whether it failed. Clicking a step shows its arguments and result.
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { Activity, CircleAlert, MessageCircleQuestionMark, Minimize2, Sparkles, TriangleAlert, Wrench, X } from "lucide-react";

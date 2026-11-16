@@ -808,7 +808,7 @@ export class Hermes {
   private turnStart = new Map<string, string | null>();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
   private unprompted = new Set<string>();
-  /** The turn each chat is in, as this app hears it, by profile and chat id (ADR 0177). Kept in memory only. */
+  /** The turn each chat is in, as this app hears it, by profile and chat id (ADR 0178). Kept in memory only. */
   private recording = new PerProfile<Recording>();
   /** Each chat's finished runs this app heard, oldest first, at most `RUNS_KEPT`. Kept in memory only. */
   private recorded = new PerProfile<Recording[]>();
@@ -4131,7 +4131,7 @@ export class Hermes {
   }
 
   /**
-   * Adds an event to the run of the turn the chat is in (ADR 0177). `message.start` begins a new run, measured from the
+   * Adds an event to the run of the turn the chat is in (ADR 0178). `message.start` begins a new run, measured from the
    * session's counters and the chat's cost as they stand; a run left open by a turn that never ended is dropped. Events
    * outside a turn belong to no run.
    */
@@ -4175,7 +4175,7 @@ export class Hermes {
   }
 
   /**
-   * The Run view of a reply (ADR 0177): the run this app watched end with it, else the turn's stored rows, read from
+   * The Run view of a reply (ADR 0178): the run this app watched end with it, else the turn's stored rows, read from
    * Hermes by the reply's stored row. Rejects when neither is had. Also reads whether Hermes sends ordinary tool steps
    * for the profile (`display.tool_progress`).
    */

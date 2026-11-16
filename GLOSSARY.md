@@ -414,7 +414,7 @@ _Avoid_: OAuth (the mechanism, not the thing), account (Hermes's word, too broad
 An OpenAI-compatible server a profile can use as a model provider, such as Ollama, LM Studio, vLLM or Groq, named by its base URL. Hermes checks it by asking it for its models, and reaches it from the server, so `localhost` is the Hermes server. Its API key, if any, goes to the profile's `.env` like a Provider key. Settings → Providers adds, activates as the default, and removes one (ADR 0133).
 _Avoid_: local model (it may be hosted), custom provider (Hermes's older config name)
 **Run view**:
-A reply's turn drawn as a timeline of steps: model calls, tool calls, Questions, compactions, status lines and errors, each with how long it took and whether it looks failed (ADR 0177). A watched run comes from the events this app heard, timed by when each arrived. A stored run comes from Hermes's stored rows, each timed by when its step ended. Only a tool's length from Hermes is measured. Every other figure is inferred and marked so.
+A reply's turn drawn as a timeline of steps: model calls, tool calls, Questions, compactions, status lines and errors, each with how long it took and whether it looks failed (ADR 0178). A watched run comes from the events this app heard, timed by when each arrived. A stored run comes from Hermes's stored rows, each timed by when its step ended. Only a tool's length from Hermes is measured. Every other figure is inferred and marked so.
 _Avoid_: trace, flight recorder (the issue's name for the whole feature), timeline (alone)
 
 **Usage**:
