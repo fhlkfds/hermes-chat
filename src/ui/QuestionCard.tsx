@@ -2,8 +2,8 @@
 // only in the card's masked DOM field until it goes to Hermes; the card then keeps only that it was answered (ADR 0146).
 import { useCallback, useId, useRef, useState, type KeyboardEvent } from "react";
 import { KeyRound, MessageCircleQuestion } from "lucide-react";
-import type { ClarifyQuestion, QuestionAnswer, QuestionItem } from "../hermes/model";
-import { endedNote, useDeliberate, visible } from "./ApprovalCard";
+import { endedNote, type ClarifyQuestion, type QuestionAnswer, type QuestionItem } from "../hermes/model";
+import { useDeliberate, visible } from "./ApprovalCard";
 
 type Card = Exclude<QuestionItem, { kind: "approval" }>;
 

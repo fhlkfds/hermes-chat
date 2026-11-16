@@ -4385,6 +4385,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .run-failed .run-bar.inferred { background: repeating-linear-gradient(135deg, var(--bad) 0 4px, transparent 4px 7px); border-color: var(--bad); }
 .run-bar.moment { width: 3px !important; min-width: 3px; border: 0; background: var(--muted); }
 .run-failed .run-bar.moment { background: var(--bad); }
+.run-gap .run-bar.inferred { background: none; border: 1px dashed var(--muted); }
 .run-took { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
 .run-detail { padding: 4px 8px 10px 26px; display: flex; flex-direction: column; gap: 8px; }
 .run-block-label { color: var(--faint); font-size: calc(12rem / 14); margin-bottom: 2px; }

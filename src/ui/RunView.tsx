@@ -1,7 +1,7 @@
 // The Run view (ADR 0178): a reply's turn as a waterfall of model calls, tool calls, Questions and status lines, each
 // with how long it took and whether it failed. Every figure the app inferred, rather than Hermes measured, is marked.
 import { useEffect, useId, useRef, useState } from "react";
-import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Wrench } from "lucide-react";
+import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Unplug, Wrench } from "lucide-react";
 import { isCompaction, questionName, type Length, type Run, type Step, type ToolProgress } from "../hermes/flightRecorder";
 import { tokens, usd } from "../hermes/usage";
 import { errorText, lengthText, plural } from "../hermes/values";
@@ -53,6 +53,8 @@ function stepName(s: Step): string {
       return isCompaction(s.status) ? "Compaction" : s.status === "warn" ? "Warning" : "Status";
     case "error":
       return "Error";
+    case "gap":
+      return "Not heard";
   }
 }
 
@@ -61,6 +63,7 @@ function StepIcon({ step }: { step: Step }) {
   if (step.kind === "model") return <Bot size={13} aria-hidden />;
   if (step.kind === "tool") return <Wrench size={13} aria-hidden />;
   if (step.kind === "question") return <MessageCircleQuestion size={13} aria-hidden />;
+  if (step.kind === "gap") return <Unplug size={13} aria-hidden />;
   return <Info size={13} aria-hidden />;
 }
 
@@ -91,6 +94,8 @@ function StepDetail({ step, run }: { step: Step; run: Run }) {
         Started {offset} into the run{run.source === "stored" ? ", worked out from the stored row before it" : ", as this app heard it"}.
         {step.kind === "tool" && step.placed && " Hermes sent no start for it, so it is placed back from its measured length."}
         {step.kind === "tool" && step.together && " It ran beside other tools, so its stored gap isn't its own length."}
+        {step.kind === "tool" && step.endUnheard && " This app didn't hear it end, so it is drawn until the turn was next heard going on, or to the turn's end."}
+        {step.kind === "question" && step.late && " Hermes asked it while this app couldn't hear, so it was asked before this."}
         {step.kind === "status" && step.end > step.start && (step.done ? " Ended when Hermes said the compaction was complete." : " Ended at its last progress line this app heard.")}
       </p>
       {step.failed && (
@@ -130,6 +135,12 @@ function StepDetail({ step, run }: { step: Step; run: Run }) {
         </>
       )}
       {(step.kind === "status" || step.kind === "error") && <Block label="Hermes said" text={step.text} />}
+      {step.kind === "gap" && (
+        <p>
+          The connection to Hermes dropped, or this app showed another profile, so it heard nothing of the turn until it reconnected. Steps Hermes took
+          in this time are missing, and no step's tokens are counted across it.
+        </p>
+      )}
     </div>
   );
 }
@@ -192,6 +203,7 @@ export function RunDialog({ api, onClose }: { api: RunApi; onClose: () => void }
   const span = run ? Math.max(1, run.end - run.start) : 1;
   const failedTool = run?.steps.some((s) => s.kind === "tool" && s.failed);
   const together = run?.steps.some((s) => s.kind === "tool" && s.together);
+  const unheard = run?.steps.some((s) => s.kind === "gap");
   const toolsOff = run?.source === "watched" && state.phase === "ready" && state.toolProgress === "off";
 
   return (
@@ -272,6 +284,7 @@ export function RunDialog({ api, onClose }: { api: RunApi; onClose: () => void }
               <li>≈ marks a time, token count or cost this app inferred. A tool length without it is Hermes's own measurement.</li>
               {failedTool && <li>Hermes sends no failure flag for a tool call, so a failed one is judged from its result, as Hermes judges one to show.</li>}
               {together && <li>Tools called together are stored as each finishes, in call order, so their gaps aren't each one's own length.</li>}
+              {unheard && <li>Steps Hermes took while this app couldn't hear it are missing. Not heard marks when.</li>}
               <li>Hermes reports retries only when every retry failed, so a retry that recovered can't show here.</li>
             </ul>
           </>
