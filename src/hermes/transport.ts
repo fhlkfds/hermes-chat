@@ -2335,6 +2335,14 @@ export class Hermes {
     if (this.isStored(chatId)) return this.snapshot.status === "connected" ? this.readStored(chatId) : undefined;
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
+    // A list saved before job runs had a kind of their own may hold a run as another platform's chat. The list read
+    // drops it, and the pane then finds it by its id as what it is, so nothing is marked or resumed before then. If the
+    // list can't be read, the chat shows its Saved copy until it can, and opens in full on the next open.
+    const unconfirmed = this.snapshot.chats.find((c) => c.id === chatId && c.source === "other" && !c.runtimeId && !this.revealed.has(c.id));
+    if (unconfirmed && !this.hasListed()) {
+      await this.sync();
+      if (!this.hasListed() || !this.snapshot.chats.some((c) => c.id === chatId) || !this.isViewing(chatId)) return;
+    }
     this.seen(chatId);
     // A chat the list didn't bring totals for, such as an older one opened from a search, reads its own.
     if (!this.snapshot.chats.find((c) => c.id === chatId)?.usage) this.track(this.refreshUsage(chatId));
@@ -4394,7 +4402,9 @@ export class Hermes {
     const PAGE = 100;
     const rows: RunRow[] = [];
     for (let page = 0; page < RUN_PAGES; page++) {
-      const query = new URLSearchParams({ profile, order: "latest", limit: String(PAGE), offset: String(page * PAGE), inline_images: "false" });
+      // A job run's chat shows its compacted turns, so their replies are looked for among them too.
+      const compacted: Record<string, string> = this.isStored(chatId) ? { include_compacted: "true" } : {};
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(PAGE), offset: String(page * PAGE), ...compacted, inline_images: "false" });
       const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: RunRow[] };
       const got = (res.messages ?? []).filter((m) => typeof m?.id === "number" && typeof m.role === "string");
       // A `latest` page counts back from the newest row and is itself oldest first.

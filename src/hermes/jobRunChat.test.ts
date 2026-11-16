@@ -106,6 +106,45 @@ describe("A job run's chat", () => {
     expect(writes(s)).toEqual([]);
   });
 
+  it("waits for the list before opening a chat a list saved before this change holds as another platform's", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row(RUN, 0, { source: "cron", title: "Disk check · Nov 16 14:40", started_at: STARTED, last_active: STARTED + 60, last_read_at: 0 })];
+    server.transcripts[RUN] = runRows();
+    const cache = memoryCache({ saved: { default: [{ id: RUN, title: "Disk check · Nov 16 14:40", source: "other", settled: true, updatedAt: (STARTED + 60) * 1000, items: [] }] } });
+    const hermes = await connect(server.openPipe, undefined, cache);
+    expect(hermes.hasListed()).toBe(false);
+    await hermes.open(RUN);
+    await hermes.idle();
+    expect(hermes.getSnapshot().chats.map((c) => c.id)).toEqual([]);
+    expect(server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
+    expect(server.restRequests.filter((r) => r.method !== "GET")).toEqual([]);
+  });
+
+  it("marks and resumes nothing in such a chat while the list can't be read", async () => {
+    const server = new FakeHermes();
+    server.sessions = [row(RUN, 0, { source: "cron", title: "Disk check · Nov 16 14:40", started_at: STARTED, last_active: STARTED + 60, last_read_at: 0 })];
+    server.transcripts[RUN] = runRows();
+    server.rest["GET /api/sessions"] = () => {
+      throw new RestError(503, '{"detail":"Session store not ready"}');
+    };
+    const cache = memoryCache({ saved: { default: [{ id: RUN, title: "Disk check · Nov 16 14:40", source: "other", settled: true, updatedAt: (STARTED + 60) * 1000, items: [] }] } });
+    const hermes = await connect(server.openPipe, undefined, cache);
+    await hermes.open(RUN);
+    await hermes.idle();
+    expect(hermes.hasListed()).toBe(false);
+    expect(server.requests.filter((r) => r.method === "session.resume")).toEqual([]);
+    expect(server.restRequests.filter((r) => r.method !== "GET")).toEqual([]);
+  });
+
+  it("finds a compacted reply's steps for its Run view among the run's compacted rows", async () => {
+    const s = await signedIn();
+    s.server.transcripts[RUN] = runRows().map((m) => (m.row_id === 104 ? m : { ...m, compacted: true }));
+    reveal(s);
+    await s.hermes.open(RUN);
+    const reply = chat(s)!.items.find((i) => i.kind === "assistant" && i.text === "Checking the root filesystem first.")!;
+    await expect(s.hermes.run(RUN, reply.id)).resolves.toBeDefined();
+  });
+
   it("is read again each time it opens, and keeps no copy on this computer", async () => {
     const s = await signedIn();
     reveal(s);
