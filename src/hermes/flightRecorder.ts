@@ -16,15 +16,22 @@ export type Heard =
   | { kind: "tool.complete"; at: number; id: string; name: string; args?: Record<string, unknown>; durationS?: number; result?: string }
   | { kind: "usage"; at: number; counters: UsageCounters }
   | { kind: "status"; at: number; status: string; text: string }
-  /** `requestId`: an Approval's own id, which `approval.cancelled` may name instead of the request's frame id. */
-  | { kind: "ask"; at: number; id: string; requestId?: string; what: QuestionKind; summary: string }
+  /**
+   * `requestId`: an Approval's own id, which `approval.cancelled` may name instead of the request's frame id. `late`:
+   * Hermes asked it while the app couldn't hear, and listed it once the app was back, so it was asked before `at`.
+   */
+  | { kind: "ask"; at: number; id: string; requestId?: string; what: QuestionKind; summary: string; late?: boolean }
   /**
    * A Question ended: Hermes stopped waiting (`request.cancel`, `approval.cancelled`), or `answered` from here. Hermes
    * may say it stopped waiting, as `resolved`, before the app hears its own answer was taken.
    */
   | { kind: "settled"; at: number; ids?: string[]; how: string; answered?: boolean }
   | { kind: "error"; at: number; message: string }
-  | { kind: "end"; at: number; status: string; failure?: string; counters?: UsageCounters };
+  | { kind: "end"; at: number; status: string; failure?: string; counters?: UsageCounters }
+  /** The connection dropped, or the app switched profile, so nothing of the turn was heard until it `rejoined`. */
+  | { kind: "dropped"; at: number }
+  /** The app reattached to the turn's session, with the turn still running. */
+  | { kind: "rejoined"; at: number };
 
 /**
  * A turn the app watched. `from`: the counters at its start, when known. `costBefore` / `costAfter`: the chat's cost
@@ -58,6 +65,9 @@ const CHATS_KEPT = 40;
 /** The most events kept per turn; merged deltas make this a very long turn. */
 const HEARD_KEPT = 4000;
 
+/** A chat's recordings are kept by profile too: two profiles can each have a chat with the same id. */
+const keyOf = (profile: string, chatId: string) => `${profile} ${chatId}`;
+
 /**
  * What the app heard of each chat's turns, in memory only: nothing is written to disk. Events pair with a turn by order
  * on the session, from `message.start` to `message.complete` or `error`, since `bf0203a` sends no `turn_id`.
@@ -67,9 +77,10 @@ export class FlightRecorder {
   private open = new Map<string, WatchedTurn>();
 
   /** Opens the chat's turn at its `message.start`. One still open, whose end never came, stays as it was heard. */
-  begin(chatId: string, at: number, from: UsageCounters | undefined, costBefore: Cost | undefined) {
+  begin(profile: string, chatId: string, at: number, from: UsageCounters | undefined, costBefore: Cost | undefined) {
+    const key = keyOf(profile, chatId);
     const turn: WatchedTurn = { heard: [{ kind: "start", at }], ...(from && { from }), ...(costBefore && { costBefore }), replies: [] };
-    const before = this.turns.get(chatId) ?? [];
+    const before = this.turns.get(key) ?? [];
     const prev = before.at(-1);
     // The last turn's cost read hadn't come back, so neither turn's cost can be told apart from the other's.
     if (prev && !prev.costRead) {
@@ -78,22 +89,33 @@ export class FlightRecorder {
     }
     // The read after the last turn failed, so the chat's cost as this turn starts isn't known.
     if (prev?.costRead && !prev.costAfter) delete turn.costBefore;
-    this.open.set(chatId, turn);
-    this.turns.delete(chatId);
-    this.turns.set(chatId, [...before, turn].slice(-TURNS_KEPT));
-    for (const old of [...this.turns.keys()].slice(0, Math.max(0, this.turns.size - CHATS_KEPT))) this.forget(old);
+    this.open.set(key, turn);
+    this.turns.delete(key);
+    this.turns.set(key, [...before, turn].slice(-TURNS_KEPT));
+    for (const old of [...this.turns.keys()].slice(0, Math.max(0, this.turns.size - CHATS_KEPT))) {
+      this.turns.delete(old);
+      this.open.delete(old);
+    }
   }
 
   /** Drops what was heard of a chat, as when it is deleted. */
-  forget(chatId: string) {
-    this.turns.delete(chatId);
-    this.open.delete(chatId);
+  forget(profile: string, chatId: string) {
+    this.turns.delete(keyOf(profile, chatId));
+    this.open.delete(keyOf(profile, chatId));
   }
 
-  /** Adds to the chat's running turn, if one is open. Text deltas merge into the one before. */
-  hear(chatId: string, h: Heard) {
-    const turn = this.open.get(chatId);
+  /**
+   * Adds to the chat's running turn, if one is open. Text deltas merge into the one before. A Clarify, Sudo password or
+   * Secret question outlives the turn that asked it, so one already heard in any of the chat's turns, which Hermes lists
+   * again once the app is back after a drop, keeps the turn and time it was first heard, and how one that names its
+   * Questions ended goes to the turn that asked them (`settled`).
+   */
+  hear(profile: string, chatId: string, h: Heard) {
+    const key = keyOf(profile, chatId);
+    const turn = this.open.get(key);
     if (!turn) return;
+    if (h.kind === "ask" && this.turns.get(key)?.some((t) => t.heard.some((e) => asks(e, h.id)))) return;
+    if (h.kind === "settled" && h.ids) return this.settled(profile, chatId, h);
     const last = turn.heard.at(-1);
     if (h.kind === "text" && last?.kind === "text" && last.reasoning === h.reasoning) {
       turn.heard[turn.heard.length - 1] = { ...last, last: h.at, chars: last.chars + h.chars };
@@ -104,34 +126,61 @@ export class FlightRecorder {
   }
 
   /**
-   * The owner's answer to a Question, which Hermes may acknowledge after the turn has ended: it goes to the turn that
-   * asked it, open or not.
+   * How a Question ended when the app learns of it outside the turn's events: the owner's answer, which Hermes may
+   * acknowledge after the turn has ended, or a Question Hermes stopped listing, answered in another app or let go of
+   * while the app couldn't hear. It goes to the turn that asked it, open or not.
    */
-  answered(chatId: string, h: Extract<Heard, { kind: "settled" }>) {
-    const asked = lastOf(this.turns.get(chatId) ?? [], (t) => t.heard.some((e) => e.kind === "ask" && h.ids?.includes(e.id)));
+  settled(profile: string, chatId: string, h: Extract<Heard, { kind: "settled" }>) {
+    const asked = lastOf(this.turns.get(keyOf(profile, chatId)) ?? [], (t) => t.heard.some((e) => !!h.ids?.some((id) => asks(e, id))));
     if (asked && asked.heard.length < HEARD_KEPT) asked.heard.push(h);
   }
 
   /** Ends the chat's running turn, with its replies, and returns it for the cost read that follows. */
-  end(chatId: string, h: Extract<Heard, { kind: "end" | "error" }>, replies: string[], replyRow: number | undefined): WatchedTurn | undefined {
-    const turn = this.open.get(chatId);
+  end(profile: string, chatId: string, h: Extract<Heard, { kind: "end" | "error" }>, replies: string[], replyRow: number | undefined): WatchedTurn | undefined {
+    const key = keyOf(profile, chatId);
+    const turn = this.open.get(key);
     if (!turn) return undefined;
     turn.heard.push(h);
     turn.replies = replies;
     if (replyRow !== undefined) turn.replyRow = replyRow;
-    this.open.delete(chatId);
+    this.open.delete(key);
+    return turn;
+  }
+
+  /** Every running turn stops being heard: the connection dropped, or the app switched profile. Marked once per drop. */
+  drop(at: number) {
+    for (const turn of this.open.values()) if (!dropped(turn)) turn.heard.push({ kind: "dropped", at });
+  }
+
+  /**
+   * The app reattached to the chat's session after a drop. A turn still `running` goes on being heard. One that isn't
+   * finished while the app couldn't hear: it is ended with no reply, so its reply is drawn from the stored rows, and
+   * returned so the chat's cost is read after it, which the next turn is measured from. Nothing for a chat whose turn
+   * wasn't dropped. Hermes sends no turn id at `bf0203a`, so a turn that ended and another that started while the app
+   * couldn't hear are taken for the one turn.
+   */
+  rejoin(profile: string, chatId: string, at: number, running: boolean): WatchedTurn | undefined {
+    const key = keyOf(profile, chatId);
+    const turn = this.open.get(key);
+    if (!turn || !dropped(turn)) return undefined;
+    turn.heard.push({ kind: "rejoined", at });
+    if (running) return undefined;
+    this.open.delete(key);
     return turn;
   }
 
   /** The finished turn a reply belongs to, by its item id or its stored row. */
-  find(chatId: string, reply: { id: string; rowId?: number }): WatchedTurn | undefined {
-    return lastOf(this.turns.get(chatId) ?? [], (t) => !this.isOpen(chatId, t) && (t.replies.includes(reply.id) || (reply.rowId !== undefined && t.replyRow === reply.rowId)));
-  }
-
-  private isOpen(chatId: string, t: WatchedTurn) {
-    return this.open.get(chatId) === t;
+  find(profile: string, chatId: string, reply: { id: string; rowId?: number }): WatchedTurn | undefined {
+    const open = this.open.get(keyOf(profile, chatId));
+    return lastOf(this.turns.get(keyOf(profile, chatId)) ?? [], (t) => t !== open && (t.replies.includes(reply.id) || (reply.rowId !== undefined && t.replyRow === reply.rowId)));
   }
 }
+
+/** Whether `h` asked the Question `id` names: its request's frame id, or an Approval's own id. */
+const asks = (h: Heard, id: string) => h.kind === "ask" && (h.id === id || h.requestId === id);
+
+/** Whether the app has stopped hearing the turn: its last drop has no rejoin after it. */
+const dropped = (turn: WatchedTurn) => lastOf(turn.heard, (h) => h.kind === "dropped" || h.kind === "rejoined")?.kind === "dropped";
 
 /** How long a step took. `measured`: Hermes timed it; otherwise the app inferred it. */
 export type Length = { ms: number; measured: boolean };
@@ -141,16 +190,20 @@ type StepBase = { id: string; start: number; end: number; length: Length; failed
 /**
  * One step of a run. `model`: one or more model calls between tool calls, its edges and tokens inferred. `tool`: a tool
  * call; `placed` when its start was worked back from its measured length, `together` when it ran beside others so its
- * stored gap isn't its own length. `question`: an Approval or Question, from when it was asked to when it ended.
- * `status`: a status line Hermes sent, at one moment, or a compaction from its first progress line to its last, `done`
- * when Hermes said it was complete.
+ * stored gap isn't its own length, `endUnheard` when the app never heard it end, so it is drawn until the turn was next heard going on after
+ * a drop (more text, or another tool), or to the turn's end.
+ * `question`: an Approval or Question, from when it was asked to when it ended; `late` when Hermes asked it while the
+ * app couldn't hear. `status`: a status line Hermes sent, at one moment, or a compaction from its first progress line to
+ * its last, `done` when Hermes said it was complete. `gap`: a time the app heard nothing of the turn, from a dropped
+ * connection or a profile switch to when it reattached.
  */
 export type Step =
   | (StepBase & { kind: "model"; calls?: number; tokens?: { prompt: number; output: number; reasoning: number }; text?: string; reasoning?: string; chars?: number })
-  | (StepBase & { kind: "tool"; name: string; callId: string; args?: Record<string, unknown>; result?: string; placed?: boolean; together?: boolean })
-  | (StepBase & { kind: "question"; what: QuestionKind; summary: string; outcome: string })
+  | (StepBase & { kind: "tool"; name: string; callId: string; args?: Record<string, unknown>; result?: string; placed?: boolean; together?: boolean; endUnheard?: boolean })
+  | (StepBase & { kind: "question"; what: QuestionKind; summary: string; outcome: string; late?: boolean })
   | (StepBase & { kind: "status"; status: string; text: string; done?: boolean })
-  | (StepBase & { kind: "error"; text: string });
+  | (StepBase & { kind: "error"; text: string })
+  | (StepBase & { kind: "gap" });
 
 /** A status line of Hermes's that tells of a compaction. */
 export const isCompaction = (status: string) => status === "compacting" || status === "compressing" || status === "compacted";
@@ -215,7 +268,8 @@ function turnCost(before: Cost | undefined, after: Cost | undefined, overlap: st
 
 /**
  * Draws a watched turn. Tool steps come from `tool.start` and `tool.complete`. Model steps are the gaps between them:
- * one starts at `message.start` or when the last tool running ends, and ends at the next `tool.start` or the turn's end.
+ * one starts at `message.start`, when the last tool running ends or when the app hears the turn again after a drop, and
+ * ends at the next `tool.start`, a drop or the turn's end.
  * Each model step's tokens and calls are the change in Hermes's counters from the last reading before it to the last
  * before the next model step, read from `session.usage` (sent at most once a second) and the turn's end.
  */
@@ -231,9 +285,25 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   const models: ModelStep[] = [];
   // The compaction whose progress lines may still come.
   let compacting: Extract<Step, { kind: "status" }> | undefined;
+  const gaps: Extract<Step, { kind: "gap" }>[] = [];
+  // Tools still running when the app heard the turn again: their end may have come while it couldn't hear.
+  const unsure = new Set<string>();
+  // The model running again, or calling another tool, after a drop shows those tools had ended by then.
+  const endUnsure = (at: number) => {
+    for (const toolId of unsure) {
+      const step = running.get(toolId);
+      if (!step) continue;
+      step.end = at;
+      step.length = { ms: at - step.start, measured: false };
+      step.endUnheard = true;
+      running.delete(toolId);
+    }
+    unsure.clear();
+  };
   let seq = 0;
   const id = (p: string) => `${p}${seq++}`;
   const openModel = (at: number) => {
+    closeModel(at);
     model = { kind: "model", id: id("m"), start: at, end: at, length: { ms: 0, measured: false } };
     steps.push(model);
   };
@@ -248,10 +318,17 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   for (const h of heard) {
     // Only status lines and usage ticks come while a compaction runs, so anything else means the next is another.
     if (h.kind !== "status" && h.kind !== "usage") compacting = undefined;
-    if (h.kind === "text" && model) {
-      model.chars = (model.chars ?? 0) + h.chars;
-      if (h.reasoning) model.reasoning = "reasoning";
+    if (h.kind === "text") {
+      if (!model && unsure.size) {
+        endUnsure(h.at);
+        if (!running.size) openModel(h.at);
+      }
+      if (model) {
+        model.chars = (model.chars ?? 0) + h.chars;
+        if (h.reasoning) model.reasoning = "reasoning";
+      }
     } else if (h.kind === "tool.start") {
+      endUnsure(h.at);
       closeModel(h.at);
       const step: Extract<Step, { kind: "tool" }> = { kind: "tool", id: id("t"), name: h.name, callId: h.id, start: h.at, end: h.at, length: { ms: 0, measured: false }, ...(h.args && { args: h.args }) };
       running.set(h.id, step);
@@ -259,6 +336,7 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
     } else if (h.kind === "tool.complete") {
       let step = running.get(h.id);
       running.delete(h.id);
+      unsure.delete(h.id);
       if (!step) {
         // Sent with no `tool.start`: with `display.tool_progress` off, Hermes still sends a failed call's completion.
         const ms = h.durationS !== undefined ? h.durationS * 1000 : 0;
@@ -274,7 +352,17 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
       if (failed) step.failed = failed;
       if (!running.size) openModel(h.at);
     } else if (h.kind === "ask") {
-      const step: Extract<Step, { kind: "question" }> = { kind: "question", id: id("q"), what: h.what, summary: h.summary, start: h.at, end: h.at, length: { ms: 0, measured: false }, outcome: "Still waiting" };
+      const step: Extract<Step, { kind: "question" }> = {
+        kind: "question",
+        id: id("q"),
+        what: h.what,
+        summary: h.summary,
+        start: h.at,
+        end: h.at,
+        length: { ms: 0, measured: false },
+        outcome: "Still waiting",
+        ...(h.late && { late: true }),
+      };
       asks.push({ id: h.id, requestId: h.requestId, step });
       steps.push(step);
     } else if (h.kind === "settled") {
@@ -306,10 +394,27 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
       if (isCompaction(h.status)) compacting = h.status === "compacted" ? undefined : step;
     } else if (h.kind === "error") {
       steps.push({ kind: "error", id: id("e"), text: h.message, start: h.at, end: h.at, length: { ms: 0, measured: false }, failed: h.message });
+    } else if (h.kind === "dropped") {
+      closeModel(h.at);
+      const gap: Extract<Step, { kind: "gap" }> = { kind: "gap", id: id("g"), start: h.at, end: h.at, length: { ms: 0, measured: false } };
+      gaps.push(gap);
+      steps.push(gap);
+    } else if (h.kind === "rejoined") {
+      const gap = gaps.at(-1);
+      if (gap) {
+        gap.end = h.at;
+        gap.length = { ms: h.at - gap.start, measured: false };
+      }
+      for (const toolId of running.keys()) unsure.add(toolId);
+      if (!running.size) openModel(h.at);
     }
   }
   const end = endH?.at ?? now;
   closeModel(end);
+  for (const gap of gaps.filter((g) => g.end === g.start && end > g.start)) {
+    gap.end = end;
+    gap.length = { ms: end - gap.start, measured: false };
+  }
   // A turn that ended failed, with no `error` event, says why on its `message.complete`.
   if (endH?.kind === "end" && (endH.failure || endH.status === "error")) {
     const why = endH.failure ?? "The turn failed.";
@@ -318,13 +423,14 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   for (const step of running.values()) {
     step.end = end;
     step.length = { ms: end - step.start, measured: false };
+    step.endUnheard = true;
   }
   for (const { step } of asks.filter((a) => !a.ended)) {
     step.end = end;
     step.length = { ms: end - step.start, measured: false };
     if (endH) step.outcome = "The turn ended";
   }
-  attributeTokens(models, heard, turn.from, endH?.kind === "end" ? endH.counters : undefined);
+  attributeTokens(models, heard, turn.from, endH?.kind === "end" ? endH.counters : undefined, gaps);
   // A model step that took no time, held no text and made no call the counters show, as before a turn that only failed, is left out.
   const kept = steps.filter((s) => s.kind !== "model" || s.length.ms > 0 || s.chars || s.calls);
   const outcome = !endH ? "running" : endH.kind === "error" ? "failed" : endH.status === "interrupted" ? "interrupted" : endH.failure || endH.status === "error" ? "failed" : "complete";
@@ -348,25 +454,31 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
  * or after it, by when the next step may be running (seen at `bf0203a`). So a step's end is the last reading inside it
  * that shows a new call, or else the first reading after it that does, before the next step ends. The last step ends
  * at the turn's final counters. A step with no such reading is left without tokens, and the step after it is measured
- * from the last reading before it started.
+ * from the last reading before it started. Counters read across a `gap` hold calls the app heard nothing of, so no step
+ * is measured across one: the step after it has no tokens unless a reading comes between the gap and its start.
  */
-function attributeTokens(models: Extract<Step, { kind: "model" }>[], heard: Heard[], from: UsageCounters | undefined, final: UsageCounters | undefined) {
-  const readings = heard.flatMap((h) => (h.kind === "usage" ? [{ at: h.at, counters: h.counters }] : []));
-  let before = from;
+function attributeTokens(models: Extract<Step, { kind: "model" }>[], heard: Heard[], from: UsageCounters | undefined, final: UsageCounters | undefined, gaps: Step[]) {
+  type Reading = { at: number; counters: UsageCounters };
+  const readings = heard.flatMap((h): Reading[] => (h.kind === "usage" ? [{ at: h.at, counters: h.counters }] : []));
+  const across = (a: number, b: number) => gaps.some((g) => a <= g.start && g.start < b);
+  let before: Reading | undefined = from && { at: -Infinity, counters: from };
   for (const [i, step] of models.entries()) {
+    if (before && across(before.at, step.start)) before = undefined;
     const next = models[i + 1];
-    const counted = (r: { counters: UsageCounters }) => !before || r.counters.calls > before.calls;
-    const after = next
-      ? (lastOf(readings, (r) => r.at > step.start && r.at <= step.end && counted(r)) ?? readings.find((r) => r.at > step.end && r.at <= next.end && counted(r)))?.counters
-      : (final ?? readings.at(-1)?.counters);
-    if (before && after && after.calls >= before.calls) {
-      const diff = counterDiff(before, after);
+    const counted = (r: Reading) => !before || r.counters.calls > before.counters.calls;
+    const after: Reading | undefined = next
+      ? (lastOf(readings, (r) => r.at > step.start && r.at <= step.end && counted(r)) ?? readings.find((r) => r.at > step.end && r.at <= next.end && !across(step.end, r.at) && counted(r)))
+      : across(step.start, Infinity)
+        ? lastOf(readings, (r) => r.at > step.start && r.at <= step.end && counted(r))
+        : ((final && { at: Infinity, counters: final }) ?? readings.at(-1));
+    if (before && after && after.counters.calls >= before.counters.calls) {
+      const diff = counterDiff(before.counters, after.counters);
       if (diff.prompt >= 0 && diff.output >= 0 && diff.reasoning >= 0) {
-        step.calls = after.calls - before.calls;
+        step.calls = after.counters.calls - before.counters.calls;
         step.tokens = diff;
       }
     }
-    before = after ?? (next && lastOf(readings, (r) => r.at <= next.start)?.counters);
+    before = after ?? (next && lastOf(readings, (r) => r.at <= next.start));
   }
 }
 
