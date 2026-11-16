@@ -164,6 +164,7 @@ describe("parseManifest", () => {
         "profiles",
         "skills",
         "serverFiles",
+        "checkpoints",
         "scheduledJobs",
         "automations",
         "outputs",

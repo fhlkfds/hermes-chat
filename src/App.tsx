@@ -3795,6 +3795,7 @@ export function Main({
                     artifactScope={{ scope, profile, ...(active.chatId && { chatId: active.chatId }) }}
                     connected={status === "connected"}
                     desk={desk}
+                    fileChanges={{ chat: (id) => chats.find((c) => c.id === id), io: (id) => hermes.rollbackIO(id) }}
                   />
                   ),
                 terminal: (shown) => (
@@ -4587,6 +4588,7 @@ function ChatView({
       onDismissSideQuestion={(id) => hermes.dismissSideQuestion(chat.id, id)}
       followUp={followUp}
       compare={compare}
+      onCheckpoints={started && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
       headActions={
         <>
           {started && inWorktree && (

@@ -39,6 +39,7 @@ export type CapabilityId =
   | "profiles"
   | "skills"
   | "serverFiles"
+  | "checkpoints"
   | "scheduledJobs"
   | "automations"
   | "outputs"
@@ -78,10 +79,20 @@ export type CapabilityAction = { name: string; method: RestMethod; route: RegExp
 /**
  * `lacks`: for an answer not of `shape`, why it shows Hermes doesn't have the feature, such as an older answer that
  * leaves the feature's field out; none when it shows nothing. Such an answer makes the capability unsupported.
+ * `read`: for a check Hermes answers with an error when it has the method, such as "session not found" for a made-up
+ * session, what its answer or failure says, with `context`, a read sent alongside (undefined when it fails).
  */
 type Probe =
   | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean; lacks?: (body: unknown) => string | undefined }
-  | { kind: "rpc"; method: AppMethod; params: (profile: string) => Record<string, unknown>; shape: (result: unknown) => boolean; lacks?: (result: unknown) => string | undefined };
+  | {
+      kind: "rpc";
+      method: AppMethod;
+      params: (profile: string) => Record<string, unknown>;
+      shape: (result: unknown) => boolean;
+      lacks?: (result: unknown) => string | undefined;
+      context?: (io: CapabilityIO, profile: string) => Promise<unknown>;
+      read?: (outcome: { answer: unknown } | { failure: Failure }, context: unknown) => { state: CapabilityState; why: string };
+    };
 
 /**
  * A check for a capability no read can settle: one request shaped like a write, for something that can't exist, so
@@ -339,6 +350,36 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     writeRoutes: [/^api\/files\//],
   },
   {
+    id: "checkpoints",
+    label: "Undoing a reply's file changes",
+    usedBy: "The files-changed chip under a reply that edited files",
+    needs: "rollback.list, rollback.diff and rollback.restore on /api/ws. Hermes takes checkpoints only with checkpoints.enabled on in the profile's config.",
+    without: "The chip doesn't show.",
+    anchor: "undoing-a-replys-file-changes",
+    // `rollback.list` at Hermes `bf0203a` (`tui_gateway/methods_tools.py:1123`) only reads, and answers "session not
+    // found" (4001) for a session no live chat has. Whether Hermes takes checkpoints is the profile's setting.
+    probe: {
+      kind: "rpc",
+      method: "rollback.list",
+      params: (profile) => ({ session_id: PROBE_NAME, profile }),
+      shape: (r) => isObj(r) && typeof r.enabled === "boolean" && isList(r.checkpoints),
+      context: (io, profile) => io.get(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(checkpointsSettingOf),
+      read: (o, on) => {
+        const has = "answer" in o ? isObj(o.answer) && typeof o.answer.enabled === "boolean" : o.failure.rpcCode === SESSION_NOT_FOUND;
+        if (!has) return "answer" in o ? { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." } : stateOfFailure(o.failure);
+        const setting =
+          on === true
+            ? "Checkpoints are on for this profile."
+            : on === false
+              ? "Checkpoints are off for this profile (checkpoints.enabled in its config.yaml), so Hermes keeps nothing to undo."
+              : "This app couldn't read whether checkpoints are on for this profile (checkpoints.enabled).";
+        return { state: "supported", why: `Hermes has rollback.list, rollback.diff and rollback.restore. ${setting}` };
+      },
+    },
+    methods: ["rollback.list", "rollback.diff", "rollback.restore"],
+    writeMethods: /^rollback\.restore$/,
+  },
+  {
     id: "scheduledJobs",
     label: "Scheduled jobs",
     usedBy: "The Scheduled jobs screen",
@@ -548,6 +589,17 @@ function turnIsolationOf(text: string): boolean | undefined {
   if (!isObj(config)) return undefined;
   const v = isObj(config.dashboard) ? config.dashboard.turn_isolation : undefined;
   return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : !!v;
+}
+/**
+ * Whether a `GET /api/config` answer turns on `checkpoints.enabled` for the profile: undefined when the answer isn't a
+ * config. Hermes's default is off. `HERMES_TUI_CHECKPOINTS` on the server overrides it, which only `rollback.list` shows.
+ */
+export function checkpointsSettingOf(text: string): boolean | undefined {
+  const config: unknown = JSON.parse(text);
+  if (!isObj(config)) return undefined;
+  // Hermes also takes the old `checkpoints: true` form, and reads `enabled` with Python's `bool()` (`tui_gateway/checkpoints.py:24`).
+  const v = typeof config.checkpoints === "boolean" ? config.checkpoints : isObj(config.checkpoints) ? config.checkpoints.enabled : undefined;
+  return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : typeof v === "number" ? v !== 0 : v === true;
 }
 /** JSON-RPC "invalid params", and Hermes's own code for params its contract refuses: the method is there, in another shape. */
 const BAD_PARAMS = new Set([-32602, 4000]);
@@ -1087,17 +1139,26 @@ export class CapabilityStore {
     const rev = this.revs.get(spec.id);
     let result: Omit<Capability, "id" | "checkedAt">;
     try {
-      // The answer is checked for its shape and then let go: nothing of it is kept.
-      const answer =
-        probe.kind === "rest"
-          ? JSON.parse(await within(this.io.get(probe.path(scope.profile), probe.maxBytes), this.timeoutMs))
-          : await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs);
-      const lacking = probe.shape(answer) ? undefined : probe.lacks?.(answer);
-      result = probe.shape(answer)
-        ? { state: "supported", source: "probed", why: "Hermes answered the check." }
-        : lacking
-          ? { state: "unsupported", source: "probed", why: lacking }
-          : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
+      if (probe.kind === "rpc" && probe.read) {
+        const context = probe.context ? within(probe.context(this.io, scope.profile), this.timeoutMs).catch(() => undefined) : undefined;
+        const outcome = await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs).then(
+          (answer) => ({ answer }),
+          (e: unknown) => ({ failure: failureOf(e) }),
+        );
+        result = { source: "probed", ...probe.read(outcome, await context) };
+      } else {
+        // The answer is checked for its shape and then let go: nothing of it is kept.
+        const answer =
+          probe.kind === "rest"
+            ? JSON.parse(await within(this.io.get(probe.path(scope.profile), probe.maxBytes), this.timeoutMs))
+            : await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs);
+        const lacking = probe.shape(answer) ? undefined : probe.lacks?.(answer);
+        result = probe.shape(answer)
+          ? { state: "supported", source: "probed", why: "Hermes answered the check." }
+          : lacking
+            ? { state: "unsupported", source: "probed", why: lacking }
+            : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
+      }
     } catch (e) {
       result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
     }

@@ -141,6 +141,10 @@ Needs `GET /api/skills`, and `PUT /api/skills/toggle` and `/api/skills/content` 
 
 Needs the dashboard's managed-files routes, `GET /api/files` and `GET /api/files/read`. Checked with `GET /api/files`. Without them, the Server files screen shows a note instead of the browser, and nothing is uploaded or saved.
 
+## Undoing a reply's file changes
+
+Needs `rollback.list`, `rollback.diff` and `rollback.restore` on `/api/ws`. Hermes `bf0203a` and `f0d9488` have them (`tui_gateway/methods_tools.py:1123`). Checked with `rollback.list` with `__hermes_chat_probe__` as the session: Hermes answers "session not found" (4001) when it has the method, and "method not found" when it doesn't. Alongside, the check reads the profile's `GET /api/config` for `checkpoints.enabled`, and the Diagnostics row says whether it is on. Hermes leaves it off by default and takes checkpoints only with it on. `HERMES_TUI_CHECKPOINTS` on the server overrides it, which only a chat's own `rollback.list` shows. Each method needs the chat's live session. Before the files-changed chip shows under a reply, the app sends `rollback.diff` with `__hermes_chat_probe__` as the hash, once per live session. For a chat whose terminal runs in a container, Hermes answers 5022 ("Checkpoints are not taken for terminal.backend=…"), and for one on the host, an empty diff without running git. Without the methods, or for a chat in a container, the chip doesn't show. With checkpoints off, it says so, and the Preview says how to turn them on. Undo restores one file per `rollback.restore`, with `file_path`, and never the whole folder, which would also drop the chat's newest message (ADR 0180). The canonical gateway answers the same methods, but the app doesn't connect to it.
+
 ## Scheduled jobs
 
 Needs the cron routes under `/api/cron/`. Checked with `GET /api/cron/jobs`. To run jobs, the profile's gateway must also be running on the server, which the app can't check. Without the routes, the Scheduled jobs screen shows a note instead of the list.

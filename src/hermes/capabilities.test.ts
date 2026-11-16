@@ -18,6 +18,7 @@ import {
   stateOfFailure,
   statusFacts,
   type CapabilityIO,
+  checkpointsSettingOf,
 } from "./capabilities";
 import { RpcError } from "./transport";
 import { RestError } from "./pipe";
@@ -45,8 +46,11 @@ const NEW: Record<string, unknown> = {
   "GET api/cron/jobs": [],
   "GET api/webhooks": { enabled: true, subscriptions: [] },
   "GET api/fs/list": { path: "/", entries: [] },
-  "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
+  "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },
+  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
   "GET api/plugins/kanban/model-options": { providers: [] },
+  // A made-up session isn't live: the method is there (`tui_gateway/methods_tools.py:1123` at `bf0203a`).
+  "RPC rollback.list": new RpcError(4001, "session not found"),
 };
 
 const noRoute = () => answered(404, "Not Found");
@@ -121,7 +125,7 @@ describe("the capability contract", () => {
   });
 
   it("checks only by reading: a GET, or a JSON-RPC method that only reads", () => {
-    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list", "subagent.roster"]);
+    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list", "subagent.roster", "rollback.list"]);
     for (const c of CAPABILITIES) {
       if (!c.probe) continue;
       if (c.probe.kind === "rpc") expect(reads.has(c.probe.method), c.id).toBe(true);
@@ -150,6 +154,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       profiles: "supported",
       skills: "supported",
       serverFiles: "supported",
+      checkpoints: "supported",
       scheduledJobs: "supported",
       automations: "supported",
       outputs: "supported",
@@ -187,7 +192,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
   it("sends nothing that writes", async () => {
     const t = store(NEW);
     await connectAndCheck(t);
-    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster)$/.test(c))).toBe(true);
+    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster|rollback\.list)$/.test(c))).toBe(true);
   });
 });
 
@@ -792,5 +797,12 @@ describe("the copied report", () => {
     const t = store({ ...NEW, "GET api/files": answered(502, "token=abcd1234secret") });
     await connectAndCheck(t);
     expect(t.caps.get("serverFiles").why).not.toContain("abcd1234secret");
+  });
+});
+
+describe("checkpointsSettingOf", () => {
+  it("reads checkpoints.enabled as Hermes does, the old `checkpoints: true` form included", () => {
+    const of = (checkpoints: unknown) => checkpointsSettingOf(JSON.stringify({ checkpoints }));
+    expect([of({ enabled: true }), of({ enabled: false }), of(true), of(false), of({ enabled: 1 }), of({ enabled: 0 }), of({ enabled: "yes" }), of({})]).toEqual([true, false, true, false, true, false, true, false]);
   });
 });
