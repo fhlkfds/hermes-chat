@@ -125,8 +125,11 @@ const sameBlock = (a: Block, b: Block) =>
 const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
   a.kind === "side" ? b.kind === "side" && a.question === b.question : b.kind !== "side" && sameBlock(a, b);
 
-/** Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, and where each turn's versions show. */
-type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number> };
+/**
+ * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and the
+ * last error of each finished turn that failed with no reply (`failedOnly`), where its Run view opens (ADR 0178).
+ */
+type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; failedOnly: Set<string> };
 
 /** `next`, or the value returned before when `same` says it holds the same. */
 function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
@@ -138,8 +141,10 @@ function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
 const sameMap = <K, V>(a: Map<K, V>, b: Map<K, V>, same: (x: V, y: V) => boolean = Object.is) =>
   a.size === b.size && [...a].every(([k, v]) => b.has(k) && same(v, b.get(k)!));
 
+const sameSet = <T,>(a: Set<T>, b: Set<T>) => a.size === b.size && [...a].every((x) => b.has(x));
+
 const sameTurns = (a: Turns, b: Turns) =>
-  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && a.regenerable.size === b.regenerable.size && [...a.regenerable].every((id) => b.regenerable.has(id));
+  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && sameSet(a.regenerable, b.regenerable) && sameSet(a.failedOnly, b.failedOnly);
 
 const sameVersions = (a?: Map<number, Variant[]>, b?: Map<number, Variant[]>) =>
   !!a &&
@@ -620,8 +625,26 @@ export function ChatPane({
     }
     const anchor = new Map<string, number>();
     for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
-    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
-  }, [chat.items]), sameTurns);
+    // A turn begins at a message, steered ones aside, or at returned work. One with no reply offers Run under its error.
+    const failedOnly = new Set<string>();
+    let begun = false;
+    let replied = false;
+    let failed: string | undefined;
+    const close = () => !replied && failed && failedOnly.add(failed);
+    for (const i of chat.items) {
+      if ((i.kind === "user" && !i.steer) || i.kind === "returned") {
+        close();
+        replied = false;
+        failed = undefined;
+        begun = true;
+      } else if (i.kind === "assistant" && i.text.trim()) replied = true;
+      // An error before any turn, as when the chat couldn't load, has no run.
+      else if (i.kind === "error" && begun) failed = i.id;
+    }
+    // The running turn's error may yet be followed by its reply.
+    if (!chat.running) close();
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor, failedOnly };
+  }, [chat.items, chat.running]), sameTurns);
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
   // How many files each finished reply changed, by its reply. The chips show once the chat's checkpoints check found
@@ -1291,6 +1314,11 @@ const BlockView = memo(
         <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
+          {onRun && (
+            <div className="msg-actions">
+              <RunButton onOpen={() => onRun(block.id)} />
+            </div>
+          )}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
@@ -1403,7 +1431,7 @@ const TranscriptChunk = memo(
                   onOutgoing={onOutgoing}
                   onBranch={message ? onBranch : undefined}
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
-                  onRun={b.kind === "assistant" ? onRun : undefined}
+                  onRun={b.kind === "assistant" || turns.failedOnly.has(b.id) ? onRun : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
