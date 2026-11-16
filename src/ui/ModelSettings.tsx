@@ -164,6 +164,98 @@ function ApplyRow({
 }
 
 /**
+ * The Project instructions model: what Write with AI and Improve with AI run on, and Text generation's model until one
+ * is picked (ADR 0177). Written as soon as it's picked, like Text generation's. Hermes has no slot for it, so it goes
+ * into the profile's config with `PUT /api/config`, where Hermes checks no price.
+ */
+function InstructionsModel({
+  saved,
+  api,
+  profile,
+  catalog,
+  connected,
+  onSaved,
+}: {
+  saved: Settings;
+  api: ModelSettingsApi;
+  profile: string;
+  catalog: ModelCatalog;
+  connected: boolean;
+  onSaved: (fresh: Settings) => void;
+}) {
+  const { modelFavorites } = useSyncExternalStore(subscribeUIPrefs, getUIPrefs);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const own = saved.instructions;
+  const text = saved.auxiliary.find((t) => t.task === TEXT_TASK);
+  const followed = text && text.provider !== AUX_AUTO ? text.model : saved.main.model;
+  const current: ModelPick | undefined = own && { provider: own.provider, model: own.model, ...(isEffort(own.effort) && { effort: own.effort }) };
+
+  const write = async (next: AuxDraft | undefined) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.applyInstructions(saved, next);
+      onSaved(await api.load());
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="text-gen" role="group" aria-label="Project instructions model">
+      <SettingRow
+        name="Project instructions model"
+        hint={
+          <>
+            Writes and improves project instructions (Write with AI). {own ? "" : `Until you pick one, it follows Text generation${followed ? `, ${followed}` : ""}.`}
+          </>
+        }
+        more={
+          <p>
+            Hermes keeps it in the <span className="mono">{profile}</span> profile's config as{" "}
+            <span className="mono">auxiliary.project_instructions</span>, so Hermes's own dashboard doesn't list it.
+          </p>
+        }
+        control={
+          <>
+            {own && (
+              <button
+                className="icon-btn small-icon"
+                title="Follow Text generation"
+                aria-label="Use the Text generation model for project instructions"
+                disabled={busy || !connected}
+                onClick={() => void write(undefined)}
+              >
+                <RotateCcw size={13} />
+              </button>
+            )}
+            <fieldset className="text-gen-controls" disabled={busy || !connected}>
+              <ModelControls
+                catalog={catalog}
+                current={current}
+                defaultEffort={catalog.defaultEffort}
+                favorites={modelFavorites}
+                onPick={(p) => void write({ provider: p.provider, model: p.model, effort: p.effort ?? AUX_INHERIT })}
+                onToggleFavorite={toggleModelFavorite}
+              />
+            </fieldset>
+          </>
+        }
+      >
+        {(busy || error) && (
+          <div className={error ? "sign-in-error" : "muted"} role={error ? "alert" : "status"}>
+            {error ? `Couldn't set the project instructions model: ${error}` : "Saving…"}
+          </div>
+        )}
+      </SettingRow>
+    </div>
+  );
+}
+
+/**
  * The Text generation model: the model chat titles are made with, picked like a chat's model. Unlike the rest of this
  * screen it's written as soon as it's picked, as it's one setting with nothing to review. Hermes keeps it as its
  * `title_generation` helper task, so its own titles and every other client on the profile use it too.
@@ -304,6 +396,7 @@ function TextGeneration({
           )}
         </SettingRow>
       </div>
+      <InstructionsModel saved={saved} api={api} profile={profile} catalog={catalog} connected={connected} onSaved={onSaved} />
     </SettingsSection>
   );
 }

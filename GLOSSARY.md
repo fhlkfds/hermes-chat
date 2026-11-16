@@ -31,6 +31,10 @@ _Avoid_: background job, pending task, handoff (fine in conversation)
 The work a chat handed off, come back: the card at the start of the turn Hermes runs when a background Subagent or a background process started with `notify_on_complete` finishes. It shows Hermes's title for it, such as "Subagent Task Completed: audit backups", and the result only, without the notice Hermes wrote for its model; a batch keeps each task's goal above its result. It sits on Hermes's side of the transcript, open, and its header closes it. A Subagent's answer reads like a reply, a process's output like a log. A kanban task's wake notice is a one-line message, not a Returned result; the task's whole result is in its sheet on the Work page (ADR 0175).
 _Avoid_: notification, wake message, delegation result (fine in conversation)
 
+**Run view**:
+One reply's turn drawn as a waterfall of steps: the model's calls, tool calls, Approvals and Questions, and Hermes's status lines, each with how long it took and whether it failed; a click shows a step's arguments and result. **Run**, under a reply, opens it. A reply this app watched is drawn from the events it heard, kept in memory only, each with when it arrived; any other from the chat's stored rows. A tool's length is Hermes's own measurement; every other time, token count and the turn's cost are the app's inference, marked with ≈ (ADR 0178).
+_Avoid_: trace, timeline, flight recorder (the feature's name in the issue tracker; fine in conversation)
+
 **Snoozed**:
 An Active chat the owner has put out of the way until a time they chose. It sits in the Snoozed section after the Inbox, collapsed until the owner opens it, soonest to wake first, and shows when it wakes. When that time comes it goes back to the Inbox, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
 _Avoid_: hidden, deferred, reminder
@@ -307,6 +311,14 @@ _Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in S
 The rail screen that shows Hermes's kanban board: one column per status, a card per Task, as the official Hermes desktop app's Kanban view shows it. A Task is one piece of bot work on that board, given to a profile (its assignee) and run by Hermes's dispatcher. The owner moves a Task between columns only as the board's workflow allows, and edits, comments on or creates Tasks there. Nothing on it changes without one of those actions (ADR 0171). The Tasks a chat created are that chat's Dispatched work.
 _Avoid_: kanban (fine in conversation), job (that is a Scheduled job), ticket
 
+**Link** (between Tasks):
+A Task's dependency on another: the Task **waits on** its parent, and Hermes makes it ready only once every Task it waits on is done or archived. A Task's sheet lists what it waits on and what waits on it (**Then**), and adds or removes a link after saying what that changes; the **Graph** view on the Work page draws the board's links as arrows from parent to child (ADR 0179).
+_Avoid_: dependency edge (fine in code), blocker (a blocked Task is another thing)
+
+**Token guess**:
+Hermes's rough guess, from a model, of how many tokens a Task will take, with a size of S, M or L. It is never a cost, and asking for one writes nothing (ADR 0179).
+_Avoid_: cost, price, estimate (fine in code)
+
 **Office** / **Desk**:
 The agent office, opened from the rail in place of the chat panes: every agent at work on the connection, one for each chat's reply, in the state the Rail inbox gives it, and one for each of its Subagents. The header's **Design** menu picks how it is drawn, and its **Profile** menu narrows it to one profile's agents (ADR 0161). **Floor plan** (the default) draws four rooms by state as an architect's plan: **Needs you**, **Working**, **Trouble** and **At rest**, the same split as the building's rooms, with each chat's agents at one pod and each agent a workstation with its state in words. **Board** gives each chat a lane and each room a column. **3D building** draws them as low-poly people in a 3D building with four rooms by state: the **Workroom** (running, queued at its door, and a reply waiting on its Dispatched work), the **Waiting room** (waiting for an Approval, or a message that may not have sent), the **Trouble room** (failed) and the **Lounge** (everything else). Each chat's agents are a **team**, in one team color, and a team keeps its group of Workroom desks while any of its agents works. A name tag shows only while the pointer is over its agent or it has focus, and stays for the picked one. Clicking an agent opens its **card**, whose only action is Open chat. **Office quality** (Normal or Low) caps the frame rate and resolution; Low also types at half the pace and has agents appear in their new room instead of walking. **List** shows the same agents as rows, and is what a computer without WebGL gets in place of the building (ADR 0122). An agent opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. One that can't be checked shows "as last seen", and only Hermes's word that a subagent completed makes it Finished (ADR 0077). A **Desk** is one agent's entry in `officeRooms`, the data every design draws.
 
@@ -413,20 +425,20 @@ _Avoid_: OAuth (the mechanism, not the thing), account (Hermes's word, too broad
 **Custom endpoint**:
 An OpenAI-compatible server a profile can use as a model provider, such as Ollama, LM Studio, vLLM or Groq, named by its base URL. Hermes checks it by asking it for its models, and reaches it from the server, so `localhost` is the Hermes server. Its API key, if any, goes to the profile's `.env` like a Provider key. Settings → Providers adds, activates as the default, and removes one (ADR 0133).
 _Avoid_: local model (it may be hosted), custom provider (Hermes's older config name)
-**Run view**:
-A reply's turn drawn as a timeline of steps: model calls, tool calls, Questions, compactions, status lines and errors, each with how long it took and whether it looks failed (ADR 0178). A watched run comes from the events this app heard, timed by when each arrived. A stored run comes from Hermes's stored rows, each timed by when its step ended. Only a tool's length from Hermes is measured. Every other figure is inferred and marked so.
-_Avoid_: trace, flight recorder (the issue's name for the whole feature), timeline (alone)
-
 **Usage**:
 The tokens a chat's model calls took in and gave out: input, cache read and written, output and its reasoning, and how many calls. A chat's usage is Hermes's own total for every call in it, from any client and across model changes. A reply's usage is shown only for a reply this app watched from start to finish, and is kept as long as its Saved copy.
 _Avoid_: tokens (alone, for the whole breakdown), stats
+
+**Reply time**:
+How long a reply took, from Hermes starting its turn (`message.start`) to finishing it (`message.complete`), tool calls and waiting on the owner's answers included. Hermes records no time per reply, so the app times the replies it watches from start to finish: the time ends the reply's usage line, and each reply that finished is kept on this computer, the latest 1,000 per connection and profile, for the Usage screen's typical, average and longest reply (ADR 0181).
+_Avoid_: latency (that is the wait for the first word), duration (for a tool call's own `duration_s`), response time
 
 **Cost**:
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
 **Usage analytics**:
-The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0026).
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Its Reply time section is the one part from this computer: the Reply times kept for the chats counted (ADR 0181). Export CSV saves the chats counted where the owner picks (ADR 0026).
 _Avoid_: dashboard, stats, report, billing
 
 **Context window**:

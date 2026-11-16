@@ -13,6 +13,14 @@ export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 
 /** `n` and the word that goes with it: `plural(1, "chat")` is "1 chat", `plural(2, "reply", "replies")` is "2 replies". */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** A length of time as people read it: 420 ms, 3.4 s, 2 min 5 s. */
+export function lengthText(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
 /** `v` if it's a string, else "". */
 export const textOrEmpty = (v: unknown): string => (typeof v === "string" ? v : "");
 

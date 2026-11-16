@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { decodeString } from "micromark-util-decode-string";
 import type { ApprovalChoice, AttachCheck, Attachment, Chat, ChatQueue, ConnectionStatus, Item, OutgoingItem, QuestionAnswer, SentReference, SideQuestion, Source } from "../hermes/model";
-import { SOURCE_LABEL, beginsTurn, isOutgoing, isWaiting } from "../hermes/model";
+import { SOURCE_LABEL, isOutgoing, isWaiting } from "../hermes/model";
 import { useLocale } from "../i18n/locale";
 import type { SkillCall } from "../hermes/skillCommands";
 import { STEER, typedCommand } from "../hermes/commands";
@@ -43,14 +43,15 @@ import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { PathsIn, useLinkMenu, useOpenPreview, usePathsIn } from "./previewContext";
+import { FilesChip } from "./FileChanges";
+import { replyFiles } from "../hermes/fileChanges";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { linkTarget, previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
-import { RunButton, RunDialog } from "./RunView";
-import type { RunView } from "../hermes/runs";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { RunButton } from "./RunView";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { useSpellCheck } from "./SpellCheckSettings";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
@@ -124,12 +125,8 @@ const sameBlock = (a: Block, b: Block) =>
 const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
   a.kind === "side" ? b.kind === "side" && a.question === b.question : b.kind !== "side" && sameBlock(a, b);
 
-/**
- * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and
- * each turn's last reply with text whoever began the turn, or its last error when it has none (`replies`), where the Run
- * view opens (ADR 0178).
- */
-type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; replies: Set<string> };
+/** Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, and where each turn's versions show. */
+type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number> };
 
 /** `next`, or the value returned before when `same` says it holds the same. */
 function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
@@ -141,8 +138,8 @@ function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
 const sameMap = <K, V>(a: Map<K, V>, b: Map<K, V>, same: (x: V, y: V) => boolean = Object.is) =>
   a.size === b.size && [...a].every(([k, v]) => b.has(k) && same(v, b.get(k)!));
 
-const sameSet = <T,>(a: Set<T>, b: Set<T>) => a.size === b.size && [...a].every((id) => b.has(id));
-const sameTurns = (a: Turns, b: Turns) => sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && sameSet(a.regenerable, b.regenerable) && sameSet(a.replies, b.replies);
+const sameTurns = (a: Turns, b: Turns) =>
+  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && a.regenerable.size === b.regenerable.size && [...a.regenerable].every((id) => b.regenerable.has(id));
 
 const sameVersions = (a?: Map<number, Variant[]>, b?: Map<number, Variant[]>) =>
   !!a &&
@@ -396,8 +393,7 @@ const savedWhen = (at: number) => new Date(at).toLocaleString(undefined, { dateS
  * Edit under the owner's messages and Regenerate under each turn's last reply (ADR 0035); `blocked` says why neither
  * can be used now. `variants` are the versions of this chat's turns, shown under each turn's last reply. Copy is under
  * every sent message and finished reply with text, whatever else is offered. `compare`: the pane is one of two compared
- * panes (ADR 0101), so a send goes to both chats and nothing queues or steers. `run` reads the Run view of a turn's
- * last reply (ADR 0178), offered under each.
+ * panes (ADR 0101), so a send goes to both chats and nothing queues or steers.
  */
 export function ChatPane({
   chat,
@@ -453,10 +449,11 @@ export function ChatPane({
   followUp,
   compare,
   branch,
+  onRun,
   branchedFrom,
   replay,
   variants,
-  run,
+  onCheckpoints,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -533,10 +530,16 @@ export function ChatPane({
   followUp?: FollowUpHost;
   compare?: Comparing;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
+  /** Opens a reply's Run view (ADR 0178). */
+  onRun?: (itemId: string) => void;
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
-  run?: (itemId: string) => Promise<RunView>;
+  /**
+   * Asks once for what a reply's files-changed chip needs (`Hermes.checkCheckpoints`, ADR 0180). None: no chip, as for
+   * a Hermes without the checkpoint methods.
+   */
+  onCheckpoints?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const keys = useBindings();
@@ -589,13 +592,13 @@ export function ChatPane({
   const branchRef = useRef(branch?.onBranch);
   branchRef.current = branch?.onBranch;
   const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
+  const runRef = useRef(onRun);
+  runRef.current = onRun;
+  const openRun = useCallback((itemId: string) => runRef.current?.(itemId), []);
   // And Edit and Regenerate.
   const replayRef = useRef(replay?.onReplay);
   replayRef.current = replay?.onReplay;
   const onReplay = useCallback((itemId: string, kind: ReplayKind) => replayRef.current?.(itemId, kind), []);
-  // And the Run view, opened here for one reply at a time.
-  const [runOf, setRunOf] = useState<string>();
-  const onRun = useCallback((itemId: string) => setRunOf(itemId), []);
   const pickRef = useRef(variants?.onPick);
   pickRef.current = variants?.onPick;
   const onPickVariant = useCallback((chatId: string, turn: number) => pickRef.current?.(chatId, turn), []);
@@ -617,23 +620,24 @@ export function ChatPane({
     }
     const anchor = new Map<string, number>();
     for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
-    const replies = new Set<string>();
-    let reply: string | undefined;
-    let failed: string | undefined;
-    const close = () => (reply ?? failed) && replies.add((reply ?? failed)!);
-    for (const i of chat.items) {
-      if (beginsTurn(i)) {
-        close();
-        reply = failed = undefined;
-      } else if (i.kind === "assistant" && i.text.trim()) reply = i.id;
-      else if (i.kind === "error") failed = i.id;
-    }
-    // The running turn's run isn't over, so its last reply so far has none yet.
-    if (!chat.running) close();
-    return { ofUser, regenerable: new Set(lastReply.values()), anchor, replies };
-  }, [chat.items, chat.running]), sameTurns);
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
+  }, [chat.items]), sameTurns);
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
+  // How many files each finished reply changed, by its reply. The chips show once the chat's checkpoints check found
+  // its terminal isn't in a container, where Hermes takes no checkpoints (ADR 0180).
+  const filesOn = !!onCheckpoints;
+  const changedFiles = useStable(
+    useMemo(() => new Map(filesOn ? replyFiles(chat.items, chat.folder).map((r) => [r.replyId, r.paths.length]) : []), [filesOn, chat.items, chat.folder]),
+    sameMap,
+  );
+  const checkpointsRef = useRef(onCheckpoints);
+  checkpointsRef.current = onCheckpoints;
+  useEffect(() => {
+    if (changedFiles.size && chat.runtimeId && chat.checkpoints?.runtimeId !== chat.runtimeId) checkpointsRef.current?.();
+  }, [changedFiles.size, chat.runtimeId, chat.checkpoints?.runtimeId]);
+  const fileChips = filesOn && chat.checkpoints && chat.checkpoints.container !== true ? changedFiles : undefined;
+  const checkpointsOff = chat.checkpoints?.on === false;
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
@@ -1057,14 +1061,16 @@ export function ChatPane({
               onOutgoing={onOutgoing}
               onBranch={branch && onBranch}
               branchBlocked={branch?.blocked}
+              onRun={onRun && openRun}
               onReplay={replay && onReplay}
               replayBlocked={replay?.blocked}
-              onRun={run && onRun}
               turns={turns}
               byTurn={byTurn}
               chatId={chat.id}
               onPickVariant={onPickVariant}
               onDismissSideQuestion={onDismissSideQuestion && dismissSide}
+              fileChips={fileChips}
+              checkpointsOff={checkpointsOff}
             />
           ))}
           {shown.to < chunks.length - 1 && <div className="transcript-gap" aria-hidden style={{ height: shown.after }} />}
@@ -1081,7 +1087,6 @@ export function ChatPane({
         </JumpContext.Provider>
       </div>
 
-      {runOf && run && <RunDialog load={() => run(runOf)} onClose={() => setRunOf(undefined)} />}
       <SubagentsPanel
         tree={chat.subagents}
         api={subagents}
@@ -1178,13 +1183,15 @@ const BlockView = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
-    onRun,
     versions,
     chatId,
     turn,
     onPickVariant,
+    filesChanged,
+    checkpointsOff,
   }: {
     block: Block;
     live: boolean;
@@ -1198,13 +1205,16 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
-    onRun?: (itemId: string) => void;
     versions?: Variant[];
     chatId: string;
     turn?: number;
     onPickVariant: (chatId: string, turn: number) => void;
+    /** For a finished reply that edited files: how many (ADR 0180). `checkpointsOff`: its profile takes no checkpoints. */
+    filesChanged?: number;
+    checkpointsOff?: boolean;
   }) {
     const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
     const nav = versions && current >= 0 && turn !== undefined && (
@@ -1266,13 +1276,14 @@ const BlockView = memo(
                 <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
-                {onRun && <RunButton onRun={() => onRun(block.id)} />}
+                {onRun && <RunButton onOpen={() => onRun(block.id)} />}
               </div>
             </div>
           )}
           {!live && nav}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
+          {filesChanged !== undefined && !live && <FilesChip chatId={chatId} replyId={block.id} count={filesChanged} off={!!checkpointsOff} />}
         </div>
       );
     if (block.kind === "error")
@@ -1280,11 +1291,6 @@ const BlockView = memo(
         <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
-          {onRun && (
-            <div className="msg-actions">
-              <RunButton onRun={() => onRun(block.id)} />
-            </div>
-          )}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
@@ -1309,13 +1315,15 @@ const BlockView = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
-    a.onRun === b.onRun &&
     a.versions === b.versions &&
     a.chatId === b.chatId &&
     a.turn === b.turn &&
-    a.onPickVariant === b.onPickVariant,
+    a.onPickVariant === b.onPickVariant &&
+    a.filesChanged === b.filesChanged &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /**
@@ -1338,14 +1346,16 @@ const TranscriptChunk = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
-    onRun,
     turns,
     byTurn,
     chatId,
     onPickVariant,
     onDismissSideQuestion,
+    fileChips,
+    checkpointsOff,
   }: {
     blocks: (Block | SideBlock)[];
     live?: string;
@@ -1360,14 +1370,16 @@ const TranscriptChunk = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
-    onRun?: (itemId: string) => void;
     turns: Turns;
     byTurn?: Map<number, Variant[]>;
     chatId: string;
     onPickVariant: (chatId: string, turn: number) => void;
     onDismissSideQuestion?: (id: string) => void;
+    fileChips?: Map<string, number>;
+    checkpointsOff: boolean;
   }) {
     return (
       <div className="transcript-chunk" data-chunk={blocks[0].id}>
@@ -1391,13 +1403,15 @@ const TranscriptChunk = memo(
                   onOutgoing={onOutgoing}
                   onBranch={message ? onBranch : undefined}
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
+                  onRun={b.kind === "assistant" ? onRun : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
-                  onRun={turns.replies.has(b.id) ? onRun : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
                   chatId={chatId}
                   turn={turns.anchor.get(b.id)}
                   onPickVariant={onPickVariant}
+                  filesChanged={b.kind === "assistant" ? fileChips?.get(b.id) : undefined}
+                  checkpointsOff={checkpointsOff}
                 />
               )}
             </ErrorBoundary>
@@ -1422,14 +1436,16 @@ const TranscriptChunk = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
-    a.onRun === b.onRun &&
     a.turns === b.turns &&
     a.byTurn === b.byTurn &&
     a.chatId === b.chatId &&
     a.onPickVariant === b.onPickVariant &&
-    a.onDismissSideQuestion === b.onDismissSideQuestion,
+    a.onDismissSideQuestion === b.onDismissSideQuestion &&
+    a.fileChips === b.fileChips &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /** A block that threw while it was drawn, in its place, so the rest of the chat keeps working (ADR 0137). */

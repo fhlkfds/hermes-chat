@@ -80,6 +80,18 @@ describe("A reply's usage", () => {
     expect(line.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("ends with how long the reply took, when this app timed it, and says how in the breakdown", async () => {
+    pane(chatOf([{ kind: "user", id: "u", text: "Disk?" }, { kind: "assistant", id: "a", text: "82% used.", usage: { ...measured, ms: 12_400 } }]));
+    const line = screen.getByRole("button", { name: /^Tokens and time for this reply: 1\.2k in, 60\.2k cache, 1k out, 12\.4 s\. Show breakdown$/ });
+    expect(line.textContent).toBe("1.2k in · 60.2k cache · 1k out · 12.4 s");
+
+    await userEvent.click(line);
+    const table = document.getElementById(line.getAttribute("aria-controls")!)!;
+    const time = [...table.querySelectorAll(".usage-row")].find((r) => r.querySelector("dt")!.textContent === "Time");
+    expect(time?.querySelector("dd")!.textContent).toBe("12.4 s");
+    expect(table.querySelector(".usage-note")!.textContent).toBe(`${REPLY_NOTES.split} ${REPLY_NOTES.cost} ${REPLY_NOTES.time}`);
+  });
+
   it("leaves the cache out of the line when the turn used none, and shows nothing for a reply not measured", () => {
     pane(
       chatOf([

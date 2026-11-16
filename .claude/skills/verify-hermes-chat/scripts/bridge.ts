@@ -8,6 +8,12 @@
 //   a prompt with "dispatch" in it calls `kanban_create` (a task on the stand-in's board, `session_id` the chat's),
 //   says "Research task dispatched (t_…)" and ends its turn. The kanban routes serve the board.
 //   a prompt with "background" in it starts two background subagents and ends its turn while they run.
+//   a prompt that starts with `tools` runs a turn with tool calls as Hermes sends and stores one, in real time: a
+//   `terminal` call, then a `read_file` that fails, each with Hermes's `duration_s`, `session.usage` after each model
+//   call, and stored rows with `timestamp` and `tool_calls` (FakeHermes.toolTurn), for the Run view (ADR 0178).
+//   a prompt with "edit two files" in it runs FakeHermes's file turn in the chat's folder (ADR 0180): a write Hermes
+//   refuses, then a write of a.txt and a patch of b.txt, with a checkpoint before them, so the reply gets the
+//   "2 files changed" chip. Checkpoints are on unless HV_CHECKPOINTS=off, which gives the chip's "checkpoints are off".
 //   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
 //   a prompt that starts with "fail" ends its reply with an error, as a provider failure does.
 //   a prompt that starts with "math" gets a reply with inline and display math and a Mermaid diagram (#350), and one
@@ -40,6 +46,9 @@
 //   or not (a test's control). With `chat`, each `$SESSION` in the body is first replaced by the runtime session id of
 //   that chat, which must be open in the app: `{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start",
 //   "session_id":"$SESSION","payload":{"tool_id":"t1","name":"terminal","preview":5}}}`.
+//   `POST /__file?chat=<chat id>&path=<path in its folder>` with the file's new text as the body writes that file in the
+//   folder the chat works in, as the owner editing it by hand would, such as after an "edit two files" turn, for the
+//   Preview's hand-edit warning (a test's control).
 //   `POST /__return?chat=<chat id>` with a JSON body `{text, display_kind, display_metadata?, reply}` runs the turn Hermes
 //   starts when handed-off work comes back (`FakeHermes.returnWork`): the notice is stored as a user row with that
 //   display kind and metadata, and `reply` streams as the turn's reply, in that chat's live session (a test's control).
@@ -73,6 +82,7 @@ const USER = "verify";
 const PASSWORD = "verify-pass";
 const server = new FakeHermes();
 const delayMs = Number(process.env.HV_DELAY_MS ?? 0);
+server.checkpoints.on = process.env.HV_CHECKPOINTS !== "off";
 
 // Synthetic seed data. Feature recipes in ../features/ name these titles; change both together.
 server.sessions = [
@@ -176,8 +186,21 @@ server.memoryProviders.add(honcho, { ...RETAINDB });
 server.memoryProviders.active = { default: "honcho", work: "" };
 
 // MCP servers as each profile's config holds them; the `.env` (tokens) stays out.
+// Each checkpointed folder's files now, and every restore the app asked for (ADR 0180).
 const dump = () =>
-  JSON.stringify({ sessions: server.sessions, transcripts: server.transcripts, mcp: server.mcp.servers, kanban: server.kanban.boards, answers: server.responses }, null, 2);
+  JSON.stringify(
+    {
+      sessions: server.sessions,
+      transcripts: server.transcripts,
+      mcp: server.mcp.servers,
+      kanban: server.kanban.boards,
+      answers: server.responses,
+      files: Object.fromEntries(Object.keys(server.checkpoints.byFolder).map((f) => [f, server.checkpoints.files(f)])),
+      restores: server.requests.filter((r) => r.method === "rollback.restore").map((r) => r.params),
+    },
+    null,
+    2,
+  );
 const save = () => stateFile && writeFileSync(stateFile, dump());
 save();
 
@@ -224,8 +247,27 @@ function replyTo(sessionId: string, prompt: string, said?: string, persisted_tur
   setTimeout(step, 400);
 }
 
+function toolsReply(sessionId: string) {
+  const sleep = (seconds: number) => new Promise<void>((done) => setTimeout(done, seconds * 1000));
+  return server
+    .toolTurn(
+      sessionId,
+      {
+        calls: [
+          [{ name: "terminal", args: { command: "df -h /srv" }, result: { output: "/dev/sda1  1.8T  1.7T  92% /srv", exit_code: 0 }, seconds: 2.4 }],
+          [{ name: "read_file", args: { path: "/srv/backup/last-run.log" }, result: { error: "File not found: /srv/backup/last-run.log" }, seconds: 0.3 }],
+        ],
+        reply: "The NAS is 92% full. The backup log isn't where I expected it, so I couldn't check the last run.",
+        modelSeconds: 1.2,
+        tokens: { prompt: 1800, output: 90 },
+        costUsd: 0.0031,
+      },
+      sleep,
+    )
+    .then(save);
+}
+
 server.kanban.wakeDelayMs = 2_000;
-server.stepDelayMs = 700;
 server.kanban.wakeWith = (sid, _stored, text, user_row_id) => replyTo(sid, "", text, { user_row_id });
 
 // The subagents a "delegate" prompt started, as `subagent.start` / `subagent.complete` payloads carry them
@@ -400,6 +442,15 @@ const http = createServer(async (req, res) => {
     send((body ?? "").replaceAll("$SESSION", runtime));
     return json(200, { ok: true });
   }
+  if (url.pathname === "/__file" && req.method === "POST") {
+    const chat = url.searchParams.get("chat") ?? "";
+    const runtime = server.runtimeIdOf(chat);
+    const path = (url.searchParams.get("path") ?? "").replace(/^\/+/, "");
+    if (!runtime || !path) return json(400, { detail: "Needs chat (a chat open in the app) and path (in the folder it works in)" });
+    server.serverFiles[`${server.folderOf(runtime, chat)}/${path}`] = body ?? "";
+    save();
+    return json(200, { ok: true });
+  }
   if (url.pathname === "/__return" && req.method === "POST") {
     const chat = url.searchParams.get("chat") ?? "";
     if (!server.runtimeIdOf(chat)) return json(400, { detail: `Chat ${chat} isn't open in the app` });
@@ -452,9 +503,8 @@ http.on("upgrade", async (req, sock: Socket) => {
           if (/delegate/i.test(prompt)) delegate(session_id, /queue/i.test(prompt));
           else if (/approval/i.test(prompt)) askApproval(session_id);
           else if (/^fail/i.test(prompt)) failReply(session_id);
-          else if (/dispatch|background/i.test(prompt)) setTimeout(save, 500);
-          // FakeHermes runs a two-tool turn for it (`toolReply`), for the Run view.
-          else if (/run steps/i.test(prompt)) setTimeout(save, 10 * server.stepDelayMs);
+          else if (/^tools/i.test(prompt)) void toolsReply(session_id);
+          else if (/dispatch|background|edit two files/i.test(prompt)) setTimeout(save, 500);
           else replyTo(session_id, prompt);
         }, 0);
       }

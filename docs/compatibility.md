@@ -10,7 +10,7 @@ The app learns what a server supports in three ways, in this order:
 
 1. **What Hermes says about itself.** `GET /api/health` gives the version and commit. `GET /api/status` gives the release date and the sign-in providers. The `gateway.ready` frame gives the protocol. `client.capabilities` lists the requests Hermes may send, such as Approvals, and `gateway.capabilities` lists feature flags.
 2. **What the app's own requests show.** When a screen reads a route and Hermes answers, that feature is supported. When Hermes answers that it has no such route or method, it is not supported.
-3. **A check.** For anything still not known about 2 seconds after the connection opens, the app sends one request that only reads. Each check has an 8-second time limit. Two features have no read to check them by: Toolset switches and Answering Approvals. While Settings → Diagnostics is open, it sends each one request shaped like a change, for something that can't exist, which Hermes refuses before changing anything (ADR 0169). Nothing else is sent to find out, and the app sends neither check on connect.
+3. **A check.** For anything still not known about 2 seconds after the connection opens, the app sends one request that only reads. Each check has an 8-second time limit. Four features have no read to check them by: Toolset switches, Answering Approvals, Work links and Work estimate. While Settings → Diagnostics is open, it sends each one request shaped like a change, which Hermes refuses before changing anything (ADR 0169, ADR 0179). Nothing else is sent to find out, and the app sends neither check on connect.
 
 A version number alone doesn't prove that a route exists, so each feature is checked on its own. A Hermes installed from a git checkout may report its version as `unknown`; diagnostics then shows its build and commit.
 
@@ -141,6 +141,10 @@ Needs `GET /api/skills`, and `PUT /api/skills/toggle` and `/api/skills/content` 
 
 Needs the dashboard's managed-files routes, `GET /api/files` and `GET /api/files/read`. Checked with `GET /api/files`. Without them, the Server files screen shows a note instead of the browser, and nothing is uploaded or saved.
 
+## Undoing a reply's file changes
+
+Needs `rollback.list`, `rollback.diff` and `rollback.restore` on `/api/ws`. Hermes `bf0203a` and `f0d9488` have them (`tui_gateway/methods_tools.py:1123`). Checked with `rollback.list` with `__hermes_chat_probe__` as the session: Hermes answers "session not found" (4001) when it has the method, and "method not found" when it doesn't. Alongside, the check reads the profile's `GET /api/config` for `checkpoints.enabled`, and the Diagnostics row says whether it is on. Hermes leaves it off by default and takes checkpoints only with it on. `HERMES_TUI_CHECKPOINTS` on the server overrides it, which only a chat's own `rollback.list` shows. Each method needs the chat's live session. Before the files-changed chip shows under a reply, the app sends `rollback.diff` with `__hermes_chat_probe__` as the hash, once per live session. For a chat whose terminal runs in a container, Hermes answers 5022 ("Checkpoints are not taken for terminal.backend=…"), and for one on the host, an empty diff without running git. Without the methods, or for a chat in a container, the chip doesn't show. With checkpoints off, it says so, and the Preview says how to turn them on. Undo restores one file per `rollback.restore`, with `file_path`, and never the whole folder, which would also drop the chat's newest message (ADR 0180). The canonical gateway answers the same methods, but the app doesn't connect to it.
+
 ## Scheduled jobs
 
 Needs the cron routes under `/api/cron/`. Checked with `GET /api/cron/jobs`. To run jobs, the profile's gateway must also be running on the server, which the app can't check. Without the routes, the Scheduled jobs screen shows a note instead of the list.
@@ -156,6 +160,17 @@ Needs `GET /api/fs/list`, and `GET /api/sessions/{id}/messages` with tool rows. 
 ## Work
 
 Needs the dashboard's kanban plugin (`plugins/kanban/dashboard/plugin_api.py`), under `/api/plugins/kanban`. Checked with `GET /api/plugins/kanban/boards`. The Work page reads `GET board` and `GET workflow` for the current board, and `GET tasks/{id}` for a task's sheet. It changes the board with `PATCH tasks/{id}` (an edit or a move), `POST tasks` (a new task, with an `idempotency_key`) and `POST tasks/{id}/comments`. Without the plugin, the Work button doesn't show, and a board read that answers 404 shows a note asking for the plugin to be turned on. The same plugin tells the chat list which tasks a chat dispatched.
+
+Planning on the Work page (ADR 0179) uses more of the same plugin's routes. Each part is its own feature in Diagnostics, and each hides only when Hermes is found to lack its own route. The rest of the page stays.
+
+| Feature | Routes | Checked with | Without it |
+| --- | --- | --- | --- |
+| Work dispatch settings | `GET orchestration` | That read: an answer with a true or false `auto_decompose` | The Work page has no Dispatch line. |
+| Work bot and model pickers | `GET model-options`, `GET assignees`, `GET profiles`, and `PATCH tasks/{id}` with `assignee`, `model_override`, `provider_override` or `clear_model_override` | `GET model-options`, which answers `providers` (an empty list when Hermes can't build the catalog: the sheet then takes a typed model) | A card's sheet has no Bot and model pickers. Edit still sets the assignee. |
+| Work links | `POST links {parent_id, child_id}` and `DELETE links?parent_id=&child_id=` | In Diagnostics, `POST links` from a task named `__hermes_chat_probe__` to itself, which Hermes refuses (400) before it reads the board | A card's sheet has no Waits on and Then lists. The Graph view still draws links, since it reads them from `GET tasks/{id}` (`links` and `link_tasks`) and the board's `link_counts`. |
+| Work estimate | `POST estimate {title, body}` and `POST tasks/{id}/estimate` | In Diagnostics, `POST estimate` with an empty title, which Hermes answers `ok: false` before asking any model | New task and a card's sheet offer no token guess. |
+
+Diagnostics also shows the server's `kanban.auto_decompose` and `kanban.auto_promote_children` (from `GET orchestration`) and the profile's `kanban.review_dispatch` (from `GET /api/config`). The relay takes `POST links`, `POST estimate` and `POST tasks/{id}/estimate` only with the fields the page sends (`kanban_write`). The plugin is the same at Hermes `b200f5bc`, `bf0203a` and `f0d9488`.
 
 ## Sign-in methods
 
@@ -175,7 +190,12 @@ Needs `subagent.roster` on `/api/ws`, which counts the background subagents and 
 
 ## Run view
 
-Needs nothing new. For a reply this app watched, it uses the `tool.*`, `message.*`, `session.usage`, `status.update` and `error` events and the Question requests on `/api/ws`. For a reply it didn't watch, it uses `GET /api/sessions/{id}/messages`, which the app already reads when a reply it sent ends, and which settles this check. It also reads `display.tool_progress` from `GET /api/config?profile=`. Hermes `bf0203a` and `f0d94882` both have all of it. At `bf0203a`, `message.start` carries no `turn_id`, so a reply's events are paired by their order, which works at every version. Times are when the app heard each event, because Hermes sends no times. Only a tool's `duration_s` is Hermes's own. With `display.tool_progress: off`, Hermes sends tool events only for file edits, delegations, questions and a few card tools, and the view says so. Settings → Diagnostics shows the setting as **Tool steps** and whether turns carry ids as **Turn ids** (ADR 0178). Without the messages route, the view shows only replies the app watched.
+The Run view under a reply draws its turn as steps (ADR 0178). It needs nothing the app doesn't already read: the session events on `/api/ws` (`message.start`, `message.delta`, `reasoning.delta`, `tool.start`, `tool.complete`, `session.usage`, `status.update`, `request.cancel`, `approval.cancelled`, `message.complete`, `error`), the Approval and Question requests, `GET /api/sessions/{id}` for the chat's cost, `GET /api/sessions/{id}/messages` for a reply the app didn't watch, and `GET /api/config` for `display.tool_progress`. Hermes `bf0203a` and `f0d9488` have all of them, so it adds no capability of its own. Settings → Diagnostics shows two facts for it under Flight recorder.
+
+- **Tool steps.** With `display.tool_progress` set to `off`, Hermes sends tool events only for file edits, `delegate_task`, `clarify`, a few card tools and a failed call's completion. A run the app watched then misses the other tool steps, and the Run view says so. A run read from stored history still has them. A `HERMES_TUI_TOOL_PROGRESS` setting on the server overrides the config, and the app can't see it.
+- **Turn ids.** `bf0203a` sends no `turn_id` on `message.start`; `f0d9488` does. The recorder pairs a turn's events by their order on the session, which works with both, and Diagnostics shows which this Hermes is once a reply starts.
+
+What it can't show, on any Hermes: no event carries a server time, so every start and end is when the app heard it. Only a tool's `duration_s` is measured by Hermes. A model call has no event, so its edges and tokens are inferred from the events around it and the `session.usage` counters, sent at most once a second. Cost is kept per chat, so a turn's cost is the change across it, and a step's isn't known. A tool call has no failure flag, so failure is judged from its result. A retry that recovered leaves no trace. A stored row has only the time its step ended. Each of these is marked or said in the view.
 
 ## Versions checked
 

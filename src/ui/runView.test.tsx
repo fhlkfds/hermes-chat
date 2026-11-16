@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
-// The Run view (RunView.tsx, ADR 0178): opened from a turn's last reply, it draws the steps and shows one's details.
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// The Run view on screen (issue #602, ADR 0178): Run under a reply opens its steps as a waterfall, from what the app
+// heard live or from the stored rows, with every inferred figure marked and each step's arguments and result a click away.
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Item } from "../hermes/model";
-import type { RunView } from "../hermes/runs";
-import { ScreenshotDesk, type ScreenshotApi } from "../hermes/screenshots";
-import { ChatPane } from "./ChatPane";
-
-const noScreenshots: ScreenshotApi = { capture: () => Promise.reject(new Error("no screenshots in this test")), discard: async () => {} };
+import { FakeHermes, row } from "../hermes/fakeHermes";
+import { connect, type Hermes } from "../hermes/transport";
+import { Main } from "../App";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 
@@ -16,124 +14,96 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
   globalThis.CSS ??= { escape: (s: string) => s } as typeof CSS;
 });
-afterEach(cleanup);
 
-const items: Item[] = [
-  { kind: "user", id: "h-0", text: "What's in the folder?" },
-  { kind: "assistant", id: "h-1", text: "Looking first." },
-  { kind: "tool", id: "h-2", name: "terminal", status: "done" },
-  { kind: "assistant", id: "h-3", text: "README.md and src." },
-  { kind: "user", id: "h-4", text: "Thanks" },
-  { kind: "assistant", id: "h-5", text: "You're welcome." },
-];
+const running: Hermes[] = [];
+afterEach(async () => {
+  cleanup();
+  await Promise.all(running.splice(0).map((h) => h.close()));
+  localStorage.clear();
+});
 
-const view: RunView = {
-  run: {
-    source: "watched",
-    start: 0,
-    end: 4000,
-    turnIds: false,
-    cost: 0.0123,
-    steps: [
-      { id: "s0", kind: "model", name: "Model call", start: 0, end: 1000, length: { ms: 1000, measured: false }, text: "Looking first." },
-      { id: "s1", kind: "tool", name: "terminal", start: 1000, end: 3500, length: { ms: 2500, measured: true }, args: { command: "ls" }, result: "README.md\nsrc" },
-      { id: "s2", kind: "tool", name: "read_file", start: 1000, end: 1200, length: { ms: 200, measured: true }, failed: "File not found: notes.md", judged: true },
-      { id: "s3", kind: "model", name: "Model call", start: 3500, end: 4000, length: { ms: 500, measured: false } },
-    ],
-  },
-  toolProgress: { mode: "off" },
-};
+const T = 1_700_000_000;
 
-function pane(run: (itemId: string) => Promise<RunView>, running = false) {
-  render(
-    <ChatPane
-      chat={{ id: "c1", runtimeId: "rt", title: "Folder", source: "app", settled: false, updatedAt: 0, items, running }}
-      status="connected"
-      draft=""
-      draftKey="draft"
-      screenshots={new ScreenshotDesk(noScreenshots)}
-      onDraft={() => {}}
-      onDraftStep={() => undefined}
-      onRetry={() => {}}
-      onEdit={() => {}}
-      onDismiss={() => {}}
-      onAttach={async () => ({ attachments: [], refused: [] })}
-      onSend={() => {}}
-      onStop={() => {}}
-      onAnswer={() => {}}
-      onQuestion={() => {}}
-      run={run}
-    />,
-  );
+async function launch(more?: (s: FakeHermes) => void) {
+  const s = new FakeHermes();
+  s.sessions = [row("c1", 0.1, { pinned: true, title: "Disk check", estimated_cost_usd: 0.01, cost_status: "estimated", input_tokens: 0, output_tokens: 0, api_call_count: 0 })];
+  s.storeMessage("c1", { role: "user", text: "How full is the NAS?", timestamp: T });
+  s.storeMessage("c1", {
+    role: "assistant",
+    text: "",
+    timestamp: T + 2,
+    tool_calls: [{ id: "k1", type: "function", function: { name: "terminal", arguments: '{"command":"df -h"}' } }],
+  });
+  s.storeMessage("c1", { role: "tool", name: "terminal", tool_call_id: "k1", result: '{"output":"","exit_code":1,"error":"df: permission denied"}', timestamp: T + 5 });
+  s.storeMessage("c1", { role: "assistant", text: "I couldn't read the disk.", timestamp: T + 6.5 });
+  more?.(s);
+  const hermes = await connect(s.openPipe);
+  running.push(hermes);
+  render(<Main hermes={hermes} connection={{ mode: "ssh", sshTarget: "liam@hermes", url: "", username: "liam" }} onSignOut={async () => {}} />);
+  await waitFor(() => expect(hermes.hasListed()).toBe(true));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /Disk check/ }));
+  await screen.findByText("I couldn't read the disk.");
+  await act(async () => void (await hermes.idle()));
+  return { s, hermes, user };
 }
 
-const runButtons = () => screen.queryAllByRole("button", { name: "Run view" }).map((b) => b.closest("[data-item]")!.getAttribute("data-item"));
+const lastRun = () => screen.getAllByRole("button", { name: "Run" }).at(-1)!;
+const rows = (dialog: HTMLElement) => within(within(dialog).getByRole("list", { name: "Steps" })).getAllByRole("button");
+const rowText = (r: HTMLElement) => r.textContent?.trim();
 
 describe("The Run view", () => {
-  it("is offered under each turn's last reply, not a reply partway through a turn", () => {
-    pane(async () => view);
-    expect(runButtons()).toEqual(["h-3", "h-5"]);
-  });
+  it("draws a reply this app didn't watch from its stored rows, every length inferred", async () => {
+    const { user } = await launch();
+    await user.click(lastRun());
+    const dialog = await screen.findByRole("dialog", { name: "Run of this reply" });
+    await within(dialog).findByText(/Hermes's stored history/);
+    expect(rows(dialog).map(rowText)).toEqual(["Model≈2.0 s (inferred)", "terminal≈3.0 s (inferred)", "Model≈1.5 s (inferred)"]);
+    expect(dialog.textContent).toContain("Hermes keeps cost per chat, not per step or turn, so a stored run has none.");
+    expect(dialog.textContent).toContain("a failed one is judged from its result");
 
-  it("is offered under a turn's error when the turn has no reply", () => {
-    render(
-      <ChatPane
-        chat={{ id: "c1", runtimeId: "rt", title: "Folder", source: "app", settled: false, updatedAt: 0, items: [...items, { kind: "user", id: "h-6", text: "Again" }, { kind: "error", id: "e-7", text: "Provider timed out" }] }}
-        status="connected"
-        draft=""
-        draftKey="draft"
-        screenshots={new ScreenshotDesk(noScreenshots)}
-        onDraft={() => {}}
-        onDraftStep={() => undefined}
-        onRetry={() => {}}
-        onEdit={() => {}}
-        onDismiss={() => {}}
-        onAttach={async () => ({ attachments: [], refused: [] })}
-        onSend={() => {}}
-        onStop={() => {}}
-        onAnswer={() => {}}
-        onQuestion={() => {}}
-        run={async () => view}
-      />,
-    );
-    expect(runButtons()).toEqual(["h-3", "h-5", "e-7"]);
-  });
-
-  it("isn't offered under the reply of a turn still running", () => {
-    pane(async () => view, true);
-    expect(runButtons()).toEqual(["h-3"]);
-  });
-
-  it("draws the steps with what is measured and inferred, and shows a step's arguments and result", async () => {
-    const run = vi.fn(async () => view);
-    pane(run);
-    await userEvent.click(within(document.querySelector('[data-item="h-3"]')!).getByRole("button", { name: "Run view" }));
-    expect(run).toHaveBeenCalledWith("h-3");
-    const dialog = await screen.findByRole("dialog", { name: /Run of this reply/ });
-    const steps = within(within(dialog).getByRole("list", { name: "Steps" })).getAllByRole("button");
-    expect(steps.map((s) => s.textContent)).toEqual([
-      "Model call1.0 s inferred",
-      "terminal2.5 s measured",
-      "read_filelooks failed200 ms measured",
-      "Model call500 ms inferred",
-    ]);
-    expect(dialog.textContent).toContain("cost $0.012");
-    expect(dialog.textContent).toContain("display.tool_progress: off");
-    expect(dialog.textContent).toContain("doesn't name its turns");
-    await userEvent.click(steps[1]);
-    const detail = within(dialog).getByRole("region", { name: "terminal: details" });
-    expect(detail.textContent).toContain('"command": "ls"');
-    expect(detail.textContent).toContain("README.md");
-    await userEvent.click(steps[2]);
-    expect(within(dialog).getByRole("region", { name: "read_file: details" }).textContent).toContain("Looks failed, judged from the result: File not found: notes.md");
-  });
-
-  it("says why when the run can't be read, and closes on Escape", async () => {
-    pane(async () => Promise.reject(new Error("Hermes's stored history doesn't hold this reply's row, so its steps can't be read.")));
-    await userEvent.click(within(document.querySelector('[data-item="h-5"]')!).getByRole("button", { name: "Run view" }));
-    const dialog = await screen.findByRole("dialog");
-    await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("doesn't hold this reply's row"));
-    await userEvent.keyboard("{Escape}");
+    await user.click(rows(dialog)[1]);
+    expect(rows(dialog)[1].getAttribute("aria-expanded")).toBe("true");
+    expect(dialog.textContent).toContain("Failed, judged from its result: df: permission denied");
+    expect(dialog.textContent).toContain('"command": "df -h"');
+    await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("draws a reply it watched from what it heard, with Hermes's measured tool lengths and the turn's inferred cost", async () => {
+    const { s, hermes, user } = await launch();
+    await act(async () => void (await hermes.send("c1", "Try again with sudo")));
+    await act(async () => {
+      await s.toolTurn(s.runtimeIdOf("c1")!, {
+        calls: [[{ name: "terminal", args: { command: "sudo df -h" }, result: { output: "92% used", exit_code: 0 }, seconds: 2.5 }]],
+        reply: "It's 92% full.",
+        modelSeconds: 1,
+        tokens: { prompt: 800, output: 40 },
+        costUsd: 0.002,
+      });
+      await hermes.idle();
+    });
+    await screen.findByText("It's 92% full.");
+    await user.click(lastRun());
+    const dialog = await screen.findByRole("dialog", { name: "Run of this reply" });
+    await within(dialog).findByText(/What this app heard live/);
+    const terminal = rows(dialog).find((r) => rowText(r)?.startsWith("terminal"))!;
+    expect(rowText(terminal)).toBe("terminal2.5 s");
+    expect(dialog.textContent).toContain("≈$0.0040 for the turn");
+    expect(dialog.textContent).toContain("Model calls2, from Hermes's counters");
+  });
+
+  it("says when the profile's tool progress is off, so a watched run misses ordinary tool steps", async () => {
+    const { s, hermes, user } = await launch((s) => (s.toolProgress = { default: "off" }));
+    await act(async () => void (await hermes.send("c1", "Again")));
+    await act(async () => {
+      await s.toolTurn(s.runtimeIdOf("c1")!, { calls: [], reply: "Done.", modelSeconds: 1, tokens: { prompt: 10, output: 2 }, costUsd: 0 });
+      await hermes.idle();
+    });
+    await screen.findByText("Done.");
+    await user.click(lastRun());
+    const dialog = await screen.findByRole("dialog", { name: "Run of this reply" });
+    const note = await within(dialog).findByRole("note");
+    expect(note.textContent).toContain("display.tool_progress is off, so Hermes doesn't send ordinary tool steps");
   });
 });

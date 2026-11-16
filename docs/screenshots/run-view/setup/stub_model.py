@@ -12,7 +12,7 @@ def plan(messages):
     if last.get("role") == "tool":
         names = [tc["function"]["name"] for m in messages if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])]
         if names and names[-1] == "terminal":
-            return {"tool_calls": [("read_file", {"path": "backup-last-run.log"})]}
+            return {"tool_calls": [("read_file", {"path": "/tmp/hermes602/work/backup-last-run.log"})]}
         return {"content": "The disk check ran. I couldn't find the backup log, so I can't say when the last backup ran."}
     text = last.get("content")
     if isinstance(text, list):

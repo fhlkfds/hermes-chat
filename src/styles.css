@@ -3358,52 +3358,6 @@ label.memory-pick { cursor: pointer; }
 .artifact-foot .btn, .artifact-panel .btn { display: inline-flex; align-items: center; gap: 6px; }
 .artifact-foot .confirm-actions { flex-wrap: wrap; }
 
-/* ---------- Run view (RunView.tsx, ADR 0178) ---------- */
-.leave-overlay .leave-dialog.run-dialog { max-width: min(760px, calc(100% - 32px)); width: 100%; max-height: min(92vh, 900px); overflow-y: auto; }
-.run-dialog > * { flex-shrink: 0; }
-.run-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.run-title svg { color: var(--muted); }
-.run-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-.run-error { display: flex; gap: 6px; align-items: flex-start; color: var(--bad); line-height: 1.5; overflow-wrap: anywhere; }
-.run-error svg { flex: none; margin-top: 3px; }
-.run-summary { color: var(--text-2); }
-.run-failed-count, .run-outcome { color: var(--bad); }
-.run-how { font-size: calc(12rem / 14); padding: 0 5px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
-.run-how.measured { color: var(--ok); border-color: rgba(124, 196, 154, 0.35); }
-.run-notes { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: calc(12rem / 14); line-height: 1.45; }
-.run-notes .run-warn { color: var(--warn); list-style: none; margin-left: -16px; display: flex; gap: 6px; align-items: flex-start; }
-.run-notes .run-warn svg { flex: none; margin-top: 3px; }
-.run-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--line-2); border-radius: 8px; padding: 4px; background: var(--code-bg); }
-.run-step {
-  width: 100%; display: grid; grid-template-columns: minmax(120px, 34%) 1fr 128px; gap: 10px; align-items: center;
-  padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; font: inherit; font-size: calc(12.5rem / 14); cursor: pointer;
-}
-.run-step:hover { background: var(--hover-2); }
-.run-step.picked { background: var(--raised-2); }
-.run-name { display: flex; align-items: center; gap: 5px; min-width: 0; }
-.run-name svg { flex: none; color: var(--muted); }
-.run-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-fail-mark { flex: none; color: var(--bad); font-size: calc(12rem / 14); }
-.run-track { position: relative; height: 10px; border-radius: 3px; background: var(--hover-2); }
-.run-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--muted); }
-.run-step.model .run-bar { background: var(--accent); }
-.run-step.tool .run-bar { background: var(--ok); }
-.run-step.question .run-bar { background: var(--warn); }
-.run-step.failed .run-bar, .run-step.error .run-bar { background: var(--bad); }
-.run-length { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.run-detail { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line-2); padding-top: 10px; }
-.run-detail h3 { margin: 0; font-size: calc(13rem / 14); }
-.run-detail h4 { margin: 4px 0 0; font-size: calc(12rem / 14); font-weight: 600; color: var(--text-2); }
-.run-detail .run-length { display: inline-flex; }
-.run-pre {
-  margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; border: 1px solid var(--line-2); border-radius: 8px; background: var(--code-bg);
-  font-family: var(--mono); font-size: var(--mono-size); white-space: pre-wrap; overflow-wrap: anywhere;
-}
-@media (max-width: 560px) {
-  .run-step { grid-template-columns: 1fr auto; }
-  .run-track { grid-column: 1 / -1; grid-row: 2; }
-}
-
 /* ---------- Branch from here (Branch.tsx, ADR 0027) ---------- */
 .leave-overlay .leave-dialog.branch-dialog { max-width: min(600px, 100%); width: 100%; max-height: min(92vh, 860px); overflow-y: auto; }
 /* It scrolls as a whole, so nothing in it is squeezed to fit. */
@@ -4227,6 +4181,22 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .ext-view h3 { margin: 4px 0 10px; font-size: calc(15rem / 14); }
 .ext-view .btn { margin-top: 12px; }
 .ext-for { margin: 0 0 10px; font-size: calc(12rem / 14); }
+/* A reply's files in the Preview, and its chip (FileChanges.tsx, ADR 0180). */
+.files-chip { margin-top: 8px; max-width: 100%; }
+.files-view { flex: 1; overflow: auto; padding: 14px 18px 40px; line-height: 1.55; user-select: text; display: flex; flex-direction: column; gap: 10px; }
+.files-view h3 { margin: 4px 0 0; font-size: calc(15rem / 14); }
+.files-view .btn { align-self: flex-start; }
+.files-file { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.files-file-head { display: flex; align-items: baseline; gap: 8px; overflow-wrap: anywhere; }
+.files-paths { margin: 0; padding-left: 18px; }
+.files-loading { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); }
+.files-choose { display: flex; flex-direction: column; gap: 8px; }
+.files-choose p { margin: 0; }
+.files-choice { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; }
+.files-choice .repo-notice { grid-column: 2; }
+.files-actions { display: flex; gap: 8px; }
+.files-report { margin: 0; padding-left: 18px; font-size: calc(12.5rem / 14); }
+.files-report .warn { color: var(--warn); }
 .ext-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ext-notice { padding: 8px 12px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line-2); }
 .ext-table { border-collapse: collapse; width: 100%; max-width: 480px; font-variant-numeric: tabular-nums; }
@@ -4270,7 +4240,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .settings .work-card p { margin: 0; font-size: calc(12.5rem / 14); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .settings .work-card p.work-why { color: var(--warn); }
 .work-why svg { vertical-align: -2px; }
-.work-assignee { display: flex; align-items: center; gap: 5px; font-size: calc(12rem / 14); color: var(--text-2); }
+.work-assignee { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; font-size: calc(12rem / 14); color: var(--text-2); }
 .settings p.work-empty { margin: 4px 2px; font-size: calc(12.5rem / 14); color: var(--faint); }
 .leave-overlay .leave-dialog.work-dialog { max-width: min(480px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); }
 .leave-overlay .leave-dialog.work-dialog.wide { max-width: min(640px, calc(100% - 32px)); padding: 0; }
@@ -4301,6 +4271,41 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-add { display: flex; gap: 8px; align-items: flex-end; }
 .work-add textarea { flex: 1; }
 .work-sheet-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+/* Planning (issue #604): the dispatch line, the Graph view, and the sheet's links, pickers and token guess. */
+.settings p.work-dispatch { margin: 0; font-size: calc(12.5rem / 14); color: var(--text-2); }
+.work-dispatch b { margin-right: 4px; color: var(--text); }
+.work-dispatch small { display: block; margin-top: 2px; font-size: calc(12rem / 14); }
+.work-model { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--muted); }
+.work-model > :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-assignee > .work-model:not(:first-child) { margin-left: 4px; }
+.settings .work-loose h2.work-column-head { text-transform: none; }
+.work-graph-view { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
+.work-graph-scroll { flex: none; overflow: auto; padding: 4px; }
+.work-graph { position: relative; }
+.work-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; }
+.work-edges marker path { fill: var(--line-3); stroke: none; }
+.settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 2px; padding: 8px 10px; }
+.settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.settings .work-card.work-node p { -webkit-line-clamp: 1; line-clamp: 1; }
+.work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); }
+.settings .work-card.ghost { cursor: default; border-style: dashed; background: transparent; color: var(--muted); }
+.settings .work-card.ghost:hover { border-color: var(--line-2); }
+.settings section.work-loose { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--sidebar); }
+.work-loose-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.settings section.work-plan { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; }
+.work-plan select, .work-plan input { background: var(--bg); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 9px; color: var(--text); outline: none; font: inherit; min-width: 0; }
+.work-plan select:focus, .work-plan input:focus { border-color: var(--line-3); }
+.work-plan label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; color: var(--muted); font-size: calc(12.5rem / 14); }
+.work-plan .muted { margin: 0; }
+.work-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.work-links li { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.work-link-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.work-confirm { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--sidebar); }
+.work-confirm .confirm-actions { margin: 0; }
+.work-model-typed { display: flex; flex: 1 1 240px; align-items: flex-end; gap: 6px; }
+.work-estimate { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; }
+.work-estimate > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; }
 @media (max-width: 640px) {
   .work-inner { padding: 14px 16px 12px; }
   .settings section.work-column { flex-basis: 78vw; }
@@ -4318,4 +4323,49 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
   }
   .conn-dot.connecting, .conn-dot.reconnecting { background: none; box-shadow: inset 0 0 0 2px var(--warn); }
   .rec-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 30%, transparent); }
+}
+
+/* ---------- Run view (RunView.tsx, ADR 0178) ---------- */
+.leave-overlay .leave-dialog.run-dialog { max-width: min(760px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; }
+.run-title svg { color: var(--accent); }
+.run-summary { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.run-summary dt { color: var(--faint); }
+.run-summary dd { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.run-inferred { color: var(--text-2); font-style: italic; }
+.run-bad { color: var(--bad); }
+.run-bad svg, .run-note svg { vertical-align: -2px; }
+.run-note { padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px; }
+.run-note svg { color: var(--warn); }
+.run-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line-2); }
+.run-step { border-bottom: 1px solid var(--line-2); }
+.run-row {
+  width: 100%; display: grid; grid-template-columns: minmax(90px, 30%) 1fr 72px; gap: 10px; align-items: center;
+  padding: 6px 4px; text-align: left; color: var(--text); background: none; border: 0; border-radius: 6px; cursor: pointer; font: inherit;
+}
+.run-row:hover { background: var(--raised-2); }
+.run-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.run-name { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-name svg { flex: none; color: var(--muted); }
+.run-failed .run-name, .run-failed .run-name svg { color: var(--bad); }
+.run-track { position: relative; height: 10px; background: var(--raised-2); border-radius: 3px; min-width: 0; }
+.run-bar { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--accent); }
+.run-model .run-bar { background: var(--muted); }
+.run-question .run-bar { background: var(--warn); }
+.run-failed .run-bar { background: var(--bad); }
+.run-bar.inferred { background: repeating-linear-gradient(135deg, var(--muted) 0 4px, transparent 4px 7px); border: 1px solid var(--muted); box-sizing: border-box; }
+.run-tool .run-bar.inferred { background: repeating-linear-gradient(135deg, var(--accent) 0 4px, transparent 4px 7px); border-color: var(--accent); }
+.run-failed .run-bar.inferred { background: repeating-linear-gradient(135deg, var(--bad) 0 4px, transparent 4px 7px); border-color: var(--bad); }
+.run-bar.moment { width: 3px !important; min-width: 3px; border: 0; background: var(--muted); }
+.run-failed .run-bar.moment { background: var(--bad); }
+.run-took { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+.run-detail { padding: 4px 8px 10px 26px; display: flex; flex-direction: column; gap: 8px; }
+.run-block-label { color: var(--faint); font-size: calc(12rem / 14); margin-bottom: 2px; }
+.run-block pre {
+  margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--line-2);
+  font-family: var(--mono); font-size: var(--mono-size); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.run-notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+@media (max-width: 560px) {
+  .run-row { grid-template-columns: 1fr 64px; }
+  .run-track { grid-column: 1 / -1; grid-row: 2; }
 }

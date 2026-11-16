@@ -150,6 +150,22 @@ describe("Settings → Persona", () => {
     expect(server.souls.default).toBe(SOUL);
   });
 
+  it("keeps the version being viewed open when a save adds a newer one above it", async () => {
+    const { user } = await launch();
+    await openPersona(user);
+    await edit(user, "# Second\n");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await screen.findByText(/Saved SOUL.md/);
+    const earlier = screen.getByRole("heading", { name: /Earlier versions/ }).closest("section")!;
+    await user.click(within(earlier).getByRole("button", { name: "View" }));
+
+    await edit(user, "# Third\n");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(within(earlier).getAllByRole("button", { name: /^(View|Hide)$/ })).toHaveLength(2));
+    expect(within(earlier).getAllByRole("button", { name: /^(View|Hide)$/ }).map((b) => b.textContent)).toEqual(["View", "Hide"]);
+    expect(within(earlier).getByRole<HTMLTextAreaElement>("textbox").value).toBe(SOUL);
+  });
+
   it("Cancel sets the edit aside, Undo brings it back, and Reload asks before dropping it", async () => {
     const { server, user } = await launch();
     await openPersona(user);

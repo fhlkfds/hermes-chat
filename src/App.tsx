@@ -24,6 +24,7 @@ import { PROJECTS_KEY, projectLinks, projectScope } from "./hermes/projectLinks"
 import { chatContext, contextLedger, knownWindow, type ChatContexts } from "./hermes/projectContextFiles";
 import { ProjectsStore, type Project } from "./hermes/projects";
 import { instructionsMessage, modelProblem, resolveNewChat, savedDefaults, type ProjectDefaults } from "./hermes/projectDefaults";
+import { unavailableWords } from "./hermes/instructionsAI";
 import { systemSecrets } from "./hermes/tauriKeyring";
 import { appUpdates } from "./hermes/tauriUpdates";
 import { tauriSnapshots } from "./hermes/snapshots";
@@ -65,6 +66,7 @@ import type { ChatPin } from "./ui/ChatMenu";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
+import { RunDialog } from "./ui/RunView";
 import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
 import type { QueueApi } from "./ui/Queue";
@@ -92,6 +94,7 @@ import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
 import { UsageAnalytics } from "./ui/UsageAnalytics";
 import { Work } from "./ui/Work";
+import type { WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { editStep, isTextField } from "./ui/editKeys";
@@ -1290,6 +1293,19 @@ export function Main({
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
+  // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a
+  // string so the set changes only when one of them does.
+  const workLacking = (
+    [
+      ["links", "workLinks"],
+      ["pickers", "workPickers"],
+      ["estimate", "workEstimate"],
+      ["dispatch", "workDispatch"],
+    ] as const
+  )
+    .flatMap(([part, id]) => (caps.caps[id].state === "unsupported" ? [part] : []))
+    .join(" ");
+  const workLacks = useMemo(() => new Set(workLacking.split(" ").filter(Boolean) as WorkFeature[]), [workLacking]);
   /** Set, each time anew, to open Settings on its Voice tab, from a voice conversation's "Change voice settings". */
   const [showVoice, setShowVoice] = useState<object>();
   /** Set, each time anew, to open Settings → Snapshots, from Share snapshot when no host is set up. */
@@ -3571,8 +3587,8 @@ export function Main({
                   writer:
                     status === "connected"
                       ? {
-                          ask: (c) => hermes.askForEdit({ profile, ...c }).then((r) => r.text),
-                          model: () => hermes.modelSettings.textModel(),
+                          ask: (c, m) => hermes.askForEdit({ profile, ...c, task: m.task, words: unavailableWords(m) }).then((r) => r.text),
+                          model: () => hermes.modelSettings.instructionsModel(),
                         }
                       : undefined,
                 }}
@@ -3628,6 +3644,8 @@ export function Main({
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
             screen={hermes.screen}
+            toolProgress={() => hermes.toolProgress()}
+            work={hermes.kanban}
             logs={logs}
             onClearCache={() => hermes.clearCache()}
             importer={{
@@ -3684,6 +3702,7 @@ export function Main({
           <Work
             api={hermes.kanban}
             connected={status === "connected"}
+            lacks={workLacks}
             onClose={() => {
               flushSync(() => setWorkOpen(false));
               focusPane(active.key);
@@ -3778,6 +3797,7 @@ export function Main({
                     artifactScope={{ scope, profile, ...(active.chatId && { chatId: active.chatId }) }}
                     connected={status === "connected"}
                     desk={desk}
+                    fileChanges={{ chat: (id) => chats.find((c) => c.id === id), io: (id) => hermes.rollbackIO(id) }}
                   />
                   ),
                 terminal: (shown) => (
@@ -4304,6 +4324,9 @@ function ChatView({
   // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
   const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
   useEffect(() => setReplayFrom(undefined), [chatId, profile]);
+  // The Run view (ADR 0178): the reply it is open for, if any.
+  const [runOf, setRunOf] = useState<string>();
+  useEffect(() => setRunOf(undefined), [chatId, profile]);
   const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);
   const listedChats = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().chats);
   const variants = useMemo(() => {
@@ -4570,6 +4593,7 @@ function ChatView({
       onDismissSideQuestion={(id) => hermes.dismissSideQuestion(chat.id, id)}
       followUp={followUp}
       compare={compare}
+      onCheckpoints={started && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
       headActions={
         <>
           {started && inWorktree && (
@@ -4609,6 +4633,7 @@ function ChatView({
           : undefined
       }
       branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
+      onRun={started ? setRunOf : undefined}
       branchedFrom={
         link && (
           <BranchedFrom
@@ -4639,7 +4664,6 @@ function ChatView({
           : undefined
       }
       variants={variants.size ? { byTurn: variants, onPick: (id, turn) => id !== chat.id && onOpenTurn(id, turn) } : undefined}
-      run={started ? (itemId) => hermes.runOf(chat.id, itemId) : undefined}
       footer={
         <StatusBar
           chat={chat}
@@ -4684,6 +4708,7 @@ function ChatView({
         }}
       />
     )}
+    {runOf && <RunDialog key={`${chat.id}/${runOf}`} api={{ read: () => hermes.run(chat.id, runOf) }} onClose={() => setRunOf(undefined)} />}
     {branchFrom && (
       <BranchDialog
         key={`${chat.id}/${branchFrom}`}

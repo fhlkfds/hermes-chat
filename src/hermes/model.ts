@@ -63,9 +63,10 @@ export type Item =
   | { kind: "user"; id: string; text: string; attachments?: string[]; references?: string[]; at?: number; outgoing?: Outgoing; rowId?: number; steer?: boolean }
   /**
    * `interrupted`: the owner, or another Hermes client, stopped this reply before it finished. `rowId`: its stored row,
-   * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`).
+   * once known. `usage`: the tokens its turn took, only for a reply this app watched finish (`usage.ts`). `sealed`:
+   * Hermes sent its whole text as `message.interim`, so text streamed after it is a new message.
    */
-  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage }
+  | { kind: "assistant"; id: string; text: string; interrupted?: boolean; at?: number; rowId?: number; usage?: ReplyUsage; sealed?: boolean }
   /**
    * A Returned result: the work a chat handed off, come back in the turn Hermes started for it (ADR 0175). `title`:
    * Hermes's one line for it, when it sent one. `body`: the result without Hermes's notice around it (`returned.ts`).
@@ -87,6 +88,11 @@ export type Item =
       durationS?: number;
       result?: string;
       summary?: string;
+      /**
+       * A file edit's diff as Hermes drew it for a terminal, ANSI colours and all: `tool.complete`'s `inline_diff`, or a
+       * stored row's `display_metadata.tool_result_metadata.inline_diff` (fileChanges.ts).
+       */
+      inlineDiff?: string;
     }
   /**
    * An Approval: Hermes asks before running a command it counts as dangerous. Like every Question (`QuestionItem`), it
@@ -240,6 +246,12 @@ export type Chat = {
   folder?: string;
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
+  /**
+   * What the files-changed chip needs to know (ADR 0180), checked once for the runtime session `runtimeId`.
+   * `container`: its terminal runs in a container, where Hermes takes no checkpoints. `on`: its profile has checkpoints
+   * on. Either is undefined when Hermes couldn't say. Set by the transport only.
+   */
+  checkpoints?: { runtimeId: string; container?: boolean; on?: boolean };
   /**
    * Its tokens and cost over its whole life, as Hermes last recorded them (`usage.ts`). Unknown until read from Hermes on
    * this connection. `usageError`: why the latest read failed; `usage` is then the earlier read, if any.

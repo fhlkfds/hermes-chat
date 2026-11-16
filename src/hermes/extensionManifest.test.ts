@@ -164,14 +164,18 @@ describe("parseManifest", () => {
         "profiles",
         "skills",
         "serverFiles",
+        "checkpoints",
         "scheduledJobs",
         "automations",
         "outputs",
         "kanban",
+        "workDispatch",
+        "workPickers",
+        "workLinks",
+        "workEstimate",
         "botMode",
         "subagents",
         "subagentRoster",
-        "runView",
       ]);
     });
   });

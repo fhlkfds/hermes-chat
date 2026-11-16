@@ -934,20 +934,20 @@ export function PersonaSettings({
             </>
           }
         >
-          {earlier.map((v, i) => (
+          {earlier.map((v) => (
             <SettingRow
-              key={`${v.replacedAt}-${i}`}
+              key={v.replacedAt}
               name={`Replaced ${when(v.replacedAt)}`}
               hint={v.exists ? chars(v.content.length) : "There was no SOUL.md."}
               control={
                 v.exists && (
-                  <button className="btn" aria-expanded={viewing === i} onClick={() => setViewing(viewing === i ? undefined : i)}>
-                    {viewing === i ? "Hide" : "View"}
+                  <button className="btn" aria-expanded={viewing === v.replacedAt} onClick={() => setViewing(viewing === v.replacedAt ? undefined : v.replacedAt)}>
+                    {viewing === v.replacedAt ? "Hide" : "View"}
                   </button>
                 )
               }
             >
-              {viewing === i && (
+              {viewing === v.replacedAt && (
                 <>
                   <textarea
                     className="persona-text persona-readonly"

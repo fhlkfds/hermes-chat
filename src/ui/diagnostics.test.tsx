@@ -42,6 +42,7 @@ function scriptedStore(answers: Record<string, unknown>) {
     get: (p) => answer(`GET ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
     rpc: (m) => answer(`RPC ${m}`),
     put: (p) => answer(`PUT ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
+    post: (p) => answer(`POST ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
   };
   return new CapabilityStore(io, () => 1, Date.now, 500, 0);
 }
@@ -55,6 +56,7 @@ const NEW = {
   "RPC session.active_list": { sessions: [] },
   "RPC subagent.roster": { sessions: [] },
   "RPC learning.detail": { ok: false },
+  "RPC rollback.list": Object.assign(new Error("session not found"), { code: 4001 }),
   "RPC profiles.list": { profiles: [{ name: "default", is_default: true, canonical_session: null }] },
   "GET api/tools/toolsets": [],
   "GET api/profiles/default/soul": {},
@@ -64,7 +66,8 @@ const NEW = {
   "GET api/cron/jobs": [],
   "GET api/webhooks": { subscriptions: [] },
   "GET api/fs/list": {},
-  "GET api/plugins/kanban/boards": { boards: [] },
+  "GET api/plugins/kanban/boards": { boards: [] },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
+  "GET api/plugins/kanban/model-options": { providers: [] },
 };
 
 function diagnostics(store: CapabilityStore, props: Partial<Parameters<typeof DiagnosticsSettings>[0]> = {}) {
@@ -95,8 +98,8 @@ describe("Connection diagnostics", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Connect to Hermes to check what it supports/);
     expect((screen.getByRole("button", { name: "Check again" }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(row$("Projects")).getByText("Unknown")).toBeTruthy();
-    // Neither the version, the feature flags nor the tool steps setting.
-    expect(screen.getAllByText("Not read yet")).toHaveLength(3);
+    // Neither the version nor the feature flags.
+    expect(screen.getAllByText("Not read yet")).toHaveLength(2);
   });
 
   it("shows the check under way, then the server and each feature with when it was checked", async () => {
@@ -215,6 +218,20 @@ describe("Connection diagnostics", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Not connected: as last checked/);
     expect(within(row$("Projects")).getByText("Supported")).toBeTruthy();
   });
+
+  it("says whether tool steps are sent for the profile and whether turns are named, for the Run view (ADR 0178)", async () => {
+    const store = scriptedStore(NEW);
+    act(() => store.connected(1, "default", {}, Promise.resolve({ server_requests: ["approval"] })));
+    const toolProgress = vi.fn(async () => "off" as const);
+    diagnostics(store, { toolProgress });
+    const section = () => screen.getByRole("heading", { name: "Flight recorder" }).closest("section")!;
+    await waitFor(() => expect(section().textContent).toContain("Not sent"));
+    expect(section().textContent).toContain("Tool progress is off, so Hermes sends tool steps live only for file edits");
+    expect(section().textContent).toContain("Not seen yet");
+    act(() => store.noteTurnIds(false));
+    expect(section().textContent).toContain("This Hermes doesn't name turns, as at bf0203a");
+    expect(toolProgress).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Diagnostics' layout (#174, ADR 0059)", () => {
@@ -228,7 +245,7 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
     diagnostics(scriptedStore(NEW), { unsecure: true });
     const server = section("Server");
     const names = [...server.querySelectorAll(".set-card > .set-row .set-name")].map((n) => n.textContent);
-    expect(names).toEqual(["Server", "Profile", "Hermes version", "Protocol", "Sign-in", "Feature flags", "Tool steps", "Turn ids", "Extra request headers"]);
+    expect(names).toEqual(["Server", "Profile", "Hermes version", "Protocol", "Sign-in", "Feature flags", "Extra request headers"]);
     const first = server.querySelector(".set-card > .set-row")!;
     expect(first.querySelector(".set-control .set-value")!.textContent).toMatch(/^https:\/\/hermes\.fixture\.invalid Unsecure$/);
     const features = section("Features");
@@ -298,6 +315,39 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
     visible(screen.getByText("Unsecure"));
     visible(within(row$("Skills")).getByText("Couldn't check"));
     visible(within(row$("Skills")).getByText(/Needs:/));
+  });
+});
+
+describe("Work dispatch (issue #604)", () => {
+  const work = (orchestration: () => Promise<{ autoDecompose: boolean; autoPromoteChildren: boolean }>, review: () => Promise<boolean>) => ({
+    orchestration,
+    reviewDispatch: vi.fn(review),
+  });
+  const value = (name: RegExp) => screen.getByText(name).closest<HTMLElement>(".diag-fact")!;
+
+  it("shows whether the server splits triage cards, makes their cards ready, and has a bot review first", async () => {
+    const w = work(async () => ({ autoDecompose: true, autoPromoteChildren: false }), async () => true);
+    diagnostics(scriptedStore(NEW), { work: w, profile: "coder" });
+    const section = screen.getByRole("region", { name: "Work dispatch" });
+    await waitFor(() => expect(within(value(/kanban\.auto_decompose/)).getByText("On")).toBeTruthy());
+    expect(within(value(/kanban\.auto_promote_children/)).getByText("Off")).toBeTruthy();
+    expect(within(value(/kanban\.review_dispatch, profile coder/)).getByText("On")).toBeTruthy();
+    expect(w.reviewDispatch).toHaveBeenCalledWith("coder");
+    expect(section.textContent).not.toMatch(/nothing runs/i);
+  });
+
+  it("says which setting it couldn't read, and leaves the others", async () => {
+    diagnostics(scriptedStore(NEW), { work: work(() => Promise.reject(new RestError(404, `{"detail":"Not Found"}`)), async () => false) });
+    await waitFor(() => expect(within(value(/kanban\.review_dispatch/)).getByText("Off")).toBeTruthy());
+    expect(within(value(/kanban\.auto_decompose/)).getByText(/^Couldn't read/)).toBeTruthy();
+  });
+
+  it("isn't shown on a Hermes without the kanban plugin", async () => {
+    const store = scriptedStore({ ...NEW, "GET api/plugins/kanban/boards": undefined });
+    diagnostics(store, { work: work(async () => ({ autoDecompose: true, autoPromoteChildren: true }), async () => true) });
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    await waitFor(() => expect(store.getSnapshot().caps.kanban.state).toBe("unsupported"));
+    expect(screen.queryByRole("region", { name: "Work dispatch" })).toBeNull();
   });
 });
 

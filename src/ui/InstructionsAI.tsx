@@ -15,6 +15,7 @@ import {
   type ProjectFacts,
   type Source,
 } from "../hermes/instructionsAI";
+import type { WriterModel } from "../hermes/modelSettings";
 import { shortName } from "../hermes/models";
 import { deadline } from "../hermes/remoteFiles";
 import { ASK_DEADLINE_MS } from "../hermes/artifacts";
@@ -25,10 +26,10 @@ import { useModal } from "./modal";
 
 /** How the dialog reaches Hermes. */
 export type InstructionsWriter = {
-  /** One stateless `llm.oneshot`; resolves with Hermes's text. */
-  ask: (call: Call) => Promise<string>;
-  /** The model that call runs on, to say who writes the draft. */
-  model: () => Promise<{ provider: string; model: string; followsMain: boolean }>;
+  /** One stateless `llm.oneshot` on `model`'s task; resolves with Hermes's text. */
+  ask: (call: Call, model: WriterModel) => Promise<string>;
+  /** The model the calls run on: which task they send, and who the dialog says writes the draft. */
+  model: () => Promise<WriterModel>;
 };
 
 type Step =
@@ -67,19 +68,33 @@ export function InstructionsAI({
   const [working, setWorking] = useState<"question" | "draft">();
   const [error, setError] = useState<string>();
   const [view, setView] = useState<"side" | "changes">("side");
-  const [model, setModel] = useState<string>();
+  const [model, setModel] = useState<WriterModel>();
   const box = useRef<HTMLDivElement>(null);
   const keys = useModal(box, returnTo);
   const titleId = useId();
   // Each call's number; a call whose number isn't the latest was stopped, or the dialog closed, and its answer is dropped.
   const latest = useRef(0);
+  // Read once per open dialog, and every call waits for it: the task a call sends comes from it. A failed read fails
+  // that call, and the next call reads again.
+  const modelRead = useRef<Promise<WriterModel>>(undefined);
+  const readModel = () =>
+    (modelRead.current ??= writer.model().then(
+      (m) => {
+        setModel(m);
+        return m;
+      },
+      (e: unknown) => {
+        modelRead.current = undefined;
+        throw e;
+      },
+    ));
 
   const call = async (what: "question" | "draft", c: Call, then: (text: string) => void) => {
     const n = ++latest.current;
     setWorking(what);
     setError(undefined);
     try {
-      const text = await deadline(writer.ask(c), ASK_DEADLINE_MS);
+      const text = await deadline(readModel().then((m) => writer.ask(c, m)), ASK_DEADLINE_MS);
       if (latest.current === n) then(text);
     } catch (e) {
       if (latest.current === n) setError(`Hermes couldn't ${what === "draft" ? "write the instructions" : "ask the next question"}: ${errorText(e)}`);
@@ -131,14 +146,9 @@ export function InstructionsAI({
   };
 
   useEffect(() => {
-    let live = true;
-    writer.model().then(
-      (m) => live && setModel(`${m.provider ? `${m.provider} · ` : ""}${shortName(m.model) || "its default model"}${m.followsMain ? ", the main model" : ""}`),
-      () => {},
-    );
+    readModel().catch(() => {});
     if (improving) improve();
     return () => {
-      live = false;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- a call counter, not a node: bumping it on close drops any answer still on its way
       latest.current++;
     };
@@ -156,6 +166,7 @@ export function InstructionsAI({
   };
   const busy = working !== undefined;
   const title = improving ? "Improve the instructions with AI" : "Write the instructions with AI";
+  const named = model && `${model.provider ? `${model.provider} · ` : ""}${shortName(model.model) || "its default model"}${model.follows === "main" ? ", the main model" : ""}`;
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -178,8 +189,9 @@ export function InstructionsAI({
           <Sparkles size={14} aria-hidden /> {title}
         </h2>
         <p className="muted small instructions-ai-model">
-          Written by profile <span className="mono">{profile}</span>'s Text generation model{model ? <>: <span className="mono">{model}</span></> : ""}. Each
-          step is a one-off call with no tools: no chat is started or changed, and nothing is saved until you Save defaults.
+          Written by profile <span className="mono">{profile}</span>'s Project instructions model{model?.follows ? ", which follows Text generation" : ""}
+          {named ? <>: <span className="mono">{named}</span></> : ""}. Each step is a one-off call with no tools: no chat is started or changed, and
+          nothing is saved until you Save defaults.
         </p>
 
         {step.kind === "improve" && (

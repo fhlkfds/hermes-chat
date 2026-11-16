@@ -508,14 +508,14 @@ describe("the Work page's board (issue #595)", () => {
   });
 
   it("holds a move until the board no longer shows the task where it was", () => {
-    const task = (status: string) => ({ id: "t_1", title: "x", body: "", assignee: "", status, priority: 0, comments: 0 });
+    const task = (status: string) => ({ id: "t_1", title: "x", body: "", assignee: "", status, priority: 0, comments: 0, links: { parents: 0, children: 0 } });
     expect(moveSettled([{ name: "ready", tasks: [task("ready")] }], { id: "t_1", from: "ready" })).toBe(false);
     expect(moveSettled([{ name: "done", tasks: [task("done")] }], { id: "t_1", from: "ready" })).toBe(true);
     expect(moveSettled([], { id: "t_1", from: "ready" })).toBe(true);
   });
 
   it("sends only the fields an edit changed", () => {
-    const t = { id: "t_1", title: "Ship", body: "", assignee: "researcher", status: "ready", priority: 1, comments: 0 };
+    const t = { id: "t_1", title: "Ship", body: "", assignee: "researcher", status: "ready", priority: 1, comments: 0, links: { parents: 0, children: 0 } };
     expect(taskEdits(t, { title: " Ship ", body: "", priority: 1, assignee: "researcher" })).toEqual({});
     expect(taskEdits(t, { title: "Ship it", body: "now", priority: 2, assignee: "" })).toEqual({ title: "Ship it", body: "now", priority: 2, assignee: "" });
   });
@@ -532,7 +532,7 @@ describe("the Work page's board (issue #595)", () => {
     const board = await api.loadBoard();
     expect(board.assignees).toEqual(["researcher", "writer"]);
     expect(board.columns.find((c) => c.name === "ready")!.tasks).toEqual([
-      { id: expect.stringMatching(/^t_/), title: "Research", body: "Look into it", assignee: "researcher", status: "ready", priority: 2, comments: 0 },
+      { id: expect.stringMatching(/^t_/), title: "Research", body: "Look into it", assignee: "researcher", status: "ready", priority: 2, comments: 0, links: { parents: 0, children: 0 } },
     ]);
     expect(canMove(await api.loadWorkflow(), "ready", "done")).toBe(true);
   });
@@ -573,5 +573,90 @@ describe("the Work page's board (issue #595)", () => {
     expect((await api.createTask(fields, "k1")).id).toBe(first.id);
     expect(server.kanban.boards.default.tasks.map((t) => t.title)).toEqual(["New"]);
     expect(server.kanban.writes[0]).toBe(`POST {"title":"New","assignee":"writer","priority":0,"idempotency_key":"k1"}`);
+  });
+});
+
+describe("planning on the Work page (issue #604)", () => {
+  async function work(server = new FakeHermes()) {
+    const hermes = await connect(server.openPipe);
+    running.push(hermes);
+    return { server, api: hermes.kanban };
+  }
+
+  it("reads each card's link counts and model, and a task's links with the linked tasks' titles", async () => {
+    const { server, api } = await work();
+    const plan = server.kanban.add("default", { title: "Plan", status: "done" });
+    const build = server.kanban.add("default", { title: "Build", status: "todo", model_override: "qwen/qwen3-coder", provider_override: "openrouter" });
+    const gone = server.kanban.add("default", { title: "Old" });
+    server.kanban.links.push({ parent: plan.id, child: build.id }, { parent: gone.id, child: build.id });
+    server.kanban.remove(gone.id);
+    const todo = (await api.loadBoard()).columns.find((c) => c.name === "todo")!.tasks[0];
+    expect(todo).toMatchObject({ title: "Build", links: { parents: 2, children: 0 }, model: "qwen/qwen3-coder", provider: "openrouter" });
+    const d = await api.loadTask(build.id);
+    expect(d.links).toEqual({ parents: [plan.id, gone.id].sort(), children: [] });
+    expect(d.linked).toEqual([{ id: plan.id, title: "Plan", status: "done" }]);
+    expect(d.task.links).toEqual({ parents: 2, children: 0 });
+  });
+
+  it("adds a link, says when it sent a ready card back to todo, and removes it", async () => {
+    const { server, api } = await work();
+    const a = server.kanban.add("default", { title: "A" });
+    const b = server.kanban.add("default", { title: "B" });
+    expect(await api.addLink(a.id, b.id)).toEqual({ gated: true });
+    expect(server.kanban.find(b.id)!.status).toBe("todo");
+    expect(await api.removeLink(a.id, b.id)).toBe(true);
+    expect(server.kanban.find(b.id)!.status).toBe("ready");
+    expect(await api.removeLink(a.id, b.id)).toBe(false);
+    expect(server.kanban.writes).toEqual([`POST links {"parent_id":"${a.id}","child_id":"${b.id}"}`, `DELETE links ${a.id} ${b.id}`, `DELETE links ${a.id} ${b.id}`]);
+  });
+
+  it("is refused a link from a card to itself, or one that makes a loop", async () => {
+    const { server, api } = await work();
+    const a = server.kanban.add("default", { title: "A" });
+    const b = server.kanban.add("default", { title: "B" });
+    await expect(api.addLink(a.id, a.id)).rejects.toMatchObject({ status: 400 });
+    await api.addLink(a.id, b.id);
+    await expect(api.addLink(b.id, a.id)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("sets a model with its provider, or one typed in, and goes back to the bot's", async () => {
+    const { server, api } = await work();
+    const t = server.kanban.add("default", { title: "Build" });
+    expect(await api.setModel(t.id, { model: "claude-opus-5-5", provider: "anthropic" })).toMatchObject({ model: "claude-opus-5-5", provider: "anthropic" });
+    expect((await api.setModel(t.id, { model: "my-model" }))!.provider).toBeUndefined();
+    const back = await api.setModel(t.id, undefined);
+    expect(back!.model).toBeUndefined();
+    expect(server.kanban.writes).toEqual([
+      `PATCH ${t.id} {"model_override":"claude-opus-5-5","provider_override":"anthropic"}`,
+      `PATCH ${t.id} {"model_override":"my-model"}`,
+      `PATCH ${t.id} {"clear_model_override":true}`,
+    ]);
+  });
+
+  it("reads the bots, their models, the model catalog and the dispatch settings", async () => {
+    const server = new FakeHermes();
+    server.kanban.orchestration = { auto_decompose: false, auto_promote_children: true };
+    server.kanban.reviewDispatch = false;
+    const { api } = await work(server);
+    expect(await api.assignees()).toEqual(["researcher", "writer"]);
+    expect(await api.profiles()).toEqual([{ name: "researcher", model: "claude-sonnet-5-5" }, { name: "writer" }]);
+    expect((await api.modelOptions()).map((p) => p.label)).toEqual(["Anthropic", "OpenRouter"]);
+    expect(await api.orchestration()).toEqual({ autoDecompose: false, autoPromoteChildren: true });
+    expect(await api.reviewDispatch("default")).toBe(false);
+    server.kanban.reviewDispatch = undefined;
+    expect(await api.reviewDispatch("default")).toBe(true);
+  });
+
+  it("asks for a token guess, for text or a task, and gives back Hermes's reason when it has none", async () => {
+    const { server, api } = await work();
+    server.kanban.estimateAnswer = { ok: true, est_tokens: 12_000.4, complexity: "M", rationale: "Several files.", model: "aux" };
+    expect(await api.estimate(" Ship it ", "")).toEqual({ ok: true, tokens: 12_000, size: "M", rationale: "Several files." });
+    expect(server.kanban.estimates).toEqual(["Ship it|"]);
+    expect(await api.estimate("", "body")).toEqual({ ok: false, reason: "a title is required to estimate" });
+    const t = server.kanban.add("default", { title: "Build", body: "All of it" });
+    server.kanban.estimateAnswer = { ok: false, reason: "LLM error: Timeout" };
+    expect(await api.estimateTask(t.id)).toEqual({ ok: false, reason: "LLM error: Timeout" });
+    expect(server.kanban.estimates.at(-1)).toBe("Build|All of it");
+    expect(server.kanban.writes).toEqual([]);
   });
 });

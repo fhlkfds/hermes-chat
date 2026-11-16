@@ -24,9 +24,10 @@ export type UsageCounters = { prompt: number; input?: number; output: number; re
 /**
  * One reply's usage: what Hermes's counters moved by during its turn, over every model call the turn made. `input` and
  * `cache` split `prompt` into uncached and cached (read or written; the live feed doesn't tell the two apart), and are
- * both undefined when that split isn't known.
+ * both undefined when that split isn't known. `ms`: how long the turn took, from its `message.start` to its
+ * `message.complete` as this app heard them; Hermes sends no time of its own (replyTimes.ts).
  */
-export type ReplyUsage = { prompt: number; input?: number; cache?: number; output: number; reasoning: number; calls: number; model?: string };
+export type ReplyUsage = { prompt: number; input?: number; cache?: number; output: number; reasoning: number; calls: number; model?: string; ms?: number };
 
 export const ZERO_COUNTERS: UsageCounters = { prompt: 0, input: 0, output: 0, reasoning: 0, calls: 0 };
 
@@ -64,6 +65,7 @@ export function replyUsageOf(v: unknown): ReplyUsage | undefined {
   const [input, cache] = [num(u.input), num(u.cache)];
   const split = input !== undefined && cache !== undefined && input + cache === u.prompt;
   const model = typeof u.model === "string" && u.model ? u.model : undefined;
+  const ms = num(u.ms);
   return {
     prompt: u.prompt as number,
     ...(split && { input, cache }),
@@ -71,6 +73,7 @@ export function replyUsageOf(v: unknown): ReplyUsage | undefined {
     reasoning: u.reasoning as number,
     calls: u.calls as number,
     ...(model && { model }),
+    ...(ms !== undefined && { ms }),
   };
 }
 

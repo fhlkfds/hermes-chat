@@ -1,24 +1,23 @@
-// The Run view (ADR 0178): the button under a reply, and the dialog that draws the reply's turn as a waterfall of
-// steps, each with how long it took and whether it failed. Clicking a step shows its arguments and result.
-import { useEffect, useId, useRef, useState, type RefObject } from "react";
-import { Activity, CircleAlert, MessageCircleQuestionMark, Minimize2, Sparkles, TriangleAlert, Wrench, X } from "lucide-react";
-import type { Length, Run, RunView, Step, StepKind, ToolProgress } from "../hermes/runs";
+// The Run view (ADR 0178): a reply's turn as a waterfall of model calls, tool calls, Questions and status lines, each
+// with how long it took and whether it failed. Every figure the app inferred, rather than Hermes measured, is marked.
+import { useEffect, useId, useRef, useState } from "react";
+import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Wrench } from "lucide-react";
+import { questionName, type Length, type Run, type Step, type ToolProgress } from "../hermes/flightRecorder";
 import { tokens, usd } from "../hermes/usage";
-import { errorText } from "../hermes/values";
+import { errorText, lengthText, plural } from "../hermes/values";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
 
 /** Under a reply: opens its Run view. */
-export function RunButton({ onRun }: { onRun: () => void }) {
+export function RunButton({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       className="msg-action"
-      title="See the steps this reply took, how long each took, and which failed."
-      aria-label="Run view"
+      title="See the steps this reply took: how long each took and which failed."
+      aria-label="Run"
       onClick={(e) => {
-        // Kept as the place focus goes back to when the view closes.
         e.currentTarget.focus();
-        onRun();
+        onOpen();
       }}
     >
       <Activity size={13} aria-hidden />
@@ -27,54 +26,172 @@ export function RunButton({ onRun }: { onRun: () => void }) {
   );
 }
 
-/** A length in a few characters: 340 ms, 2.5 s, 1 min 4 s. */
-export function lengthText(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)} min ${s % 60} s`;
-}
+export type RunApi = { read: () => Promise<{ run: Run; toolProgress?: ToolProgress }> };
 
-const ICONS: Record<StepKind, typeof Wrench> = {
-  model: Sparkles,
-  tool: Wrench,
-  question: MessageCircleQuestionMark,
-  compaction: Minimize2,
-  status: CircleAlert,
-  error: TriangleAlert,
-};
+type State = { phase: "loading" } | { phase: "failed"; why: string } | { phase: "ready"; run: Run; toolProgress?: ToolProgress };
 
-function LengthBadge({ length }: { length: Length }) {
+/** A length, with ≈ and "inferred" for one the app worked out rather than Hermes measured. */
+function Took({ length }: { length: Length }) {
+  if (length.measured) return <span title="Measured by Hermes">{lengthText(length.ms)}</span>;
   return (
-    <span className="run-length">
-      {lengthText(length.ms)}{" "}
-      <span className={`run-how ${length.measured ? "measured" : "inferred"}`} title={length.measured ? "Hermes measured this length itself." : "Worked out by this app, not measured by Hermes."}>
-        {length.measured ? "measured" : "inferred"}
-      </span>
+    <span className="run-inferred" title="Inferred by this app">
+      ≈{lengthText(length.ms)}
+      <span className="sr-only"> (inferred)</span>
     </span>
   );
 }
 
-type State = { phase: "loading" } | { phase: "failed"; why: string } | { phase: "ready"; view: RunView };
+function stepName(s: Step): string {
+  switch (s.kind) {
+    case "model":
+      return s.calls && s.calls > 1 ? `Model, ${s.calls} calls` : "Model";
+    case "tool":
+      return s.name;
+    case "question":
+      return questionName(s.what);
+    case "status":
+      return s.status === "compacting" || s.status === "compressing" ? "Compaction" : s.status === "warn" ? "Warning" : "Status";
+    case "error":
+      return "Error";
+  }
+}
 
-/** The dialog: reads the run once when it opens. Late answers after it closed change nothing. */
-export function RunDialog({ load, returnTo, onClose }: { load: () => Promise<RunView>; returnTo?: RefObject<HTMLElement | null>; onClose: () => void }) {
+function StepIcon({ step }: { step: Step }) {
+  if (step.failed) return <CircleAlert size={13} aria-hidden className="run-bad" />;
+  if (step.kind === "model") return <Bot size={13} aria-hidden />;
+  if (step.kind === "tool") return <Wrench size={13} aria-hidden />;
+  if (step.kind === "question") return <MessageCircleQuestion size={13} aria-hidden />;
+  return <Info size={13} aria-hidden />;
+}
+
+const SHOWN_CHARS = 4000;
+
+function Block({ label, text }: { label: string; text: string }) {
+  const [all, setAll] = useState(false);
+  const long = text.length > SHOWN_CHARS;
+  return (
+    <div className="run-block">
+      <div className="run-block-label">{label}</div>
+      <pre>{long && !all ? `${text.slice(0, SHOWN_CHARS)}…` : text}</pre>
+      {long && (
+        <button className="link-btn" onClick={() => setAll((a) => !a)}>
+          {all ? "Show less" : `Show all ${plural(text.length, "character")}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** What a step holds: a tool's arguments and result, a model step's tokens and text, a Question's outcome. */
+function StepDetail({ step, run }: { step: Step; run: Run }) {
+  const offset = lengthText(Math.max(0, step.start - run.start));
+  return (
+    <div className="run-detail">
+      <p className="muted small">
+        Started {offset} into the run{run.source === "stored" ? ", worked out from the stored row before it" : ", as this app heard it"}.
+        {step.kind === "tool" && step.placed && " Hermes sent no start for it, so it is placed back from its measured length."}
+        {step.kind === "tool" && step.together && " It ran beside other tools, so its stored gap isn't its own length."}
+      </p>
+      {step.failed && (
+        <p className="run-bad">
+          <CircleAlert size={13} aria-hidden /> {step.kind === "tool" ? `Failed, judged from its result: ${step.failed}` : step.failed}
+        </p>
+      )}
+      {step.kind === "tool" && (
+        <>
+          <Block label="Arguments" text={step.args ? JSON.stringify(step.args, null, 2) : "None sent"} />
+          <Block label="Result" text={step.result ?? (step.end > step.start || step.length.measured ? "None sent" : "Still running")} />
+        </>
+      )}
+      {step.kind === "model" && (
+        <>
+          <p>
+            {step.calls !== undefined ? (
+              <span className="run-inferred">
+                ≈{plural(step.calls, "model call")}, {tokens(step.tokens!.prompt)} in, {tokens(step.tokens!.output)} out
+                {step.tokens!.reasoning ? `, ${tokens(step.tokens!.reasoning)} reasoning` : ""}, from Hermes's counters before and after it (inferred).
+              </span>
+            ) : run.source === "watched" ? (
+              "Hermes's counters didn't move where this app could tell, so its tokens aren't known."
+            ) : (
+              "Hermes stores no tokens for a step."
+            )}
+          </p>
+          {step.chars ? <p className="muted small">{plural(step.chars, "character")} of text and reasoning streamed.</p> : null}
+          {step.reasoning && step.reasoning !== "reasoning" && <Block label="Reasoning" text={step.reasoning} />}
+          {step.text && <Block label="Text" text={step.text} />}
+        </>
+      )}
+      {step.kind === "question" && (
+        <>
+          <Block label="Asked" text={step.summary || "(nothing shown)"} />
+          <p>{step.outcome}.</p>
+        </>
+      )}
+      {(step.kind === "status" || step.kind === "error") && <Block label="Hermes said" text={step.text} />}
+    </div>
+  );
+}
+
+/** The run's facts above the waterfall: where it came from, how long, how many calls, what it cost. */
+function Summary({ run }: { run: Run }) {
+  const cost = run.cost;
+  return (
+    <dl className="run-summary">
+      <dt>From</dt>
+      <dd>{run.source === "watched" ? "What this app heard live: each time is when an event arrived here" : "Hermes's stored history: each row has only the time its step ended"}</dd>
+      <dt>Length</dt>
+      <dd>
+        <Took length={{ ms: run.end - run.start, measured: false }} />
+        {run.outcome === "running" ? ", still running" : run.outcome === "interrupted" ? ", stopped" : run.outcome === "failed" ? ", failed" : ""}
+      </dd>
+      {run.calls !== undefined && (
+        <>
+          <dt>Model calls</dt>
+          <dd>{run.calls}, from Hermes's counters</dd>
+        </>
+      )}
+      <dt>Cost</dt>
+      <dd>
+        {!cost ? (
+          "Hermes keeps cost per chat, not per step or turn, so a stored run has none."
+        ) : "usd" in cost ? (
+          <span className="run-inferred">≈{usd(cost.usd)} for the turn, the change in the chat's cost across it (inferred)</span>
+        ) : (
+          cost.why
+        )}
+      </dd>
+    </dl>
+  );
+}
+
+/**
+ * The Run view for one reply. It reads the run once when it opens; `onClose` closes it. A late answer after it closed
+ * changes nothing.
+ */
+export function RunDialog({ api, onClose }: { api: RunApi; onClose: () => void }) {
   const [state, setState] = useState<State>({ phase: "loading" });
-  const [picked, setPicked] = useState<string>();
+  const [open, setOpen] = useState<string>();
   const box = useRef<HTMLDivElement>(null);
-  const keys = useModal(box, returnTo);
+  const keys = useModal(box);
   const titleId = useId();
-  const loadRef = useRef(load);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+
   useEffect(() => {
-    let open = true;
-    loadRef.current().then(
-      (view) => open && setState({ phase: "ready", view }),
-      (e) => open && setState({ phase: "failed", why: errorText(e) }),
+    let live = true;
+    apiRef.current.read().then(
+      ({ run, toolProgress }) => live && setState({ phase: "ready", run, toolProgress }),
+      (e) => live && setState({ phase: "failed", why: errorText(e) }),
     );
-    return () => void (open = false);
+    return () => void (live = false);
   }, []);
-  const view = state.phase === "ready" ? state.view : undefined;
-  const step = view?.run.steps.find((s) => s.id === picked);
+
+  const run = state.phase === "ready" ? state.run : undefined;
+  const span = run ? Math.max(1, run.end - run.start) : 1;
+  const failedTool = run?.steps.some((s) => s.kind === "tool" && s.failed);
+  const together = run?.steps.some((s) => s.kind === "tool" && s.together);
+  const toolsOff = run?.source === "watched" && state.phase === "ready" && state.toolProgress === "off";
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -93,158 +210,77 @@ export function RunDialog({ load, returnTo, onClose }: { load: () => Promise<Run
           }
         }}
       >
-        <div className="run-head">
-          <h2 id={titleId} className="leave-title run-title">
-            <Activity size={14} aria-hidden /> Run of this reply
-          </h2>
-          <button className="icon-btn" aria-label="Close" title="Close" autoFocus onClick={onClose}>
-            <X size={15} aria-hidden />
-          </button>
-        </div>
+        <h2 id={titleId} className="leave-title run-title">
+          <Activity size={14} aria-hidden /> Run of this reply
+        </h2>
         {state.phase === "loading" && (
-          <p className="run-loading" role="status">
+          <p role="status">
             <Spinner /> Reading this reply's steps…
           </p>
         )}
         {state.phase === "failed" && (
-          <p role="alert" className="run-error">
+          <p role="alert" className="run-bad">
             <CircleAlert size={13} aria-hidden /> {state.why}
           </p>
         )}
-        {view && (
+        {run && (
           <>
-            <Summary run={view.run} />
-            <Notes run={view.run} toolProgress={view.toolProgress} />
-            <Waterfall run={view.run} picked={picked} onPick={(id) => setPicked(id === picked ? undefined : id)} />
-            {step && <StepDetail step={step} run={view.run} />}
+            <Summary run={run} />
+            {toolsOff && (
+              <p className="run-note" role="note">
+                <TriangleAlert size={13} aria-hidden /> This profile's <code>display.tool_progress</code> is <code>off</code>, so Hermes doesn't send
+                ordinary tool steps. Only file edits, <code>delegate_task</code>, <code>clarify</code>, a few card tools and failed calls still show
+                here.
+              </p>
+            )}
+            {run.truncated && (
+              <p className="run-note" role="note">
+                <TriangleAlert size={13} aria-hidden /> This turn sent more events than this app keeps, so its later steps are missing here. Open it again
+                once Hermes has stored the reply to read every step from the chat's history.
+              </p>
+            )}
+            {run.steps.length === 0 ? (
+              <p className="muted">No steps to show.</p>
+            ) : (
+              <ol className="run-steps" aria-label="Steps">
+                {run.steps.map((s) => {
+                  const left = ((s.start - run.start) / span) * 100;
+                  const width = ((s.end - s.start) / span) * 100;
+                  const expanded = open === s.id;
+                  return (
+                    <li key={s.id} className={`run-step run-${s.kind}${s.failed ? " run-failed" : ""}`}>
+                      <button className="run-row" aria-expanded={expanded} onClick={() => setOpen(expanded ? undefined : s.id)}>
+                        <span className="run-name">
+                          <StepIcon step={s} /> {stepName(s)}
+                        </span>
+                        <span className="run-track" aria-hidden>
+                          <span
+                            className={`run-bar${s.length.measured ? "" : " inferred"}${s.end === s.start ? " moment" : ""}`}
+                            style={{ left: `${Math.min(100, Math.max(0, left))}%`, width: `${Math.min(100 - Math.max(0, left), Math.max(0, width))}%` }}
+                          />
+                        </span>
+                        <span className="run-took">{s.end === s.start && !s.length.measured ? "" : <Took length={s.length} />}</span>
+                      </button>
+                      {expanded && <StepDetail step={s} run={run} />}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            <ul className="run-notes muted small">
+              <li>≈ marks a time, token count or cost this app inferred. A tool length without it is Hermes's own measurement.</li>
+              {failedTool && <li>Hermes sends no failure flag for a tool call, so a failed one is judged from its result, as Hermes judges one to show.</li>}
+              {together && <li>Tools called together are stored as each finishes, in call order, so their gaps aren't each one's own length.</li>}
+              <li>Hermes reports retries only when every retry failed, so a retry that recovered can't show here.</li>
+            </ul>
           </>
         )}
+        <div className="confirm-actions">
+          <button className="btn" autoFocus onClick={onClose}>
+            Close
+          </button>
+        </div>
       </div>
     </div>
-  );
-}
-
-function Summary({ run }: { run: Run }) {
-  const failed = run.steps.filter((s) => s.failed).length;
-  return (
-    <p className="run-summary">
-      {run.source === "watched" ? "Watched by this app" : "Read from Hermes's stored history"} · {run.steps.length} step{run.steps.length === 1 ? "" : "s"} ·{" "}
-      {lengthText(Math.max(0, run.end - run.start))} <span className="run-how inferred">inferred</span> ·{" "}
-      {run.tokens && (
-        <>
-          {tokens(run.tokens.prompt)} tokens in, {tokens(run.tokens.output)} out over {run.tokens.calls} model call{run.tokens.calls === 1 ? "" : "s"} ·{" "}
-        </>
-      )}
-      {run.cost !== undefined ? (
-        <>
-          cost {usd(run.cost)} <span className="run-how inferred">inferred</span>
-        </>
-      ) : (
-        <span className="muted" title={run.costWhy}>
-          no cost for this reply
-        </span>
-      )}
-      {failed > 0 && <span className="run-failed-count"> · {failed} look{failed === 1 ? "s" : ""} failed</span>}
-      {run.outcome && <span className="run-outcome"> · {run.outcome}</span>}
-    </p>
-  );
-}
-
-function Notes({ run, toolProgress }: { run: Run; toolProgress: ToolProgress }) {
-  const off = "mode" in toolProgress && toolProgress.mode === "off";
-  return (
-    <ul className="run-notes">
-      {off && (
-        <li className="run-warn">
-          <TriangleAlert size={12} aria-hidden />
-          <span>
-            Hermes doesn't send ordinary tool steps for this profile (<span className="mono">display.tool_progress: off</span>). Only file edits, delegations,
-            questions and a few card tools show here.
-          </span>
-        </li>
-      )}
-      {"why" in toolProgress && <li>Couldn't tell whether Hermes sends every tool step: {toolProgress.why}</li>}
-      {run.source === "watched" ? (
-        <>
-          <li>Times are when this app heard each event: Hermes sends no times of its own. Only a tool's length marked measured is Hermes's.</li>
-          <li>A model call has no event: each is the time between tool calls, its tokens from Hermes's usage counters, which arrive at most once a second.</li>
-          {run.turnIds === false && <li>This Hermes doesn't name its turns, so this reply's events are the ones heard between its start and end.</li>}
-        </>
-      ) : (
-        <li>Hermes stores one time per step, when it ended, so each length is the gap since the step before. This app didn't watch this reply live.</li>
-      )}
-      <li>
-        Hermes doesn't say when a tool fails: a failure here is judged from the result's words. A retry that recovered leaves no trace, and Hermes keeps cost per chat, so no
-        step has a cost{run.cost === undefined && run.costWhy ? `. ${run.costWhy}` : "."}
-      </li>
-    </ul>
-  );
-}
-
-function Waterfall({ run, picked, onPick }: { run: Run; picked?: string; onPick: (id: string) => void }) {
-  if (!run.steps.length) return <p className="muted">No steps: this app saw no model call or tool call in this reply.</p>;
-  const total = Math.max(1, run.end - run.start);
-  return (
-    <ol className="run-steps" aria-label="Steps">
-      {run.steps.map((s) => {
-        const Icon = ICONS[s.kind];
-        const left = Math.min(100, Math.max(0, ((s.start - run.start) / total) * 100));
-        const width = Math.max(0.6, Math.min(100 - left, ((s.end - s.start) / total) * 100));
-        return (
-          <li key={s.id}>
-            <button className={`run-step ${s.kind}${s.failed ? " failed" : ""}${picked === s.id ? " picked" : ""}`} aria-pressed={picked === s.id} onClick={() => onPick(s.id)}>
-              <span className="run-name">
-                <Icon size={12} aria-hidden /><span className="run-name-text">{s.name}</span>
-                {s.failed && <span className="run-fail-mark">{s.judged ? "looks failed" : "failed"}</span>}
-              </span>
-              <span className="run-track" aria-hidden>
-                <span className="run-bar" style={{ left: `${left}%`, width: `${width}%` }} />
-              </span>
-              {s.length ? <LengthBadge length={s.length} /> : <span className="run-length muted">+{lengthText(Math.max(0, s.start - run.start))}</span>}
-            </button>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-const shown = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
-
-function StepDetail({ step, run }: { step: Step; run: Run }) {
-  return (
-    <section className="run-detail" aria-label={`${step.name}: details`}>
-      <h3>{step.name}</h3>
-      <p className="muted small">
-        {run.source === "watched" ? "Heard" : "Stored"} {lengthText(Math.max(0, step.start - run.start))} after the reply began
-        {step.length && <>, took <LengthBadge length={step.length} /></>}
-      </p>
-      {step.failed && (
-        <p className="run-error">
-          <CircleAlert size={13} aria-hidden /> {step.judged ? `Looks failed, judged from the result: ${step.failed}` : step.failed}
-        </p>
-      )}
-      {step.note && <p className="muted small">{step.note}</p>}
-      {step.tokens && (
-        <p className="small">
-          Tokens <span className="run-how inferred">inferred</span>: {tokens(step.tokens.prompt)} in, {tokens(step.tokens.output)} out
-          {step.tokens.reasoning > 0 && `, ${tokens(step.tokens.reasoning)} reasoning`} over {step.tokens.calls} model call{step.tokens.calls === 1 ? "" : "s"}
-        </p>
-      )}
-      {step.args !== undefined && <Block title="Arguments" text={shown(step.args)} />}
-      {step.result !== undefined && <Block title="Result" text={step.result} />}
-      {step.reasoning && <Block title="Reasoning" text={step.reasoning} />}
-      {step.text && <Block title={step.kind === "model" ? "Text" : "What happened"} text={step.text} />}
-      {step.args === undefined && step.result === undefined && !step.text && !step.reasoning && <p className="muted small">Hermes sent nothing more about this step.</p>}
-    </section>
-  );
-}
-
-function Block({ title, text }: { title: string; text: string }) {
-  return (
-    <>
-      <h4>{title}</h4>
-      <pre className="run-pre">{text}</pre>
-    </>
   );
 }
