@@ -1,6 +1,6 @@
 // The language and tag a choice resolves to, English filling a translation's gaps, and the formats each locale writes.
 import { describe, expect, it } from "vitest";
-import readme from "../../README.md?raw";
+import features from "../../docs/features.md?raw";
 import { en } from "./en";
 import { LANGUAGES, fillFromEnglish, htmlLang, localeFor, parseLanguageChoice, systemLanguages, type LanguageChoice } from "./locale";
 
@@ -71,8 +71,8 @@ describe("Formats", () => {
 });
 
 describe("The languages", () => {
-  it("are each named in the README's Languages list", () => {
-    const section = readme.split("\n### Languages\n")[1].split("\n### ")[0];
+  it("are each named in the feature guide's Languages list", () => {
+    const section = features.split("\n### Languages\n")[1].split("\n### ")[0];
     const listed = [...section.matchAll(/^- (.+)$/gm)].map((m) => m[1]);
     expect(listed).toEqual(Object.values(LANGUAGES).map((l) => l.name));
   });

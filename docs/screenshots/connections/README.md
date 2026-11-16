@@ -24,7 +24,7 @@ b default  [('hc88-b-default', 2)]
 b research [('hc88-b-default', 2), ('hc88-b-research', 2)]
 ```
 
-Synthetic chats were seeded directly into these temporary databases; no model provider was configured. Resuming a chat read the transcript but Hermes reported that it could not initialize its assistant. This run therefore does not verify live model execution, remote-run survival, gateway/CLI work, real Approval expiry, SSH routing, external authentication gateways, Wayland or audio hardware. Automated protocol tests cover pending work, Approvals, late responses, queues, screenshot outboxes, headers, migration, bad keyring values and switch races. Canonical session authority remains unsupported, as documented in the main README.
+Synthetic chats were seeded directly into these temporary databases; no model provider was configured. Resuming a chat read the transcript but Hermes reported that it could not initialize its assistant. This run therefore does not verify live model execution, remote-run survival, gateway/CLI work, real Approval expiry, SSH routing, external authentication gateways, Wayland or audio hardware. Automated protocol tests cover pending work, Approvals, late responses, queues, screenshot outboxes, headers, migration, bad keyring values and switch races. Canonical session authority remains unsupported, as documented in docs/features.md.
 
 ## Commands and actual output
 

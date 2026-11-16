@@ -12,7 +12,7 @@ The `.deb` is built on Ubuntu 24.04, so it installs on Ubuntu 24.04, Debian 13 o
 
 The app decides at runtime, in `src-tauri/src/update.rs`, in this order:
 
-1. **A file pacman owns.** The app asks `pacman -Qqo` about the file it was installed as. Running from an AppImage, that is the AppImage itself (`$APPIMAGE`), because the binary runs from a temporary mount of it. Otherwise it's the binary. If a package owns that file, only the package manager replaces it. The updater never runs, even in an AppImage that carries an update key, so a package that ships the release AppImage is safe. The app asks pacman again right before a check and right before an install, in case a package took the file over while the app ran. Settings shows the package and its version, and for `hermes-chat-git` compares its commit with `main` (README, "Updates").
+1. **A file pacman owns.** The app asks `pacman -Qqo` about the file it was installed as. Running from an AppImage, that is the AppImage itself (`$APPIMAGE`), because the binary runs from a temporary mount of it. Otherwise it's the binary. If a package owns that file, only the package manager replaces it. The updater never runs, even in an AppImage that carries an update key, so a package that ships the release AppImage is safe. The app asks pacman again right before a check and right before an install, in case a package took the file over while the app ran. Settings shows the package and its version, and for `hermes-chat-git` compares its commit with `main` (docs/features.md, "Updates").
 2. **A standalone AppImage built with an update key.** `$APPIMAGE` is set, the binary's bundle type is AppImage, and the build carries `plugins.updater`. Tauri's updater checks the endpoint, downloads the new AppImage, verifies its signature against the public key built into the app, and replaces the AppImage. The new version runs after the owner restarts.
 3. **Anything else.** A `.deb` install, a source build (`npm run app`), a binary pulled out of an AppImage, an AppImage built without an update key, or a copy of the packaged binary somewhere pacman doesn't own. Settings says the copy isn't updated from here.
 
@@ -129,7 +129,7 @@ The app trusts exactly one public key, the one it was built with. A release sign
 5. Replace the `release-signing` environment's secrets with the new key and password.
 6. Every later release is built as usual with the new key, publishes its own `latest-2.json`, and attaches a copy of the bridge's `latest.json`, so a copy still on the old key always finds the bridge first.
 
-**Lost key.** No installed copy can be updated through the updater again. Make a new key, publish a release signed with it, and tell owners to download that AppImage by hand. The README and release notes say so.
+**Lost key.** No installed copy can be updated through the updater again. Make a new key, publish a release signed with it, and tell owners to download that AppImage by hand. The feature guide and release notes say so.
 
 **Leaked key.** Anyone who also controls what the endpoint serves can push an update. Rotate at once as above, delete the leaked secret, and say in the release notes which versions trusted the leaked key. Copies that never reach the bridge keep trusting it, so they also need a manual download.
 
