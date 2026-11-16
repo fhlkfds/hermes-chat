@@ -10,6 +10,7 @@ Typing "/" at the start of the composer opens a menu of slash commands, followed
 | `/delete` | App | Asks first, then the chat list's Delete. |
 | `/steer <message>` | Hermes | `command.dispatch {name: "steer", arg, session_id}`. |
 | `/context` | Hermes | `slash.exec {command: "/context", session_id}`. |
+| `/goal [outcome]` | Hermes | Opens Set a goal, which sends `command.dispatch {name: "goal", arg, session_id}` once the owner has seen it (ADR 0187). |
 
 ## Why these
 

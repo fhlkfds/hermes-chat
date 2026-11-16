@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, Suspense, lazy, useCallback, useLayoutEffect, useMemo, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Columns2, FolderCog, GitBranch, PanelBottom, PanelLeft, PanelRight, PanelTop, Target, X } from "lucide-react";
 import { CONNECT_STOPPED, LIVE_MIN_GAP_MS, RenameConflict, TitleModelUnavailable, connect, openSaved, readSaved, toSource, type Delivery, type Hermes, type NoticeCard, type Notify } from "./hermes/transport";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandHost } from "./ui/SlashCommands";
@@ -68,6 +68,7 @@ import type { ChatPin } from "./ui/ChatMenu";
 import { BranchDialog, BranchedFrom } from "./ui/Branch";
 import { MembershipDialog, MembershipStatus, needsOwner as membershipNeedsOwner } from "./ui/MembershipSync";
 import { ReplayDialog } from "./ui/Replay";
+import { GoalBar, SetGoalDialog, useChatGoal, type GoalApi } from "./ui/GoalBar";
 import { RunDialog } from "./ui/RunView";
 import { replayBlocked, variantsIn, type ReplayKind } from "./hermes/replay";
 import { branchBlocked, type BranchLink } from "./hermes/branch";
@@ -4356,6 +4357,21 @@ function ChatView({
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
   const skillCommands = useSkillCommands(hermes, status === "connected", profile);
   const caps = useCapabilities(hermes.capabilities);
+  // Standing missions (GoalBar.tsx, ADR 0187): the goal bar while the chat has a goal, and Set a goal.
+  const missions = caps.caps.standingMissions;
+  const goalApi: GoalApi = {
+    read: () => hermes.readGoal(chat.id),
+    budget: () => hermes.goalBudget(),
+    set: (draft, seen) => hermes.setGoal(chat.id, draft, seen),
+    act: (action) => hermes.controlGoal(chat.id, action),
+  };
+  const goalLive = sessionHere && status === "connected" && missions.state !== "unsupported" ? chat.runtimeId : undefined;
+  const control = useChatGoal(hermes.goals, chat.id, goalLive, goalApi.read);
+  const [settingGoal, setSettingGoal] = useState<{ outcome: string }>();
+  useEffect(() => setSettingGoal(undefined), [chatId, profile]);
+  const goalBlocked = status !== "connected" || !chat.runtimeId ? "Hermes isn't connected to this chat right now." : undefined;
+  const setGoalWhy = goalBlocked ?? hermes.goalRefusal(chat.id);
+  // Another of the profile's chats can be referenced; a Bot Chat is its bot's, and an archived one is out of sight.
   const referable = useMemo(
     () => listedChats.filter((c) => c.id !== chat.id && !c.archived && policyOf(c).listed && c.title.trim()).map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
     [listedChats, chat.id],
@@ -4390,6 +4406,7 @@ function ChatView({
       if (!serverCommands.list.listed.has(def.name)) return "This Hermes doesn't list it, so it may not have it. Updating Hermes may add it.";
       if (!chat.runtimeId) return "This chat is still loading from Hermes.";
       if (def.name === "steer" && !chat.running) return "No reply is running to steer. Send it as a message instead.";
+      if (def.name === "goal") return setGoalWhy;
       return undefined;
     },
     run: async (def, arg, still) => {
@@ -4428,6 +4445,14 @@ function ChatView({
         // Its answer in the transcript says how it went, Hermes's refusal included, so a refusal keeps the words typed.
         if (def.name === "btw") {
           if ((await hermes.askSideQuestion(chat.id, arg)) && here()) done();
+          return undefined;
+        }
+        // Set a goal shows the check before anything is saved, so /goal opens it rather than going to Hermes as typed.
+        if (def.name === "goal") {
+          if (here()) {
+            done();
+            setSettingGoal({ outcome: arg });
+          }
           return undefined;
         }
         const res = await hermes.runCommand(chat.id, def, arg);
@@ -4616,6 +4641,11 @@ function ChatView({
               <GitBranch size={13} aria-hidden /> <span className="mono">{inWorktree.branch}</span>
             </button>
           )}
+          {sessionHere && missions.state === "supported" && (
+            <button className="icon-btn" title={setGoalWhy ?? "Set a goal…"} aria-label="Set a goal" disabled={!!setGoalWhy} onClick={() => setSettingGoal({ outcome: "" })}>
+              <Target size={16} />
+            </button>
+          )}
           {sessionHere && shownProject?.has && shownProject.defaults && (
             <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
               <FolderCog size={16} />
@@ -4623,6 +4653,16 @@ function ChatView({
           )}
           {previewControls}
         </>
+      }
+      goalBar={
+        control?.goal && sessionHere && missions.state !== "unsupported" ? (
+          <GoalBar
+            goal={control.goal}
+            blocked={goalBlocked ?? hermes.goalUnchecked()}
+            resumeBlocked={chat.running ? "A reply is running. Resume once it ends." : undefined}
+            act={goalApi.act}
+          />
+        ) : undefined
       }
       queue={queue}
       queueApi={queueApi}
@@ -4721,6 +4761,9 @@ function ChatView({
           if (warnings.length) onToast(warnings.join(" "));
         }}
       />
+    )}
+    {settingGoal && (
+      <SetGoalDialog key={chat.id} api={goalApi} outcome={settingGoal.outcome} blocked={setGoalWhy} onClose={() => setSettingGoal(undefined)} onDone={() => setSettingGoal(undefined)} />
     )}
     {runOf && <RunDialog key={`${chat.id}/${runOf}`} api={{ read: () => hermes.run(chat.id, runOf) }} onClose={() => setRunOf(undefined)} />}
     {branchFrom && (
