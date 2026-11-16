@@ -278,6 +278,8 @@ function toolsReply(sessionId: string) {
 
 server.kanban.wakeDelayMs = 2_000;
 server.kanban.wakeWith = (sid, _stored, text, user_row_id) => replyTo(sid, "", text, { user_row_id });
+// A goal's next turn starts once the last one is judged, as Hermes's does (fakeGoals.ts, ADR 0187).
+server.goalTurn = (sid, prompt) => setTimeout(() => replyTo(sid, prompt), 2_000);
 
 // The subagents a "delegate" prompt started, as `subagent.start` / `subagent.complete` payloads carry them
 // (`tools/delegate_tool.py` at the deployed `f0d94882`). Each is also in Hermes's registry, for `subagent.list`.

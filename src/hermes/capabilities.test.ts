@@ -33,7 +33,8 @@ const NEW: Record<string, unknown> = {
   "GET api/status": { version: "0.17.0", release_date: "2026-11-01", hermes_home: "/home/h/.hermes", install_id: "abc", auth_required: true, auth_providers: ["basic"], auth_flows: ["cookie"] },
   "RPC gateway.capabilities": { per_session_exclusive_submit: true, not_a_flag: "x" },
   "RPC projects.list": { projects: [], active_id: null },
-  "RPC commands.catalog": { pairs: [] },
+  "RPC commands.catalog": { pairs: [], canon: { "/goal": "/goal" } },
+  "RPC session.control.read": new RpcError(4001, "session not found"),
   "RPC session.active_list": { sessions: [] },
   "RPC subagent.roster": { sessions: [] },
   "RPC learning.detail": { ok: false, message: "skill '__hermes_chat_probe__' not found" },
@@ -66,6 +67,7 @@ const OLD: Record<string, unknown> = {
   "RPC learning.detail": noMethod("learning.detail"),
   "RPC profiles.list": noMethod("profiles.list"),
   "RPC subagent.roster": noMethod("subagent.roster"),
+  "RPC session.control.read": noMethod("session.control.read"),
   "GET api/files": noRoute(),
   "GET api/fs/list": noRoute(),
 };
@@ -125,7 +127,7 @@ describe("the capability contract", () => {
   });
 
   it("checks only by reading: a GET, or a JSON-RPC method that only reads", () => {
-    const reads = new Set(["projects.list", "commands.catalog", "session.active_list", "learning.detail", "profiles.list", "subagent.roster", "rollback.list"]);
+    const reads = new Set(["projects.list", "commands.catalog", "session.control.read", "session.active_list", "learning.detail", "profiles.list", "subagent.roster", "rollback.list"]);
     for (const c of CAPABILITIES) {
       if (!c.probe) continue;
       if (c.probe.kind === "rpc") expect(reads.has(c.probe.method), c.id).toBe(true);
@@ -145,6 +147,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       approvals: "supported",
       projects: "supported",
       commands: "supported",
+      standingMissions: "supported",
       liveSessions: "supported",
       memory: "supported",
       toolsets: "supported",
@@ -192,7 +195,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
   it("sends nothing that writes", async () => {
     const t = store(NEW);
     await connectAndCheck(t);
-    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster|rollback\.list)$/.test(c))).toBe(true);
+    expect(t.calls.every((c) => c.startsWith("GET ") || /^RPC (gateway\.capabilities|projects\.list|commands\.catalog|session\.control\.read|session\.active_list|learning\.detail|profiles\.list|subagent\.roster|rollback\.list)$/.test(c))).toBe(true);
   });
 });
 
@@ -214,6 +217,7 @@ describe("a check of an old Hermes (0.16.0)", () => {
       outputs: "unsupported",
       botMode: "unsupported",
       subagentRoster: "unsupported",
+      standingMissions: "unsupported",
       toolsets: "supported",
       scheduledJobs: "supported",
       persona: "supported",
@@ -597,6 +601,17 @@ describe("refusing writes Hermes can't take", () => {
 });
 
 describe("checking again", () => {
+  it("checks standing missions again on each connection, since another profile may have a /goal of its own", async () => {
+    const t = store({ ...NEW });
+    await connectAndCheck(t);
+    expect(t.caps.get("standingMissions").state).toBe("supported");
+    t.answers["RPC commands.catalog"] = { canon: { "/goal": "/goal" }, categories: [{ name: "User commands", pairs: [["/goal", "exec: ./ship.sh"]] }] };
+    t.setGen(2);
+    t.caps.connected(2, "work", { skin: {} }, Promise.resolve({ server_requests: ["approval"] }));
+    expect(t.caps.get("standingMissions").state).toBe("unknown");
+    await vi.waitFor(() => expect(t.caps.get("standingMissions").state).toBe("unsupported"));
+  });
+
   it("keeps what it knew on a reconnect to the same build checked lately", async () => {
     let now = 1_000_000;
     const t = store(NEW, { now: () => now });
@@ -606,8 +621,8 @@ describe("checking again", () => {
     const before = t.calls.length;
     await connectAndCheck(t, 2);
     const again = t.calls.slice(before);
-    // Only the facts, to see whether the build changed.
-    expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC gateway.capabilities"]);
+    // Only the facts, to see whether the build changed, and standing missions, whose /goal may differ by profile.
+    expect(again.sort()).toEqual(["GET api/health", "GET api/status", "RPC commands.catalog", "RPC gateway.capabilities", "RPC session.control.read"]);
     expect(t.caps.getSnapshot().checkedAt).toBe(now);
   });
 

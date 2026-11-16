@@ -31,6 +31,9 @@ export const COMMANDS: readonly CommandDef[] = [
   { name: "btw", args: "<question>", description: "Ask a side question about this chat without interrupting the reply or adding to the chat", scope: "server" },
   // `slash.exec` `/context`, answered from the live session (tui_gateway/methods_slash.py `_format_live_context_output`).
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },
+  // `command.dispatch` `_cmd_goal` (tui_gateway/methods_tools.py at `bf0203a`). Typed, it opens Set a goal, which shows
+  // the check before anything is saved (ADR 0187).
+  { name: "goal", args: "[outcome]", description: "Set a goal Hermes keeps working toward until a check proves it done", scope: "server" },
 ];
 
 /** `/steer`, which the composer also uses for a message sent into a running reply (ADR 0057). */
@@ -93,11 +96,12 @@ export type ServerCommandList = { listed: Set<string>; replaced: Set<string>; un
 
 /**
  * Commands that go through `command.dispatch`, which runs a quick command (any shell command) or a plugin command before
- * Hermes's own of the same name (`_dispatch_quick`, `_dispatch_plugin`). `slash.exec /context` is answered from the live
+ * Hermes's own of the same name (`_dispatch_quick`, `_dispatch_plugin`). `session.control`'s goal actions go through it
+ * too, so one named `goal` replaces those as well. `slash.exec /context` is answered from the live
  * session before any of those (`_live_slash_command_output`), and `/btw` is a method of its own, so nothing can replace
  * either.
  */
-const REPLACEABLE = new Set(["steer"]);
+const REPLACEABLE = new Set(["steer", "goal"]);
 
 /**
  * The registry's server commands that this Hermes lists in `commands.catalog` for `profile`, the catalog the official
