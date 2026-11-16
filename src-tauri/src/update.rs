@@ -5,8 +5,8 @@
 // - a standalone AppImage built with an update key: Tauri's updater downloads the release, checks its signature against
 //   the key built into the app, and swaps the AppImage. Nothing else ever goes through the updater, because with no
 //   bundle type it would overwrite whatever file the binary runs from.
-// - anything else (a build from source, or the Windows installer's copy): nothing here updates it. A Windows install is
-//   updated by running a newer installer; the updater would need a signing key this build doesn't have.
+// - anything else (a build from source, the Windows installer's copy, or a .deb's): nothing here updates it. A Windows
+//   or .deb install is updated by installing a newer one; the updater would need a signing key this build doesn't have.
 // The webview checks GitHub for the pacman case itself (src/hermes/updates.ts).
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -39,7 +39,8 @@ pub enum Install {
     Pacman { package: String, running: String, installed: Option<String> },
     /// `updater`: built with an update key and endpoint, so it can update itself.
     AppImage { version: String, updater: bool },
-    /// `installer`: the bundle that put it in place, when that says how to update it (`nsis`: run a newer installer).
+    /// `installer`: the bundle that put it in place, when that says how to update it (`nsis`: run a newer installer;
+    /// `deb`: install a newer .deb).
     Unmanaged {
         version: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,7 +201,14 @@ pub async fn update_install_kind(app: AppHandle, state: State<'_, Updates>) -> R
     Ok(match state.package().await {
         Some((package, running)) => Install::Pacman { installed: state.pacman.version(&package).await, package, running },
         None if is_appimage() => Install::AppImage { version, updater: configured(app.config()) },
-        None => Install::Unmanaged { version, installer: (bundle_type() == Some(BundleType::Nsis)).then_some("nsis") },
+        None => Install::Unmanaged {
+            version,
+            installer: match bundle_type() {
+                Some(BundleType::Nsis) => Some("nsis"),
+                Some(BundleType::Deb) => Some("deb"),
+                _ => None,
+            },
+        },
     })
 }
 
@@ -509,5 +517,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"unmanaged","version":"0.1.0"}"#);
         let i = Install::Unmanaged { version: "0.1.0".into(), installer: Some("nsis") };
         assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"unmanaged","version":"0.1.0","installer":"nsis"}"#);
+        let i = Install::Unmanaged { version: "0.1.0".into(), installer: Some("deb") };
+        assert_eq!(serde_json::to_string(&i).unwrap(), r#"{"kind":"unmanaged","version":"0.1.0","installer":"deb"}"#);
     }
 }

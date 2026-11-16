@@ -14,7 +14,7 @@ export const REPO = "l0cky12/hermes-chat";
 export type Install =
   | { kind: "pacman"; package: string; running: string; installed: string | null }
   | { kind: "appImage"; version: string; updater: boolean }
-  | { kind: "unmanaged"; version: string; installer?: "nsis" };
+  | { kind: "unmanaged"; version: string; installer?: "nsis" | "deb" };
 
 /** One line of release notes. Shown as text: a link would take the app's own window to GitHub. */
 export type Note = { text: string };
@@ -299,10 +299,11 @@ export function updater(deps: UpdateDeps): Updater {
         return settle({
           state: "unsupported",
           version: install.version,
-          reason:
-            install.installer === "nsis"
-              ? "This copy was installed with the Windows installer. To update, download and run a newer installer."
-              : "This copy wasn't installed by pacman or as an AppImage, so it isn't updated from here. If you built it from source, pull and build it again.",
+          reason: {
+            nsis: "This copy was installed with the Windows installer. To update, download and run a newer installer.",
+            deb: "This copy was installed from a .deb. To update, download a newer .deb from the release page and install it with apt.",
+            none: "This copy wasn't installed by pacman or as an AppImage, so it isn't updated from here. If you built it from source, pull and build it again.",
+          }[install.installer ?? "none"],
         });
       if (install.kind === "pacman") {
         if (install.installed === null)

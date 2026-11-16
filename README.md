@@ -17,6 +17,7 @@ The application is built with Tauri 2, React 19, and TypeScript, and it uses Vit
 - [Server requirements](#server-requirements)
 - [Features](#features)
 - [Install on Arch Linux](#install-on-arch-linux)
+- [Install on Debian and Ubuntu](#install-on-debian-and-ubuntu)
 - [Install on Windows](#install-on-windows)
 - [Updates](#updates)
 - [Development](#development)
@@ -463,6 +464,16 @@ Uninstalling the package (`pacman -R hermes-chat-git`) removes the launcher, and
 
 A development build (`npm run app`) or an AppImage registers nothing. To try a link with one, run the binary with the link as its argument, for example `src-tauri/target/debug/hermes-chat 'hermes-chat://chat?…'`.
 
+## Install on Debian and Ubuntu
+
+Download `hermes-chat_<version>_amd64.deb` from the latest [release](https://github.com/l0cky12/Highwing/releases) and install it with apt, which also installs the libraries it needs:
+
+```sh
+sudo apt install ./hermes-chat_<version>_amd64.deb
+```
+
+It is built on Ubuntu 24.04, so it needs Ubuntu 24.04, Debian 13 or newer, on x86_64. The `.sha256` file beside it holds its checksum (`sha256sum -c`). The package is called `highwing` (`sudo apt remove highwing` removes it). The command, icon and [chat links](#chat-links-and-the-desktop) are the Arch package's, but the launcher file is `Highwing.desktop`, so that is the name to give `xdg-mime default`. The app doesn't update a .deb install: to update, install a newer .deb the same way. Pushing a `v<version>` tag builds the package and attaches it to that release (ADR 0182).
+
 ## Install on Windows
 
 Download `hermes-chat_<version>_x64-setup.exe` from the latest [release](https://github.com/l0cky12/hermes-chat/releases) and run it. It installs for your Windows user only, with no admin rights, and registers [chat links](#chat-links). The installer isn't code-signed, so Windows SmartScreen warns on first run: choose **More info**, then **Run anyway**. The `.sha256` file beside it holds its checksum (`Get-FileHash` in PowerShell).
@@ -481,7 +492,7 @@ How an update installs depends on how the app was installed:
 
 - **The `hermes-chat-git` package** (pacman owns `/usr/bin/hermes-chat`): the app compares the package's commit with `main` on GitHub and lists the pull requests merged since. It never replaces the package's files. You run the update yourself, from your checkout: `git pull && packaging/aur/build.sh -si`. Back in the app, it sees the new version and offers **Restart now**.
 - **A standalone AppImage built with an update key**: Tauri's updater downloads the new AppImage, checks its signature against the public key built into the app, and replaces the AppImage. Then you restart.
-- **Anything else** (for example `npm run app`, or a binary you copied): the app says it isn't updated from here. It decides by asking pacman which package owns the binary it started from, so a copy of the packaged binary somewhere else counts as unmanaged too.
+- **Anything else** (for example `npm run app`, a .deb install, or a binary you copied): the app says it isn't updated from here. It decides by asking pacman which package owns the binary it started from, so a copy of the packaged binary somewhere else counts as unmanaged too.
 
 An AppImage that a package installed counts as the package's: the app asks pacman about the AppImage file, and the updater never replaces it (ADR 0075).
 

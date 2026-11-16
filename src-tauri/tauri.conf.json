@@ -22,6 +22,24 @@
       "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "shortDescription": "Desktop client for your Hermes Agent servers",
+    "longDescription": "Highwing is a desktop chat client for your own Hermes Agent servers. It signs in to the Hermes web dashboard through an SSH tunnel or at the dashboard's web address.",
+    "linux": {
+      "deb": {
+        "recommends": ["openssh-client", "desktop-file-utils"],
+        "desktopTemplate": "../packaging/aur/hermes-chat.desktop",
+        "files": {
+          "/usr/share/icons/hicolor/16x16/apps/hermes-chat.png": "icons/hicolor/16x16.png",
+          "/usr/share/icons/hicolor/22x22/apps/hermes-chat.png": "icons/hicolor/22x22.png",
+          "/usr/share/icons/hicolor/24x24/apps/hermes-chat.png": "icons/hicolor/24x24.png",
+          "/usr/share/icons/hicolor/48x48/apps/hermes-chat.png": "icons/hicolor/48x48.png",
+          "/usr/share/icons/hicolor/64x64/apps/hermes-chat.png": "icons/hicolor/64x64.png",
+          "/usr/share/icons/hicolor/256x256/apps/hermes-chat.png": "icons/hicolor/256x256.png",
+          "/usr/share/icons/hicolor/scalable/apps/hermes-chat.svg": "../assets/icon.svg",
+          "/usr/share/icons/hicolor/symbolic/apps/hermes-chat-symbolic.svg": "../assets/icons/hermes-chat-symbolic.svg"
+        }
+      }
+    }
   }
 }
