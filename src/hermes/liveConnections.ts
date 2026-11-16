@@ -48,7 +48,7 @@ export type LiveSummary = {
 /** How often a background connection reads what runs and waits, and the other profiles' Unread chats (ADR 0125). */
 export const BACKGROUND_LIVE_MS = 60_000;
 export const BACKGROUND_UNREAD_MS = 120_000;
-/** At most this many background reads run at once, across every background connection. */
+/** At most this many reads run at once across the live connections: the background reads and Everywhere's. */
 export const BACKGROUND_READS_AT_ONCE = 4;
 
 /** An inbox entry from a background connection: its key and alias carry the connection, so colliding ids stay apart. */
@@ -64,20 +64,22 @@ export function withoutServer(e: InboxEntry): InboxEntry {
   return { ...rest, key: strip(e.key), ...(e.alias && { alias: strip(e.alias) }) };
 }
 
-/** Reads run `max` at a time; the rest wait their turn. */
+/**
+ * Reads run `max` at a time; the rest wait in the order they asked. A read that ends hands its slot straight to the
+ * next one waiting, so a read asked for in that moment can't take it too and make `max + 1`.
+ */
 function limiter(max: number) {
   let running = 0;
   const waiting: (() => void)[] = [];
-  return async (read: () => Promise<unknown>) => {
+  return async <T>(read: () => Promise<T>): Promise<T> => {
     if (running >= max) await new Promise<void>((go) => waiting.push(go));
-    running++;
+    else running++;
     try {
-      await read();
-    } catch {
-      // A read that fails says so in the snapshot it was for.
+      return await read();
     } finally {
-      running--;
-      waiting.shift()?.();
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
     }
   };
 }
@@ -98,7 +100,12 @@ export class LiveConnections {
   private rechecks = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<() => void>();
   private version = 0;
-  private read = limiter(BACKGROUND_READS_AT_ONCE);
+  /**
+   * Runs `read` when one of the app's `BACKGROUND_READS_AT_ONCE` slots is free. Every background read and every
+   * Everywhere read (everywhere.ts) share them, so that many requests at most are in flight across the live
+   * connections. Answers and rejects as `read` does.
+   */
+  readonly readInTurn = limiter(BACKGROUND_READS_AT_ONCE);
 
   constructor(
     private keep: (ids: string[]) => void = () => {},
@@ -259,7 +266,8 @@ export class LiveConnections {
     // A read waiting its turn checks again when it starts: the connection may be the target or closed by then.
     const watched = () => this.timers.get(id) === timers;
     const every = (ms: number, read: () => Promise<unknown>) => {
-      const queued = () => void this.read(() => (watched() ? read() : Promise.resolve()));
+      // A read that fails says so in the snapshot it was for.
+      const queued = () => void this.readInTurn(() => (watched() ? read() : Promise.resolve())).catch(() => {});
       timers.push(
         setTimeout(() => {
           if (!watched()) return;
