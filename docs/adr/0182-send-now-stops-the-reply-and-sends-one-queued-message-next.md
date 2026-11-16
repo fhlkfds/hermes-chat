@@ -1,6 +1,6 @@
 # Send now stops the reply and sends one queued message next
 
-> **Accepted.** `Hermes.sendQueuedNow` and the `rush` case of `pump` in `src/hermes/transport.ts`, `ChatQueue.rush` in `src/hermes/model.ts`, and the row's Send now button and Ctrl+Enter in `src/ui/Queue.tsx`.
+> **Superseded by [ADR 0187](0187-send-now-steers-a-queued-message-into-the-running-reply-and-stops-it-only-when-it-cant.md)** (#643). Send now steers the message into a running reply instead. It stops the reply as described here only for a message with files, or when `/steer` can't run in the chat. The mark, its badge, and what cancels it stay as described here.
 
 A queued message waits for the reply to end, and after a stopped or failed reply the whole queue pauses until the owner resumes it (ADR 0018). Sending one queued message right away took four steps: press Stop, drag the message to the top, wait for the stop to land, then press Resume. Resume also let the rest of the queue go. The owner wants one action that sends a chosen queued message now.
 
