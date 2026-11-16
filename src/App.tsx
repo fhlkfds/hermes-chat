@@ -57,6 +57,8 @@ import { Office } from "./ui/Office";
 import { EMPTY_OFFICE_MEMORY } from "./ui/OfficeBuilding";
 import { officeRooms, type Desk, type Room } from "./hermes/office";
 import type { SubagentId } from "./hermes/subagents";
+import { policyOf } from "./hermes/chatKind";
+import { jobRunTitle } from "./hermes/cronJobs";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { blocksRestore, inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxAcks, type InboxEntry } from "./hermes/inbox";
 import { LiveConnections, attention as attentionOf, withoutServer, type LiveSummary } from "./hermes/liveConnections";
@@ -1712,8 +1714,7 @@ export function Main({
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
-  // A Bot Chat opened from the Bots view is in `chats`, for its pane, but never in the list (ADR 0066).
-  const inList = chats.filter((c) => !isBotChat(c));
+  const inList = chats.filter((c) => policyOf(c).listed);
   const listed = inShown ? inList.filter((c) => inShown.has(c.id)) : inList;
   const unreadChats = inList.filter((c) => c.unread && !c.archived);
   const projectUnread: ProjectUnread = {
@@ -1797,7 +1798,7 @@ export function Main({
   // the chat to reopen at the next launch as it was.
   const rememberChat = (id: string | null) => {
     const chat = id === null ? undefined : hermes.getSnapshot().chats.find((c) => c.id === id);
-    if (chat && isBotChat(chat)) return;
+    if (chat && !policyOf(chat).listed) return;
     rememberOpenChat(pref, id);
     shown?.set(pref, id);
   };
@@ -3080,6 +3081,7 @@ export function Main({
           onNew={() => newChat()}
           onDelete={() => deleteChat(chat.id)}
           onOpenChat={(id) => openChat(id, { pane: p.key })}
+          onOpenJob={openJobAt}
           onOpenTurn={(id, turn) => {
             if (!chats.some((c) => c.id === id)) return setToast({ text: "That chat isn't in the chat list now.", at: Date.now() });
             guard(() => {
@@ -3509,6 +3511,9 @@ export function Main({
                     start: (job, text) => startTroubleshoot(hermes, troubleshoots, scope, profile, job, text, (id) => openChat(id)),
                     openChat: (id) => openChat(id),
                   }}
+                  onOpenRun={(run, job) =>
+                    run.sessionId && pick({ chatId: run.sessionId, source: "cron", title: jobRunTitle(run.startedAt, job.name), settled: true, updatedAt: run.endedAt ?? run.startedAt, snippet: [] })
+                  }
                 />
               </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
@@ -4036,6 +4041,7 @@ function ChatView({
   onNew,
   onDelete,
   onOpenChat,
+  onOpenJob,
   onShowAt,
   onOpenTurn,
   previewControls,
@@ -4119,6 +4125,7 @@ function ChatView({
   onDelete: () => Promise<boolean>;
   /** Opens another chat in this pane: a branch just made. */
   onOpenChat: (id: string) => void;
+  onOpenJob: (jobId: string) => void;
   /** Opens the chat a branch came from, at the message it was branched after. */
   onShowAt: (link: BranchLink) => void;
   /** Opens another version of a turn in this pane, at that turn (ADR 0035). */
@@ -4138,6 +4145,8 @@ function ChatView({
   const shownDraft = draftOf(chatId);
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const stillIn = () => hermes.profile === profile;
+  const policy = policyOf(chat);
+  const sessionHere = started && policy.session === "live";
 
   // A new chat takes each value from what the owner chose for it here, then the shown project's defaults, then the
   // profile (projectDefaults.ts). A pick here also stays the composer's Model pick, as before.
@@ -4287,7 +4296,7 @@ function ChatView({
   }, [autoSend]);
   // The chat's queue, shared by every pane showing it (ADR 0018). A chat not started yet has none.
   const queue = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().queues[chat.id]);
-  const queueApi: QueueApi | undefined = started
+  const queueApi: QueueApi | undefined = sessionHere
     ? {
         add: (text, attachments) => {
           const why = hermes.enqueue(chat.id, text, attachments);
@@ -4347,9 +4356,8 @@ function ChatView({
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
   const skillCommands = useSkillCommands(hermes, status === "connected", profile);
   const caps = useCapabilities(hermes.capabilities);
-  // Another of the profile's chats can be referenced; a Bot Chat is its bot's, and an archived one is out of sight.
   const referable = useMemo(
-    () => listedChats.filter((c) => c.id !== chat.id && !c.archived && !isBotChat(c) && c.title.trim()).map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
+    () => listedChats.filter((c) => c.id !== chat.id && !c.archived && policyOf(c).listed && c.title.trim()).map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
     [listedChats, chat.id],
   );
   const commands: CommandHost = {
@@ -4580,6 +4588,7 @@ function ChatView({
       onCopyLink={started ? onCopyLink : undefined}
       onDelete={started ? () => void onDelete() : undefined}
       onArchive={started ? onArchive : undefined}
+      onOpenJob={onOpenJob}
       active={active}
       visible={visible}
       split={split}
@@ -4588,13 +4597,13 @@ function ChatView({
       voice={voice}
       // A Voice conversation's turn goes straight to the chat, as a slash command's message does: what the owner has
       // typed stays in the composer, and a failure is a Failed message (ADR 0111).
-      voiceSend={started ? (text) => hermes.sendTracked(chat.id, text) : undefined}
+      voiceSend={sessionHere ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
       references={{ desk: referenceDesk, onTextModelSettings: onTextGenerationSettings }}
       onDismissSideQuestion={(id) => hermes.dismissSideQuestion(chat.id, id)}
       followUp={followUp}
       compare={compare}
-      onCheckpoints={started && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
+      onCheckpoints={sessionHere && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
       headActions={
         <>
           {started && inWorktree && (
@@ -4607,7 +4616,7 @@ function ChatView({
               <GitBranch size={13} aria-hidden /> <span className="mono">{inWorktree.branch}</span>
             </button>
           )}
-          {started && shownProject?.has && shownProject.defaults && (
+          {sessionHere && shownProject?.has && shownProject.defaults && (
             <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
               <FolderCog size={16} />
             </button>
@@ -4618,7 +4627,7 @@ function ChatView({
       queue={queue}
       queueApi={queueApi}
       subagents={
-        started
+        sessionHere
           ? {
               refresh: () => hermes.refreshSubagents(chat.id),
               output: (id) => hermes.subagentOutput(chat.id, id),
@@ -4633,7 +4642,7 @@ function ChatView({
             }
           : undefined
       }
-      branch={started ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
+      branch={started && policy.branch ? { blocked: branchBlocked(chat, status === "connected"), onBranch: setBranchFrom } : undefined}
       onRun={started ? setRunOf : undefined}
       branchedFrom={
         link && (
@@ -4660,7 +4669,7 @@ function ChatView({
         )
       }
       replay={
-        started && chat.source !== "import"
+        started && policy.replay
           ? { blocked: replayBlocked(chat, status === "connected"), onReplay: (itemId, kind) => setReplayFrom({ itemId, kind }) }
           : undefined
       }
@@ -4669,13 +4678,17 @@ function ChatView({
         <StatusBar
           chat={chat}
           status={status}
-          context={{
-            inspect: () => hermes.inspectContext(chat.id),
-            history: () => hermes.compactionHistory(chat.id),
-            compact: () => hermes.compact(chat.id),
-            cannotCompact: () => hermes.cannotCompact(),
-            openMemory: onMemorySettings,
-          }}
+          context={
+            policy.session === "live"
+              ? {
+                  inspect: () => hermes.inspectContext(chat.id),
+                  history: () => hermes.compactionHistory(chat.id),
+                  compact: () => hermes.compact(chat.id),
+                  cannotCompact: () => hermes.cannotCompact(),
+                  openMemory: onMemorySettings,
+                }
+              : undefined
+          }
         />
       }
       modelControls={

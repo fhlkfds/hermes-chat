@@ -184,7 +184,7 @@ describe("The Settled drawer, in the list", () => {
   const drawn = () => [...drawer()!.querySelectorAll(".settled-list .row-open")].map((r) => r.getAttribute("data-chat"));
   const more = () => within(drawer()!).queryByRole("button", { name: /^Show \d+ more$/ });
 
-  it("opens on the first ten Settled chats, then shows 25 more a press until all are drawn, and starts at ten again when reopened (ADR 0184)", async () => {
+  it("opens on the first ten Settled chats, then shows 25 more a press until all are drawn, and starts at ten again when reopened (ADR 0185)", async () => {
     const user = userEvent.setup();
     setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
     render(<List chats={settledMany} />);

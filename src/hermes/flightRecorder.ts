@@ -383,10 +383,10 @@ export type RunRow = {
   reasoning?: unknown;
 };
 
-type StoredCall = { id: string; name: string; args?: Record<string, unknown> };
+export type StoredCall = { id: string; name: string; args?: Record<string, unknown> };
 
 /** An assistant row's `tool_calls`: JSON text in the stored row, or a list. */
-function callsOf(raw: unknown): StoredCall[] {
+export function callsOf(raw: unknown): StoredCall[] {
   let list = raw;
   if (typeof raw === "string") {
     try {

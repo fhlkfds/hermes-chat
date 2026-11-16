@@ -12,6 +12,7 @@
 // Hermes's helper tasks, which no chat carries.
 import { chatUsageOf, costLabel, tokens as shortTokens, usd, type ChatUsage, type Cost } from "./usage";
 import { instantsOf, isoIn, knownZone } from "./schedule";
+import { jobRunTitle } from "./cronJobs";
 import { statusOf } from "./pipe";
 import { errorText, nonEmptyText } from "./values";
 import type { ReplyTime } from "./replyTimes";
@@ -180,7 +181,8 @@ export function chatOfRow(profile: string, row: unknown, readAt: number): { chat
   const chat = withSegments({
     profile,
     id,
-    title: nonEmptyText(r.title) ?? nonEmptyText(r.preview)?.slice(0, 80) ?? id,
+    // A run Hermes hasn't named yet starts with the scheduler's instructions, which say nothing of the run.
+    title: nonEmptyText(r.title) ?? (r.source === "cron" ? jobRunTitle(started * 1000) : nonEmptyText(r.preview)?.slice(0, 80)) ?? id,
     source: nonEmptyText(r.source) ?? "unknown",
     startedAt: started * 1000,
     model: nonEmptyText(r.model),

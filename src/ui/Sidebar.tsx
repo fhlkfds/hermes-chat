@@ -982,12 +982,12 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   rows[rows.indexOf(e.target as HTMLButtonElement) + (command === "rowDown" ? 1 : -1)]?.focus();
 }
 
-/** How many Settled chats the drawer draws when it opens, and how many more each Show more press adds (ADR 0184). */
+/** How many Settled chats the drawer draws when it opens, and how many more each Show more press adds (ADR 0185). */
 export const SETTLED_FIRST = 10;
 export const SETTLED_PAGE = 25;
 
 /**
- * The open Settled drawer's rows: the first ten, then a Show more button for 25 more at a time (ADR 0184). The drawer
+ * The open Settled drawer's rows: the first ten, then a Show more button for 25 more at a time (ADR 0185). The drawer
  * mounts this only while open, so closing and reopening it starts at ten again. The chat on screen is always drawn,
  * with the rows above it, so opening a Settled chat from a search still shows its row.
  */

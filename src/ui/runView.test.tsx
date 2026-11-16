@@ -112,6 +112,8 @@ describe("The Run view", () => {
     const replyRuns = screen.getAllByRole("button", { name: "Run" }).length;
     await act(async () => void (await hermes.send("c1", "Check the other disk")));
     const runtime = s.runtimeIdOf("c1")!;
+    // Every event lands on one clock reading, so the model step before the tool takes no time even on a slow runner.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
     await act(async () => {
       s.event(runtime, "message.start");
       s.event(runtime, "tool.start", { tool_id: "k2", name: "terminal", args: { command: "df -h /mnt/b" } });
@@ -119,6 +121,7 @@ describe("The Run view", () => {
       s.event(runtime, "error", { message: "Provider unavailable" });
       await hermes.idle();
     });
+    clock.mockRestore();
     const error = (await screen.findByText("Provider unavailable")).closest(".msg.error") as HTMLElement;
     expect(screen.getAllByRole("button", { name: "Run" })).toHaveLength(replyRuns + 1);
     await user.click(within(error).getByRole("button", { name: "Run" }));
