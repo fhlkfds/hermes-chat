@@ -58,6 +58,7 @@ import { EMPTY_OFFICE_MEMORY } from "./ui/OfficeBuilding";
 import { officeRooms, type Desk, type Room } from "./hermes/office";
 import type { SubagentId } from "./hermes/subagents";
 import { policyOf } from "./hermes/chatKind";
+import { jobRunTitle } from "./hermes/cronJobs";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { blocksRestore, inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxAcks, type InboxEntry } from "./hermes/inbox";
 import { LiveConnections, attention as attentionOf, withoutServer, type LiveSummary } from "./hermes/liveConnections";
@@ -3511,6 +3512,10 @@ export function Main({
                     start: (job, text) => startTroubleshoot(hermes, troubleshoots, scope, profile, job, text, (id) => openChat(id)),
                     openChat: (id) => openChat(id),
                   }}
+                  // Hermes names a run only once it has ended; the chat takes its title from Hermes when it opens.
+                  onOpenRun={(run, job) =>
+                    run.sessionId && pick({ chatId: run.sessionId, source: "cron", title: jobRunTitle(run.startedAt, job.name), settled: true, updatedAt: run.endedAt ?? run.startedAt, snippet: [] })
+                  }
                 />
               </CapabilityGate>
             ) : projectScreenOpen && shownProject && !settingsOpen ? (
