@@ -1,6 +1,6 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
 // the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), removed, and
-// sent now (ADR 0187); the queue can be paused and resumed.
+// sent now (ADR 0188); the queue can be paused and resumed.
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { ArrowUp, GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, type Rush, type SendNowRoute, isOutgoing, isWaiting, sendNowRoute } from "../hermes/model";
@@ -15,7 +15,7 @@ export type QueueApi = {
   /** Puts the message at place `index`, 0 first. */
   moveTo: (id: string, index: number) => void;
   /**
-   * Send now (ADR 0187): steers the message into the running reply, or stops the reply for it when it can't be steered;
+   * Send now (ADR 0188): steers the message into the running reply, or stops the reply for it when it can't be steered;
    * with no reply running, sends it as soon as it can go. Resolves with why Hermes refused the steer, which leaves the
    * message queued.
    */

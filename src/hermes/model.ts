@@ -193,17 +193,17 @@ export type Queued = { id: string; text: string; attachments?: Attachment[] };
 export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean; rush?: Rush };
 
 /**
- * Send now's mark on one queued message (ADR 0187). `steering`: a /steer carrying it into the running reply waits for
+ * Send now's mark on one queued message (ADR 0188). `steering`: a /steer carrying it into the running reply waits for
  * Hermes's answer, and until then none of the chat's queue goes, since the answer decides what goes first. Otherwise
  * it goes next, ahead of the rest and paused or not, and the reply that ends before it doesn't pause the queue.
  */
 export type Rush = { id: string; steering: boolean };
 
-/** What Send now does with a queued message (ADR 0187). `stop`: stops the running reply for it, saying `why`. */
+/** What Send now does with a queued message (ADR 0188). `stop`: stops the running reply for it, saying `why`. */
 export type SendNowRoute = { by: "send" } | { by: "steer" } | { by: "stop"; why: string };
 
 /**
- * What Send now does with `item` in `chat` (ADR 0187). With no reply running, or one the owner is already stopping,
+ * What Send now does with `item` in `chat` (ADR 0188). With no reply running, or one the owner is already stopping,
  * it just goes next. A running reply is steered unless a steer can't carry it, and then it's stopped for it.
  * `cantSteer`: why /steer can't run in the chat now, if it can't.
  */

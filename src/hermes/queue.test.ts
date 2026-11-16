@@ -249,7 +249,7 @@ describe("The queue pauses when the owner should look first", () => {
   });
 });
 
-describe("Send now (ADR 0187)", () => {
+describe("Send now (ADR 0188)", () => {
   const interrupts = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "session.interrupt").length;
   const steers = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "command.dispatch").length;
   const NO_STEER = "This Hermes doesn't list it, so it may not have it.";

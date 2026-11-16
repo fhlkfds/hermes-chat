@@ -3219,7 +3219,7 @@ export class Hermes {
   }
 
   /**
-   * Send now (ADR 0187), by `sendNowRoute`. A running reply is steered: the message stays in its place until Hermes
+   * Send now (ADR 0188), by `sendNowRoute`. A running reply is steered: the message stays in its place until Hermes
    * takes it, then leaves the queue, and the reply and the rest of the queue carry on. Otherwise, or when Hermes had no
    * reply to steer, it goes next, ahead of the rest, as soon as the chat can take it: a reply it can't be steered into
    * is stopped for it, and that stop doesn't pause the queue. Neither a pause nor a Failed message above holds it. The
