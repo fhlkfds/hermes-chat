@@ -13,7 +13,7 @@ The state of a chat the owner is currently working in: any chat that isn't Settl
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Opened, it shows the ten newest, and a Show more button adds 25 more a press (ADR 0185). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
@@ -30,6 +30,10 @@ _Avoid_: background job, pending task, handoff (fine in conversation)
 **Returned result**:
 The work a chat handed off, come back: the card at the start of the turn Hermes runs when a background Subagent or a background process started with `notify_on_complete` finishes. It shows Hermes's title for it, such as "Subagent Task Completed: audit backups", and the result only, without the notice Hermes wrote for its model; a batch keeps each task's goal above its result. It sits on Hermes's side of the transcript, open, and its header closes it. A Subagent's answer reads like a reply, a process's output like a log. A kanban task's wake notice is a one-line message, not a Returned result; the task's whole result is in its sheet on the Work page (ADR 0175).
 _Avoid_: notification, wake message, delegation result (fine in conversation)
+
+**Run view**:
+One reply's turn drawn as a waterfall of steps: the model's calls, tool calls, Approvals and Questions, and Hermes's status lines, each with how long it took and whether it failed; a click shows a step's arguments and result. **Run**, under a reply, opens it. A reply this app watched is drawn from the events it heard, kept in memory only, each with when it arrived; any other from the chat's stored rows. A tool's length is Hermes's own measurement; every other time, token count and the turn's cost are the app's inference, marked with ≈ (ADR 0178).
+_Avoid_: trace, timeline, flight recorder (the feature's name in the issue tracker; fine in conversation)
 
 **Snoozed**:
 An Active chat the owner has put out of the way until a time they chose. It sits in the Snoozed section after the Inbox, collapsed until the owner opens it, soonest to wake first, and shows when it wakes. When that time comes it goes back to the Inbox, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
@@ -96,7 +100,7 @@ A chat with something new in it since the owner last opened it, in this app or a
 _Avoid_: new, unseen
 
 **Source**:
-The platform a chat was started on: this app, Telegram, Discord, the command line, the official Hermes desktop app, or a transcript file (an Imported transcript). A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
+The platform a chat was started on: this app, Telegram, Discord, the command line, the official Hermes desktop app, a transcript file (an Imported transcript), or a Scheduled job (a Job-run chat). A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
 _Avoid_: origin, platform (as an attribute of a chat)
 
 **Imported chat**:
@@ -184,7 +188,7 @@ A label the owner puts on chats, in one profile. A chat can have several tags, o
 _Avoid_: label (in the app), category, folder, project
 
 **Chat filter**:
-What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Applying a filter changes no chat (ADR 0106).
+What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Job-run chats are found only when the Source asked for is Scheduled jobs. Applying a filter changes no chat (ADR 0106, ADR 0184).
 _Avoid_: query, view
 
 **Saved filter**:
@@ -244,7 +248,7 @@ The text the owner has typed in a chat's composer and not sent. Each chat keeps 
 _Avoid_: unsent message, saved message
 
 **Queued message**:
-A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. Highwing sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
+A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. **Send now** on one stops the running reply and sends that message next, past a pause and without the stop pausing the queue (ADR 0182). Highwing sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
 _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
 
 **Steered message**:
@@ -260,7 +264,7 @@ A command the owner types at the start of the composer, after a "/", picked from
 _Avoid_: quick command (Hermes's word for commands defined in its config), shortcut, macro
 
 **Goal** (standing mission):
-An outcome the owner gives a chat for Hermes to keep working toward, turn after turn, until it is done, the owner pauses or clears it, or it uses up the profile's turn budget. It may carry what must not change and a check: a shell command that must exit 0 before Hermes's judge model is asked whether the goal is done. Hermes keeps the goal and runs the check on the server. The goal bar above the message box shows it, with Pause, Resume and Clear. A goal moves only while its chat is live on the server (ADR 0178).
+An outcome the owner gives a chat for Hermes to keep working toward, turn after turn, until it is done, the owner pauses or clears it, or it uses up the profile's turn budget. It may carry what must not change and a check: a shell command that must exit 0 before Hermes's judge model is asked whether the goal is done. Hermes keeps the goal and runs the check on the server. The goal bar above the message box shows it, with Pause, Resume and Clear. A goal moves only while its chat is live on the server (ADR 0187).
 _Avoid_: task (a Work card), loop and heartbeat (Hermes's other standing work, on a clock), gate (Hermes's word for a check)
 
 **Template**:
@@ -310,6 +314,14 @@ _Avoid_: child agent, worker, delegate (in the UI). Subagent model settings in S
 **Work page** / **Task**:
 The rail screen that shows Hermes's kanban board: one column per status, a card per Task, as the official Hermes desktop app's Kanban view shows it. A Task is one piece of bot work on that board, given to a profile (its assignee) and run by Hermes's dispatcher. The owner moves a Task between columns only as the board's workflow allows, and edits, comments on or creates Tasks there. Nothing on it changes without one of those actions (ADR 0171). The Tasks a chat created are that chat's Dispatched work.
 _Avoid_: kanban (fine in conversation), job (that is a Scheduled job), ticket
+
+**Link** (between Tasks):
+A Task's dependency on another: the Task **waits on** its parent, and Hermes makes it ready only once every Task it waits on is done or archived. A Task's sheet lists what it waits on and what waits on it (**Then**), and adds or removes a link after saying what that changes; the **Graph** view on the Work page draws the board's links as arrows from parent to child (ADR 0179).
+_Avoid_: dependency edge (fine in code), blocker (a blocked Task is another thing)
+
+**Token guess**:
+Hermes's rough guess, from a model, of how many tokens a Task will take, with a size of S, M or L. It is never a cost, and asking for one writes nothing (ADR 0179).
+_Avoid_: cost, price, estimate (fine in code)
 
 **Office** / **Desk**:
 The agent office, opened from the rail in place of the chat panes: every agent at work on the connection, one for each chat's reply, in the state the Rail inbox gives it, and one for each of its Subagents. The header's **Design** menu picks how it is drawn, and its **Profile** menu narrows it to one profile's agents (ADR 0161). **Floor plan** (the default) draws four rooms by state as an architect's plan: **Needs you**, **Working**, **Trouble** and **At rest**, the same split as the building's rooms, with each chat's agents at one pod and each agent a workstation with its state in words. **Board** gives each chat a lane and each room a column. **3D building** draws them as low-poly people in a 3D building with four rooms by state: the **Workroom** (running, queued at its door, and a reply waiting on its Dispatched work), the **Waiting room** (waiting for an Approval, or a message that may not have sent), the **Trouble room** (failed) and the **Lounge** (everything else). Each chat's agents are a **team**, in one team color, and a team keeps its group of Workroom desks while any of its agents works. A name tag shows only while the pointer is over its agent or it has focus, and stays for the picked one. Clicking an agent opens its **card**, whose only action is Open chat. **Office quality** (Normal or Low) caps the frame rate and resolution; Low also types at half the pace and has agents appear in their new room instead of walking. **List** shows the same agents as rows, and is what a computer without WebGL gets in place of the building (ADR 0122). An agent opens its chat, or the subagent in the chat's Subagents panel; it never approves or starts anything. One that can't be checked shows "as last seen", and only Hermes's word that a subagent completed makes it Finished (ADR 0077). A **Desk** is one agent's entry in `officeRooms`, the data every design draws.
@@ -421,12 +433,16 @@ _Avoid_: local model (it may be hosted), custom provider (Hermes's older config 
 The tokens a chat's model calls took in and gave out: input, cache read and written, output and its reasoning, and how many calls. A chat's usage is Hermes's own total for every call in it, from any client and across model changes. A reply's usage is shown only for a reply this app watched from start to finish, and is kept as long as its Saved copy.
 _Avoid_: tokens (alone, for the whole breakdown), stats
 
+**Reply time**:
+How long a reply took, from Hermes starting its turn (`message.start`) to finishing it (`message.complete`), tool calls and waiting on the owner's answers included. Hermes records no time per reply, so the app times the replies it watches from start to finish: the time ends the reply's usage line, and each reply that finished is kept on this computer, the latest 1,000 per connection and profile, for the Usage screen's typical, average and longest reply (ADR 0181).
+_Avoid_: latency (that is the wait for the first word), duration (for a tool call's own `duration_s`), response time
+
 **Cost**:
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
 **Usage analytics**:
-The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0026).
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Its Reply time section is the one part from this computer: the Reply times kept for the chats counted (ADR 0181). Export CSV saves the chats counted where the owner picks (ADR 0026).
 _Avoid_: dashboard, stats, report, billing
 
 **Context window**:
@@ -446,7 +462,7 @@ The resizable panel beside the chat, with four tabs: Preview, Terminal, Files an
 _Avoid_: drawer, sidebar (that is the chat list), inspector
 
 **Preview**:
-The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It works like a small browser that only the owner drives: Back, Forward, Reload, and an address box that follows a link clicked inside the page and takes a bare port such as `5173`. Back and Forward cross from a page to a file and back, and the Preview is where the owner left it after another tab. With nothing open, it lists Dev servers. It opens from a link or a Path link in a reply, an opened tool call, the context inspector or its address box, never on Hermes's own: Hermes's requests to read or drive it are turned down (ADR 0103). What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). On Linux a web page is the top level of a view of its own, so a site that refuses to be shown inside other apps still shows (ADR 0081). On Windows such a site gets a note and Open in your browser instead (ADR 0011).
+The Side panel's tab that shows a web page, a Server page, a Server file, a Local file or a tool call's output. It works like a small browser that only the owner drives: Back, Forward, Reload, and an address box that follows a link clicked inside the page and takes a bare port such as `5173`. Back and Forward cross from a page to a file and back, and the Preview is where the owner left it after another tab. A file shows as text (Markdown and HTML also rendered), an image, a PDF drawn page by page, or a Word document's text (ADR 0186). With nothing open, it lists Dev servers. It opens from a link or a Path link in a reply, an opened tool call, the context inspector or its address box, never on Hermes's own: Hermes's requests to read or drive it are turned down (ADR 0103). What it shows can't reach the app, the sign-in or this computer's other files (ADR 0007). On Linux a web page is the top level of a view of its own, so a site that refuses to be shown inside other apps still shows (ADR 0081). On Windows such a site gets a note and Open in your browser instead (ADR 0011).
 _Avoid_: preview pane (its name before the Side panel), viewer, artifact (the official desktop app's word), browser panel (T3 Code's)
 
 **Server page**:
@@ -567,7 +583,11 @@ _Avoid_: trigger, test run
 
 **Job run**:
 One run of a Scheduled job, as Hermes recorded it: an agent session, or the output a script job printed. Its state is running, succeeded, failed, or unknown, when Hermes recorded no outcome (the run's process stopped, or Hermes went on in a session it doesn't list). Its result is the agent's last reply, read from the session, or the script's output.
-_Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
+_Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run's session opens as a Job-run chat, but it isn't one of the chats in the list)
+
+**Job-run chat**:
+The chat an agent Job run left: the Hermes session the run's agent worked in, with the prompt it got, its tool calls and its reply. It opens from **Open the chat** on the run in the job's history, from a search or Saved filter with the Scheduled jobs source, from Usage, or from a chat link. It is read-only. Hermes runs only the job in it and refuses a reply, so it has no composer, Edit, Regenerate or Branch. The app reads its stored messages and never resumes it, so opening it starts nothing on the server and doesn't mark it read. It stays out of the chat list, unread counts and the Inbox (ADR 0184).
+_Avoid_: cron chat, cron session (Hermes's words, fine in server-side talk), run log, transcript (the transcript is what it shows)
 
 **Troubleshoot** (a Scheduled job):
 The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0053).
@@ -653,10 +673,10 @@ _Avoid_: capability (a feature Hermes supports, ADR 0044), approval (Hermes aski
 - **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
 - **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Highwing shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
-- **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's reply without opening it as a chat.
+- **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's last reply and Open the chat opens its whole session as a read-only Job-run chat.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).
 - **Edit** (of a message) vs **Edit** of a Failed message vs **Edit** of a Server file: Edit under a message Hermes has makes a Version in a new branch and never changes the chat. Edit on a Failed message takes its words back into the composer. Edit of a Server file changes that file. **Regenerate** (a reply) makes a Version too; **Regenerate title** only renames the chat.
-- **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
+- **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` sessions are Job-run chats: never listed, and found with the Scheduled jobs source. Any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
 - **Context window** vs **Usage**: the window is what the model reads on one call, now. Usage, cache reads included, adds up over every call in the chat, so a chat's cache reads can far exceed its window. The context inspector shows the cache as billing, apart from the window's size.
 - **Memory** vs a **Saved copy** and the local cache: memory is the agent's, on the server, and changes what Hermes knows. Saved copies and drafts are this computer's copies of chats and change nothing in Hermes. Memory vs a memory *provider*: a profile may also use an external provider (such as Honcho) whose memories live with that provider; Settings → Memory names it but doesn't show or edit what it stores.
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.

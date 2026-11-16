@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ListFilter, Search, Tag as TagIcon, X } from "lucide-react";
 import { STATE_LABEL, isEmptyFilter, tidyFilter, type ChatFilter, type ChatState, type FilterOutcome } from "../hermes/chatFilter";
+import { policyOf } from "../hermes/chatKind";
 import { SOURCE_LABEL, type Found, type Source } from "../hermes/model";
 import { previewBulk, type BulkPreview, type ScopeTags } from "../hermes/tags";
 import { SourceIcon, Spinner, highlight, useReturnFocus } from "./bits";
@@ -16,7 +17,7 @@ import { errorText } from "../hermes/values";
 /** Typing this long without a pause sends the search. */
 const PAUSE_MS = 200;
 
-const SOURCE_NAME: Record<Source, string> = { ...SOURCE_LABEL, cli: "Command line", desktop: "Hermes desktop app", import: "Imported transcripts", other: "Other platforms" };
+const SOURCE_NAME: Record<Source, string> = { ...SOURCE_LABEL, cli: "Command line", desktop: "Hermes desktop app", import: "Imported transcripts", cron: "Scheduled jobs", other: "Other platforms" };
 
 /** Each part of a filter but its words, as the owner reads it, with what clears it. */
 function filterParts(f: ChatFilter, tags: ScopeTags): { key: string; label: string; clear: ChatFilter }[] {
@@ -266,7 +267,7 @@ export function SearchPalette({
               <div className="hit-title">
                 <SourceIcon source={f.source} />
                 <span className="hit-name">{highlight(f.title, results.text ?? "", "hl")}</span>
-                {f.archived ? <span className="badge">Archived</span> : f.settled && <span className="badge">Settled</span>}
+                {f.archived ? <span className="badge">Archived</span> : policyOf(f).readOnly === "jobRun" ? <span className="badge">Job run</span> : f.settled && <span className="badge">Settled</span>}
                 <span className="hit-time">{l.fmt.age(f.updatedAt)}</span>
               </div>
               <HitTags tags={tags} chatId={f.chatId} model={tidy.model || tidy.text ? f.model : undefined} />

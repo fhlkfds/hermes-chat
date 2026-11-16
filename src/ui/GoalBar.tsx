@@ -1,4 +1,4 @@
-// Standing missions (issue #603, ADR 0178): the goal bar above a chat's message box, and Set a goal. Hermes keeps the
+// Standing missions (issue #603, ADR 0187): the goal bar above a chat's message box, and Set a goal. Hermes keeps the
 // goal and moves it after each turn; this shows what Hermes last said about it and sends the owner's changes.
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleX, Hourglass, Pause, Play, Target, TriangleAlert, X } from "lucide-react";

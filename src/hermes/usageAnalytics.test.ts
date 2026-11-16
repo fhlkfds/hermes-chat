@@ -271,6 +271,7 @@ function base(id: string, over: Partial<UsageChat> = {}, row: Partial<SessionRow
     startedAt: NOW,
     archived: false,
     pinned: false,
+    ids: [id],
     segments: [{ id, usage: { ...counts, cost, readAt: NOW } }],
     missing: 0,
     counts,

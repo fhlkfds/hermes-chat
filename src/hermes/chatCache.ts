@@ -8,10 +8,11 @@
 // Clearing the cache deletes every connection's chat lists and Saved copies, and nothing else: never the sign-in,
 // drafts, outboxes, appearance or display preferences (uiPrefs.ts).
 import { type ScopeSource, connectionScope, inScope } from "./connections";
-import type { Attachment, Chat, ChatQueue, Item, Outgoing, OutgoingItem, Queued, SentReference, Source } from "./model";
+import { SOURCE_LABEL, type Attachment, type Chat, type ChatQueue, type Item, type Outgoing, type OutgoingItem, type Queued, type SentReference, type Source } from "./model";
 import type { ChatCache, SavedTranscript } from "./transport";
 import { UI_PREFS_KEY } from "./uiPrefs";
 import { replyUsageOf } from "./usage";
+import { replyTimesOf, withReplyTime, type ReplyTime } from "./replyTimes";
 import { persist } from "./unsaved";
 import { NO_BRANCHES, type BranchAttempt, type BranchLink, type BranchPoint, type BranchStore, type BranchVariant } from "./branch";
 import { pickOf } from "./models";
@@ -19,7 +20,7 @@ import { optionalText } from "./values";
 import { isServerPath } from "./preview";
 
 /** Every key prefix this module keeps a connection's data under, each followed by its scope (connections.ts). */
-export const CACHE_PREFIXES = () => [LIST_PREFIX, TRANSCRIPT_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, OUTBOX_PREFIX, QUEUE_PREFIX, HELD_PREFIX, BRANCH_PREFIX];
+export const CACHE_PREFIXES = () => [LIST_PREFIX, TRANSCRIPT_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, OUTBOX_PREFIX, QUEUE_PREFIX, HELD_PREFIX, BRANCH_PREFIX, REPLY_TIMES_PREFIX];
 /** Each profile's chat list, by connection and profile. */
 export const LIST_PREFIX = "hermes-chat.chats.";
 /** A chat's Saved copy, by connection, profile and chat. */
@@ -34,6 +35,8 @@ export const OUTBOX_PREFIX = "hermes-chat.outbox.";
 export const QUEUE_PREFIX = "hermes-chat.queue.";
 /** The branches this app made, and the ones whose answer was lost, per connection and profile (ADR 0027). */
 export const BRANCH_PREFIX = "hermes-chat.branches.";
+/** How long the replies this app watched finish took, per connection and profile (replyTimes.ts, ADR 0181). */
+export const REPLY_TIMES_PREFIX = "hermes-chat.reply-times.";
 /** Where drafts.ts kept a chat's sent messages Hermes didn't take, or may not have, before the outbox: moved into it. */
 export const HELD_PREFIX = "hermes-chat.undelivered.";
 
@@ -129,7 +132,7 @@ export function clearCachedChats() {
 /** When a Saved copy was saved, read off the front of its JSON so the rest isn't parsed. */
 const savedAtOf = (k: string) => Number(/^\{"savedAt":(\d+)/.exec(localStorage.getItem(k) ?? "")?.[1] ?? 0);
 
-const SOURCES: Source[] = ["app", "telegram", "discord", "desktop", "cli", "import", "other"];
+const SOURCES = Object.keys(SOURCE_LABEL) as Source[];
 export const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
 /** A saved list row as a Chat, or undefined if it isn't one. The transcript is never in the list. */
@@ -349,6 +352,14 @@ export function localChatCache(connection: ScopeSource): ChatCache {
   const outboxKey = (profile: string, chatId: string) => OUTBOX_PREFIX + scope(profile, chatId);
   const queueKey = (profile: string, chatId: string) => QUEUE_PREFIX + scope(profile, chatId);
   const branchKey = (profile: string) => BRANCH_PREFIX + scope(profile);
+  const replyTimesKey = (profile: string) => REPLY_TIMES_PREFIX + scope(profile);
+  const loadReplyTimes = (profile: string): ReplyTime[] => {
+    try {
+      return replyTimesOf(JSON.parse(localStorage.getItem(replyTimesKey(profile)) ?? "null"));
+    } catch {
+      return [];
+    }
+  };
   /** The chat ids of the profile's keys under `prefix`: the key's scope with the chat id last. */
   const chatsUnder = (prefix: string, profile: string, keys = keysOf(prefix + scope(profile).slice(0, -1) + ",")) =>
     keys.filter((k) => k.startsWith(prefix + scope(profile).slice(0, -1) + ",")).flatMap((k) => {
@@ -526,6 +537,10 @@ export function localChatCache(connection: ScopeSource): ChatCache {
     saveBranches(profile, store) {
       const empty = !Object.keys(store.links).length && !store.attempts.length;
       return persist(() => localStorage, branchKey(profile), empty ? null : JSON.stringify(store));
+    },
+    loadReplyTimes,
+    saveReplyTime(profile, t) {
+      persist(() => localStorage, replyTimesKey(profile), JSON.stringify(withReplyTime(loadReplyTimes(profile), t)));
     },
     rememberOlderPulled(profile) {
       try {

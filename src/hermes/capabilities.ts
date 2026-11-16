@@ -10,7 +10,7 @@
 // 2. What the app's own traffic shows: every dashboard GET and JSON-RPC request the screens make is observed, so a
 //    route that answered, or one that is missing, settles that capability without asking again.
 // 3. A check, only for what neither of those settled: one request per capability that only reads, with a time limit.
-//    Two capabilities have no read to check them by, so Diagnostics sends each one named request shaped like a write,
+//    A few capabilities have no read to check them by, so Diagnostics sends each one named request shaped like a write,
 //    which changes nothing, while it is open (`WriteCheck`, ADR 0169). Nothing else is written to find out, and nothing
 //    at all on connect.
 //
@@ -41,10 +41,15 @@ export type CapabilityId =
   | "profiles"
   | "skills"
   | "serverFiles"
+  | "checkpoints"
   | "scheduledJobs"
   | "automations"
   | "outputs"
   | "kanban"
+  | "workDispatch"
+  | "workPickers"
+  | "workLinks"
+  | "workEstimate"
   | "botMode"
   | "subagents"
   | "subagentRoster";
@@ -76,6 +81,8 @@ export type CapabilityAction = { name: string; method: RestMethod; route: RegExp
 /**
  * `lacks`: for an answer not of `shape`, why it shows Hermes doesn't have the feature, such as an older answer that
  * leaves the feature's field out; none when it shows nothing. Such an answer makes the capability unsupported.
+ * `read`: for a check Hermes answers with an error when it has the method, such as "session not found" for a made-up
+ * session, what its answer or failure says, with `context`, a read sent alongside (undefined when it fails).
  */
 type Probe =
   | { kind: "rest"; path: (profile: string) => string; maxBytes?: number; shape: (body: unknown) => boolean; lacks?: (body: unknown) => string | undefined }
@@ -85,10 +92,8 @@ type Probe =
       params: (profile: string) => Record<string, unknown>;
       shape: (result: unknown) => boolean;
       lacks?: (result: unknown) => string | undefined;
-      /** A JSON-RPC error code that shows the method is there: Hermes's refusal of a name nothing real has. */
-      refusedWith?: number;
-      /** What else decides the capability once the method is there, read only then. */
-      alsoNeeds?: (io: CapabilityIO, profile: string) => Promise<{ state: CapabilityState; why: string }>;
+      context?: (io: CapabilityIO, profile: string) => Promise<unknown>;
+      read?: (outcome: { answer: unknown } | { failure: Failure }, context: unknown) => { state: CapabilityState; why: string };
     };
 
 /**
@@ -247,22 +252,24 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "standing-missions",
     // `session.control.read` for a session no chat has fails "session not found" (4001) before reading anything
     // (`tui_gateway/methods_session_control.py`). A quick or plugin command named `goal` runs instead of Hermes's
-    // `/goal`, and so do `session.control`'s goal actions, which go through `command.dispatch` (ADR 0178).
+    // `/goal`, and so do `session.control`'s goal actions, which go through `command.dispatch` (ADR 0187).
     probe: {
       kind: "rpc",
       method: "session.control.read",
       params: () => ({ session_id: PROBE_NAME }),
       shape: isObj,
-      // SESSION_NOT_FOUND, which is declared after this list.
-      refusedWith: 4001,
-      alsoNeeds: async (io, profile) => {
-        const list = await listServerCommands(io.rpc, profile).catch((e: unknown) => errorText(e));
-        if (typeof list === "string") return { state: "unknown", why: `Hermes has session.control, but couldn't say whether /goal is its own: ${list}` };
-        if (list.replaced.has("goal"))
+      context: (io, profile) => listServerCommands(io.rpc, profile).catch((e: unknown) => errorText(e)),
+      read: (o, list) => {
+        const has = "answer" in o ? isObj(o.answer) : o.failure.rpcCode === SESSION_NOT_FOUND;
+        if (!has) return "answer" in o ? { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." } : stateOfFailure(o.failure);
+        if (typeof list === "string" || list === undefined)
+          return { state: "unknown", why: `Hermes has session.control, but couldn't say whether /goal is its own${list ? `: ${list}` : "."}` };
+        const commands = list as Awaited<ReturnType<typeof listServerCommands>>;
+        if (commands.replaced.has("goal"))
           return { state: "unsupported", why: "Hermes has session.control, but a quick or plugin command called /goal would run instead of Hermes's own, so Highwing doesn't set goals here." };
-        if (list.unsure.has("goal"))
+        if (commands.unsure.has("goal"))
           return { state: "unknown", why: "Hermes has session.control, but couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /goal." };
-        if (!list.listed.has("goal")) return { state: "unsupported", why: "Hermes has session.control, but doesn't list /goal as its own command." };
+        if (!commands.listed.has("goal")) return { state: "unsupported", why: "Hermes has session.control, but doesn't list /goal as its own command." };
         return { state: "supported", why: "Hermes has session.control.read and session.control, and /goal is its own command." };
       },
     },
@@ -383,6 +390,36 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     writeRoutes: [/^api\/files\//],
   },
   {
+    id: "checkpoints",
+    label: "Undoing a reply's file changes",
+    usedBy: "The files-changed chip under a reply that edited files",
+    needs: "rollback.list, rollback.diff and rollback.restore on /api/ws. Hermes takes checkpoints only with checkpoints.enabled on in the profile's config.",
+    without: "The chip doesn't show.",
+    anchor: "undoing-a-replys-file-changes",
+    // `rollback.list` at Hermes `bf0203a` (`tui_gateway/methods_tools.py:1123`) only reads, and answers "session not
+    // found" (4001) for a session no live chat has. Whether Hermes takes checkpoints is the profile's setting.
+    probe: {
+      kind: "rpc",
+      method: "rollback.list",
+      params: (profile) => ({ session_id: PROBE_NAME, profile }),
+      shape: (r) => isObj(r) && typeof r.enabled === "boolean" && isList(r.checkpoints),
+      context: (io, profile) => io.get(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(checkpointsSettingOf),
+      read: (o, on) => {
+        const has = "answer" in o ? isObj(o.answer) && typeof o.answer.enabled === "boolean" : o.failure.rpcCode === SESSION_NOT_FOUND;
+        if (!has) return "answer" in o ? { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." } : stateOfFailure(o.failure);
+        const setting =
+          on === true
+            ? "Checkpoints are on for this profile."
+            : on === false
+              ? "Checkpoints are off for this profile (checkpoints.enabled in its config.yaml), so Hermes keeps nothing to undo."
+              : "This app couldn't read whether checkpoints are on for this profile (checkpoints.enabled).";
+        return { state: "supported", why: `Hermes has rollback.list, rollback.diff and rollback.restore. ${setting}` };
+      },
+    },
+    methods: ["rollback.list", "rollback.diff", "rollback.restore"],
+    writeMethods: /^rollback\.restore$/,
+  },
+  {
     id: "scheduledJobs",
     label: "Scheduled jobs",
     usedBy: "The Scheduled jobs screen",
@@ -424,7 +461,69 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "work",
     probe: { kind: "rest", path: () => "api/plugins/kanban/boards", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.boards) },
     routes: [/^api\/plugins\/kanban\/boards$/],
-    writeRoutes: [/^api\/plugins\/kanban\//],
+    // Not the planning routes: a plugin without one of them still has the board, and each is guarded on its own.
+    writeRoutes: [/^api\/plugins\/kanban\/(?!links$|estimate$|tasks\/[^/]+\/estimate$)/],
+  },
+  {
+    id: "workDispatch",
+    label: "Work dispatch settings",
+    usedBy: "The Dispatch line on the Work page",
+    needs: "GET /api/plugins/kanban/orchestration.",
+    without: "The Work page doesn't say whether this server splits triage cards or makes their cards ready on its own.",
+    anchor: "work",
+    probe: { kind: "rest", path: () => "api/plugins/kanban/orchestration", maxBytes: 64 * 1024, shape: (b) => isObj(b) && typeof b.auto_decompose === "boolean" },
+    routes: [/^api\/plugins\/kanban\/orchestration$/],
+  },
+  {
+    id: "workPickers",
+    label: "Work bot and model pickers",
+    usedBy: "Bot and model in a Work card's sheet",
+    needs: "GET /api/plugins/kanban/model-options, assignees and profiles.",
+    without: "A card's sheet has no Bot and model pickers. Edit still sets a card's assignee.",
+    anchor: "work",
+    probe: { kind: "rest", path: () => "api/plugins/kanban/model-options", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.providers) },
+    routes: [/^api\/plugins\/kanban\/model-options$/, /^api\/plugins\/kanban\/assignees$/, /^api\/plugins\/kanban\/profiles$/],
+  },
+  {
+    id: "workLinks",
+    label: "Work links",
+    usedBy: "Adding and removing links in a Work card's sheet",
+    needs: "POST and DELETE /api/plugins/kanban/links.",
+    without: "A card's sheet doesn't show its links or offer to change them. The Graph view still draws them.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a link is changed.",
+    // A link from a task to itself: `kanban_db.link_tasks` refuses it (400) before it reads the board, at `b200f5bc`,
+    // `bf0203a` and `f0d9488`. A plugin without the route answers FastAPI's own 404 or a 405.
+    writeCheck: {
+      send: (io) => io.post("api/plugins/kanban/links", { parent_id: PROBE_NAME, child_id: PROBE_NAME }),
+      read: (o) => {
+        if ("answer" in o) return { state: "unknown", why: "Hermes took a link from a task to itself, which it should refuse, so this app won't say links work." };
+        if (o.failure.status === 400 && /depend on itself/i.test(o.failure.reason)) return { state: "supported", why: "Hermes refused a link from a task to itself before changing anything, as it does when it has the route." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: [/^api\/plugins\/kanban\/links$/],
+  },
+  {
+    id: "workEstimate",
+    label: "Work estimate",
+    usedBy: "The token guess in New task and a Work card's sheet",
+    needs: "POST /api/plugins/kanban/estimate and /api/plugins/kanban/tasks/{id}/estimate.",
+    without: "New task and a card's sheet offer no token guess.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a token guess is asked for.",
+    // An estimate with no title: `_run_estimate` answers `ok: false` before it asks any model, so nothing is spent.
+    writeCheck: {
+      send: (io) => io.post("api/plugins/kanban/estimate", { title: "" }).then((t) => JSON.parse(t) as unknown),
+      read: (o) => {
+        if ("answer" in o)
+          return isObj(o.answer) && o.answer.ok === false && typeof o.answer.reason === "string" && /title/i.test(o.answer.reason)
+            ? { state: "supported", why: "Hermes asked for a title before guessing, without asking any model." }
+            : { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: [/^api\/plugins\/kanban\/estimate$/, /^api\/plugins\/kanban\/tasks\/[^/]+\/estimate$/],
   },
   {
     id: "botMode",
@@ -493,6 +592,11 @@ export type ServerFacts = {
   versionWhy?: string;
   /** Why the feature flags couldn't be read, if they couldn't. */
   flagsWhy?: string;
+  /**
+   * Whether `message.start` carries `turn_id` on this connection: `bf0203a` sends none, so the flight recorder pairs a
+   * turn's events by order (ADR 0178). Undefined until a turn starts.
+   */
+  turnIds?: boolean;
 };
 
 export type CapabilitySnapshot = {
@@ -530,6 +634,17 @@ function turnIsolationOf(text: string): boolean | undefined {
   if (!isObj(config)) return undefined;
   const v = isObj(config.dashboard) ? config.dashboard.turn_isolation : undefined;
   return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : !!v;
+}
+/**
+ * Whether a `GET /api/config` answer turns on `checkpoints.enabled` for the profile: undefined when the answer isn't a
+ * config. Hermes's default is off. `HERMES_TUI_CHECKPOINTS` on the server overrides it, which only `rollback.list` shows.
+ */
+export function checkpointsSettingOf(text: string): boolean | undefined {
+  const config: unknown = JSON.parse(text);
+  if (!isObj(config)) return undefined;
+  // Hermes also takes the old `checkpoints: true` form, and reads `enabled` with Python's `bool()` (`tui_gateway/checkpoints.py:24`).
+  const v = typeof config.checkpoints === "boolean" ? config.checkpoints : isObj(config.checkpoints) ? config.checkpoints.enabled : undefined;
+  return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : typeof v === "number" ? v !== 0 : v === true;
 }
 /** JSON-RPC "invalid params", and Hermes's own code for params its contract refuses: the method is there, in another shape. */
 const BAD_PARAMS = new Set([-32602, 4000]);
@@ -667,6 +782,8 @@ export type CapabilityIO = {
   rpc(method: AppMethod, params: Record<string, unknown>): Promise<unknown>;
   /** A dashboard `PUT`, for a write check only (`WriteCheck`). */
   put(pathAndQuery: string, body: unknown): Promise<string>;
+  /** A dashboard `POST`, for a write check only (`WriteCheck`). */
+  post(pathAndQuery: string, body: unknown): Promise<string>;
 };
 
 /** Per request, so one slow route can't hold up the rest. The checks run side by side. */
@@ -842,7 +959,7 @@ export class CapabilityStore {
     this.run++;
     clearTimeout(this.due);
     // The canonical protocol never gets this far (`ProtocolMismatchError`), so a connection that is up is legacy.
-    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready) }, stale: false });
+    this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready), turnIds: undefined }, stale: false });
     this.setCap("chat", { state: "supported", source: "advertised", why: "Hermes speaks the legacy session protocol on this connection." });
     for (const c of CAPABILITIES)
       if (c.perProfile) {
@@ -859,6 +976,11 @@ export class CapabilityStore {
       (e) => learnt(false, approvalsFailed(e)),
     );
     this.due = setTimeout(() => void this.check(scope, false), this.delayMs);
+  }
+
+  /** What the first `message.start` on this connection showed of turn ids; seen passively, never asked. */
+  noteTurnIds(present: boolean) {
+    if (this.snap.facts.turnIds !== present) this.set({ facts: { ...this.snap.facts, turnIds: present } });
   }
 
   /** The connection dropped, closed or changed profile: what shows stays, marked as last checked, and checks under way are dropped. */
@@ -1004,7 +1126,7 @@ export class CapabilityStore {
     // A build is known by its commit when Hermes names one, else by its version: a git checkout has no version.
     const key = facts.commit ?? facts.build ?? facts.version;
     const sameBuild = key !== undefined && key === this.checkedFor;
-    this.set({ facts: { ...facts, protocol: this.snap.facts.protocol, declinesNotShown: this.snap.facts.declinesNotShown } });
+    this.set({ facts: { ...facts, protocol: this.snap.facts.protocol, declinesNotShown: this.snap.facts.declinesNotShown, turnIds: this.snap.facts.turnIds } });
     // Another build may have other routes: only what this connection learnt stands.
     if (!sameBuild && this.checkedFor !== undefined) {
       const kept = Object.values(this.snap.caps).filter((c) => (c.checkedAt ?? 0) >= this.connectedAt);
@@ -1072,26 +1194,29 @@ export class CapabilityStore {
     const rev = this.revs.get(spec.id);
     let result: Omit<Capability, "id" | "checkedAt">;
     try {
-      // The answer is checked for its shape and then let go: nothing of it is kept.
-      const answer =
-        probe.kind === "rest"
-          ? JSON.parse(await within(this.io.get(probe.path(scope.profile), probe.maxBytes), this.timeoutMs))
-          : await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs);
-      const lacking = probe.shape(answer) ? undefined : probe.lacks?.(answer);
-      result = probe.shape(answer)
-        ? { state: "supported", source: "probed", why: "Hermes answered the check." }
-        : lacking
-          ? { state: "unsupported", source: "probed", why: lacking }
-          : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
+      if (probe.kind === "rpc" && probe.read) {
+        const context = probe.context ? within(probe.context(this.io, scope.profile), this.timeoutMs).catch(() => undefined) : undefined;
+        const outcome = await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs).then(
+          (answer) => ({ answer }),
+          (e: unknown) => ({ failure: failureOf(e) }),
+        );
+        result = { source: "probed", ...probe.read(outcome, await context) };
+      } else {
+        // The answer is checked for its shape and then let go: nothing of it is kept.
+        const answer =
+          probe.kind === "rest"
+            ? JSON.parse(await within(this.io.get(probe.path(scope.profile), probe.maxBytes), this.timeoutMs))
+            : await within(this.io.rpc(probe.method, probe.params(scope.profile)), this.timeoutMs);
+        const lacking = probe.shape(answer) ? undefined : probe.lacks?.(answer);
+        result = probe.shape(answer)
+          ? { state: "supported", source: "probed", why: "Hermes answered the check." }
+          : lacking
+            ? { state: "unsupported", source: "probed", why: lacking }
+            : { state: "unknown", source: "probed", why: "Hermes answered with something other than what this app reads, so it may have changed." };
+      }
     } catch (e) {
-      const f = failureOf(e);
-      result =
-        probe.kind === "rpc" && probe.refusedWith !== undefined && f.rpcCode === probe.refusedWith
-          ? { state: "supported", source: "probed", why: "Hermes has the method: it refused the check's made-up name." }
-          : { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(f)) };
+      result = { source: "probed", ...(e instanceof SyntaxError ? { state: "unknown", why: "Hermes answered with something that isn't JSON." } : stateOfFailure(failureOf(e))) };
     }
-    if (result.state === "supported" && probe.kind === "rpc" && probe.alsoNeeds)
-      result = { source: "probed", ...(await within(probe.alsoNeeds(this.io, scope.profile), this.timeoutMs).catch((e: unknown) => stateOfFailure(failureOf(e)))) };
     // A screen's own answer that came in meanwhile is newer, and stands.
     if (this.current(scope, run) && this.revs.get(spec.id) === rev) this.found(spec.id, probeKey(spec), result);
   }

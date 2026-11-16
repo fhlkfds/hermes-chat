@@ -14,7 +14,7 @@ Hermes Chat began as a Linux-only app (D-Bus, GTK, X11, WebKitGTK, `std::os::uni
 - **Credentials**: Credential Manager holds at most 2560 bytes, so a long secret is split over `<account>`, `<account>#2`, and so on.
 - **Updates**: a Windows copy is updated by running a newer installer. It reports `unmanaged` with `installer: "nsis"`.
 - **Chat links**: the NSIS installer registers `hermes-chat:` under the current user's registry classes (`src-tauri/windows/installer-hooks.nsh`).
-- **The build**: `.github/workflows/windows.yml` runs `cargo test --lib` and `tauri build --bundles nsis` on `windows-latest` and uploads the `.exe` as an artifact. `tauri.windows.conf.json` turns bundling on only for Windows.
+- **The build**: `.github/workflows/installers.yml` (named `windows.yml` until ADR 0183) runs `cargo test --lib` and `tauri build --bundles nsis` on `windows-latest` and uploads the `.exe` as an artifact. `tauri.windows.conf.json` turns bundling on only for Windows.
 
 ## Known limits
 

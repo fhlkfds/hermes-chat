@@ -179,6 +179,76 @@ describe("The Settled drawer, in the list", () => {
     expect(head("Settled").getAttribute("aria-expanded")).toBe("false");
   });
 
+  // 37 Settled chats, newest first: s1 is the newest.
+  const settledMany = Array.from({ length: 37 }, (_, i) => chat(`s${i + 1}`, { settled: true, updatedAt: NOW - (i + 1) * 60_000 }));
+  const drawn = () => [...drawer()!.querySelectorAll(".settled-list .row-open")].map((r) => r.getAttribute("data-chat"));
+  const more = () => within(drawer()!).queryByRole("button", { name: /^Show \d+ more$/ });
+
+  it("opens on the first ten Settled chats, then shows 25 more a press until all are drawn, and starts at ten again when reopened (ADR 0185)", async () => {
+    const user = userEvent.setup();
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany} />);
+    expect(heads()).toEqual(["Inbox0", "Settled37"]);
+    expect(drawn()).toEqual(settledMany.slice(0, 10).map((c) => c.id));
+    expect(more()?.textContent).toBe("Show 25 more");
+    await user.click(more()!);
+    expect(drawn()).toEqual(settledMany.slice(0, 35).map((c) => c.id));
+    // The last press offers only what is left.
+    expect(more()?.textContent).toBe("Show 2 more");
+    await user.click(more()!);
+    expect(drawn()).toEqual(settledMany.map((c) => c.id));
+    expect(more()).toBeNull();
+    // Closing the drawer and opening it again goes back to the first ten.
+    await user.click(head("Settled"));
+    await user.click(head("Settled"));
+    expect(drawn()).toHaveLength(10);
+    expect(more()?.textContent).toBe("Show 25 more");
+  });
+
+  it("draws no Show more button for ten Settled chats or fewer", () => {
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany.slice(0, 10)} />);
+    expect(drawn()).toHaveLength(10);
+    expect(more()).toBeNull();
+  });
+
+  it("draws down to the Settled chat on screen when it is past the first ten, so its row shows", () => {
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany} selectedId="s20" />);
+    expect(drawn()).toEqual(settledMany.slice(0, 20).map((c) => c.id));
+    expect(drawer()!.querySelector('.row-open[aria-current="true"]')?.getAttribute("data-chat")).toBe("s20");
+    expect(more()?.textContent).toBe("Show 17 more");
+  });
+
+  it("moves focus to the first new row on a keyboard press of Show more, and leaves it on a click", async () => {
+    const user = userEvent.setup();
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany} />);
+    more()!.focus();
+    await user.keyboard("{Enter}");
+    expect(document.activeElement?.getAttribute("data-chat")).toBe("s11");
+    // A click draws the rest without moving focus to s36, the first row it drew.
+    await user.click(more()!);
+    expect(drawn()).toHaveLength(37);
+    expect(document.activeElement?.closest(".row")).toBeNull();
+  });
+
+  it("moves focus to the first new row on a keyboard press while a row above is being renamed", async () => {
+    const user = userEvent.setup();
+    setUIPrefs({ chatSectionsShown: ["inbox", "settled"], chatSectionsCollapsed: [] });
+    render(<List chats={settledMany.slice(0, 11)} />);
+    const s5 = drawer()!.querySelector<HTMLElement>('.row-open[data-chat="s5"]')!;
+    await user.pointer({ keys: "[MouseRight]", target: s5 });
+    await user.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    // An edited title keeps the rename box open when focus leaves it, so s5 has no row button meanwhile.
+    await user.type(screen.getByRole("textbox", { name: "Chat title" }), " edited");
+    more()!.focus();
+    expect(screen.getByRole("textbox", { name: "Chat title" })).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(more()).toBeNull();
+    expect(document.activeElement?.getAttribute("data-chat")).toBe("s11");
+  });
+
   it("has Working right above it, the scroll's last section, whether Archived shows or not", () => {
     const chats = [...mix, chat("nap")];
     const all = ["pinned", "inbox", "snoozed", "archived", "working", "settled"] as const;

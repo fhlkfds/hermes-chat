@@ -1,7 +1,7 @@
 // Transcript, thinking, tool-call groups, Approval cards, find bar, composer and the Settle button, ported from the prototype.
 // Dictation and Read aloud come from Voice.tsx.
 import { createContext, memo, type ReactNode, type RefObject, useCallback, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArchiveRestore, ArrowUp, AtSign, Brain, PackageCheck, SquareTerminal, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, Columns2, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Share2, Square, Trash2, Wrench, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, AtSign, Brain, CalendarClock, PackageCheck, SquareTerminal, Camera, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CloudOff, Columns2, CornerDownRight, EyeOff, FileDown, FileInput, Globe, HardDrive, Link2, ListPlus, Ellipsis, Paperclip, RotateCcw, Search, Server, Share2, Square, Trash2, Wrench, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { decodeString } from "micromark-util-decode-string";
@@ -17,6 +17,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Menu, PinItem, type ChatPin } from "./ChatMenu";
 import { isBotChat } from "../hermes/bots";
+import { policyOf } from "../hermes/chatKind";
 import { DeleteChatDialog } from "./DeleteChat";
 import { ExportChatDialog, type ExportMode } from "./ExportChat";
 import { QueuePanel, type QueueApi } from "./Queue";
@@ -43,12 +44,15 @@ import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { PathsIn, useLinkMenu, useOpenPreview, usePathsIn } from "./previewContext";
+import { FilesChip } from "./FileChanges";
+import { replyFiles } from "../hermes/fileChanges";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { linkTarget, previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { RunButton } from "./RunView";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { useSpellCheck } from "./SpellCheckSettings";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
@@ -122,8 +126,11 @@ const sameBlock = (a: Block, b: Block) =>
 const sameChunkBlock = (a: Block | SideBlock, b: Block | SideBlock) =>
   a.kind === "side" ? b.kind === "side" && a.question === b.question : b.kind !== "side" && sameBlock(a, b);
 
-/** Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, and where each turn's versions show. */
-type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number> };
+/**
+ * Each turn's owner's message (`ofUser`), the replies Regenerate is offered on, where each turn's versions show, and the
+ * last error of each finished turn that failed with no reply (`failedOnly`), where its Run view opens (ADR 0178).
+ */
+type Turns = { ofUser: Map<string, number>; regenerable: Set<string>; anchor: Map<string, number>; failedOnly: Set<string> };
 
 /** `next`, or the value returned before when `same` says it holds the same. */
 function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
@@ -135,8 +142,10 @@ function useStable<T>(next: T, same: (a: T, b: T) => boolean): T {
 const sameMap = <K, V>(a: Map<K, V>, b: Map<K, V>, same: (x: V, y: V) => boolean = Object.is) =>
   a.size === b.size && [...a].every(([k, v]) => b.has(k) && same(v, b.get(k)!));
 
+const sameSet = <T,>(a: Set<T>, b: Set<T>) => a.size === b.size && [...a].every((x) => b.has(x));
+
 const sameTurns = (a: Turns, b: Turns) =>
-  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && a.regenerable.size === b.regenerable.size && [...a.regenerable].every((id) => b.regenerable.has(id));
+  sameMap(a.ofUser, b.ofUser) && sameMap(a.anchor, b.anchor) && sameSet(a.regenerable, b.regenerable) && sameSet(a.failedOnly, b.failedOnly);
 
 const sameVersions = (a?: Map<number, Variant[]>, b?: Map<number, Variant[]>) =>
   !!a &&
@@ -281,6 +290,7 @@ function MoreMenu({
   const [at, setAt] = useState<{ x: number; y: number }>();
   const close = useCallback(() => setAt(undefined), []);
   const button = useRef<HTMLButtonElement>(null);
+  const { manage, link } = policyOf(chat);
   const [askDelete, setAskDelete] = useState(false);
   const [exporting, setExporting] = useState<ExportMode>();
   const noDelete = !onDelete;
@@ -306,7 +316,7 @@ function MoreMenu({
       <button
         ref={button}
         className={`icon-btn ${at ? "on" : ""}`}
-        title={isBotChat(chat) ? "More actions: export, share" : `More actions: export, share, copy link, ${pin ? "pin, " : ""}settle, archive${onDelete ? ", delete" : ""}`}
+        title={`More actions: ${["export", "share", link && "copy link", manage && pin && "pin", manage && "settle", manage && "archive", manage && onDelete && "delete"].filter(Boolean).join(", ")}`}
         aria-label="More"
         aria-haspopup="menu"
         aria-expanded={!!at}
@@ -328,16 +338,16 @@ function MoreMenu({
           {onExport && onSnapshotSettings && item("Share snapshot…", <Share2 size={15} />, () => setExporting("share"), "Publish a copy of this chat that anyone with its link can read")}
           {/* A Bot Chat is opened from its bot's row, found by its title (ADR 0066): no link to it by id, and nothing
               that would retire it, which would leave its bot to start another. */}
-          {onCopyLink && !isBotChat(chat) && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Highwing on this computer")}
-          {pin && !isBotChat(chat) && !chat.archived && <PinItem pin={pin} onClose={close} />}
-          {onSettle && !isBotChat(chat) && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
+          {onCopyLink && link && item("Copy chat link", <Link2 size={15} />, onCopyLink, "Copy a link that opens this chat in Highwing on this computer")}
+          {pin && manage && !chat.archived && <PinItem pin={pin} onClose={close} />}
+          {onSettle && manage && !chat.archived && item(chat.settled ? "Unsettle" : "Settle", chat.settled ? <ArchiveRestore size={15} /> : <Archive size={15} />, () => onSettle(!chat.settled))}
           {onArchive &&
-            !isBotChat(chat) &&
+            manage &&
             !chat.running &&
             (chat.archived
               ? item("Restore", <RotateCcw size={15} />, () => onArchive(false))
               : item("Archive", <EyeOff size={15} />, () => onArchive(true), "Hide in every Hermes client, keeping its history"))}
-          {onDelete && !isBotChat(chat) && (
+          {onDelete && manage && (
             <>
               <div className="menu-sep" role="separator" />
               {item("Delete chat…", <Trash2 size={15} />, () => setAskDelete(true), "Delete this chat in every Hermes client. This can't be undone.", true)}
@@ -420,6 +430,7 @@ export function ChatPane({
   onSnapshotSettings,
   onCopyLink,
   onDelete,
+  onOpenJob,
   modelControls,
   active = true,
   visible = true,
@@ -447,9 +458,11 @@ export function ChatPane({
   followUp,
   compare,
   branch,
+  onRun,
   branchedFrom,
   replay,
   variants,
+  onCheckpoints,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -491,6 +504,7 @@ export function ChatPane({
   onCopyLink?: () => void;
   /** Deletes the chat, once the owner has said yes in the header menu's question. */
   onDelete?: () => void;
+  onOpenJob?: (jobId: string) => void;
   modelControls?: ReactNode;
   active?: boolean;
   visible?: boolean;
@@ -528,9 +542,16 @@ export function ChatPane({
   followUp?: FollowUpHost;
   compare?: Comparing;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
+  /** Opens a reply's Run view (ADR 0178). */
+  onRun?: (itemId: string) => void;
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
+  /**
+   * Asks once for what a reply's files-changed chip needs (`Hermes.checkCheckpoints`, ADR 0180). None: no chip, as for
+   * a Hermes without the checkpoint methods.
+   */
+  onCheckpoints?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const keys = useBindings();
@@ -583,6 +604,9 @@ export function ChatPane({
   const branchRef = useRef(branch?.onBranch);
   branchRef.current = branch?.onBranch;
   const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
+  const runRef = useRef(onRun);
+  runRef.current = onRun;
+  const openRun = useCallback((itemId: string) => runRef.current?.(itemId), []);
   // And Edit and Regenerate.
   const replayRef = useRef(replay?.onReplay);
   replayRef.current = replay?.onReplay;
@@ -608,10 +632,42 @@ export function ChatPane({
     }
     const anchor = new Map<string, number>();
     for (const [id, t] of ofUser) anchor.set(lastReply.get(t) ?? id, t);
-    return { ofUser, regenerable: new Set(lastReply.values()), anchor };
-  }, [chat.items]), sameTurns);
+    // A turn begins at a message, steered ones aside, or at returned work. One with no reply offers Run under its error.
+    const failedOnly = new Set<string>();
+    let begun = false;
+    let replied = false;
+    let failed: string | undefined;
+    const close = () => !replied && failed && failedOnly.add(failed);
+    for (const i of chat.items) {
+      if ((i.kind === "user" && !i.steer) || i.kind === "returned") {
+        close();
+        replied = false;
+        failed = undefined;
+        begun = true;
+      } else if (i.kind === "assistant" && i.text.trim()) replied = true;
+      // An error before any turn, as when the chat couldn't load, has no run.
+      else if (i.kind === "error" && begun) failed = i.id;
+    }
+    // The running turn's error may yet be followed by its reply.
+    if (!chat.running) close();
+    return { ofUser, regenerable: new Set(lastReply.values()), anchor, failedOnly };
+  }, [chat.items, chat.running]), sameTurns);
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
+  // How many files each finished reply changed, by its reply. The chips show once the chat's checkpoints check found
+  // its terminal isn't in a container, where Hermes takes no checkpoints (ADR 0180).
+  const filesOn = !!onCheckpoints;
+  const changedFiles = useStable(
+    useMemo(() => new Map(filesOn ? replyFiles(chat.items, chat.folder).map((r) => [r.replyId, r.paths.length]) : []), [filesOn, chat.items, chat.folder]),
+    sameMap,
+  );
+  const checkpointsRef = useRef(onCheckpoints);
+  checkpointsRef.current = onCheckpoints;
+  useEffect(() => {
+    if (changedFiles.size && chat.runtimeId && chat.checkpoints?.runtimeId !== chat.runtimeId) checkpointsRef.current?.();
+  }, [changedFiles.size, chat.runtimeId, chat.checkpoints?.runtimeId]);
+  const fileChips = filesOn && chat.checkpoints && chat.checkpoints.container !== true ? changedFiles : undefined;
+  const checkpointsOff = chat.checkpoints?.on === false;
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
@@ -850,6 +906,8 @@ export function ChatPane({
   const movedAt = useMemo(() => performance.now(), [chat.items, chat.sideQuestions]);
   const last = chat.items[chat.items.length - 1];
   const waiting = chat.items.find(isWaiting);
+  const policy = policyOf(chat);
+  const { jobId } = chat;
   // The streaming block is the chat's last item, so it is in the last chunk that holds more than side questions.
   let liveChunk = chunks.length - 1;
   while (liveChunk > 0 && chunks[liveChunk].every((b) => b.kind === "side")) liveChunk--;
@@ -868,10 +926,14 @@ export function ChatPane({
             <span className="badge" title="Its bot's one continuous chat, opened from the Bots view">
               Bot
             </span>
+          ) : policy.readOnly === "jobRun" ? (
+            <span className="badge" title="One run of a scheduled job, as Hermes stored it">
+              Job run
+            </span>
           ) : (
             chat.settled && <span className="badge">Settled</span>
           )}
-          {!isBotChat(chat) && !chat.settled && !chat.archived && snoozedUntil !== undefined && (
+          {policy.listed && !chat.settled && !chat.archived && snoozedUntil !== undefined && (
             <span className="badge" title={`Snoozed until ${wakeFull(snoozedUntil)}`}>
               Snoozed
             </span>
@@ -972,13 +1034,20 @@ export function ChatPane({
         <JumpContext.Provider value={jumpTo}>
         <PathsIn folder={chat.folder} session={chat.id}>
         <div className="transcript-inner">
-          {chat.source !== "app" && (
+          {policy.readOnly === "jobRun" ? (
             <div className="imported-note">
-              <SourceIcon source={chat.source} /> Imported from {SOURCE_LABEL[chat.source]}.
-              {chat.source === "import"
-                ? " Its messages are dated as the file had them; a Markdown export has only the time it was exported."
-                : chat.settled && " Replying here moves it to Active."}
+              <SourceIcon source={chat.source} /> A scheduled job ran this chat. Its first message is what Hermes gave the agent: its instructions for a
+              scheduled run, then the job's prompt.
             </div>
+          ) : (
+            chat.source !== "app" && (
+              <div className="imported-note">
+                <SourceIcon source={chat.source} /> Imported from {SOURCE_LABEL[chat.source]}.
+                {chat.source === "import"
+                  ? " Its messages are dated as the file had them; a Markdown export has only the time it was exported."
+                  : chat.settled && " Replying here moves it to Active."}
+              </div>
+            )
           )}
           {branchedFrom}
           {chat.savedAt !== undefined && (
@@ -1007,7 +1076,8 @@ export function ChatPane({
             </div>
           )}
           {notice}
-          {!chat.loading && !notLoaded && blocks.length === 0 && (
+          {!chat.loading && !notLoaded && blocks.length === 0 && policy.readOnly === "jobRun" && <div className="unloaded-chat">Hermes has stored no messages for this run yet.</div>}
+          {!chat.loading && !notLoaded && blocks.length === 0 && !policy.readOnly && (
             <div className="empty-state">
               <div className="empty-chat">What should Hermes work on?</div>
               <ul className="empty-keys" aria-label="Keyboard shortcuts">
@@ -1035,6 +1105,7 @@ export function ChatPane({
               onOutgoing={onOutgoing}
               onBranch={branch && onBranch}
               branchBlocked={branch?.blocked}
+              onRun={onRun && openRun}
               onReplay={replay && onReplay}
               replayBlocked={replay?.blocked}
               turns={turns}
@@ -1042,6 +1113,8 @@ export function ChatPane({
               chatId={chat.id}
               onPickVariant={onPickVariant}
               onDismissSideQuestion={onDismissSideQuestion && dismissSide}
+              fileChips={fileChips}
+              checkpointsOff={checkpointsOff}
             />
           ))}
           {shown.to < chunks.length - 1 && <div className="transcript-gap" aria-hidden style={{ height: shown.after }} />}
@@ -1074,11 +1147,24 @@ export function ChatPane({
       />
       {goalBar}
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
-      {chat.source === "import" ? (
+      {policy.readOnly === "imported" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.
         <div className="composer-wrap read-only-note" role="note">
           <FileInput size={14} aria-hidden /> This is an imported transcript, so it's read-only here. Hermes has its words, not
           everything the original chat had, so it can't carry on from it. Start a new chat to continue.
+        </div>
+      ) : policy.readOnly === "jobRun" ? (
+        <div className="composer-wrap read-only-note" role="note">
+          <CalendarClock size={14} aria-hidden />
+          <span>
+            This chat is a run of a scheduled job, so it's read-only here. Hermes runs only its job in it and won't take a reply. Start a
+            new chat to follow up.
+          </span>
+          {jobId && onOpenJob && (
+            <button type="button" className="btn small-btn" onClick={() => onOpenJob(jobId)}>
+              Open the job
+            </button>
+          )}
         </div>
       ) : (
       <Composer
@@ -1155,12 +1241,15 @@ const BlockView = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
     versions,
     chatId,
     turn,
     onPickVariant,
+    filesChanged,
+    checkpointsOff,
   }: {
     block: Block;
     live: boolean;
@@ -1174,12 +1263,16 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
     versions?: Variant[];
     chatId: string;
     turn?: number;
     onPickVariant: (chatId: string, turn: number) => void;
+    /** For a finished reply that edited files: how many (ADR 0180). `checkpointsOff`: its profile takes no checkpoints. */
+    filesChanged?: number;
+    checkpointsOff?: boolean;
   }) {
     const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
     const nav = versions && current >= 0 && turn !== undefined && (
@@ -1241,12 +1334,14 @@ const BlockView = memo(
                 <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+                {onRun && <RunButton onOpen={() => onRun(block.id)} />}
               </div>
             </div>
           )}
           {!live && nav}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
+          {filesChanged !== undefined && !live && <FilesChip chatId={chatId} replyId={block.id} count={filesChanged} off={!!checkpointsOff} />}
         </div>
       );
     if (block.kind === "error")
@@ -1254,6 +1349,11 @@ const BlockView = memo(
         <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
           {block.usage && <ReplyUsageLine usage={block.usage} />}
+          {onRun && (
+            <div className="msg-actions">
+              <RunButton onOpen={() => onRun(block.id)} />
+            </div>
+          )}
         </div>
       );
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
@@ -1278,12 +1378,15 @@ const BlockView = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
     a.versions === b.versions &&
     a.chatId === b.chatId &&
     a.turn === b.turn &&
-    a.onPickVariant === b.onPickVariant,
+    a.onPickVariant === b.onPickVariant &&
+    a.filesChanged === b.filesChanged &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /**
@@ -1306,6 +1409,7 @@ const TranscriptChunk = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
     turns,
@@ -1313,6 +1417,8 @@ const TranscriptChunk = memo(
     chatId,
     onPickVariant,
     onDismissSideQuestion,
+    fileChips,
+    checkpointsOff,
   }: {
     blocks: (Block | SideBlock)[];
     live?: string;
@@ -1327,6 +1433,7 @@ const TranscriptChunk = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
     turns: Turns;
@@ -1334,6 +1441,8 @@ const TranscriptChunk = memo(
     chatId: string;
     onPickVariant: (chatId: string, turn: number) => void;
     onDismissSideQuestion?: (id: string) => void;
+    fileChips?: Map<string, number>;
+    checkpointsOff: boolean;
   }) {
     return (
       <div className="transcript-chunk" data-chunk={blocks[0].id}>
@@ -1357,12 +1466,15 @@ const TranscriptChunk = memo(
                   onOutgoing={onOutgoing}
                   onBranch={message ? onBranch : undefined}
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
+                  onRun={b.kind === "assistant" || turns.failedOnly.has(b.id) ? onRun : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
                   chatId={chatId}
                   turn={turns.anchor.get(b.id)}
                   onPickVariant={onPickVariant}
+                  filesChanged={b.kind === "assistant" ? fileChips?.get(b.id) : undefined}
+                  checkpointsOff={checkpointsOff}
                 />
               )}
             </ErrorBoundary>
@@ -1387,13 +1499,16 @@ const TranscriptChunk = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
     a.turns === b.turns &&
     a.byTurn === b.byTurn &&
     a.chatId === b.chatId &&
     a.onPickVariant === b.onPickVariant &&
-    a.onDismissSideQuestion === b.onDismissSideQuestion,
+    a.onDismissSideQuestion === b.onDismissSideQuestion &&
+    a.fileChips === b.fileChips &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /** A block that threw while it was drawn, in its place, so the rest of the chat keeps working (ADR 0137). */

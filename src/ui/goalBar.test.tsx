@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Set a goal and the goal bar on screen (issue #603, ADR 0178): the check is shown exactly, with what it can do, before
+// Set a goal and the goal bar on screen (issue #603, ADR 0187): the check is shown exactly, with what it can do, before
 // anything is saved; the bar follows the goal to done or to a pause and says why; /goal opens the dialog; and none of
 // it shows where a quick command takes /goal.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";

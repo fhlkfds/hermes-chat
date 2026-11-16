@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Standing missions (ADR 0178): setting a chat's goal with a check, reading it back, the goal bar's updates, Pause,
+// Standing missions (ADR 0187): setting a chat's goal with a check, reading it back, the goal bar's updates, Pause,
 // Resume and Clear, and the capability check, against FakeHermes with the shapes Hermes has at `bf0203a`.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";

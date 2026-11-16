@@ -2,10 +2,11 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { playwright } from "@vitest/browser-playwright";
 import { fileURLToPath } from "node:url";
+import { pdfjsAssets } from "../vite.config";
 
 export default defineConfig({
   root: fileURLToPath(new URL("..", import.meta.url)),
-  plugins: [react()],
+  plugins: [react(), pdfjsAssets],
   // Vitest scans only the test files for dependencies to pre-bundle. The app frame's own imports, found later on a cold
   // cache, made Vite reload the page in the middle of the first test.
   optimizeDeps: { entries: ["e2e/app.html"] },

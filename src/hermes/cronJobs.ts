@@ -83,6 +83,13 @@ export type JobRun = {
   sessionId?: string;
 };
 
+/**
+ * What a run's chat is called until Hermes names it, which it does only once the run has ended: the job's name, when
+ * it's known here, and when the run started, much as Hermes will put it.
+ */
+export const jobRunTitle = (startedAt: number, jobName?: string) =>
+  `${jobName?.trim() || "Scheduled job run"} · ${new Date(startedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+
 /** What an agent run replied, read from its session. `reply` is undefined when the session has no reply. */
 export type RunResult = { reply?: string; at?: number };
 

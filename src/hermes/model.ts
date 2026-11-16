@@ -4,8 +4,11 @@ import type { ChatUsage, ReplyUsage } from "./usage";
 import type { SubagentTree } from "./subagents";
 import type { DispatchedTask, RosterWork } from "./dispatched";
 
-/** `import`: a transcript file imported into Hermes (ADR 0031). Hermes Chat shows it read-only. */
-export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "other";
+/**
+ * `import`: a transcript file imported into Hermes (ADR 0031). Hermes Chat shows it read-only. `cron`: a Job run, the
+ * session Hermes ran a Scheduled job in; chatKind.ts says what such a chat can do here.
+ */
+export type Source = "app" | "telegram" | "discord" | "cli" | "desktop" | "import" | "cron" | "other";
 
 export const SOURCE_LABEL: Record<Source, string> = {
   app: "Highwing",
@@ -14,6 +17,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
   cli: "the command line",
   desktop: "the Hermes desktop app",
   import: "a transcript file",
+  cron: "a scheduled job",
   other: "another Hermes platform",
 };
 
@@ -88,6 +92,11 @@ export type Item =
       durationS?: number;
       result?: string;
       summary?: string;
+      /**
+       * A file edit's diff as Hermes drew it for a terminal, ANSI colours and all: `tool.complete`'s `inline_diff`, or a
+       * stored row's `display_metadata.tool_result_metadata.inline_diff` (fileChanges.ts).
+       */
+      inlineDiff?: string;
     }
   /**
    * An Approval: Hermes asks before running a command it counts as dangerous. Like every Question (`QuestionItem`), it
@@ -178,9 +187,11 @@ export type Queued = { id: string; text: string; attachments?: Attachment[] };
 /**
  * A chat's queue, kept on this computer per connection, profile and chat. `paused`: why it waits for the owner's
  * Resume (the owner paused it, or the last reply ended in a way the owner should look at first). `unsaved`: the last
- * write to this computer's storage failed, so it lasts only until the app closes.
+ * write to this computer's storage failed, so it lasts only until the app closes. `rush`: the id of the message the
+ * owner chose Send now on, which goes as soon as the reply it stopped has ended, paused or not (ADR 0182). Kept only
+ * while the app runs, and only while that message is still queued.
  */
-export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean };
+export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean; rush?: string };
 
 /** The most messages one chat's queue holds. */
 export const QUEUE_LIMIT = 20;
@@ -215,6 +226,8 @@ export type Chat = {
   archived?: boolean;
   /** A bot's Bot Chat, opened from the Bots view: it stays out of the chat list and search (bots.ts, ADR 0066). */
   bot?: boolean;
+  /** The Scheduled job a Job run's chat is a run of, once Hermes has said (`cron_job_id`). */
+  jobId?: string;
   updatedAt: number;
   /** Something happened in it since the owner last opened it here or in another Hermes client (ADR 0002). */
   unread?: boolean;
@@ -241,6 +254,12 @@ export type Chat = {
   folder?: string;
   /** What Hermes reports about the chat's session on this connection; gone when the connection drops. */
   live?: SessionLive;
+  /**
+   * What the files-changed chip needs to know (ADR 0180), checked once for the runtime session `runtimeId`.
+   * `container`: its terminal runs in a container, where Hermes takes no checkpoints. `on`: its profile has checkpoints
+   * on. Either is undefined when Hermes couldn't say. Set by the transport only.
+   */
+  checkpoints?: { runtimeId: string; container?: boolean; on?: boolean };
   /**
    * Its tokens and cost over its whole life, as Hermes last recorded them (`usage.ts`). Unknown until read from Hermes on
    * this connection. `usageError`: why the latest read failed; `usage` is then the earlier read, if any.

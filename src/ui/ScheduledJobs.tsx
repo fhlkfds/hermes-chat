@@ -190,6 +190,7 @@ export function ScheduledJobs({
   connected,
   onClose,
   troubleshoot,
+  onOpenRun,
   openJob,
 }: {
   api: CronApi;
@@ -197,6 +198,7 @@ export function ScheduledJobs({
   connected: boolean;
   onClose: () => void;
   troubleshoot?: TroubleshootWiring;
+  onOpenRun?: (run: JobRun, job: CronJob) => void;
   /** The job to show first, instead of the list. */
   openJob?: string;
 }) {
@@ -428,6 +430,7 @@ export function ScheduledJobs({
             loaded={loaded}
             heading={heading}
             troubleshoot={troubleshoot}
+            onOpenRun={onOpenRun}
             trouble={troubleOf(shown.id)}
             ask={view.ask}
             reading={{ at: readAt, loading, error: error && errorText(error), reload: () => void load() }}
@@ -490,12 +493,14 @@ function RunRow({
   zone,
   result,
   onResult,
+  onOpenChat,
   onTroubleshoot,
 }: {
   run: JobRun;
   zone: JobsZone;
   result?: RunResult | string | "loading";
   onResult?: () => void;
+  onOpenChat?: () => void;
   /** Hands the job to Hermes with this run picked out; offered on a failed run. */
   onTroubleshoot?: () => void;
 }) {
@@ -520,10 +525,19 @@ function RunRow({
           <Wrench size={13} /> Troubleshoot this run
         </button>
       )}
-      {onResult && (
-        <button type="button" className="job-result-toggle" aria-expanded={open} aria-controls={resultId} onClick={onResult}>
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {open ? "Hide the result" : "Show the result"}
-        </button>
+      {(onResult || onOpenChat) && (
+        <div className="job-run-actions">
+          {onResult && (
+            <button type="button" className="job-result-toggle" aria-expanded={open} aria-controls={resultId} onClick={onResult}>
+              {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {open ? "Hide the result" : "Show the result"}
+            </button>
+          )}
+          {onOpenChat && (
+            <button type="button" className="job-result-toggle job-run-open" title="Open this run's whole chat, with its tool steps. It's read-only." onClick={onOpenChat}>
+              <MessageSquare size={13} /> Open the chat
+            </button>
+          )}
+        </div>
       )}
       {open && (
         <div id={resultId} className="job-result" role="region" aria-label="Run result">
@@ -556,6 +570,7 @@ function JobDetail({
   onDeleted,
   onToast,
   troubleshoot,
+  onOpenRun,
   trouble,
   ask,
   reading,
@@ -572,6 +587,7 @@ function JobDetail({
   /** Says something on the list, once this job has left it. */
   onToast?: (text: string) => void;
   troubleshoot?: TroubleshootWiring;
+  onOpenRun?: (run: JobRun, job: CronJob) => void;
   /** The newest troubleshooting chat for this job, in this app run. */
   trouble?: Troubleshoot;
   /** Start the Troubleshoot preview at once. */
@@ -968,6 +984,7 @@ function JobDetail({
                 zone={zone}
                 result={results[r.id]}
                 onResult={r.sessionId && connected ? () => showResult(r) : undefined}
+                onOpenChat={r.sessionId && connected && onOpenRun ? () => onOpenRun(r, job) : undefined}
                 onTroubleshoot={troubleshoot && connected && !busy && !starting ? () => prepare(r) : undefined}
               />
             ))}

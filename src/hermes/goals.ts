@@ -1,4 +1,4 @@
-// Standing missions (issue #603, ADR 0178): a chat's goal as Hermes keeps it, and the calls that set and change it.
+// Standing missions (issue #603, ADR 0187): a chat's goal as Hermes keeps it, and the calls that set and change it.
 // Read in Hermes's source at `b200f5bc`, `bf0203a` and `f0d9488`, where every file below is the same:
 // `tui_gateway/methods_session_control.py` (session.control.read, session.control and their snapshot),
 // `hermes_cli/goal_command.py` (the /goal grammar), `hermes_cli/goals.py` (contract lines, checks and the judge) and

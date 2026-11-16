@@ -32,7 +32,7 @@ export const COMMANDS: readonly CommandDef[] = [
   // `slash.exec` `/context`, answered from the live session (tui_gateway/methods_slash.py `_format_live_context_output`).
   { name: "context", description: "Show what fills this chat's context window, as Hermes counts it", scope: "server" },
   // `command.dispatch` `_cmd_goal` (tui_gateway/methods_tools.py at `bf0203a`). Typed, it opens Set a goal, which shows
-  // the check before anything is saved (ADR 0178).
+  // the check before anything is saved (ADR 0187).
   { name: "goal", args: "[outcome]", description: "Set a goal Hermes keeps working toward until a check proves it done", scope: "server" },
 ];
 

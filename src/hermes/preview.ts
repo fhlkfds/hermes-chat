@@ -9,6 +9,7 @@ import { RestError, sessionNotFound } from "./pipe";
 import { IMAGE_DATA_URL, SANDBOX_MISSING, SANDBOX_NOT_FOUND_PREFIX, type RemotePreview } from "./remoteFiles";
 import type { ArtifactRef } from "./artifacts";
 import { errorText } from "./values";
+import { dataUrlBytes, documentFormatOf, looksLike, notA, type DocumentFormat } from "./documents";
 
 export type PreviewTarget =
   /**
@@ -30,16 +31,19 @@ export type PreviewTarget =
   | { kind: "local"; path: string; name: string }
   | { kind: "tool"; name: string; text: string }
   /** An extension's view (ADR 0126, section 6): a tree the app draws, kept by `Extensions`, never the extension's HTML. */
-  | { kind: "extension"; id: ExtensionId; view: string; title: string };
+  | { kind: "extension"; id: ExtensionId; view: string; title: string }
+  /** The files a reply changed on the server, and undoing them (ADR 0180): `replyId` is the reply's item in chat `chatId`. */
+  | { kind: "files"; chatId: string; replyId: string };
 
 /**
  * A file as the pane shows it. `text`: its first part when `truncated`; `format` picks the view: Markdown and HTML
- * have a rendered view beside the source. `image`: a `data:` or `blob:` URL of an image. `unsupported`: why the pane
- * can't show it.
+ * have a rendered view beside the source. `image`: a `data:` or `blob:` URL of an image. `document`: a PDF or Word
+ * file's bytes, whose first bytes say it is one (documents.ts). `unsupported`: why the pane can't show it.
  */
 export type FileView =
   | { kind: "text"; text: string; language: string; format: "markdown" | "html" | "code"; size: number; truncated: boolean }
   | { kind: "image"; src: string; size?: number }
+  | { kind: "document"; format: DocumentFormat; bytes: Uint8Array; size: number }
   | { kind: "unsupported"; reason: string; size?: number };
 
 /**
@@ -68,6 +72,8 @@ export function previewName(t: PreviewTarget): string {
       return `${t.name} output`;
     case "extension":
       return t.title;
+    case "files":
+      return "Files changed";
     case "local":
       return t.name;
     case "server":
@@ -183,6 +189,8 @@ export function addressOf(t: PreviewTarget): string {
       return `${t.name} output`;
     case "extension":
       return `${t.title} (extension)`;
+    case "files":
+      return "Files a reply changed";
   }
 }
 
@@ -334,14 +342,19 @@ const SERVER_LANGUAGES: Record<string, string> = { html: "xml", jsx: "javascript
 const extOf = (name: string) => /\.([a-z0-9]+)$/i.exec(name)?.[1].toLowerCase() ?? "";
 export const languageOf = (name: string) => LANGUAGES[extOf(name)] ?? "";
 /** Whether `name` ends in an extension the Preview has a view for, so a word like `package.json` reads as a file's name. */
-export const previewKnows = (name: string) => Object.hasOwn(LANGUAGES, extOf(name)) || IMAGE_NAME.test(name) || MARKDOWN_NAME.test(name) || HTML_NAME.test(name);
+export const previewKnows = (name: string) =>
+  Object.hasOwn(LANGUAGES, extOf(name)) || IMAGE_NAME.test(name) || MARKDOWN_NAME.test(name) || HTML_NAME.test(name) || !!documentFormatOf(name);
 const formatOf = (name: string): "markdown" | "html" | "code" => (MARKDOWN_NAME.test(name) ? "markdown" : HTML_NAME.test(name) ? "html" : "code");
 
-/** Why a file that isn't text or an image can't be shown. */
-function unsupported(name: string, mime: string | undefined, size?: number): FileView {
-  const what =
-    /\.pdf$/i.test(name) || mime === "application/pdf" ? "PDF files" : mime && mime !== "application/octet-stream" ? `${mime} files` : "binary files";
+/** Why a file that isn't text, an image or a document can't be shown. */
+function unsupported(mime: string | undefined, size?: number): FileView {
+  const what = mime && mime !== "application/octet-stream" ? `${mime} files` : "binary files";
   return { kind: "unsupported", reason: `The preview can't show ${what}.`, size };
+}
+
+/** `bytes` as a document view when they start the way `format` does, or why they can't be shown. */
+export function documentView(format: DocumentFormat, bytes: Uint8Array, size = bytes.length): FileView {
+  return looksLike(format, bytes) ? { kind: "document", format, bytes, size } : { kind: "unsupported", reason: notA(format), size };
 }
 
 /** `read-text`'s answer (`hermes_cli/web_routers/files.py` `fs_read_text` at the deployed `bf0203a`). */
@@ -371,10 +384,11 @@ function serverFileError(e: unknown): Error {
 }
 
 /**
- * Reads a Server file for the pane. `get` is a signed-in dashboard REST GET returning the parsed body. Images go as a
- * `data:` URL, up to Hermes's 16 MB; anything else as text, up to its first 512 KB. A binary file that isn't an image
- * is `unsupported`. Failures reject with a message for the owner. `session`: the chat whose sandbox the path is in
- * (ADR 0062), named as `session_id`; a chat Hermes no longer has is left out and the file read as before.
+ * Reads a Server file for the pane. `get` is a signed-in dashboard REST GET returning the parsed body. Images, PDFs
+ * and Word files go as a `data:` URL, up to Hermes's limit for one; anything else as text, up to its first 512 KB. A
+ * binary file that isn't one of those is `unsupported`. Failures reject with a message for the owner. `session`: the
+ * chat whose sandbox the path is in (ADR 0062), named as `session_id`; a chat Hermes no longer has is left out and the
+ * file read as before.
  */
 export async function readServerFile(get: (pathAndQuery: string) => Promise<unknown>, path: string, profile: string, session?: string): Promise<FileView> {
   if (!isServerPath(path)) throw new Error("Only full paths on the Hermes server, starting with / or ~/, open in the preview.");
@@ -389,14 +403,24 @@ export async function readServerFile(get: (pathAndQuery: string) => Promise<unkn
   const image = async (size?: number): Promise<FileView> => {
     const res = (await fetch("api/fs/read-data-url").catch((e) => Promise.reject(serverFileError(e)))) as { dataUrl?: unknown };
     const src = typeof res.dataUrl === "string" ? res.dataUrl : "";
-    if (!IMAGE_DATA_URL.test(src)) return unsupported(path, /^data:([^;,]+)/.exec(src)?.[1], size);
+    if (!IMAGE_DATA_URL.test(src)) return unsupported(/^data:([^;,]+)/.exec(src)?.[1], size);
     const base64 = src.slice(src.indexOf(",") + 1);
     return { kind: "image", src, size: size ?? (base64.length * 3) / 4 - (base64.match(/=*$/)?.[0].length ?? 0) };
   };
+  const readDocument = async (format: DocumentFormat): Promise<FileView> => {
+    const res = (await fetch("api/fs/read-data-url").catch((e) => Promise.reject(serverFileError(e)))) as { dataUrl?: unknown };
+    const bytes = typeof res.dataUrl === "string" ? dataUrlBytes(res.dataUrl) : undefined;
+    if (!bytes) throw new Error("Hermes's answer isn't a file.");
+    return documentView(format, bytes);
+  };
   if (IMAGE_NAME.test(path)) return image();
+  const named = documentFormatOf(path);
+  if (named) return readDocument(named);
   const res = (await fetch("api/fs/read-text").catch((e) => Promise.reject(serverFileError(e)))) as ReadText;
   const size = typeof res.byteSize === "number" ? res.byteSize : undefined;
-  if (res.binary) return res.mimeType?.startsWith("image/") ? image(size) : unsupported(path, res.mimeType, size);
+  const typed = res.binary ? documentFormatOf("", res.mimeType) : undefined;
+  if (typed) return readDocument(typed);
+  if (res.binary) return res.mimeType?.startsWith("image/") ? image(size) : unsupported(res.mimeType, size);
   const text = typeof res.text === "string" ? res.text : "";
   const lang = res.language ?? "";
   return {
@@ -412,7 +436,8 @@ export async function readServerFile(get: (pathAndQuery: string) => Promise<unkn
 /** A file the managed files routes read (remoteFiles.ts `preview`), as the pane shows it. */
 export function hostFileView(p: RemotePreview): FileView {
   if (p.kind === "image") return { kind: "image", src: p.dataUrl, size: p.size };
-  if (p.kind === "binary") return unsupported(p.name, p.mime, p.size);
+  if (p.kind === "document") return { kind: "document", format: p.format, bytes: p.bytes, size: p.size };
+  if (p.kind === "binary") return unsupported(p.mime, p.size);
   return { kind: "text", text: p.text, language: languageOf(p.name), format: formatOf(p.name), size: p.size, truncated: false };
 }
 
@@ -420,16 +445,23 @@ export function hostFileView(p: RemotePreview): FileView {
 export type LocalText = { size: number; truncated: boolean; binary: boolean; text: string };
 
 /**
- * Reads a Local file for the pane: images through `readImage` (Rust's `read_preview`, image files up to 25 MB), anything
- * else through `readText`. `readImage` resolves to an object URL, which the caller revokes.
+ * Reads a Local file for the pane: images through `readImage` (Rust's `read_preview`, image files up to 25 MB), PDF and
+ * Word files through `readDocument` (up to 25 MB), anything else through `readText`. `readImage` resolves to an object
+ * URL, which the caller revokes.
  */
 export async function readLocalFile(
   file: { path: string; name: string },
-  io: { readText: (path: string) => Promise<LocalText>; readImage: (path: string) => Promise<string> },
+  io: {
+    readText: (path: string) => Promise<LocalText>;
+    readImage: (path: string) => Promise<string>;
+    readDocument: (path: string, format: DocumentFormat) => Promise<Uint8Array>;
+  },
 ): Promise<FileView> {
   if (LOCAL_IMAGE_NAME.test(file.name)) return { kind: "image", src: await io.readImage(file.path) };
+  const format = documentFormatOf(file.name);
+  if (format) return documentView(format, await io.readDocument(file.path, format));
   const t = await io.readText(file.path);
-  if (t.binary) return unsupported(file.name, undefined, t.size);
+  if (t.binary) return unsupported(undefined, t.size);
   return { kind: "text", text: t.text, language: languageOf(file.name), format: formatOf(file.name), size: t.size, truncated: t.truncated };
 }
 

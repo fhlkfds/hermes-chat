@@ -40,7 +40,7 @@ import { projectsApi, type ProjectsApi } from "./projects";
 import { STEER, askSideQuestion, listServerCommands, runServerCommand, sideAnswer, type CommandDef, type CommandResult, type ServerCommandList } from "./commands";
 import { GoalBoard, GoalWriteError, controlOf, goalAction, maxTurnsOf, readControl, setGoal, type Control, type GoalAction, type GoalDraft } from "./goals";
 import { callText, offeredSkills, runSkill, skillInvocationText, type SkillCall, type SkillCommands } from "./skillCommands";
-import { CronApi } from "./cronJobs";
+import { CronApi, jobRunTitle } from "./cronJobs";
 import { followsSession, nextRoster, parseKanbanCreate, sameTask, type DispatchedTask } from "./dispatched";
 import { KanbanApi, KanbanWatch } from "./kanban";
 import { AutomationsApi } from "./automations";
@@ -51,8 +51,12 @@ import { readBack, sendImport, type PlannedChat } from "./importTranscripts";
 import { memoryApi, type MemoryApi } from "./memory";
 import { MemoryProvidersApi } from "./memoryProviders";
 import { SkillsApi } from "./skills";
-import { CapabilityStore, CapabilityUnsupportedError, RouteMissingError, failureOf, isNoRoute, sharesChats, specOf, type CapabilityId, type ServerFacts } from "./capabilities";
+import { CapabilityStore, CapabilityUnsupportedError, PROBE_NAME, RouteMissingError, checkpointsSettingOf, failureOf, isNoRoute, sharesChats, specOf, type CapabilityId, type ServerFacts } from "./capabilities";
+import { parseCheckpointList, type RelPath } from "./fileChanges";
+import type { Restored, RollbackIO } from "./fileUndo";
 import type { AppMethod } from "./canonicalVerbs";
+import { policyOf } from "./chatKind";
+import { projectStored, type TranscriptMessage } from "./storedTranscript";
 import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
 import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
 import { projectContextFiles, type ChatContext, type ProjectContextFiles } from "./projectContextFiles";
@@ -72,8 +76,10 @@ import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
+import type { ReplyTime } from "./replyTimes";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 import { toolResultText } from "./toolResult";
+import { FlightRecorder, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type Run, type RunRow, type ToolProgress, type WatchedTurn } from "./flightRecorder";
 import { num } from "./chatCache";
 import { onLost, onRoster, onSubagentEvent, onUnchecked, parseOutput, type SubagentId, type SubagentOutput } from "./subagents";
 import {
@@ -94,8 +100,8 @@ import {
   type StoredBranchRow,
 } from "./branch";
 import { cannotResend, laterOf, replayBlocked, resendText, replayTarget, splitRefs, turnAt, variantRoot, withRefs, withoutMarkers, type ReplayKind, type ReplayPreview } from "./replay";
-import { errorText, formatBytes, optionalText } from "./values";
-import { returnedItem } from "./returned";
+import { errorText, formatBytes, isObj, nonBlankText, nonEmptyText, optionalText } from "./values";
+import { displayMetadata, returnedItem } from "./returned";
 
 /**
  * The `source` this app stamps on chats it starts. Legacy `session.create` stores any string as-is, but the gateway
@@ -106,6 +112,11 @@ export const APP_SOURCE = "gui";
 
 /** Why a Bot Chat can't be renamed here (ADR 0066). */
 const BOT_CHAT_RENAME = "A Bot Chat's name is how Hermes finds it, so it can't be renamed.";
+/** Hermes runs only the job in a Job run's session, and stores a refusal in the run's history if it is sent a message. */
+const JOB_RUN_NO_SESSION = "A scheduled job's run can't be continued here.";
+const JOB_RUN_READ_ONLY = "This chat is a run of a scheduled job, so it's read-only here.";
+const HERMES_MESSAGES_PAGE_MAX = 500;
+const STORED_PAGES = 10;
 /** What this app stamped before, still shown as this app's. Hermes won't edit these chats. */
 const OLD_APP_SOURCE = "hermes-chat";
 const READY_TIMEOUT_MS = 15_000;
@@ -219,6 +230,10 @@ export type ChatCache = {
   loadBranches(profile: string): BranchStore;
   /** False: storage refused it, so it lasts until the app closes. */
   saveBranches(profile: string, store: BranchStore): boolean;
+  /** How long the profile's finished replies took, oldest first (replyTimes.ts). */
+  loadReplyTimes(profile: string): ReplyTime[];
+  /** Keeps one more, dropping the oldest past `REPLY_TIMES_KEPT`. */
+  saveReplyTime(profile: string, t: ReplyTime): void;
 };
 /**
  * What clicking a notification about a waiting card does: `open` shows the card in its chat. `deny`, for an Approval
@@ -255,6 +270,8 @@ const noCache: ChatCache = {
   saveQueue: () => true,
   loadBranches: () => NO_BRANCHES,
   saveBranches: () => true,
+  loadReplyTimes: () => [],
+  saveReplyTime: () => {},
 };
 
 /** A row of dashboard REST `GET /api/sessions`; times are Unix seconds. */
@@ -307,28 +324,6 @@ type ProfileList = { profiles: { name: string; model?: string | null; provider?:
 
 /** Legacy `config.set` result for `model` (`ConfigSetResult`): an expensive model is applied only once confirmed. */
 type ConfigSet = { value?: unknown; confirm_required?: boolean; confirm_message?: string; deferred?: boolean; warning?: string };
-
-/** A history row from legacy `session.resume` (research doc §5, `TranscriptMessage`). Tool rows carry the call's
- * name, args and an 80-char `context`; Hermes keeps the result (`content`) only for edit tools. `timestamp`: when the
- * row was stored, Unix seconds, sent only when positive (`session_history._history_to_messages` at `bf0203a`). */
-type TranscriptMessage = {
-  role: string;
-  text?: string;
-  reasoning?: string;
-  content?: unknown;
-  name?: string;
-  context?: string;
-  args?: Record<string, unknown>;
-  /** A tool row's call (`tool_call_id`). */
-  tool_call_id?: string;
-  timestamp?: number;
-  /** The stored row (`messages.id`); a live session's not-yet-stored tail has none. */
-  row_id?: number;
-  /** How Hermes shows the row: `steer` for a message that went into a running reply (`session_history.py`). */
-  display_kind?: string;
-  /** Hermes's display facts for the row, such as a Returned result's title, as an object or its JSON text. */
-  display_metadata?: unknown;
-};
 
 /** The history rows `raw` holds: a row with no role is left out, and a field of the wrong type is dropped. */
 const transcriptMessages = (raw: unknown): TranscriptMessage[] =>
@@ -394,6 +389,8 @@ const questionSpec = <Q extends QuestionItem>(i: Q) => QUESTIONS[i.kind] as unkn
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+/** The most pages of 100 stored rows the Run view reads back to find where a reply's turn began. */
+const RUN_PAGES = 5;
 /** "No window here shows this chat" (`NOT_SHOWN_CODE`, `tui_gateway/server_requests.py`): one client declining. */
 const NOT_SHOWN = 4404;
 /** Requests only the window showing the chat answers (the official app's `WINDOW_OWNED_REQUESTS` at `bf0203a`). */
@@ -745,6 +742,9 @@ export class Hermes {
   private readSinceListRead = new Set<string>();
   /** Resumes in flight, so opening a chat and replying in it share one. */
   private resuming = new Map<string, Promise<string>>();
+  private readingStored = new Map<string, Promise<void>>();
+  /** The runtime sessions whose checkpoints check (`checkCheckpoints`) has gone out. */
+  private checkpointsChecked = new Set<string>();
   /** Chats that had a reply running or an Approval waiting when the owner switched away from their profile, by
    * profile. Switching back resumes them once the list is read, which brings back what Hermes is still waiting on. */
   private busyIn = new Map<string, string[]>();
@@ -809,6 +809,10 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
+  /** When each chat's running turn started (`message.start`), Unix ms: how long its reply took is timed from it. */
+  private turnBegan = new Map<string, number>();
+  /** What the app heard of each chat's turns, in memory, for the Run view (ADR 0178). */
+  private recorder = new FlightRecorder();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
   private unprompted = new Set<string>();
   /** Side questions asked on this connection, so each card has its own id (ADR 0070). */
@@ -1269,6 +1273,11 @@ export class Hermes {
         if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
         return pipe.request("PUT", pathAndQuery, JSON.stringify(body));
       },
+      post: (pathAndQuery, body) => {
+        const pipe = this.pipe;
+        if (!pipe || this.snapshot.status !== "connected") return Promise.reject(new Error("Not connected to Hermes."));
+        return pipe.request("POST", pathAndQuery, JSON.stringify(body));
+      },
     },
     () => this.generation,
   );
@@ -1595,7 +1604,7 @@ export class Hermes {
     return runServerCommand((method, params) => this.request(method, params), runtimeId, def, arg);
   }
 
-  /** Each chat's goal as Hermes last showed it (goals.ts, ADR 0178), for the goal bar. Kept in memory only. */
+  /** Each chat's goal as Hermes last showed it (goals.ts, ADR 0187), for the goal bar. Kept in memory only. */
   readonly goals = new GoalBoard();
 
   /** The chat's live session id, or a rejection saying it isn't open on Hermes. */
@@ -1630,7 +1639,7 @@ export class Hermes {
   }
 
   /**
-   * Why a goal can't be set in the chat now: `/goal` may not be Hermes's own (ADR 0178), or a reply is running, whose
+   * Why a goal can't be set in the chat now: `/goal` may not be Hermes's own (ADR 0187), or a reply is running, whose
    * end would judge the goal before it is read back.
    */
   goalRefusal(chatId: string): string | undefined {
@@ -1792,8 +1801,9 @@ export class Hermes {
       // Nothing checked for the old profile's connection lands now; the new one checks again.
       this.capabilities.disconnected();
     }
-    const unread = this.snapshot.chats.filter((c) => c.unread).length;
-    const chats = this.snapshot.chats.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
+    const canNotify = this.snapshot.chats.filter((c) => policyOf(c).inbox);
+    const unread = canNotify.filter((c) => c.unread).length;
+    const chats = canNotify.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
     // A chat started here may not be in the saved list yet, so its Failed messages keep the title it had.
     for (const c of this.snapshot.chats) this.titlesSeen.set(`${from} ${c.id}`, c.title);
     const failures = this.snapshot.chats.flatMap((c) =>
@@ -2031,8 +2041,7 @@ export class Hermes {
     const q = text.trim();
     if (!q) return { found: [], capped: false };
     const profile = this.profile;
-    const raw = rawSources(sources);
-    const query = new URLSearchParams({ q, profile, limit: String(limit), exclude_sources: "cron", ...(raw && { sources: raw }) });
+    const query = new URLSearchParams({ q, profile, limit: String(limit), ...sourceQuery(sources) });
     const [res] = (await Promise.all([this.rest("GET", `api/sessions/search?${query}`), this.knownBotChats()])) as [{ results: SearchRow[] }, void];
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
@@ -2053,7 +2062,7 @@ export class Hermes {
    * of them (`include_pinned`), so one page of one row is enough.
    */
   private async pinnedIds(profile: string): Promise<Set<string>> {
-    const query = new URLSearchParams({ profile, order: "recent", limit: "1", offset: "0", archived: "include", exclude_sources: "cron" });
+    const query = new URLSearchParams({ profile, order: "recent", limit: "1", offset: "0", archived: "include", ...sourceQuery() });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     return new Set(res.sessions.filter((r) => r.pinned).map((r) => r.id));
@@ -2067,7 +2076,7 @@ export class Hermes {
     this.foreground();
     const profile = this.profile;
     await this.knownBotChats();
-    const { rows, more } = await this.readList(profile, archived, -Infinity, rawSources(sources));
+    const { rows, more } = await this.readList(profile, archived, -Infinity, sources);
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the chats came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     const seen = new Set<string>();
@@ -2263,7 +2272,13 @@ export class Hermes {
   }
 
   reveal(found: Found) {
-    if (this.snapshot.chats.some((c) => c.id === found.chatId)) return;
+    const shown = this.snapshot.chats.find((c) => c.id === found.chatId);
+    // A list saved before job runs had a kind of their own may hold one as another platform's chat, until the next sync.
+    if (shown && shown.source !== "cron" && found.source === "cron") {
+      this.revealed.add(found.chatId);
+      return this.patchChat(found.chatId, (c) => ({ ...c, source: "cron", settled: true }));
+    }
+    if (shown) return;
     const { chatId: id, title, source, settled, archived, updatedAt } = found;
     this.revealed.add(id);
     // A Bot Chat reached from the inbox stays out of the list, as one opened from its bot's row does (ADR 0066).
@@ -2395,8 +2410,17 @@ export class Hermes {
     const before = this.viewing.get(pane);
     this.viewing.set(pane, chatId);
     if (before !== undefined && before !== chatId && !this.isViewing(before)) this.readWhenBack.delete(before);
+    if (this.isStored(chatId)) return this.snapshot.status === "connected" ? this.readStored(chatId) : undefined;
     this.showSaved(chatId);
     if (this.snapshot.status !== "connected") return;
+    // A list saved before job runs had a kind of their own may hold a run as another platform's chat. The list read
+    // drops it, and the pane then finds it by its id as what it is, so nothing is marked or resumed before then. If the
+    // list can't be read, the chat shows its Saved copy until it can, and opens in full on the next open.
+    const unconfirmed = this.snapshot.chats.find((c) => c.id === chatId && c.source === "other" && !c.runtimeId && !this.revealed.has(c.id));
+    if (unconfirmed && !this.hasListed()) {
+      await this.sync();
+      if (!this.hasListed() || !this.snapshot.chats.some((c) => c.id === chatId) || !this.isViewing(chatId)) return;
+    }
     this.seen(chatId);
     // A chat the list didn't bring totals for, such as an older one opened from a search, reads its own.
     if (!this.snapshot.chats.find((c) => c.id === chatId)?.usage) this.track(this.refreshUsage(chatId));
@@ -2412,6 +2436,64 @@ export class Hermes {
         c.running ? c : { ...c, items: [...withoutLoadError(c.items), { kind: "error", id: LOAD_ERROR_ID, text: `Couldn't load this chat: ${(e as Error).message}` }] },
       );
     }
+  }
+
+  private isStored(chatId: string): boolean {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    return !!chat && policyOf(chat).session === "stored";
+  }
+
+  private readStored(chatId: string): Promise<void> {
+    const profile = this.profile;
+    const gen = this.generation;
+    const key = `${profile} ${gen} ${chatId}`;
+    const under = this.readingStored.get(key);
+    if (under) return under;
+    const left = () => this.profile !== profile || this.generation !== gen;
+    this.patchChat(chatId, (c) => ({ ...c, loading: true }));
+    const detail = () =>
+      this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`).then(
+        (row) => (isObj(row) ? row : undefined),
+        (e) => (sessionNotFound(e) ? Promise.reject(e) : undefined),
+      );
+    const pages = async () => {
+      const rows: unknown[] = [];
+      for (let page = 0; page < STORED_PAGES; page++) {
+        const query = new URLSearchParams({ profile, order: "oldest", limit: String(HERMES_MESSAGES_PAGE_MAX), offset: String(page * HERMES_MESSAGES_PAGE_MAX), include_compacted: "true", inline_images: "false" });
+        const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { profile?: unknown; messages?: unknown };
+        if (typeof res?.profile === "string" && res.profile !== profile) throw new Error(`Hermes answered for the ${res.profile} profile, not ${profile}.`);
+        const got = Array.isArray(res?.messages) ? res.messages : [];
+        rows.push(...got);
+        if (got.length < HERMES_MESSAGES_PAGE_MAX) return { rows, more: false };
+      }
+      return { rows, more: true };
+    };
+    const reading = (async () => {
+      try {
+        const [{ rows, more }, row] = await Promise.all([pages(), detail()]);
+        if (left()) return;
+        const title = nonBlankText(row?.title);
+        const jobId = nonEmptyText(row?.cron_job_id);
+        const items = historyItems(projectStored(rows));
+        if (more) items.push({ kind: "error", id: LOAD_ERROR_ID, text: `This run has more than ${rows.length.toLocaleString("en-US")} stored rows. The rest aren't shown here.` });
+        this.patchChat(chatId, (c) => ({
+          ...c,
+          ...(title && { title }),
+          ...(jobId && { jobId }),
+          ...(row && { usage: newerChatUsage(c.usage, chatUsageOf(row, Date.now())), usageError: undefined }),
+          items,
+        }));
+      } catch (e) {
+        if (left()) return;
+        const text = sessionNotFound(e) ? "This run's chat isn't on the server any more." : `Couldn't load this chat: ${(e as Error).message}`;
+        this.patchChat(chatId, (c) => ({ ...c, items: [...withoutLoadError(c.items), { kind: "error", id: LOAD_ERROR_ID, text }] }));
+      } finally {
+        this.readingStored.delete(key);
+        if (!left()) this.patchChat(chatId, (c) => ({ ...c, loading: false }));
+      }
+    })();
+    this.readingStored.set(key, reading);
+    return reading;
   }
 
   /**
@@ -2481,6 +2563,66 @@ export class Hermes {
     const res = (await this.request("session.cwd.set", { session_id: sid, profile: this.profile, cwd: folder })) as { cwd?: unknown } | undefined;
     if (res?.cwd !== folder) throw new Error(`Hermes didn't move it to ${folder}${typeof res?.cwd === "string" ? `: it works in ${res.cwd}` : ""}.`);
     this.patchChat(chatId, (c) => ({ ...c, folder }));
+  }
+
+  /**
+   * Reading and restoring the checkpoints Hermes keeps for the chat's folder (`rollback.*`, ADR 0180), each on the chat's
+   * live session. A restore names one file, relative to the folder: Hermes then leaves the chat alone, where a
+   * whole-folder restore would drop its newest message.
+   */
+  rollbackIO(chatId: string): RollbackIO {
+    const call = async (method: "rollback.list" | "rollback.diff" | "rollback.restore", params: Record<string, unknown>) => {
+      const profile = this.profile;
+      const sid = await this.resume(chatId);
+      return obj(await this.request(method, { session_id: sid, profile, ...params })) ?? {};
+    };
+    return {
+      list: async () => {
+        const list = parseCheckpointList(await call("rollback.list", {}));
+        if (!list) throw new Error("Hermes answered rollback.list in a way this app doesn't read.");
+        return list;
+      },
+      diff: async (hash) => {
+        const { stat, diff } = await call("rollback.diff", { hash });
+        if (typeof stat !== "string" || typeof diff !== "string") throw new Error("Hermes answered rollback.diff in a way this app doesn't read.");
+        return { stat, diff };
+      },
+      restoreFile: async (hash: string, file: RelPath): Promise<Restored> => {
+        const r = await call("rollback.restore", { hash, file_path: file });
+        return r.success === true ? { restored: true } : { restored: false, error: textOf(r.error) || "Hermes didn't say why." };
+      },
+      readText: async (abs) => {
+        const query = new URLSearchParams({ path: abs, profile: this.profile });
+        const res = obj(await this.rest("GET", `api/fs/read-text?${query}`).catch(() => undefined));
+        return typeof res?.text === "string" && res.truncated === false && res.binary !== true ? res.text : undefined;
+      },
+    };
+  }
+
+  /**
+   * Finds out, once for the chat's live session, whether its terminal runs in a container, where Hermes takes no
+   * checkpoints, and whether its profile has checkpoints on, for the files-changed chip (`Chat.checkpoints`). The
+   * container check is `rollback.diff` of a hash that can't be one: Hermes refuses it for a container before reading
+   * the hash, and otherwise answers an empty diff (`tui_gateway/methods_tools.py:1175` at `bf0203a`).
+   */
+  checkCheckpoints(chatId: string) {
+    const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
+    if (!runtimeId || this.checkpointsChecked.has(runtimeId)) return;
+    this.checkpointsChecked.add(runtimeId);
+    const profile = this.profile;
+    this.track(
+      (async () => {
+        const [container, on] = await Promise.all([
+          this.request("rollback.diff", { session_id: runtimeId, profile, hash: PROBE_NAME }).then(
+            () => false,
+            (e: unknown) => (e instanceof RpcError && e.code === 5022 && e.message.startsWith("Checkpoints are not taken for terminal.backend=") ? true : undefined),
+          ),
+          this.restGet(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(checkpointsSettingOf).catch(() => undefined),
+        ]);
+        if (this.profile !== profile) return;
+        this.patchChat(chatId, (c) => ({ ...c, checkpoints: { runtimeId, ...(container !== undefined && { container }), ...(on !== undefined && { on }) } }));
+      })(),
+    );
   }
 
   /**
@@ -2626,6 +2768,7 @@ export class Hermes {
   private async branchBoundary(chatId: string, itemId: string, profile: string) {
     const before = this.snapshot.chats.find((c) => c.id === chatId);
     if (!before) throw new Error("This chat isn't in the list.");
+    if (policyOf(before).session === "stored") throw new Error(JOB_RUN_READ_ONLY);
     const blocked = branchBlocked(before, this.snapshot.status === "connected");
     if (blocked) throw new Error(blocked);
     const rows = await this.storedRows(chatId, profile);
@@ -2870,7 +3013,7 @@ export class Hermes {
     const rows: SessionRow[] = [];
     const cutoff = since / 1000 - 3600;
     for (let page = 0; page < BRANCH_LIST_PAGES; page++) {
-      const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), exclude_sources: "cron" });
+      const query = new URLSearchParams({ profile, order: "created", archived: "include", limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), ...sourceQuery() });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       rows.push(...res.sessions);
       // Every page ends with the pinned rows, out of order; only the others say how far back the list has reached.
@@ -3116,6 +3259,7 @@ export class Hermes {
    */
   enqueue(chatId: string, text: string, attachments: Attachment[] = []): string | undefined {
     if (!this.snapshot.chats.some((c) => c.id === chatId)) return "This chat isn't in the list.";
+    if (this.isStored(chatId)) return JOB_RUN_NO_SESSION;
     if (!text.trim() && !attachments.length) return "There's nothing to queue.";
     const q = this.snapshot.queues[chatId] ?? { items: [] };
     if (q.items.length >= QUEUE_LIMIT) return `A chat can queue up to ${QUEUE_LIMIT} messages. Remove one, or wait for one to go.`;
@@ -3152,6 +3296,24 @@ export class Hermes {
     this.setQueue(chatId, { ...q, items });
   }
 
+  /**
+   * Send now (ADR 0182): the queued message goes next, ahead of the rest, as soon as the chat can take it. A running
+   * reply is stopped first, and the stop doesn't pause the queue. Neither a pause nor a Failed message above holds it.
+   * The rest of the queue keeps its place and its pause. Pausing the queue, or a dropped connection, cancels it.
+   */
+  sendQueuedNow(chatId: string, id: string) {
+    const q = this.snapshot.queues[chatId];
+    const item = q?.items.find((i) => i.id === id);
+    if (!q || !item) return;
+    this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
+    // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+    const profile = this.profile;
+    void this.resume(chatId).then(
+      () => (this.snapshot.queues[chatId]?.rush === id ? this.stop(chatId) : undefined),
+      (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
+    );
+  }
+
   /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
   pauseQueue(chatId: string) {
     this.pauseQueueFor(chatId, PAUSED.owner);
@@ -3160,7 +3322,7 @@ export class Hermes {
   /** Lets the chat's queue go again, the next message once the chat is ready for it. */
   resumeQueue(chatId: string) {
     const q = this.snapshot.queues[chatId];
-    if (q?.paused !== undefined) this.setQueue(chatId, { items: q.items });
+    if (q?.paused !== undefined) this.setQueue(chatId, { items: q.items, rush: q.rush });
   }
 
   /** The owner is editing a queued message: none of the chat's queue goes until the returned function is called. */
@@ -3179,11 +3341,11 @@ export class Hermes {
 
   /**
    * Pauses a queue that has messages, unless it is paused already, saying `why`. `evenEmpty`: an empty one too, so the
-   * messages queued next wait for the owner's Resume.
+   * messages queued next wait for the owner's Resume. A pause cancels Send now, and then `why` says what stopped it.
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
-    const q = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && q.paused === undefined) this.setQueue(chatId, { ...q, paused: why });
+    const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
@@ -3191,7 +3353,9 @@ export class Hermes {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
     // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
-    if (next.items.length || next.paused !== undefined) queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }) };
+    const rush = next.items.some((i) => i.id === next.rush) && next.rush;
+    if (next.items.length || next.paused !== undefined)
+      queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }), ...(rush && { rush }) };
     else delete queues[chatId];
     this.update({ queues });
     return kept;
@@ -3211,21 +3375,24 @@ export class Hermes {
    * Sends the next queued message of each chat that is ready for it: connected, its queue not paused or being edited,
    * no reply running, nothing loading or sending, no Approval waiting, and no message Hermes didn't take or may have.
    * One Hermes may have is settled first by reading the chat's history back (ADR 0006), which loading the chat does.
+   * A message the owner chose Send now on goes paused or not, and past a message Hermes didn't take (ADR 0182).
    */
   private pump() {
     if (this.closing || this.snapshot.status !== "connected" || restartHold.on || this.role === "background") return;
     for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
-      if (!q.items.length || q.paused !== undefined || this.queueHolds.has(chatId)) continue;
+      const rush = q.items.find((i) => i.id === q.rush);
+      if (!q.items.length || (q.paused !== undefined && !rush) || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(this.profile, chatId)) continue;
-      if (chat.items.some((i) => isOutgoing(i) || isWaiting(i))) continue;
+      if (chat.items.some((i) => (!rush && isOutgoing(i)) || isWaiting(i))) continue;
       const profile = this.profile;
       if (!chat.runtimeId) {
         // Loaded first: that reads whether a reply is running, and settles any message Hermes may have.
-        this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, `Couldn't load the chat: ${withoutStop((e as Error).message)}.`));
+        this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)));
         continue;
       }
-      const [next, ...rest] = q.items;
+      const next = rush ?? q.items[0];
+      const rest = q.items.filter((i) => i !== next);
       // It enters the outbox and leaves the queue in one step, before anything goes. The outbox is written first, and
       // must be kept on this computer: if storage refuses it, nothing is sent and the queue, untouched, keeps it.
       let kept = true;
@@ -3264,6 +3431,7 @@ export class Hermes {
   ): Promise<{ delivery: Delivery; itemId?: string }> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) return { delivery: { delivery: "unsent", reason: "This chat isn't in the list." } };
+    if (policyOf(chat).session === "stored") return { delivery: { delivery: "unsent", reason: JOB_RUN_NO_SESSION } };
     // A message that runs skills shows as Hermes will show it, `/name` and the words, never the skill's own text.
     if (skill) text = callText(skill);
     const profile = this.profile;
@@ -3425,9 +3593,10 @@ export class Hermes {
    */
   async delete(chatId: string): Promise<boolean> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat || chat.running) return false;
+    if (!chat || chat.running || policyOf(chat).session === "stored") return false;
     const profile = this.profile;
     this.deleted.set(profile, chatId, true);
+    this.recorder.forget(chatId);
     this.pinWanted.delete(profile, chatId);
     this.archiveWanted.delete(profile, chatId);
 
@@ -3481,6 +3650,7 @@ export class Hermes {
     // A Bot Chat's title is how Hermes finds it, and a chat renamed to the title would become a bot's one chat (ADR 0066).
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (chat && isBotChat(chat)) throw new Error(BOT_CHAT_RENAME);
+    if (this.isStored(chatId)) throw new Error(JOB_RUN_READ_ONLY);
     if (isBotChatTitle(title)) throw new Error(`“${BOT_CHAT_TITLE}” is the name Hermes gives each bot's one chat. Pick another name.`);
     const profile = this.profile;
     // Read in this order, a rename elsewhere either shows in the title or makes the revision stale.
@@ -3521,6 +3691,7 @@ export class Hermes {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     if (!chat) throw new Error("This chat isn't in the list.");
     if (isBotChat(chat)) throw new Error(BOT_CHAT_RENAME);
+    if (policyOf(chat).session === "stored") throw new Error(JOB_RUN_READ_ONLY);
     const from = chat.title;
     const profile = this.profile;
     // Tool rows count toward each page, so older pages are read until the last messages are all in.
@@ -3669,6 +3840,11 @@ export class Hermes {
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
       if (!(await send(chat.runtimeId))) this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
+      else {
+        const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
+        // A Clarify answered a question at a time is still waiting until its last question is locked.
+        if (now && isQuestion(now) && now.answer) this.recorder.answered(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+      }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
       this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, errorItem(c, `Couldn't answer Hermes: ${(e as Error).message}`)] }));
@@ -4125,11 +4301,14 @@ export class Hermes {
     }
     if (type === "status.update") {
       if (payload.kind === "process" && typeof payload.text === "string") this.kanbanWatch.nudge(payload.text);
+      const shown = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
+      if (shown && typeof payload.kind === "string" && typeof payload.text === "string")
+        this.recorder.hear(shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
       return;
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
     if (!chat) return;
-    // A chat's goal changed, here or in another Hermes client, or after a turn (goals.ts, ADR 0178).
+    // A chat's goal changed, here or in another Hermes client, or after a turn (goals.ts, ADR 0187).
     if (type === "session.control.update") {
       const control = controlOf(payload);
       if (control) this.goals.put(chat.id, control);
@@ -4157,6 +4336,13 @@ export class Hermes {
       return;
     }
     if (type === "message.start") {
+      const from = this.usageFrom.get(session_id!);
+      // A chat with nothing but the owner's messages has had no reply, so it has cost nothing before this turn.
+      const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
+      const began = Date.now();
+      this.turnBegan.set(chat.id, began);
+      this.recorder.begin(chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
+      this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
       else this.unprompted.add(chat.id);
@@ -4167,11 +4353,19 @@ export class Hermes {
       const task = call?.kind === "tool" && call.name === "kanban_create" ? parseKanbanCreate(call.args, payload.result, Date.now(), this.kanbanWatch.currentBoard()) : undefined;
       if (task) this.kanbanWatch.add(task, chat.id);
     }
-    const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
+    this.record(chat.id, type, payload);
+    const counted = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
+    const began = type === "message.complete" ? this.turnBegan.get(chat.id) : undefined;
+    const now = Date.now();
+    const ms = began === undefined ? undefined : Math.max(0, now - began);
+    const usage = counted && ms !== undefined ? { ...counted, ms } : counted;
+    // Only a reply that finished counts toward how long replies take: a stopped or failed one ended early.
+    if (ms !== undefined && (payload.status ?? "complete") === "complete" && !payload.error) this.cache.saveReplyTime(this.profile, { chat: chat.id, at: now, ms });
     const from = this.turnStart.get(chat.id);
     const unprompted = this.unprompted.has(chat.id);
     if (type === "message.complete" || type === "error") {
       this.turnStart.delete(chat.id);
+      this.turnBegan.delete(chat.id);
       this.unprompted.delete(chat.id);
     }
     // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
@@ -4189,6 +4383,7 @@ export class Hermes {
       },
       delta,
     );
+    const ended = type === "message.complete" || type === "error" ? this.endRecording(chat.id, type, payload, from) : undefined;
     // A tool call that went on, or a turn that ended, may have been waiting on a question another client answered.
     if (type === "tool.complete" || type === "message.complete" || type === "error") this.track(this.settleQuestions(chat.id));
     if (type === "message.complete") {
@@ -4198,7 +4393,9 @@ export class Hermes {
       if (unprompted) this.track(this.showUnsentPrompt(chat.id, receipt, from));
       else this.stampTurn(chat.id, receipt);
     }
-    if (type === "message.complete") this.track(this.refreshUsage(chat.id));
+    if (type === "message.complete") this.track(this.refreshUsage(chat.id).then(() => ended && this.costAfter(chat.id, ended)));
+    // A failed turn may have cost something too, and the next turn is measured from the read after it.
+    if (type === "error" && ended) this.track(this.refreshUsage(chat.id).then(() => this.costAfter(chat.id, ended)));
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(this.profile, chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
@@ -4206,7 +4403,8 @@ export class Hermes {
     // A turn ends once; a repeated end finds the chat no longer running.
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
-    if (type === "message.complete" || type === "error") {
+    // A reply stopped for Send now ended as the owner asked: the message they chose goes, and the queue doesn't pause.
+    if ((type === "message.complete" || type === "error") && !this.snapshot.queues[chat.id]?.rush) {
       const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
       if (why) this.pauseQueueFor(chat.id, why);
     }
@@ -4221,6 +4419,117 @@ export class Hermes {
     const start = this.usageFrom.get(runtimeId);
     this.usageFrom.set(runtimeId, end ?? "unknown");
     return end && start && start !== "unknown" ? replyUsage(start, end) : undefined;
+  }
+
+  /** Keeps a session event in the chat's running turn, with when it arrived, for the Run view (ADR 0178). */
+  private record(chatId: string, type: string, p: Record<string, unknown>) {
+    const at = Date.now();
+    const h = ((): Heard | undefined => {
+      switch (type) {
+        case "message.delta":
+        case "reasoning.delta":
+          return typeof p.text === "string" && p.text ? { kind: "text", at, last: at, chars: p.text.length, reasoning: type === "reasoning.delta" } : undefined;
+        case "tool.start":
+        case "tool.complete": {
+          const id = textOf(p.tool_id);
+          if (id === undefined) return undefined;
+          const name = optionalText(p.name) ?? "tool";
+          const args = obj(p.args);
+          return type === "tool.start"
+            ? { kind: "tool.start", at, id, name, ...(args && { args }) }
+            : { kind: "tool.complete", at, id, name, ...(args && { args }), ...(num(p.duration_s) !== undefined && { durationS: num(p.duration_s) }), result: toolResultText(p.result) };
+        }
+        case "session.usage": {
+          const counters = countersOf(p.usage);
+          return counters && { kind: "usage", at, counters };
+        }
+        case "request.cancel":
+          return { kind: "settled", at, ids: [String(p.id)], how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+        case "approval.cancelled":
+          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+        default:
+          return undefined;
+      }
+    })();
+    if (h) this.recorder.hear(chatId, h);
+  }
+
+  /**
+   * Ends the chat's recorded turn with its replies and errors, as the transcript now shows them, and returns it. A turn
+   * that failed with no reply opens its Run view from its error.
+   */
+  private endRecording(chatId: string, type: string, p: Record<string, unknown>, from: string | null | undefined): WatchedTurn | undefined {
+    const at = Date.now();
+    const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
+    const begin = turnFrom(items, from);
+    const replies = items.slice(begin < 0 ? turnStart(items) : begin).flatMap((i) => (i.kind === "assistant" || i.kind === "error" ? [i.id] : []));
+    const receipt = (p.persisted_turn ?? {}) as PersistedTurn;
+    const replyRow = typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
+    const failure = textOf(p.error ?? (p.status === "error" ? (p.failure_reason ?? "The turn failed.") : undefined));
+    const h: Heard =
+      type === "error"
+        ? { kind: "error", at, message: textOf(p.message) ?? "Hermes reported an error." }
+        : { kind: "end", at, status: textOf(p.status) ?? "complete", ...(failure && { failure }), ...(countersOf(p.usage) && { counters: countersOf(p.usage) }) };
+    return this.recorder.end(chatId, h, replies, replyRow);
+  }
+
+  /** The chat's cost as read after a recorded turn: only a read that succeeded after it ended counts. */
+  private costAfter(chatId: string, turn: WatchedTurn) {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const ended = turn.heard.at(-1)?.at ?? 0;
+    turn.costRead = true;
+    if (chat?.usage && !chat.usageError && chat.usage.readAt >= ended && !turn.costOverlap) turn.costAfter = chat.usage.cost;
+  }
+
+  /**
+   * One reply's run, for the Run view (ADR 0178): from what the app heard, if it watched the reply's turn, otherwise from
+   * Hermes's stored rows. With it, the profile's `display.tool_progress`, or undefined when it couldn't be read.
+   */
+  async run(chatId: string, itemId: string): Promise<{ run: Run; toolProgress?: ToolProgress }> {
+    const profile = this.profile;
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const reply = chat?.items.find((i) => i.id === itemId);
+    if (!chat || (reply?.kind !== "assistant" && reply?.kind !== "error")) throw new Error("This reply isn't in the chat any more.");
+    const config = this.toolProgress().catch(() => undefined);
+    const watched = this.recorder.find(chatId, reply);
+    if (reply.kind === "error") {
+      if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+      // An error item has no stored row to read the turn back from.
+      throw new Error("This app didn't watch this failed turn, so its steps can't be shown.");
+    }
+    // A recording cut short is missing steps the stored rows still have, when they can be read back that far.
+    if (watched?.truncated && reply.rowId !== undefined) {
+      const rows = await this.turnRowsOf(profile, chatId, reply.rowId).catch(() => undefined);
+      return { run: rows ? storedRun(rows) : watchedRun(watched, Date.now()), toolProgress: await config };
+    }
+    if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+    if (reply.rowId === undefined) throw new Error("Hermes hasn't stored this reply yet, so its steps can't be read. Try again once the chat has reloaded.");
+    const rows = await this.turnRowsOf(profile, chatId, reply.rowId);
+    return { run: storedRun(rows), toolProgress: await config };
+  }
+
+  /** The profile's `display.tool_progress`, from `GET /api/config`: whether Hermes sends ordinary tool steps (ADR 0178). */
+  async toolProgress(): Promise<ToolProgress> {
+    return toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
+  }
+
+  /** The stored rows of the turn holding row `replyRow`, oldest first, read a page at a time back from the newest. */
+  private async turnRowsOf(profile: string, chatId: string, replyRow: number): Promise<RunRow[]> {
+    const PAGE = 100;
+    const rows: RunRow[] = [];
+    for (let page = 0; page < RUN_PAGES; page++) {
+      // A job run's chat shows its compacted turns, so their replies are looked for among them too.
+      const compacted: Record<string, string> = this.isStored(chatId) ? { include_compacted: "true" } : {};
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(PAGE), offset: String(page * PAGE), ...compacted, inline_images: "false" });
+      const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: RunRow[] };
+      const got = (res.messages ?? []).filter((m) => typeof m?.id === "number" && typeof m.role === "string");
+      // A `latest` page counts back from the newest row and is itself oldest first.
+      rows.unshift(...got);
+      const turn = turnRows(rows, replyRow);
+      if (turn) return turn;
+      if (got.length < PAGE) break;
+    }
+    throw new Error(rows.some((r) => r.id === replyRow) ? "This reply's turn began too far back to read." : "Hermes has no stored row for this reply.");
   }
 
   /**
@@ -4243,6 +4552,7 @@ export class Hermes {
    */
   private saveTranscript(chatId: string) {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    if (chat && policyOf(chat).session === "stored") return;
     const items = chat?.items.filter((i) => (i.kind === "user" && !i.outgoing) || i.kind === "returned" || i.kind === "assistant" || i.kind === "thinking" || i.kind === "tool") ?? [];
     if (items.length) this.cache.saveTranscript(this.profile, chatId, items);
   }
@@ -4335,6 +4645,8 @@ export class Hermes {
     }
     const sid = textOf(req.params.session_id) ?? "";
     const chat = this.snapshot.chats.find((c) => c.runtimeId === sid);
+    const card = questionCard(req);
+    if (chat && card) this.recorder.hear(chat.id, { kind: "ask", at: Date.now(), id: req.id, ...(card.kind === "approval" && { requestId: card.requestId }), what: card.kind, summary: questionSummary(card) });
     if (chat) this.showQuestions(chat.id, [req]);
     else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
   }
@@ -4441,6 +4753,7 @@ export class Hermes {
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
     this.turnStart.clear();
+    this.turnBegan.clear();
     this.unprompted.clear();
     this.earlySideAnswers.clear();
     this.sideAwaiting.clear();
@@ -4565,6 +4878,7 @@ export class Hermes {
   private resume(chatId: string): Promise<string> {
     const known = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
     if (known) return Promise.resolve(known);
+    if (this.isStored(chatId)) return Promise.reject(new Error(JOB_RUN_NO_SESSION));
     let resuming = this.resuming.get(chatId);
     if (resuming) return resuming;
     this.patchChat(chatId, (c) => ({ ...c, loading: true }));
@@ -4645,7 +4959,7 @@ export class Hermes {
 
   private setArchived(chatId: string, archived: boolean): Promise<boolean> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat || chat.running || !!chat.archived === archived) return Promise.resolve(false);
+    if (!chat || chat.running || !!chat.archived === archived || policyOf(chat).session === "stored") return Promise.resolve(false);
     const profile = this.profile;
     this.archiveWanted.set(profile, chatId, archived);
     this.archiveUnsure.delete(chatId);
@@ -4699,6 +5013,7 @@ export class Hermes {
     if (this.profile !== profile) return;
     if (now === undefined) {
       this.deleted.set(profile, chatId, true);
+      this.recorder.forget(chatId);
       this.update({
         chats: this.snapshot.chats.filter((c) => c.id !== chatId),
         syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
@@ -4748,7 +5063,7 @@ export class Hermes {
   /** Resolves to false only when the write to Hermes failed. */
   private setSettled(chatId: string, settled: boolean): Promise<boolean> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
-    if (!chat || chat.settled === settled) return Promise.resolve(true);
+    if (!chat || chat.settled === settled || policyOf(chat).session === "stored") return Promise.resolve(true);
     this.pinWanted.set(this.profile, chatId, !settled);
     this.patchChat(chatId, (c) => ({ ...c, settled }));
     return this.writePin(chatId);
@@ -4836,6 +5151,7 @@ export class Hermes {
    * the dot again.
    */
   private markRead(chatId: string) {
+    if (this.isStored(chatId)) return;
     this.patchChat(chatId, (c) => (c.unread ? { ...c, unread: false } : c));
     const write: Promise<void> = this.patchSession(chatId, this.profile, { unread: false })
       .then(() => void this.readSinceListRead.add(chatId))
@@ -4958,10 +5274,9 @@ export class Hermes {
   /**
    * Reads the profile's chats from dashboard REST, most recent first, `archived` ones excluded or only those, until
    * the list passes `cutoff`. Every page also carries all pinned rows, archived or not, out of order; the unpinned
-   * ones follow recency. `sources`: only chats from these, as Hermes stores them. `more`: the list goes on past the
-   * most pages read.
+   * ones follow recency. `sources`: only chats from these. `more`: the list goes on past the most pages read.
    */
-  private async readList(profile: string, archived: "exclude" | "only" | "include", cutoff: number, sources?: string): Promise<{ rows: SessionRow[]; more: boolean; botChats: Set<string> }> {
+  private async readList(profile: string, archived: "exclude" | "only" | "include", cutoff: number, sources?: Source[]): Promise<{ rows: SessionRow[]; more: boolean; botChats: Set<string> }> {
     const rows: SessionRow[] = [];
     /** The Bot Chats the pages held, which the list leaves out (`isBotChatRow`). */
     const botChats = new Set<string>();
@@ -4972,9 +5287,8 @@ export class Hermes {
         order: "recent",
         limit: String(PAGE_SIZE),
         offset: String(offset),
-        exclude_sources: "cron",
+        ...sourceQuery(sources),
         ...(archived !== "exclude" && { archived }),
-        ...(sources && { sources }),
       });
       const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
       // A Bot Chat is opened from its bot's row only, never from the list (ADR 0066). Hermes lists them hidden, except
@@ -4992,7 +5306,7 @@ export class Hermes {
    */
   private async unreadIn(profile: string): Promise<{ unread: number; more: boolean; chats: ListedChat[] }> {
     const cutoff = this.cache.olderPulled(profile) ? -Infinity : Date.now() - LIST_WINDOW_MS;
-    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", exclude_sources: "cron" });
+    const query = new URLSearchParams({ profile, order: "recent", limit: String(OTHER_PAGE_SIZE), offset: "0", ...sourceQuery() });
     const res = (await this.rest("GET", `api/sessions?${query}`)) as SessionPage;
     const chats = res.sessions
       .filter((r) => !r.archived && !this.deleted.has(profile, r.id) && !this.isBotChatRow(profile, r))
@@ -5016,8 +5330,7 @@ export class Hermes {
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      // A Bot Chat isn't part of the list, so it isn't kept as part of it (ADR 0066).
-      chats.filter((c) => !isBotChat(c)).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
+      chats.filter((c) => policyOf(c).listed).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
         id,
         title,
         source,
@@ -5204,7 +5517,7 @@ export class Hermes {
   /**
    * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
-   * names its profile, and reads only while connected.
+   * names its profile, and reads only while connected. Reply times are this computer's own (replyTimes.ts).
    */
   usageIo(): UsageIo {
     const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
@@ -5216,6 +5529,7 @@ export class Hermes {
       },
       session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
       hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+      replyTimes: (profile) => this.cache.loadReplyTimes(profile),
     };
   }
 
@@ -5537,7 +5851,9 @@ const LIST_MAX_BYTES = 8 * 1024 * 1024;
 const sessionPath = (chatId: string) => `api/sessions/${encodeURIComponent(chatId)}`;
 
 /** A session's title as the list shows it: an untitled one by its first words. */
-function listTitle(r: Pick<SessionRow, "title" | "preview">, known?: string): string {
+function listTitle(r: Pick<SessionRow, "title" | "preview" | "source" | "started_at">, known?: string): string {
+  // Hermes names a run only once it has ended, and a run's first words are the scheduler's own instructions to the agent.
+  if (r.source === "cron") return r.title || known || jobRunTitle((r.started_at ?? 0) * 1000);
   // Hermes's preview of an untitled chat is its first message on one line, with any attached context after the words.
   const preview = r.preview?.replace(/\s*--- (?:Context Warnings|Attached Context) ---[\s\S]*$/, "").trim();
   return r.title || preview || known || "Untitled chat";
@@ -5578,6 +5894,7 @@ const RAW_SOURCES: Record<Exclude<Source, "other">, string[]> = {
   desktop: ["desktop"],
   cli: ["cli", "tui"],
   import: ["import"],
+  cron: ["cron"],
 };
 
 /**
@@ -5589,6 +5906,15 @@ function rawSources(sources?: Source[]): string | undefined {
   if (!sources?.length || sources.includes("other")) return undefined;
   const raw = sources.flatMap((s) => RAW_SOURCES[s as Exclude<Source, "other">]);
   return [...raw, ...(sources.some((s) => s === "app" || s === "cli" || s === "desktop") ? ["local"] : [])].join(",");
+}
+
+/**
+ * What a list or search asks Hermes about sources. Job runs are left out of every one (`exclude_sources=cron`) but one
+ * that asks for them: they aren't part of the chat list, and Hermes applies the exclude over `sources`.
+ */
+function sourceQuery(sources?: Source[]): { sources?: string; exclude_sources?: string } {
+  const raw = rawSources(sources);
+  return { ...(raw && { sources: raw }), ...(!sources?.includes("cron") && { exclude_sources: "cron" }) };
 }
 
 /** The surface a `local` chat was started on, when Hermes has stamped one (`_UNSET_CREATED_SOURCES` at `bf0203a`). */
@@ -5608,7 +5934,8 @@ export function toSource(stored = "", created?: string | null): Source {
     case "tui":
       return "cli";
     case "import":
-      return "import";
+    case "cron":
+      return source;
     default:
       return "other";
   }
@@ -5657,6 +5984,9 @@ const PAUSED = {
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
+
+/** Why a queue waits when its chat couldn't be loaded. */
+const notLoaded = (e: unknown) => `Couldn't load the chat: ${withoutStop((e as Error).message)}.`;
 
 /** The profile's queues as kept. One with messages comes back paused: what its chat did meanwhile went unseen. */
 function loadQueues(cache: ChatCache, profile: string): Record<string, ChatQueue> {
@@ -5735,6 +6065,7 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
           preview: m.context || undefined,
           status: "done",
           result: typeof m.content === "string" ? m.content : undefined,
+          ...inlineDiffOf(obj(displayMetadata(m.display_metadata)?.tool_result_metadata)?.inline_diff),
         },
       ];
     // Assistant rows can be reasoning only; system rows are timeline notes this app doesn't show yet.
@@ -5752,8 +6083,28 @@ function historyItems(messages: TranscriptMessage[]): Item[] {
   });
 }
 
+/** A file edit's `inline_diff`, to spread into its tool item. */
+const inlineDiffOf = (v: unknown): { inlineDiff?: string } => (typeof v === "string" && v ? { inlineDiff: v } : {});
+
 /** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
 const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
+
+const APPROVAL_ANSWERED: Record<ApprovalChoice, string> = { once: "Allowed once", session: "Allowed for this chat", always: "Always allowed", deny: "Denied" };
+
+/** How the owner answered a Question from here, for its step in the Run view. A password or secret is never kept. */
+function answeredHow(q: QuestionItem): string {
+  if (q.kind === "approval") return `${q.answer ? APPROVAL_ANSWERED[q.answer] : "Answered"} from this app`;
+  if (q.answer === "skipped") return "Skipped from this app";
+  if (q.kind !== "clarify") return "Answered from this app";
+  return `Answered from this app: ${q.questions.map((x) => `${x.question} → ${q.locked[x.qid] ?? "skipped"}`).join("; ")}`;
+}
+
+/** One line for what a Question asks, for its step in the Run view. */
+function questionSummary(q: QuestionItem): string {
+  if (q.kind === "approval" || q.kind === "sudo") return q.command;
+  if (q.kind === "clarify") return q.questions.map((x) => x.question).join(" · ");
+  return q.envVar;
+}
 
 /** A card for an `approval` request. Choices this app doesn't know are dropped; it never makes one up. */
 function approvalItem(r: ServerRequest): ApprovalItem {
@@ -5998,7 +6349,7 @@ function applyEvent(c: Chat, type: string, p: Record<string, unknown>, from?: st
       const call = items[at];
       if (call?.kind !== "tool") return c;
       // A screenshot inside the result stays on the server (ADR 0061).
-      items[at] = { ...call, status: "done", durationS: num(p.duration_s), result: toolResultText(p.result), summary: optionalText(p.summary) };
+      items[at] = { ...call, status: "done", durationS: num(p.duration_s), result: toolResultText(p.result), summary: optionalText(p.summary), ...inlineDiffOf(p.inline_diff) };
       return { ...c, items };
     }
     // Every second or so while a turn runs.

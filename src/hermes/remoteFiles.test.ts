@@ -17,6 +17,9 @@ import {
   type RemoteEntry,
 } from "./remoteFiles";
 import { RestError } from "./pipe";
+import { DOCUMENT_PREVIEW_MAX_BYTES } from "./documents";
+
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 const running: Hermes[] = [];
 afterEach(async () => {
@@ -185,6 +188,22 @@ describe("previewing a server file", () => {
     expect(await hermes.files.preview(blob, true)).toMatchObject({ kind: "binary", size: 7 });
   });
 
+  it("reads a PDF or Word file's bytes, and a file only named like one as binary", async () => {
+    const { hermes } = await signedIn((s) => {
+      s.managedFiles.nodes = {
+        "/srv/plan.docx": { bytes: "PK\x03\x04word", mime: DOCX_MIME },
+        "/srv/report.pdf": { bytes: "%PDF-1.7\0", mime: "application/pdf" },
+        "/srv/fake.pdf": { bytes: "\x7fELF\0\0", mime: "application/pdf" },
+      };
+    });
+    const { entries } = await hermes.files.list("/srv");
+    const named = (name: string) => entries.find((e) => e.name === name)!;
+    expect(await hermes.files.preview(named("plan.docx"))).toMatchObject({ kind: "document", format: "docx", size: 8 });
+    const pdf = await hermes.files.preview(named("report.pdf"));
+    expect(pdf.kind === "document" && [pdf.format, [...pdf.bytes.subarray(0, 5)]]).toEqual(["pdf", [0x25, 0x50, 0x44, 0x46, 0x2d]]);
+    expect(await hermes.files.preview(named("fake.pdf"))).toMatchObject({ kind: "binary" });
+  });
+
   it("says why the server won't send a file", async () => {
     const { server, hermes } = await signedIn((s) => {
       s.managedFiles.nodes = { "/srv/locked.txt": { text: "x", unreadable: true }, "/srv/a.txt": { text: "a" }, "/srv/.env": { text: "KEY=1" } };
@@ -211,6 +230,8 @@ describe("what can be previewed", () => {
     expect(previewSupport(file("x.bin", { mime: "application/octet-stream" })).kind).toBe("maybe-text");
     expect(previewSupport(file("a.mp4", { mime: "video/mp4" }))).toEqual({ kind: "none", why: "There's no preview for video/mp4 files." });
     expect(previewSupport(file("a.zip", { mime: "application/zip" })).kind).toBe("none");
+    expect(previewSupport(file("a.pdf", { mime: "application/pdf" }))).toEqual({ kind: "document", format: "pdf", max: DOCUMENT_PREVIEW_MAX_BYTES });
+    expect(previewSupport(file("download", { mime: DOCX_MIME }))).toMatchObject({ kind: "document", format: "docx" });
     expect(previewSupport(file("a.tiff", { mime: "image/tiff" })).kind).toBe("none");
     // A link's type comes from its target, so its target's name counts too.
     expect(previewSupport(file("current", { path: "/srv/app.ts", linkTarget: "/srv/app.ts", mime: "video/mp2t" })).kind).toBe("text");

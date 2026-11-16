@@ -11,6 +11,7 @@ import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { FakeProjectContext } from "./fakeProjectContext";
+import { FakeCheckpoints, inlineDiff, type FakeEdit } from "./fakeCheckpoints";
 import { FakeGoals } from "./fakeGoals";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 import { skillInvocationText } from "./skillCommands";
@@ -121,6 +122,22 @@ export type TranscriptMessage = {
   compacted?: boolean;
   summary?: boolean;
   message_uid?: string;
+  /** What REST shows of a compaction summary row in place of its `content` (`_project_for_display`). */
+  display_content?: string;
+};
+
+/**
+ * A turn `FakeHermes.toolTurn` runs: batches of tool calls, one model call each, then the reply in one more. Each model
+ * call takes `modelSeconds` and adds `tokens` and `costUsd`; each tool takes its `seconds`. `turnId`: what
+ * `message.start` carries, as `f0d9488` sends; none, as `bf0203a` sends.
+ */
+export type ToolTurnPlan = {
+  turnId?: string;
+  calls: { name: string; args: Record<string, unknown>; result: unknown; seconds: number }[][];
+  reply: string;
+  modelSeconds: number;
+  tokens: { prompt: number; output: number };
+  costUsd: number;
 };
 
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
@@ -209,6 +226,8 @@ export function fakeEnv(): Record<string, Record<string, unknown>> {
 const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
+/** What Hermes answers a checkpoint read or restore for a chat whose terminal runs in a container (`checkpoint_manager.py:818`). */
+const CONTAINER_REFUSAL = "Checkpoints are not taken for terminal.backend=docker: file paths belong to the container, not this host.";
 /** A faked failure: a dashboard answer is a `RestError` already, anything else the text Rust rejects with. */
 const thrown = (e: string | Error) => (typeof e === "string" ? new Error(e) : e);
 
@@ -288,6 +307,7 @@ const FS_LANGUAGES: Record<string, string> = { py: "python", md: "markdown", htm
 const FS_MIME: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", svg: "image/svg+xml", py: "text/x-python", md: "text/markdown", html: "text/html",
   txt: "text/plain", json: "application/json", pdf: "application/pdf", ts: "video/mp2t",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
 export class FakeHermes {
@@ -427,7 +447,7 @@ export class FakeHermes {
   catalogSkills = true;
   /** Each live session's profile, for the skills `command.dispatch` finds. */
   readonly runtimeProfile = new Map<string, string>();
-  /** Goals (fakeGoals.ts, ADR 0178). `standingMissions` false: a Hermes without `session.control`, "method not found". */
+  /** Goals (fakeGoals.ts, ADR 0187). `standingMissions` false: a Hermes without `session.control`, "method not found". */
   readonly goals = new FakeGoals();
   standingMissions = true;
   /** Starts the turn that follows a goal's turn at once, as Hermes does; none in tests, which send turns themselves. */
@@ -482,6 +502,20 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
+  /** The checkpoints Hermes keeps for each folder (`rollback.*`, fakeCheckpoints.ts), of the files in `serverFiles`. */
+  readonly checkpoints = new FakeCheckpoints(() => this.serverFiles, now);
+  /** False: a Hermes without `rollback.list`, `rollback.diff` and `rollback.restore`, which answers "method not found". */
+  rollbackMethods = true;
+  /**
+   * What the scripted turn a prompt saying "edit two files" runs does, in order, in the chat's folder: by default a
+   * write Hermes refuses, then a write and a patch of two files that `fileTurnSeed` puts there first if they're missing.
+   */
+  fileTurn: FakeEdit[] = [
+    { tool: "write_file", path: "notes.txt", content: "never written\n", refused: true },
+    { tool: "write_file", path: "a.txt", content: "alpha line one\nalpha line two (by the bot)\n" },
+    { tool: "patch", path: "b.txt", old: "beta original", new: "beta patched by the bot" },
+  ];
+  fileTurnSeed: Record<string, string> = { "a.txt": "alpha line one\n", "b.txt": "beta original\n", "notes.txt": "the owner's notes\n" };
   /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). `session`: the chat named. */
   readonly fsWrites: { profile: string; path: string; text: string; session?: string }[] = [];
   /**
@@ -547,6 +581,8 @@ export class FakeHermes {
    * `session.active_list` lists the session as working, and only a response frame, relayed to the child, settles one.
    */
   turnIsolation = false;
+  /** Each profile's `display.tool_progress`, as its config holds it; `all` for one not set. */
+  toolProgress: Record<string, unknown> = {};
   /** The Approvals this client answered, by either way: `approval.respond`, or a response frame to the request. */
   readonly approvalAnswers: { id: string; choice: unknown; via: "approval.respond" | "response" }[] = [];
   /**
@@ -915,9 +951,13 @@ export class FakeHermes {
       this.turns.add(runtimeId);
       if (stored) this.inflight.set(runtimeId, { stored, user: String(r.params.text ?? ""), assistant: "" });
       this.stopped.delete(runtimeId);
-      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
       const prompt = String(r.params.text ?? "");
-      if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
+      const fileTurn = !!stored && /edit two files/i.test(prompt);
+      // The file turn's message has its stored row reported, as Hermes reports every message's, so its reply gets a time.
+      const userRow = this.userRowId ?? (fileTurn ? this.transcripts[stored!].at(-1)?.row_id : undefined);
+      this.respond(r.id, { status: "streaming", ...(userRow !== undefined && { user_row_id: userRow }) });
+      if (fileTurn) queueMicrotask(() => this.fileReply(runtimeId, stored!));
+      else if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
       else if (stored && /background/i.test(prompt)) queueMicrotask(() => this.backgroundReply(runtimeId, stored));
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
@@ -1339,6 +1379,29 @@ export class FakeHermes {
       this.respond(r.id, { ...this.sessionInfo, cwd });
     },
     "session.close": (r) => this.respond(r.id, { closed: true }),
+    // `tui_gateway/methods_tools.py:1123-1183` at `bf0203a`, as measured on a real Hermes (ADR 0180).
+    "rollback.list": (r) =>
+      this.rollback(r, (folder) => this.respond(r.id, this.checkpoints.on ? { enabled: true, checkpoints: this.checkpoints.list(folder) } : { enabled: false, checkpoints: [] })),
+    "rollback.diff": (r) =>
+      this.rollback(r, (folder, stored) => {
+        if (!r.params.hash) return this.fail(r.id, 4014, "hash required");
+        if (this.checkpoints.containerChats.has(stored)) return this.fail(r.id, 5022, CONTAINER_REFUSAL);
+        this.respond(r.id, this.checkpoints.diff(folder, String(r.params.hash)));
+      }),
+    // A whole-folder restore (no `file_path`) drops the chat's newest message of the owner's and all after it, whatever
+    // checkpoint it restores (`_rewind_active_session_history`).
+    "rollback.restore": (r) =>
+      this.rollback(r, (folder, stored) => {
+        if (!r.params.hash) return this.fail(r.id, 4014, "hash required");
+        if (this.checkpoints.containerChats.has(stored)) return this.respond(r.id, { success: false, error: CONTAINER_REFUSAL });
+        const file = typeof r.params.file_path === "string" && r.params.file_path ? r.params.file_path : undefined;
+        const result = this.checkpoints.restore(folder, String(r.params.hash), file);
+        if (result.success !== true || file) return this.respond(r.id, result);
+        const rows = this.transcripts[stored] ?? [];
+        const at = rows.map((m) => m.role === "user").lastIndexOf(true);
+        if (at >= 0) this.transcripts[stored] = rows.slice(0, at);
+        this.respond(r.id, { ...result, history_removed: at >= 0 ? rows.length - at : 0 });
+      }),
     // `tui_gateway/methods_tools.py` `tools.show`: the session's agent's tools grouped by toolset. An id it doesn't hold
     // falls back to the launch profile's config (`_session_toolsets(None)`), with no error.
     "tools.show": (r) => {
@@ -1552,6 +1615,10 @@ export class FakeHermes {
       terminal: { backend: this.terminalBackend[query.get("profile") || "default"] ?? "local" },
       dashboard: { turn_isolation: this.turnIsolation },
       goals: { max_turns: this.goals.maxTurns },
+      // Merged over Hermes's defaults, where `tool_progress` is `all`. YAML reads a bare `off` as false.
+      display: { tool_progress: this.toolProgress[query.get("profile") || "default"] ?? "all" },
+      checkpoints: { enabled: this.checkpoints.on, max_snapshots: this.checkpoints.max },
+      ...(this.kanban.reviewDispatch !== undefined && { kanban: { review_dispatch: this.kanban.reviewDispatch } }),
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
       // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
       ...(this.mcp.servers[query.get("profile") || "default"] && { mcp_servers: this.mcp.servers[query.get("profile") || "default"] }),
@@ -2427,6 +2494,66 @@ export class FakeHermes {
     if (stored) setTimeout(() => this.event(sessionId, "session.control.update", { control: this.goals.control(stored) }), 0);
   }
 
+  /** Runs a `rollback.*` method on the live session it names, in that session's folder. */
+  private rollback(r: Request, run: (folder: string, stored: string) => void) {
+    if (!this.rollbackMethods) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    const sid = String(r.params.session_id ?? "");
+    const stored = this.runtime.get(sid);
+    if (!stored) return this.fail(r.id, 4001, "session not found");
+    run(this.folderOf(sid, stored), stored);
+  }
+
+  /** The folder a live session works in: as it was set, or as its stored row has it. */
+  folderOf(runtimeId: string, stored: string) {
+    const row = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored);
+    return this.sessionCwd.get(runtimeId) ?? row?.cwd ?? this.hermesHome;
+  }
+
+  /**
+   * The scripted turn that edits files (`fileTurn`), as Hermes `bf0203a` ran one (measured): with checkpoints on and a
+   * terminal on the host, one checkpoint before the first edit; each edit's `tool.start` and `tool.complete` with its
+   * args, and for one that went through its `inline_diff`; its tool rows stored with that diff as `display_metadata`.
+   */
+  private fileReply(runtimeId: string, stored: string) {
+    const folder = this.folderOf(runtimeId, stored);
+    for (const [path, text] of Object.entries(this.fileTurnSeed)) if (typeof this.serverFiles[`${folder}/${path}`] !== "string") this.serverFiles[`${folder}/${path}`] = text;
+    this.event(runtimeId, "message.start");
+    if (this.checkpoints.on && !this.checkpoints.containerChats.has(stored)) this.checkpoints.take(folder, `before ${this.fileTurn[0]?.tool ?? "write_file"}`);
+    this.fileTurn.forEach((e, n) => {
+      const tool_id = `call_file_${n}`;
+      const args = e.tool === "write_file" ? { path: e.path, content: e.content } : { path: e.path, old_string: e.old, new_string: e.new };
+      this.event(runtimeId, "tool.start", { tool_id, name: e.tool, context: e.path, args });
+      const where = e.path.startsWith("/") ? e.path : `${folder}/${e.path}`;
+      const before = typeof this.serverFiles[where] === "string" ? (this.serverFiles[where] as string) : undefined;
+      if (e.tool === "write_file" && e.refused) {
+        const result = { error: `Refusing to overwrite ${e.path}: ${where} exists but this task has not seen its full current content.`, stale_write_blocked: true, path: e.path };
+        this.event(runtimeId, "tool.complete", { tool_id, name: e.tool, args, duration_s: 0.1, result });
+        this.storeMessage(stored, { role: "tool", tool_call_id: tool_id, name: e.tool, args, context: e.path, content: JSON.stringify(result) });
+        return;
+      }
+      const after = e.tool === "write_file" ? e.content : (before ?? "").replace(e.old, e.new);
+      this.serverFiles[where] = after;
+      const inline_diff = inlineDiff(e.path, before, after);
+      const result = e.tool === "write_file" ? { bytes_written: after.length } : { success: true, files_modified: [where] };
+      this.event(runtimeId, "tool.complete", { tool_id, name: e.tool, args, duration_s: 0.1, inline_diff, result });
+      this.storeMessage(stored, {
+        role: "tool",
+        tool_call_id: tool_id,
+        name: e.tool,
+        args,
+        context: e.path,
+        content: JSON.stringify(result),
+        display_metadata: { tool_result_metadata: { inline_diff } },
+      });
+    });
+    const text = "Done editing the files.";
+    const user_row_id = (this.transcripts[stored] ?? []).filter((m) => m.role === "user").at(-1)?.row_id;
+    this.event(runtimeId, "message.delta", { text });
+    this.storeMessage(stored, { role: "assistant", text });
+    const final_assistant_row_id = this.transcripts[stored].at(-1)!.row_id;
+    this.event(runtimeId, "message.complete", { text, status: "complete", persisted_turn: { user_row_id, final_assistant_row_id } });
+  }
+
   /** A reply that starts two background subagents, as `delegate_task` in background mode reports them, and ends its turn while they run. */
   private backgroundReply(runtimeId: string, stored: string) {
     this.event(runtimeId, "message.start");
@@ -2646,6 +2773,63 @@ export class FakeHermes {
     this.event(runtime, "message.complete", { text: reply, status: "complete", persisted_turn: { user_row_id } });
   }
 
+  /**
+   * Runs a turn with tool calls in a runtime session whose prompt is already stored, as Hermes sends and stores one at
+   * `bf0203a` and `f0d9488` (docs/research/fleet-features-server-support.md, "Flight recorder"). Each model call adds
+   * `tokens` and one call to the session's counters, sent as a `session.usage` tick, and `costUsd` to its row's
+   * `estimated_cost_usd`. Each batch of `calls` is one model call's tool calls: `tool.start`, then `tool.complete` with
+   * Hermes's own `duration_s` and the result parsed as JSON when it is JSON. The rows are stored with `timestamp` at
+   * the end of each step and `tool_calls` on the assistant row. `wait` paces it: none in tests, real time on the stand-in.
+   */
+  async toolTurn(runtimeId: string, plan: ToolTurnPlan, wait: (seconds: number) => Promise<void> = async () => {}) {
+    const stored = this.runtime.get(runtimeId);
+    if (!stored) throw new Error(`No stored session for ${runtimeId}`);
+    const session = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored);
+    const prompt = [...(this.transcripts[stored] ?? [])].reverse().find((m) => m.role === "user");
+    const user_row_id = prompt?.row_id;
+    let clock = prompt?.timestamp ?? now();
+    const counters = () => ({
+      input: session?.input_tokens ?? 0,
+      output: session?.output_tokens ?? 0,
+      reasoning: 0,
+      prompt: session?.input_tokens ?? 0,
+      completion: session?.output_tokens ?? 0,
+      total: (session?.input_tokens ?? 0) + (session?.output_tokens ?? 0),
+      calls: session?.api_call_count ?? 0,
+    });
+    const modelCall = async (text: string, toolCalls?: unknown[]) => {
+      await wait(plan.modelSeconds);
+      clock += plan.modelSeconds;
+      if (session) {
+        session.input_tokens = (session.input_tokens ?? 0) + plan.tokens.prompt;
+        session.output_tokens = (session.output_tokens ?? 0) + plan.tokens.output;
+        session.api_call_count = (session.api_call_count ?? 0) + 1;
+        session.estimated_cost_usd = (session.estimated_cost_usd ?? 0) + plan.costUsd;
+        session.cost_status = "estimated";
+      }
+      this.storeMessage(stored, { role: "assistant", text, timestamp: clock, ...(toolCalls && { tool_calls: toolCalls }) });
+      this.event(runtimeId, "session.usage", { usage: counters() });
+    };
+    this.event(runtimeId, "message.start", plan.turnId ? { turn_id: plan.turnId } : {});
+    let seq = 0;
+    for (const batch of plan.calls) {
+      const ids = batch.map(() => `call_${runtimeId}_${++seq}`);
+      await modelCall("", batch.map((c, i) => ({ id: ids[i], type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } })));
+      for (const [i, c] of batch.entries()) this.event(runtimeId, "tool.start", { tool_id: ids[i], name: c.name, context: JSON.stringify(c.args).slice(0, 80), args: c.args });
+      for (const [i, c] of batch.entries()) {
+        await wait(c.seconds);
+        clock += c.seconds;
+        const text = typeof c.result === "string" ? c.result : JSON.stringify(c.result);
+        this.storeMessage(stored, { role: "tool", tool_call_id: ids[i], name: c.name, args: c.args, result: text, timestamp: clock });
+        this.event(runtimeId, "tool.complete", { tool_id: ids[i], name: c.name, args: c.args, duration_s: c.seconds, result: c.result });
+      }
+    }
+    this.event(runtimeId, "message.delta", { text: plan.reply });
+    await modelCall(plan.reply);
+    const final_assistant_row_id = this.transcripts[stored].at(-1)!.row_id;
+    this.event(runtimeId, "message.complete", { text: plan.reply, status: "complete", usage: counters(), persisted_turn: { user_row_id, final_assistant_row_id } });
+  }
+
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
@@ -2745,7 +2929,7 @@ export class FakeHermes {
 
   /**
    * `GET /api/sessions/{id}/messages` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`): stored rows,
-   * `SELECT *` from `messages`, oldest first or `order=latest` newest first, a page of `limit` from `offset`. Only rows
+   * `SELECT *` from `messages`, oldest first, a page of `limit` from `offset`, counted from the newest for `order=latest`. Only rows
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
@@ -2759,7 +2943,8 @@ export class FakeHermes {
         content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
         tool_name: m.role === "tool" ? (m.name ?? null) : null,
         tool_call_id: m.tool_call_id ?? null,
-        tool_calls: m.tool_calls === undefined ? null : JSON.stringify(m.tool_calls),
+        // Parsed back into its list, as v0.23.1 answers (`_row_to_message_dict`); the column holds its JSON text.
+        tool_calls: m.tool_calls ?? null,
         timestamp: m.timestamp ?? null,
         display_kind: m.display_kind ?? null,
         // A TEXT column: the stored row has the JSON text, where `session.history` sends the object.
@@ -2768,11 +2953,13 @@ export class FakeHermes {
         compacted: m.compacted ? 1 : 0,
         _compressed_summary: m.summary ? 1 : null,
         message_uid: m.message_uid ?? `uid-${m.row_id}`,
+        ...(m.display_content !== undefined && { display_content: m.display_content }),
       }));
-    if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);
-    return { session_id: id, profile: query.get("profile") ?? "default", messages: rows.slice(offset, offset + limit), pagination: {} };
+    // `latest` pages back from the newest row and still answers oldest first (`get_messages`, `hermes_state_messages.py`).
+    const page = query.get("order") === "latest" ? rows.slice(Math.max(0, rows.length - offset - limit), rows.length - offset) : rows.slice(offset, offset + limit);
+    return { session_id: id, profile: query.get("profile") ?? "default", messages: page, pagination: {} };
   }
 
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */
@@ -2785,7 +2972,16 @@ export class FakeHermes {
   private sessionDetail(id: string, profile: string | null) {
     const s = this.storeOrFail(profile).find((r) => r.id === id);
     if (!s) throw new RestError(404, `{"detail":"Session not found"}`);
-    return { ...s, archived: s.archived ? 1 : 0, pinned: s.pinned ? 1 : 0, runtime_revision: s.runtime_revision ?? 0, profile: profile ?? "default" };
+    // Only the detail row names a cron session's job (`cron_run_identity`); a list row never does.
+    const job = Object.entries(this.cron.runs).find(([, runs]) => runs.some((r) => r.id === id))?.[0];
+    return {
+      ...s,
+      archived: s.archived ? 1 : 0,
+      pinned: s.pinned ? 1 : 0,
+      runtime_revision: s.runtime_revision ?? 0,
+      profile: profile ?? "default",
+      ...(s.source === "cron" && { cron_job_id: job ?? null, cron_execution_id: null }),
+    };
   }
 
   /**
@@ -3488,7 +3684,12 @@ export type KanbanRow = {
   /** What the task's completion recorded (`tasks.result`, `kanban_db.complete_task`). */
   result?: string | null;
   comments?: { id: number; author: string; body: string; created_at: number }[];
+  model_override?: string | null;
+  provider_override?: string | null;
 };
+
+/** The kanban plugin's routes past the board's own, each of which a test may leave out (`FakeKanban.without`). */
+export type KanbanExtraRoute = "links" | "assignees" | "profiles" | "model-options" | "orchestration" | "estimate";
 
 const KANBAN_COLUMNS = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"];
 /** The plugin's `GET workflow`, as a fixture: the dispatcher's columns (scheduled, running, review) take no drop. */
@@ -3539,6 +3740,28 @@ export class FakeKanban {
   wakeWith?: (runtimeId: string, stored: string, text: string, userRowId: number) => void;
   private seq = 0;
   private runSeq = 0;
+  /** Dependency links (`task_links`): the child waits on the parent. */
+  links: { parent: string; child: string }[] = [];
+  /** Routes this plugin lacks, each answering FastAPI's own 404 `Not Found`, as an older plugin does. */
+  without = new Set<KanbanExtraRoute>();
+  /** `GET profiles`: each profile and the model it runs on. */
+  profiles: { name: string; model: string; provider: string }[] = [
+    { name: "researcher", model: "claude-sonnet-5-5", provider: "anthropic" },
+    { name: "writer", model: "", provider: "" },
+  ];
+  /** `GET model-options`; empty, as Hermes answers when it can't build the list. */
+  modelOptions: { slug: string; label: string; models: string[] }[] = [
+    { slug: "anthropic", label: "Anthropic", models: ["claude-sonnet-5-5", "claude-opus-5-5"] },
+    { slug: "openrouter", label: "OpenRouter", models: ["qwen/qwen3-coder"] },
+  ];
+  /** `kanban.auto_decompose` and `kanban.auto_promote_children`, as `GET orchestration` answers them. */
+  orchestration = { auto_decompose: true, auto_promote_children: true };
+  /** `kanban.review_dispatch` in the config, when it names it. */
+  reviewDispatch?: boolean;
+  /** What `POST estimate` answers for a task with a title, in place of the guess made from its text. */
+  estimateAnswer?: Record<string, unknown>;
+  /** Every estimate asked for, as `title|body`. Estimates write nothing, so they aren't in `writes`. */
+  estimates: string[] = [];
 
   constructor(private server: FakeHermes) {}
 
@@ -3609,10 +3832,15 @@ export class FakeKanban {
   }
 
   route(req: RestRequest): (() => unknown) | undefined {
-    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments)?)?$/.exec(req.path);
-    if (!m || this.missing) return undefined;
-    const [, what, rawId, comments] = m;
-    if (req.method !== "GET") return what === "tasks" ? () => this.write(req.method, rawId && decodeURIComponent(rawId), !!comments, req.body ?? {}) : undefined;
+    if (this.missing) return undefined;
+    const extra = /^\/api\/plugins\/kanban\/(links|assignees|profiles|model-options|orchestration|estimate)$/.exec(req.path)?.[1] as KanbanExtraRoute | undefined;
+    if (extra) return this.without.has(extra) ? undefined : this.extraRoute(extra, req);
+    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments|\/estimate)?)?$/.exec(req.path);
+    if (!m) return undefined;
+    const [, what, rawId, sub] = m;
+    if (sub === "/estimate") return req.method === "POST" && !this.without.has("estimate") ? () => this.estimateTask(decodeURIComponent(rawId)) : undefined;
+    const comments = !!sub;
+    if (req.method !== "GET") return what === "tasks" ? () => this.write(req.method, rawId && decodeURIComponent(rawId), comments, req.body ?? {}) : undefined;
     if (comments) return undefined;
     return () => {
       if (what === "workflow") return KANBAN_WORKFLOW;
@@ -3626,7 +3854,10 @@ export class FakeKanban {
       if (!board) this.refuse(404, `board '${slug}' does not exist`);
       if (what === "board")
         return {
-          columns: KANBAN_COLUMNS.filter((c) => c !== "archived").map((name) => ({ name, tasks: board.tasks.filter((t) => t.status === name).map(listed) })),
+          columns: KANBAN_COLUMNS.filter((c) => c !== "archived").map((name) => ({
+            name,
+            tasks: board.tasks.filter((t) => t.status === name).map((t) => ({ ...listed(t), link_counts: this.linkCounts(t.id) })),
+          })),
           assignees: ["researcher", "writer"],
           tenants: [],
           latest_event_id: 0,
@@ -3634,8 +3865,115 @@ export class FakeKanban {
         };
       const task = board.tasks.find((t) => t.id === decodeURIComponent(rawId ?? ""));
       if (!task) this.refuse(404, `task '${rawId}' does not exist`);
-      return { task: listed(task), events: [], runs: task.runs, comments: task.comments ?? [], links: [] };
+      const links = this.linksOf(task.id);
+      // `_link_tasks`: a linked task Hermes no longer has is left out.
+      const link_tasks = [...new Set([...links.parents, ...links.children])].flatMap((id) => {
+        const t = this.find(id);
+        return t ? [{ id: t.id, title: t.title, status: t.status }] : [];
+      });
+      return { task: listed(task), events: [], runs: task.runs, comments: task.comments ?? [], links, link_tasks };
     };
+  }
+
+  /** `_links_for`: the task's parents and children, each sorted by id. */
+  linksOf(id: string) {
+    return {
+      parents: this.links.filter((l) => l.child === id).map((l) => l.parent).sort(),
+      children: this.links.filter((l) => l.parent === id).map((l) => l.child).sort(),
+    };
+  }
+
+  private linkCounts(id: string) {
+    const { parents, children } = this.linksOf(id);
+    return { parents: parents.length, children: children.length };
+  }
+
+  /** Makes `child` wait on `parent`, as `kanban_db.link_tasks` does: true when a ready child went back to todo. */
+  link(parent: string, child: string): boolean {
+    if (parent === child) this.refuse(400, "a task cannot depend on itself");
+    const missing = [parent, child].filter((id) => !this.find(id));
+    if (missing.length) this.refuse(400, `unknown task(s): ${missing.join(", ")}`);
+    const kid = this.find(child)!;
+    if (kid.status === "running") this.refuse(400, `cannot link ${parent} -> ${child}: child is already running`);
+    const below = (from: string, seen = new Set<string>()): boolean =>
+      from === parent || (!seen.has(from) && (seen.add(from), this.links.some((l) => l.parent === from && below(l.child, seen))));
+    if (below(child)) this.refuse(400, `linking ${parent} -> ${child} would create a cycle`);
+    if (!this.links.some((l) => l.parent === parent && l.child === child)) this.links.push({ parent, child });
+    if (!["done", "archived"].includes(this.find(parent)!.status) && kid.status === "ready") {
+      kid.status = "todo";
+      return true;
+    }
+    return false;
+  }
+
+  /** `kanban_db.unlink_tasks`, then `recompute_ready`: a todo task none of whose parents is open becomes ready. */
+  unlink(parent: string, child: string): boolean {
+    const before = this.links.length;
+    this.links = this.links.filter((l) => !(l.parent === parent && l.child === child));
+    if (this.links.length === before) return false;
+    for (const t of Object.values(this.boards).flatMap((b) => b.tasks))
+      if (t.status === "todo" && this.linksOf(t.id).parents.every((p) => ["done", "archived"].includes(this.find(p)?.status ?? "done"))) t.status = "ready";
+    return true;
+  }
+
+  private extraRoute(route: KanbanExtraRoute, req: RestRequest): (() => unknown) | undefined {
+    const { method, body = {}, query } = req;
+    switch (`${method} ${route}`) {
+      case "POST links":
+      case "DELETE links":
+        return () => this.linkWrite(method, method === "POST" ? body : { parent_id: query.get("parent_id"), child_id: query.get("child_id") });
+      case "GET assignees": {
+        const names = new Set([...this.profiles.map((p) => p.name), ...Object.values(this.boards).flatMap((b) => b.tasks.flatMap((t) => (t.assignee ? [t.assignee] : [])))]);
+        return () => ({ assignees: [...names].sort().map((name) => ({ name, on_disk: this.profiles.some((p) => p.name === name), counts: {} })) });
+      }
+      case "GET profiles":
+        return () => ({
+          profiles: this.profiles.map((p, i) => ({ ...p, is_default: i === 0, description: "", description_auto: false, skill_count: 0 })),
+        });
+      case "GET model-options":
+        return () => ({ providers: this.modelOptions });
+      case "GET orchestration":
+        return () => ({
+          orchestrator_profile: "",
+          default_assignee: "",
+          ...this.orchestration,
+          resolved_orchestrator_profile: "default",
+          resolved_default_assignee: "default",
+          active_profile: "default",
+        });
+      case "POST estimate":
+        return () => this.estimate(String(body.title ?? ""), typeof body.body === "string" ? body.body : "");
+    }
+    // A route the plugin has, for another method.
+    return () => this.refuse(405, "Method Not Allowed");
+  }
+
+  /** `POST links` and `DELETE links?parent_id=&child_id=`, logged in `writes` as the page sent them. */
+  private linkWrite(method: string, ends: Record<string, unknown>) {
+    const parent = String(ends.parent_id ?? "");
+    const child = String(ends.child_id ?? "");
+    this.writes.push(method === "POST" ? `POST links ${JSON.stringify(ends)}` : `DELETE links ${parent} ${child}`);
+    const fail = this.failNext;
+    this.failNext = undefined;
+    if (typeof fail === "number") this.refuse(fail, "refused");
+    const answer = method === "POST" ? { ok: true, gated: this.link(parent, child) } : { ok: this.unlink(parent, child) };
+    if (fail === "lost") throw new Error("error sending request: connection reset");
+    return answer;
+  }
+
+  /** `_run_estimate`: no title is refused before any model is asked; otherwise a guess from the text's length. */
+  private estimate(title: string, body: string) {
+    if (!title.trim()) return { ok: false, reason: "a title is required to estimate" };
+    this.estimates.push(`${title}|${body}`);
+    if (this.estimateAnswer) return this.estimateAnswer;
+    const tokens = 4_000 + 100 * (title.length + body.length);
+    return { ok: true, est_tokens: tokens, complexity: tokens < 8_000 ? "S" : tokens < 20_000 ? "M" : "L", rationale: "Reads a few files and edits one.", model: "aux-model" };
+  }
+
+  private estimateTask(id: string) {
+    const task = this.find(id);
+    if (!task) this.refuse(404, `task ${id} not found`);
+    return this.estimate(task.title, task.body ?? "");
   }
 
   /** `POST tasks`, `PATCH tasks/{id}` and `POST tasks/{id}/comments`, as the plugin answers them. */
@@ -3670,7 +4008,17 @@ export class FakeKanban {
       if (typeof body.title === "string") task.title = body.title;
       if (typeof body.body === "string") task.body = body.body || null;
       if (typeof body.priority === "number") task.priority = body.priority;
-      if (typeof body.assignee === "string") task.assignee = body.assignee || null;
+      if (typeof body.assignee === "string") {
+        if (task.status === "running") this.refuse(409, `cannot reassign ${task.id}: currently running (claimed). Wait for completion or reclaim the stale lock first.`);
+        task.assignee = body.assignee || null;
+      }
+      if (body.clear_model_override === true || typeof body.model_override === "string") {
+        const model = body.clear_model_override === true ? "" : String(body.model_override).trim();
+        const provider = typeof body.provider_override === "string" ? body.provider_override.trim() : "";
+        if (provider && !model) this.refuse(400, "provider_override requires a model_override");
+        task.model_override = model || null;
+        task.provider_override = (model && provider) || null;
+      }
       if (typeof body.block_reason === "string") task.latest_summary = body.block_reason;
       if (typeof body.summary === "string") task.latest_summary = body.summary;
       if (typeof body.status === "string") this.move(task.id, body.status);
@@ -3687,5 +4035,5 @@ export class FakeKanban {
 
 /** A task as the routes list it: the stored row less what the plugin keeps to itself. */
 function listed({ subscribed: _, comments, ...t }: KanbanRow) {
-  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, ...t, comment_count: comments?.length ?? 0 };
+  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, model_override: null, provider_override: null, reasoning_effort: null, ...t, comment_count: comments?.length ?? 0 };
 }

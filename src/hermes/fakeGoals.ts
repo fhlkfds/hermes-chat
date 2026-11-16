@@ -1,4 +1,4 @@
-// FakeHermes's goals (standing missions, ADR 0178): `/goal` through `command.dispatch`, `session.control.read`,
+// FakeHermes's goals (standing missions, ADR 0187): `/goal` through `command.dispatch`, `session.control.read`,
 // `session.control` and the judge after a turn, with the shapes Hermes has at `b200f5bc`, `bf0203a` and `f0d9488`
 // (`tui_gateway/methods_session_control.py`, `hermes_cli/goal_command.py`, `hermes_cli/goals.py`). Checks don't run
 // anything: `exitOf` says what a command would exit with.

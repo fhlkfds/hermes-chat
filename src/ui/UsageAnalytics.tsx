@@ -46,7 +46,8 @@ import {
 } from "../hermes/usageAnalytics";
 import { Spinner } from "./bits";
 import { useLocale, type Formats } from "../i18n/locale";
-import { errorText } from "../hermes/values";
+import { errorText, lengthText } from "../hermes/values";
+import { REPLY_TIMES_KEPT, replyTimeStats, type ReplyTimeStats } from "../hermes/replyTimes";
 
 const HERE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const ROLLING = [1, 7, 30, 90, 365] as const;
@@ -181,6 +182,8 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
 
   const shownChats = useMemo(() => (data ? filterChats(data.chats, { model, project }, projectsOf) : []), [data, model, project, projectsOf]);
   const totals = useMemo(() => totalsOf(shownChats), [shownChats]);
+  // Read again with each read of Hermes, so replies timed since the page opened count after a refresh.
+  const timed = useMemo(() => replyTimeStats(shownChats, (p) => io.replyTimes?.(p) ?? []), [shownChats, io]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on what `ctx` reads (`zone`, `projectsOf`, `projects`); `ctx` itself is a new object every render
   const groups = useMemo(() => sortGroups(groupBy(shownChats, dim, ctx), sort), [shownChats, dim, sort, zone, projectsOf, projects]);
   const models = useMemo(() => [...new Set((data?.chats ?? []).map((c) => c.model ?? NO_MODEL))].sort(), [data]);
@@ -400,6 +403,7 @@ export function UsageAnalytics({ io, profile, listProfiles, projects, projectCha
           <>
             <TotalsTiles totals={totals} partial={partial} />
             <CostCard totals={totals} partial={unreadChats} />
+            <ReplyTimeCard stats={timed} chats={totals.chats} />
             {!drill ? (
               <section className="usage-section" aria-labelledby="usage-breakdown">
                 <div className="usage-section-head">
@@ -527,6 +531,38 @@ function TotalsTiles({ totals, partial }: { totals: Totals; partial: boolean }) 
       <p className="usage-note">
         Input, cache read and cache written don't overlap: together they are everything the model was sent. Reasoning is part of Output, so the total
         doesn't add it again. A "+" means some counts are missing, so the true figure is higher.
+      </p>
+    </section>
+  );
+}
+
+/** How long replies took in the chats shown, as this computer timed them. `chats`: how many chats are shown. */
+function ReplyTimeCard({ stats, chats }: { stats?: ReplyTimeStats; chats: number }) {
+  const { fmt } = useLocale();
+  const tile = (label: string, value: string, sub?: string) => (
+    <div className="usage-tile">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+      {sub && <dd className="usage-tile-sub">{sub}</dd>}
+    </div>
+  );
+  return (
+    <section className="usage-section" aria-labelledby="usage-reply-time">
+      <h2 id="usage-reply-time">Reply time</h2>
+      {stats ? (
+        <dl className="usage-tiles">
+          {tile("Typical reply", lengthText(stats.median), "half took longer, half less")}
+          {tile("Average", lengthText(stats.mean))}
+          {tile("Longest", lengthText(stats.longest))}
+          {tile("Replies timed", fmt.number(stats.replies), `in ${fmt.number(stats.chats)} of ${fmt.number(chats)} ${chats === 1 ? "chat" : "chats"}`)}
+        </dl>
+      ) : (
+        <p className="usage-note">No reply in these chats has been timed on this computer yet.</p>
+      )}
+      <p className="usage-note">
+        From Hermes starting each reply to finishing it, tool calls and waiting for your answers included. Hermes doesn't record how long a reply took, so
+        Highwing times the replies it watches finish, keeping each profile's latest {fmt.number(REPLY_TIMES_KEPT)}. Replies from other clients, or stopped or failed ones, aren't
+        counted.
       </p>
     </section>
   );

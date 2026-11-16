@@ -70,6 +70,9 @@ export const APP_METHODS = [
   "prompt.btw",
   "prompt.submit",
   "request.answer",
+  "rollback.diff",
+  "rollback.list",
+  "rollback.restore",
   "session.active_list",
   "session.branch",
   "session.close",
@@ -115,6 +118,7 @@ export type AppVerb = {
 const NO_METHOD = (method: AppMethod): CanonicalAnswer => ({ code: -32601, message: `unknown method: ${method} — not available on this Hermes backend` });
 const moved = (method: AppMethod, params: AppVerb["params"], canonical: string): AppVerb => ({ method, params, route: "refused", answer: NO_METHOD(method), canonical });
 const DESKTOP = "starts or drives the profile's Bot Desktop";
+const CHECKPOINTS = "added after the gateway was recorded; its route and answer are from the source at bf0203a";
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 export const APP_VERBS: AppVerb[] = [
@@ -266,7 +270,7 @@ export const APP_VERBS: AppVerb[] = [
   },
   // `arxiv` is a skill Hermes bundles, so a new home has it.
   { method: "command.dispatch", shape: "a skill", params: (s) => ({ name: "arxiv", arg: "", session_id: s.sid }), route: "authority", answer: "ok" },
-  // Standing missions (ADR 0178): routes and params from the gateway's source at `f0d94882` (`gateway/session_commands.py`
+  // Standing missions (ADR 0187): routes and params from the gateway's source at `f0d94882` (`gateway/session_commands.py`
   // `_AUTOMATION_COMMANDS`, `gateway/session_ancillary.py` `read`, `gateway/session_control_actions.py` `control`).
   {
     method: "command.dispatch",
@@ -286,6 +290,18 @@ export const APP_VERBS: AppVerb[] = [
   },
   { method: "slash.exec", params: (s) => ({ command: "/context", session_id: s.sid }), route: "authority", answer: "ok" },
   { method: "prompt.btw", params: (s) => ({ session_id: s.sid, text: "A side question" }), route: "authority", answer: "ok" },
+
+  // Checkpoints (issue #601, ADR 0180): the authority answers all three for a live session
+  // (`gateway/session_tui_ops.py:205` at `bf0203a`), in the same shapes as the legacy handlers.
+  { method: "rollback.list", params: (s) => ({ session_id: s.sid, profile: s.profile }), route: "authority", answer: "ok", unprobed: CHECKPOINTS },
+  { method: "rollback.diff", params: (s) => ({ session_id: s.sid, profile: s.profile, hash: "0a1b2c3d" }), route: "authority", answer: "ok", unprobed: CHECKPOINTS },
+  {
+    method: "rollback.restore",
+    params: (s) => ({ session_id: s.sid, profile: s.profile, hash: "0a1b2c3d", file_path: "notes.txt" }),
+    route: "authority",
+    answer: "ok",
+    unprobed: CHECKPOINTS,
+  },
 
   // Tools and subagents.
   { method: "tools.show", params: (s) => ({ session_id: s.sid }), route: "authority", answer: "ok" },

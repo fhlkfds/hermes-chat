@@ -12,8 +12,10 @@
 // Hermes's helper tasks, which no chat carries.
 import { chatUsageOf, costLabel, tokens as shortTokens, usd, type ChatUsage, type Cost } from "./usage";
 import { instantsOf, isoIn, knownZone } from "./schedule";
+import { jobRunTitle } from "./cronJobs";
 import { statusOf } from "./pipe";
 import { errorText, nonEmptyText } from "./values";
+import type { ReplyTime } from "./replyTimes";
 
 const DAY = 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
@@ -34,6 +36,8 @@ export type UsageIo = {
   session(profile: string, id: string): Promise<unknown>;
   /** `GET /api/analytics/usage?days=&profile=`: Hermes's own sums for sessions started in the last `days` days. */
   hermesTotals(profile: string, days: number): Promise<unknown>;
+  /** How long the profile's replies took, as this computer timed them: not read from Hermes (replyTimes.ts). */
+  replyTimes?(profile: string): readonly ReplyTime[];
 };
 
 export const COUNT_FIELDS = ["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as const;
@@ -64,6 +68,8 @@ export type UsageChat = {
   provider?: string;
   archived: boolean;
   pinned: boolean;
+  /** Every session id Hermes listed for it: its row's, and each segment's, read or not. */
+  ids: string[];
   segments: Segment[];
   missing: number;
   counts: Counts;
@@ -175,13 +181,15 @@ export function chatOfRow(profile: string, row: unknown, readAt: number): { chat
   const chat = withSegments({
     profile,
     id,
-    title: nonEmptyText(r.title) ?? nonEmptyText(r.preview)?.slice(0, 80) ?? id,
+    // A run Hermes hasn't named yet starts with the scheduler's instructions, which say nothing of the run.
+    title: nonEmptyText(r.title) ?? (r.source === "cron" ? jobRunTitle(started * 1000) : nonEmptyText(r.preview)?.slice(0, 80)) ?? id,
     source: nonEmptyText(r.source) ?? "unknown",
     startedAt: started * 1000,
     model: nonEmptyText(r.model),
     provider: nonEmptyText(r.billing_provider),
     archived: !!r.archived,
     pinned: !!r.pinned,
+    ids: [...new Set([id, root, ...lineage])],
     segments: [{ id: root, usage: chatUsageOf(r, readAt) }],
     missing: 0,
   });

@@ -1010,8 +1010,8 @@ function CommitDialog({
   );
 }
 
-/** One file of a combined patch, drawn as the diff panel draws it. */
-function PatchFile({ diff }: { diff: string }) {
+/** One file of a combined patch, drawn as the diff panel draws it: the Repository screen's, and a reply's files in the Preview. */
+export function PatchFile({ diff }: { diff: string }) {
   const parsed = useMemo(() => parseDiff(diff), [diff]);
   const title = /^diff --git a\/(.*) b\/(.*)$/m.exec(diff);
   return (
