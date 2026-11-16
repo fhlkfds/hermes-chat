@@ -168,7 +168,7 @@ The Live connection the owner works in: the composer, voice, Server files, Setti
 _Avoid_: current connection, active server
 
 **Background connection**:
-A Live connection that isn't the Composer target. It keeps its socket and the chats it held, shows their Approvals with its server's name in the Inbox and in notifications, and reads what runs and waits on its server every minute. It never sends, starts, branches or drains a queue, runs no search of its own, and answers no server request it doesn't show (ADR 0125). It does answer Everywhere's read of one of its profiles (ADR 0190).
+A Live connection that isn't the Composer target. It keeps its socket and the chats it held, shows their Approvals with its server's name in the Inbox and in notifications, and reads what runs and waits on its server every minute. It never sends, starts, branches or drains a queue, runs no search of its own, and answers no server request it doesn't show (ADR 0125). It does answer Everywhere's read of one of its profiles (ADR 0191).
 _Avoid_: watched connection, idle connection (one that isn't live)
 
 **Chat reference** (`ChatRef`):
@@ -200,7 +200,7 @@ What the search palette narrows the profile's chats by: words, Tags, Source, mod
 _Avoid_: query, view
 
 **Everywhere**:
-The search palette's scope that looks for the words in every profile of every Live connection, the Background connections too, where **This profile** looks in the profile on screen. Each row names its server, its bot and the chat. Hermes searches one profile for each request and gives at most 100 chats, so each profile is asked once, at most four requests are in flight across the connections, and a profile that gave 100 says more may match. Its filters are Bot, which decides which profiles are asked, and the model and dates, checked on what Hermes answered. A server whose Hermes has no chat search is left out, with why. Opening a row makes its connection the Composer target, switches to its profile, asking first as a chat link does, and goes to the words it matched. Searching changes nothing: no list, no shown profile, no target (ADR 0190).
+The search palette's scope that looks for the words in every profile of every Live connection, the Background connections too, where **This profile** looks in the profile on screen. Each row names its server, its bot and the chat. Hermes searches one profile for each request and gives at most 100 chats, so each profile is asked once, at most four requests are in flight across the connections, and a profile that gave 100 says more may match. Its filters are Bot, which decides which profiles are asked, and the model and dates, checked on what Hermes answered. A server whose Hermes has no chat search is left out, with why. Opening a row makes its connection the Composer target, switches to its profile, asking first as a chat link does, and goes to the words it matched. Searching changes nothing: no list, no shown profile, no target (ADR 0191).
 _Avoid_: global search, all servers (it covers the live ones only), cross-profile search
 
 **Saved filter**:
