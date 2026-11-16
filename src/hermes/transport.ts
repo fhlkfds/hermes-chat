@@ -3243,24 +3243,22 @@ export class Hermes {
       return undefined;
     }
     this.setQueue(chatId, { ...q, rush: { id, steering: true } });
-    const marked = () => this.profile === profile && this.snapshot.queues[chatId]?.rush?.id === id;
+    const sameProfile = () => this.profile === profile;
+    const stillWanted = () => sameProfile() && this.snapshot.queues[chatId]?.rush?.id === id;
     let res: "steered" | "not running";
     try {
       res = await this.steer(chatId, item.text);
     } catch (e) {
-      // Cancelled meanwhile: the pause, removal or profile switch that did it says why.
-      if (!marked()) return undefined;
+      if (!stillWanted()) return undefined;
       const { rush: _, ...rest } = this.snapshot.queues[chatId]!;
       this.setQueue(chatId, rest);
       return errorText(e);
     }
-    // Hermes has it, so it leaves the queue even if paused meanwhile: else a Resume would send it a second time.
-    if (res === "steered" && this.profile === profile) this.removeQueued(chatId, id);
-    else if (res === "not running" && marked()) this.rushNext(chatId, id);
+    if (res === "steered" && sameProfile()) this.removeQueued(chatId, id);
+    else if (res === "not running" && stillWanted()) this.rushNext(chatId, id);
     return undefined;
   }
 
-  /** Moves the queued message to the front and marks it to go next (`Rush`), past a pause. */
   private rushNext(chatId: string, id: string) {
     const q = this.snapshot.queues[chatId];
     const item = q?.items.find((i) => i.id === id);
@@ -3328,8 +3326,7 @@ export class Hermes {
    * Sends the next queued message of each chat that is ready for it: connected, its queue not paused or being edited,
    * no reply running, nothing loading or sending, no Approval waiting, and no message Hermes didn't take or may have.
    * One Hermes may have is settled first by reading the chat's history back (ADR 0006), which loading the chat does.
-   * A message the owner chose Send now on goes paused or not, and past a message Hermes didn't take. While Send now
-   * steers one into the reply, none goes until Hermes answers, since the answer decides what goes first (ADR 0187).
+   * A message the owner chose Send now on goes paused or not, and past a message Hermes didn't take (ADR 0182).
    */
   private pump() {
     if (this.closing || this.snapshot.status !== "connected" || restartHold.on || this.role === "background") return;
@@ -4353,9 +4350,9 @@ export class Hermes {
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
     // A reply stopped for Send now ended as the owner asked: the message they chose goes, and the queue doesn't pause.
-    // One a steer is still on its way into ended by itself, and pauses the queue as any other would (ADR 0187).
     const rush = this.snapshot.queues[chat.id]?.rush;
-    if ((type === "message.complete" || type === "error") && (!rush || rush.steering)) {
+    const stoppedForSendNow = rush !== undefined && !rush.steering;
+    if ((type === "message.complete" || type === "error") && !stoppedForSendNow) {
       const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
       if (why) this.pauseQueueFor(chat.id, why);
     }

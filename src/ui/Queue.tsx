@@ -1,7 +1,6 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
 // the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), removed, and
-// sent now, steered into the running reply or, when it can't be, stopping it (ADR 0187); the queue can be paused and
-// resumed.
+// sent now (ADR 0187); the queue can be paused and resumed.
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { ArrowUp, GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, type Rush, type SendNowRoute, isOutgoing, isWaiting, sendNowRoute } from "../hermes/model";
@@ -16,9 +15,9 @@ export type QueueApi = {
   /** Puts the message at place `index`, 0 first. */
   moveTo: (id: string, index: number) => void;
   /**
-   * Send now (ADR 0187): steers the message into the running reply, or stops the reply for it when it can't be steered
-   * (`sendNowRoute`); with no reply running, sends it as soon as it can go. Resolves with why Hermes refused the steer,
-   * which leaves the message queued.
+   * Send now (ADR 0187): steers the message into the running reply, or stops the reply for it when it can't be steered;
+   * with no reply running, sends it as soon as it can go. Resolves with why Hermes refused the steer, which leaves the
+   * message queued.
    */
   sendNow: (id: string) => Promise<string | undefined>;
   /** Why /steer can't run in this chat now, if it can't. */
@@ -191,7 +190,6 @@ function QueueRow({
   count: number;
   state: string;
   route: SendNowRoute;
-  /** Send now is steering it into the reply: its words are the ones Hermes got, so they can't be edited. */
   steering: boolean;
   mark: string;
   dragged: boolean;
@@ -203,13 +201,12 @@ function QueueRow({
   const spellCheck = useSpellCheck();
   const [editing, setEditing] = useState<string>();
   const [gone, setGone] = useState(false);
-  // Why Hermes refused the last Send now's steer. It answers that one press, in the pane it was pressed in.
-  const [refused, setRefused] = useState<string>();
+  const [steerRefusal, setSteerRefusal] = useState<string>();
   const rowRef = useRef<HTMLLIElement>(null);
   const files = item.attachments?.length ?? 0;
   const sendNow = () => {
-    setRefused(undefined);
-    void api.sendNow(item.id).then(setRefused);
+    setSteerRefusal(undefined);
+    void api.sendNow(item.id).then(setSteerRefusal);
   };
   // Nothing in the queue goes while its words are being changed.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hold while an edit is open, release when it closes; `api` is a new object every render, so listing it would release and hold again on every render
@@ -296,9 +293,9 @@ function QueueRow({
             </span>
           )}
           {gone && <span className="queue-gone">It had already gone, so the edit wasn't kept.</span>}
-          {refused && (
+          {steerRefusal && (
             <span className="queue-gone" role="alert">
-              Hermes didn't take it as a steer: {refused}
+              Hermes didn't take it as a steer: {steerRefusal}
             </span>
           )}
           {editing !== undefined && <span className="queue-keys">Enter to save · Esc to cancel</span>}
@@ -329,7 +326,7 @@ function QueueRow({
               title="Edit"
               aria-label={`Edit queued message ${index + 1}`}
               disabled={steering}
-              onClick={() => (setGone(false), setRefused(undefined), setEditing(item.text))}
+              onClick={() => (setGone(false), setSteerRefusal(undefined), setEditing(item.text))}
             >
               <Pencil size={13} />
             </button>

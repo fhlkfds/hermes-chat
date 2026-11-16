@@ -253,7 +253,6 @@ describe("Send now (ADR 0187)", () => {
   const interrupts = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "session.interrupt").length;
   const steers = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "command.dispatch").length;
   const NO_STEER = "This Hermes doesn't list it, so it may not have it.";
-  /** Holds Hermes's answer to the next /steer until the returned function is called. */
   const holdSteer = (server: FakeHermes) => {
     const real = server.handlers["command.dispatch"];
     let answer!: () => void;

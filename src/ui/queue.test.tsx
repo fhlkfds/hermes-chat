@@ -78,10 +78,9 @@ function drag(source: Element, target: Element, clientY: number, { drop = true }
   return allowed;
 }
 
-/** A Hermes that doesn't list /steer, so Send now can't steer. */
 const noSteer = (server: FakeHermes) => (server.commandCatalog = ["context"]);
 
-/** Signed in, with "Nightly backup" open and a reply streaming in it. `setup` changes the server before it starts. */
+/** Signed in, with "Nightly backup" open and a reply streaming in it. */
 async function replying(setup?: (server: FakeHermes) => void) {
   const server = new FakeHermes();
   setup?.(server);

@@ -203,10 +203,9 @@ export type Rush = { id: string; steering: boolean };
 export type SendNowRoute = { by: "send" } | { by: "steer" } | { by: "stop"; why: string };
 
 /**
- * What Send now does with `item` in `chat`, for the row's label and the transport alike, so the label can't promise
- * what the action won't do. With no reply running, or one the owner is already stopping, it just goes next. A running
- * reply is steered unless a steer can't carry it: then it's stopped for it, as before ADR 0187. `cantSteer`: why /steer
- * can't run in the chat now, if it can't.
+ * What Send now does with `item` in `chat` (ADR 0187). With no reply running, or one the owner is already stopping,
+ * it just goes next. A running reply is steered unless a steer can't carry it, and then it's stopped for it.
+ * `cantSteer`: why /steer can't run in the chat now, if it can't.
  */
 export function sendNowRoute(item: Queued, chat: Pick<Chat, "running" | "stopping">, cantSteer: string | undefined): SendNowRoute {
   if (!chat.running || chat.stopping) return { by: "send" };
