@@ -24,14 +24,15 @@ import { Spinner } from "./bits";
 /** The parts of the page that each need a route an older kanban plugin may lack. */
 export type WorkFeature = "links" | "pickers" | "estimate" | "dispatch";
 
-/** A card as the board and the graph show it. */
-export function CardFace({ t }: { t: BoardTask }) {
+/** A card as the board and the graph show it. `status`: shown at the end of the meta line, as the graph does. */
+export function CardFace({ t, status }: { t: BoardTask; status?: string }) {
   return (
     <>
       <div className="work-meta">
         <code>{t.id}</code>
         {t.priority !== 0 && <span>P{t.priority}</span>}
-        {t.tenant && <span>{t.tenant}</span>}
+        {t.tenant && <span className="work-tenant">{t.tenant}</span>}
+        {status && <span className="work-status work-node-status">{status}</span>}
       </div>
       <b className="work-title">{t.title}</b>
       {t.status === "blocked" && t.summary ? (

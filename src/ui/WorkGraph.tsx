@@ -3,7 +3,7 @@
 // task not on the board ends at a dashed ghost.
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { BoardTask, KanbanApi } from "../hermes/kanban";
-import { NODE, arrow, graphOf, layout, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
+import { NODE, arrow, graphOf, layout, nodeSize, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
 import { errorText, plural } from "../hermes/values";
 import { CardFace } from "./WorkPlan";
 
@@ -89,7 +89,10 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
     g.nodes.map((n) => n.id),
     g.edges,
   );
-  const { at, width, height } = place(layers);
+  const size = nodeSize(parseFloat(getComputedStyle(document.documentElement).fontSize) || 14);
+  const { at, width, height: drawn } = place(layers, size);
+  // Room under the last row for an arrow that skips a layer in a graph one row tall.
+  const height = drawn + NODE.gapY;
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
   const titleOf = (id: string) => byId.get(id)?.title ?? id;
 
@@ -110,7 +113,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
                 </marker>
               </defs>
               {g.edges.map((e) => (
-                <path key={`${e.parent} ${e.child}`} data-edge={`${e.parent} ${e.child}`} d={arrow(at.get(e.parent)!, at.get(e.child)!)} markerEnd={`url(#${marker})`} />
+                <path key={`${e.parent} ${e.child}`} data-edge={`${e.parent} ${e.child}`} d={arrow(at.get(e.parent)!, at.get(e.child)!, size)} markerEnd={`url(#${marker})`} />
               ))}
             </svg>
             {layers.flat().map((id) => {
@@ -119,11 +122,10 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
               const waits = g.edges.filter((e) => e.child === id).map((e) => titleOf(e.parent));
               const then = g.edges.filter((e) => e.parent === id).map((e) => titleOf(e.child));
               const said = [waits.length && `Waits on ${waits.join(", ")}.`, then.length && `Then ${then.join(", ")}.`].filter(Boolean).join(" ");
-              const style = { left: pos.x, top: pos.y, width: NODE.width, height: NODE.height };
+              const style = { left: pos.x, top: pos.y, ...size };
               return n.task ? (
                 <div key={id} className="work-card work-node" role="button" tabIndex={0} style={style} title={n.task.body || n.task.title} onClick={() => onOpen(id)} onKeyDown={opensOnKey(() => onOpen(id))}>
-                  <CardFace t={n.task} />
-                  <span className="work-status work-node-status">{n.status}</span>
+                  <CardFace t={n.task} status={n.status} />
                   {said && <span className="sr-only">{said}</span>}
                 </div>
               ) : (

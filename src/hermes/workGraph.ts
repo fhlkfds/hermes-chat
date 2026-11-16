@@ -96,27 +96,51 @@ export function layout(ids: readonly string[], edges: readonly Edge[]): string[]
   return layers.filter(Boolean);
 }
 
-/** A card's size and the gaps between cards in the drawn graph, in CSS pixels. */
-export const NODE = { width: 184, height: 84, gapX: 44, gapY: 16 };
+/**
+ * A card's size in the drawn graph at the interface size `rootPx`, in CSS pixels. Its width and its rows' line heights
+ * in styles.css (`.work-node`) are px at the default 14px and grow with the text; the padding, the gaps between the
+ * four rows and the border don't. The rows are the meta line, two title lines, a line of body or blocked summary, and
+ * the assignee line.
+ */
+export const nodeSize = (rootPx: number) => ({
+  width: Math.round((184 * rootPx) / 14),
+  height: Math.ceil(2 * 8 + 3 * 2 + 2 * 1 + ((16 + 2 * 18 + 17 + 17) * rootPx) / 14),
+});
 
-/** Where each card sits, its top left corner, and the size of the whole drawing. */
-export function place(layers: readonly string[][]): { at: Map<string, { x: number; y: number }>; width: number; height: number } {
+/** A card's size at the default interface size and the gaps between cards in the drawn graph, in CSS pixels. */
+export const NODE = { ...nodeSize(14), gapX: 44, gapY: 16 };
+
+type Size = { width: number; height: number };
+
+/** Where each card of `size` sits, its top left corner, and the size of the whole drawing. */
+export function place(layers: readonly string[][], size: Size = NODE): { at: Map<string, { x: number; y: number }>; width: number; height: number } {
   const at = new Map<string, { x: number; y: number }>();
-  layers.forEach((layer, i) => layer.forEach((id, j) => at.set(id, { x: i * (NODE.width + NODE.gapX), y: j * (NODE.height + NODE.gapY) })));
+  layers.forEach((layer, i) => layer.forEach((id, j) => at.set(id, { x: i * (size.width + NODE.gapX), y: j * (size.height + NODE.gapY) })));
   const tallest = Math.max(0, ...layers.map((l) => l.length));
   return {
     at,
-    width: layers.length ? layers.length * NODE.width + (layers.length - 1) * NODE.gapX : 0,
-    height: tallest ? tallest * NODE.height + (tallest - 1) * NODE.gapY : 0,
+    width: layers.length ? layers.length * size.width + (layers.length - 1) * NODE.gapX : 0,
+    height: tallest ? tallest * size.height + (tallest - 1) * NODE.gapY : 0,
   };
 }
 
-/** The SVG path of an arrow from the right of `from` to the left of `to`. */
-export function arrow(from: { x: number; y: number }, to: { x: number; y: number }): string {
-  const x1 = from.x + NODE.width;
-  const y1 = from.y + NODE.height / 2;
+/**
+ * The SVG path of an arrow from the right of `from` to the left of `to`, cards of `size`. An arrow that skips a layer
+ * runs along the gap between two rows, nearest midway between its ends, past the cards of the layers between. Below a
+ * drawing's only row, that gap is under the drawing.
+ */
+export function arrow(from: { x: number; y: number }, to: { x: number; y: number }, size: Size = NODE): string {
+  const x1 = from.x + size.width;
+  const y1 = from.y + size.height / 2;
   const x2 = to.x;
-  const y2 = to.y + NODE.height / 2;
-  const bend = Math.max(24, Math.abs(x2 - x1) / 2);
-  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+  const y2 = to.y + size.height / 2;
+  const curve = (xa: number, ya: number, xb: number, yb: number) => {
+    const bend = Math.max(24, Math.abs(xb - xa) / 2);
+    return `C ${xa + bend} ${ya}, ${xb - bend} ${yb}, ${xb} ${yb}`;
+  };
+  if (x2 - x1 <= NODE.gapX) return `M ${x1} ${y1} ${curve(x1, y1, x2, y2)}`;
+  const pitch = size.height + NODE.gapY;
+  const row = Math.max(1, Math.ceil(((y1 + y2) / 2 + NODE.gapY / 2) / pitch - 0.5));
+  const lane = row * pitch - NODE.gapY / 2;
+  return `M ${x1} ${y1} ${curve(x1, y1, x1 + NODE.gapX, lane)} L ${x2 - NODE.gapX} ${lane} ${curve(x2 - NODE.gapX, lane, x2, y2)}`;
 }

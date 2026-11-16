@@ -4288,10 +4288,19 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .work-edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; }
 .work-edges marker path { fill: var(--line-3); stroke: none; }
+/* A graph card is as tall as nodeSize (workGraph.ts) makes it from these rows' line heights: each row keeps them,
+   whole, and none shrinks or wraps past its lines. */
 .settings .work-card.work-node { position: absolute; box-sizing: border-box; overflow: hidden; gap: 2px; padding: 8px 10px; }
-.settings .work-card.work-node .work-title { display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.settings .work-card.work-node p { -webkit-line-clamp: 1; line-clamp: 1; }
-.work-node-status { position: absolute; top: 8px; right: 10px; font-size: calc(12rem / 14); }
+.settings .work-card.work-node .work-meta { flex: none; flex-wrap: nowrap; overflow: hidden; line-height: calc(16rem / 14); }
+.work-node .work-meta > * { flex: none; }
+/* The tenant gives way first, then the id, so the priority and the status always show whole. */
+.work-node .work-meta .work-tenant, .work-node .work-meta code { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-node .work-meta .work-tenant { flex-shrink: 1000; }
+.work-node .work-meta .work-node-status { margin-left: auto; text-transform: none; }
+.settings .work-card.work-node .work-title { flex: none; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: calc(18rem / 14); }
+.settings .work-card.work-node p { flex: none; -webkit-line-clamp: 1; line-clamp: 1; line-height: calc(17rem / 14); }
+.settings .work-card.work-node > small { flex: none; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; line-height: calc(17rem / 14); }
+.work-node > small > span:not(.work-model) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .settings .work-card.ghost { cursor: default; border-style: dashed; background: transparent; color: var(--muted); }
 .settings .work-card.ghost:hover { border-color: var(--line-2); }
 .settings section.work-loose { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--sidebar); }
