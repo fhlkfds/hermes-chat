@@ -1,12 +1,12 @@
 // The Work page (issue #595, ADR 0171): the dashboard's kanban board of bot work, laid out and featured as the official
 // Hermes desktop app's Kanban view. It reads the current board, and changes it only on an explicit move, edit, new
 // task or comment. The move rules come from the plugin's own workflow (kanban.ts `canMove`). Its Graph view, links, bot
-// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0179).
+// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0179). A card's sheet
+// shows its bot's run, with Stop, Reclaim and Reassign (ADR 0188).
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowLeft, CircleAlert, Cpu, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
 import {
   NoKanbanPlugin,
-  canMove,
   moveNeeds,
   moveSettled,
   refused,
@@ -20,6 +20,7 @@ import {
   type TaskDetail,
   type TaskFields,
   type TaskLinks,
+  type TaskRun,
   type Workflow,
 } from "../hermes/kanban";
 import { failureOf, stateOfFailure } from "../hermes/capabilities";
@@ -28,6 +29,7 @@ import { Spinner } from "./bits";
 import { useModal } from "./modal";
 import { BotModelSection, CardFace, DispatchLine, EstimateBox, LinksSection, PICKABLE, type DispatchRead, type WorkFeature } from "./WorkPlan";
 import { WorkGraph, opensOnKey } from "./WorkGraph";
+import { RunSection, manualMoves } from "./WorkRun";
 
 export type WorkApi = Pick<
   KanbanApi,
@@ -47,6 +49,8 @@ export type WorkApi = Pick<
   | "orchestration"
   | "estimate"
   | "estimateTask"
+  | "changeRun"
+  | "runChat"
 >;
 
 /** A move waiting on its summary or reason. */
@@ -62,18 +66,23 @@ const validFields = (f: TaskFields) => !!f.title.trim() && Number.isInteger(f.pr
 
 const NONE: ReadonlySet<WorkFeature> = new Set();
 
-/** `lacks`: the parts of the page whose routes the connected Hermes doesn't have, which don't show. */
+/**
+ * `lacks`: the parts of the page whose routes the connected Hermes doesn't have, which don't show. `watchMs`: how often
+ * an open sheet reads a card whose bot is at work.
+ */
 export function Work({
   api,
   connected,
   onClose,
   pollMs = 10_000,
+  watchMs = 5_000,
   lacks = NONE,
 }: {
   api: WorkApi;
   connected: boolean;
   onClose: () => void;
   pollMs?: number;
+  watchMs?: number;
   lacks?: ReadonlySet<WorkFeature>;
 }) {
   const [board, setBoard] = useState<Board>();
@@ -172,7 +181,8 @@ export function Work({
     if (openId && board && !open) setOpenId(undefined);
   }, [openId, board, open]);
 
-  const allowed = (t: BoardTask, to: string) => !!workflow && canMove(workflow, t.status, to);
+  const moves = (t: BoardTask) => (workflow ? manualMoves(workflow, t, lacks) : []);
+  const allowed = (t: BoardTask, to: string) => moves(t).some((c) => c.key === to);
 
   const move = async (task: BoardTask, to: string, note = "") => {
     setSaving(true);
@@ -333,7 +343,7 @@ export function Work({
                     role="button"
                     tabIndex={0}
                     title={t.body || t.title}
-                    draggable={!!workflow && !locked}
+                    draggable={!locked && moves(t).length > 0}
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/plain", t.id);
                       draggingNow.current = t;
@@ -363,6 +373,8 @@ export function Work({
           assignees={board?.assignees ?? []}
           board={tasks}
           lacks={lacks}
+          watchMs={watchMs}
+          defaultAssignee={dispatch.kind === "read" ? dispatch.o.defaultAssignee : undefined}
           onRefresh={() => void load(true)}
           onSaved={() => void load()}
           onMove={(to) => requestMove(open, to)}
@@ -442,6 +454,9 @@ function MovePrompt({ ask, busy, error, onSubmit, onClose }: { ask: Ask; busy: b
             placeholder={ask.need === "summary" ? "What got done?" : "Why is it blocked?"}
             aria-label={ask.need === "summary" ? "Summary" : "Reason"}
           />
+          {ask.task.status === "running" && ask.to === "blocked" && (
+            <p className="muted small">Blocking doesn't stop its bot, which works on to the end of its turn. The card stays blocked when the bot finishes.</p>
+          )}
           {error && <p className="work-err">{error}</p>}
           <div className="confirm-actions">
             <button type="button" className="btn" onClick={onClose}>
@@ -557,6 +572,8 @@ function TaskSheet({
   assignees,
   board,
   lacks,
+  watchMs,
+  defaultAssignee,
   onRefresh,
   onSaved,
   onMove,
@@ -573,6 +590,9 @@ function TaskSheet({
   /** The board's cards, which the task can be linked to. */
   board: BoardTask[];
   lacks: ReadonlySet<WorkFeature>;
+  watchMs: number;
+  /** The server's `kanban.default_assignee` when the page read its dispatch settings. */
+  defaultAssignee?: string;
   onRefresh: () => void;
   onSaved: () => void;
   onMove: (to: string) => void;
@@ -586,6 +606,7 @@ function TaskSheet({
   const [read, setRead] = useState<{ task: BoardTask; seen: string }>();
   // The links as last read: a link added or removed changes the board's counts, which reads them again.
   const [links, setLinks] = useState<{ links: TaskLinks; linked: LinkedTask[] }>();
+  const [runs, setRuns] = useState<TaskRun[]>();
   const [comments, setComments] = useState<TaskComment[]>();
   const [readErr, setReadErr] = useState<string>();
   const [rev, setRev] = useState(0);
@@ -611,6 +632,7 @@ function TaskSheet({
     setRead({ task: d.task, seen });
     setComments(d.comments);
     setLinks({ links: d.links, linked: d.linked });
+    setRuns(d.runs);
     setReadErr(undefined);
     const u = unsureNow.current;
     if (u && ours(d.comments, u.body) > u.had) {
@@ -627,9 +649,19 @@ function TaskSheet({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read again when the task, the board's values for it, its comment count or `rev` change; `api` is the same Hermes throughout
   }, [task.id, seen, task.comments, rev]);
+  // A read for the run section's watch. It takes no turn of its own: any read begun after it, by the sheet or by a
+  // section's write, is newer, and this one's answer is dropped.
+  const refresh = async () => {
+    const mine = gen.current;
+    const d = await api.loadTask(task.id);
+    if (!live.current || mine !== gen.current) return undefined;
+    show(d);
+    return d;
+  };
 
   const current = read && read.seen === seen ? read.task : task;
-  const targets = workflow.columns.filter((c) => canMove(workflow, task.status, c.key));
+  const targets = manualMoves(workflow, task, lacks);
+  const steered = task.status === "running" && !lacks.has("reassign");
   const can = (to: string) => targets.some((c) => c.key === to);
   const changes = form && base.current ? taskEdits(base.current, form) : {};
   const canSave = !!form && validFields(form) && Object.keys(changes).length > 0;
@@ -763,6 +795,24 @@ function TaskSheet({
                     <p className="work-text">{current.result}</p>
                   </>
                 )}
+                {!!runs?.length && (
+                  <RunSection
+                    task={current}
+                    api={api}
+                    runs={runs}
+                    assignees={assignees}
+                    can={{ reclaim: !lacks.has("reclaim"), reassign: !lacks.has("reassign") }}
+                    watchMs={watchMs}
+                    refresh={refresh}
+                    defaultAssignee={defaultAssignee}
+                    onRead={(d) => {
+                      gen.current++;
+                      show(d);
+                    }}
+                    onSaved={onSaved}
+                    onWriting={onWriting}
+                  />
+                )}
                 {PICKABLE.has(task.status) && !lacks.has("pickers") && (
                   <BotModelSection
                     task={{ ...current, status: task.status }}
@@ -862,6 +912,10 @@ function TaskSheet({
                   Save
                 </button>
               </>
+            ) : steered ? (
+              <p className="muted small">
+                A bot is working on this card. {lacks.has("reclaim") ? "Stop or Reassign" : "Stop, Reclaim or Reassign"} it above. Moving the card wouldn't stop the bot.
+              </p>
             ) : (
               <>
                 <select

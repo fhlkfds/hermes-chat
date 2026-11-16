@@ -1,7 +1,7 @@
 // Planning on the Work page (issue #604, ADR 0179): a card's face, the dispatch line, the token guess, and the task
 // sheet's links and bot and model pickers. Every write here is previewed, refused when the task changed since the sheet
 // showed it, sent once, and read back before the section unlocks (ADR 0014, ADR 0171).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Cpu, TriangleAlert, User, X } from "lucide-react";
 import {
   isOpen,
@@ -18,11 +18,22 @@ import {
   type TaskDetail,
   type TaskLinks,
 } from "../hermes/kanban";
+import type { CapabilityId } from "../hermes/capabilities";
 import { errorText } from "../hermes/values";
 import { Spinner } from "./bits";
 
 /** The parts of the page that each need a route an older kanban plugin may lack. */
-export type WorkFeature = "links" | "pickers" | "estimate" | "dispatch";
+export type WorkFeature = "links" | "pickers" | "estimate" | "dispatch" | "reclaim" | "reassign";
+
+/** The capability each part needs. A part hides only once Hermes is found to lack it. */
+export const WORK_PARTS: Record<WorkFeature, CapabilityId> = {
+  links: "workLinks",
+  pickers: "workPickers",
+  estimate: "workEstimate",
+  dispatch: "workDispatch",
+  reclaim: "workReclaim",
+  reassign: "workReassign",
+};
 
 /** A card as the board and the graph show it. `status`: shown at the end of the meta line, as the graph does. */
 export function CardFace({ t, status }: { t: BoardTask; status?: string }) {
@@ -144,19 +155,20 @@ export function EstimateBox({ ask, text, disabled }: { ask: () => Promise<Estima
 
 /**
  * One write from the sheet, from the owner's pick to Hermes's word on it. `unconfirmed`: it may have landed, so the
- * section stays locked until a read shows it did, or the owner sends it again, which can't do it twice.
+ * section stays locked until a read shows it did, or the owner sends it again, which can't do it twice. `alert`: it
+ * landed, with something the owner must know that it couldn't undo.
  */
-type Write<C> =
-  | { kind: "idle"; note?: string }
+export type Write<C> =
+  | { kind: "idle"; note?: string; alert?: string }
   | { kind: "confirming"; change: C; preview?: string[] }
   | { kind: "writing"; change: C }
   | { kind: "unconfirmed"; change: C; why: string }
   | { kind: "failed"; why: string };
 
-const busy = (w: Write<unknown>) => w.kind === "writing" || w.kind === "unconfirmed";
+export const busy = (w: Write<unknown>) => w.kind === "writing" || w.kind === "unconfirmed";
 
 /** What the sheet hands its sections: the task as it shows it, and how to show a newer read of it. */
-type SheetLink = {
+export type SheetLink = {
   task: BoardTask;
   api: SheetApi;
   /** A read of the task taken here, for the sheet to show. */
@@ -166,7 +178,7 @@ type SheetLink = {
   /** A write is on its way, so the board isn't read under it. */
   onWriting: (writing: boolean) => void;
 };
-export type SheetApi = Pick<KanbanApi, "loadTask" | "addLink" | "removeLink" | "editTask" | "setModel" | "assignees" | "profiles" | "modelOptions">;
+export type SheetApi = Pick<KanbanApi, "loadTask" | "addLink" | "removeLink" | "editTask" | "setModel" | "assignees" | "profiles" | "modelOptions" | "changeRun" | "runChat">;
 
 /**
  * `child` waits on `parent`; the sheet's task is one of the two. `seen`: its links as the sheet showed them. `starts`:
@@ -374,8 +386,25 @@ export function LinksSection({
   );
 }
 
-/** A write's preview with Save and Cancel, its progress, and what came of it. */
-function WriteStatus<C>({ w, verb, onConfirm, onCancel }: { w: Write<C>; verb: (c: C) => string; onConfirm: (c: C) => void; onCancel: () => void }) {
+/**
+ * A write's preview with Save and Cancel, its progress, and what came of it. `field`: what the confirm asks for before
+ * it can be sent, and `ready` whether it has it.
+ */
+export function WriteStatus<C>({
+  w,
+  verb,
+  onConfirm,
+  onCancel,
+  field,
+  ready = true,
+}: {
+  w: Write<C>;
+  verb: (c: C) => string;
+  onConfirm: (c: C) => void;
+  onCancel: () => void;
+  field?: ReactNode;
+  ready?: boolean;
+}) {
   if (w.kind === "confirming")
     return (
       <div className="work-confirm" role="group" aria-label="Confirm the change">
@@ -390,11 +419,12 @@ function WriteStatus<C>({ w, verb, onConfirm, onCancel }: { w: Write<C>; verb: (
             <Spinner /> Checking what this changes…
           </p>
         )}
+        {field}
         <div className="confirm-actions">
           <button className="btn" onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn primary" disabled={!w.preview} onClick={() => onConfirm(w.change)}>
+          <button className="btn primary" disabled={!w.preview || !ready} onClick={() => onConfirm(w.change)}>
             {verb(w.change)}
           </button>
         </div>
@@ -421,6 +451,12 @@ function WriteStatus<C>({ w, verb, onConfirm, onCancel }: { w: Write<C>; verb: (
     return (
       <p className="work-err" role="alert">
         {w.why}
+      </p>
+    );
+  if (w.alert)
+    return (
+      <p className="work-err" role="alert">
+        {w.alert}
       </p>
     );
   return w.note ? <p className="muted">{w.note}</p> : null;
