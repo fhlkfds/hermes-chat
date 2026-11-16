@@ -371,7 +371,9 @@ export class ProfilesApi {
     else if (write.model === null) fields.model = failed({ kind: "unsent", message: "Hermes has no route that takes a profile's model away." });
     const back = await this.list().then(held, () => undefined);
     const now = back && profileFieldsOf(back);
-    return { fields: settle(fields, edits, now, PROFILE_FIELDS_SAME, ["model"]), ...(now && { now }) };
+    // Hermes stores a provider under its canonical id ("Stub" reads back "custom:stub") and the model name as sent.
+    const landedAs = { model: (a: ProfileFields["model"], b: ProfileFields["model"]) => (a?.model.trim() ?? "") === (b?.model.trim() ?? "") };
+    return { fields: settle(fields, edits, now, PROFILE_FIELDS_SAME, landedAs), ...(now && { now }) };
   }
 
   /**

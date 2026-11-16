@@ -61,8 +61,10 @@ describe("settling a save against what Hermes has afterwards", () => {
     expect(settle({ title: { kind: "saved" } }, edits, { ...shown, title: "Writer" }, SAME)).toEqual({ title: { kind: "saved" } });
   });
 
-  it("keeps a saved field Hermes stores in its own spelling, whatever it reads back as", () => {
-    expect(settle({ title: { kind: "saved" } }, edits, { ...shown, title: "custom:writer" }, SAME, ["title"])).toEqual({ title: { kind: "saved" } });
+  it("judges a field Hermes respells by what it keeps, and still shows a real change made after the write", () => {
+    const sameWord = { title: (a: string, b: string) => a.replace(/^custom:/, "").toLowerCase() === b.toLowerCase() };
+    expect(settle({ title: { kind: "saved" } }, edits, { ...shown, title: "custom:writer" }, SAME, sameWord)).toEqual({ title: { kind: "saved" } });
+    expect(settle({ title: { kind: "saved" } }, edits, { ...shown, title: "custom:quill" }, SAME, sameWord)).toEqual({ title: { kind: "changedElsewhere", theirs: "custom:quill" } });
   });
 
   it("leaves a refusal as it is, and every outcome when nothing was read back", () => {

@@ -158,6 +158,13 @@ describe("Settings → Profiles' calls", () => {
     expect(saved).toEqual({ fields: { model: { kind: "saved" } }, now: { description: "", model: { provider: "custom:stub", model: "FAKE" } } });
   });
 
+  it("Edit shows a model another client saved straight after this one's, whatever spelling Hermes gives the provider", async () => {
+    const { server, api } = await signedIn((s) => (s.providerIds = { Stub: "custom:stub" }));
+    server.beforeProfileField = () => queueMicrotask(() => (server.profileModel.work = { ...server.profileModel.work!, model: "fake-large" }));
+    const saved = await api.edit("work", { model: { from: null, to: { provider: "Stub", model: "FAKE" } } });
+    expect(saved.fields).toEqual({ model: { kind: "changedElsewhere", theirs: { provider: "custom:stub", model: "fake-large" } } });
+  });
+
   it("Edit counts a description whose answer was lost as saved once the list has it, and one changed straight after as theirs", async () => {
     const { server, api } = await signedIn((s) => (s.profileFieldLost = "The connection dropped."));
     expect((await api.edit("work", { description: { from: "", to: "Writes code" } })).fields).toEqual({ description: { kind: "saved" } });

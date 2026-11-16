@@ -33,7 +33,7 @@ Hermes's desktop retries a rejected save by reading the block again and applying
 
 - **Name in Bot Mode, colour, Pin and Hide.** A change another client made to a field since the owner saw it is never written over, and no key the app doesn't edit is lost. Hermes's revision check makes this hold even for a change that lands between the app's read and its write.
 - **Description, model and picture.** Hermes has no revision for these. A change made since the owner saw the field is caught. A change that lands in the one round trip between the app's read and its write is written over, as with the persona (ADR 0014).
-- **The model's read-back can't tell who wrote it.** Hermes stores a provider under its canonical id (probed: `Stub` is stored as `custom:stub`), so what reads back can differ from what was sent with nobody else writing. A model whose `PUT` Hermes answered is saved, and the dialog shows the model as Hermes reports it.
+- **A model's provider reads back respelt.** Hermes stores a provider under its canonical id (probed: `Stub` is stored as `custom:stub`) and the model name as sent. So the read-back after the app's own `PUT` judges the model by its name alone: the same name is saved, and another name is someone else's change. A different provider with the same name, written straight after the app's, isn't caught. The dialog shows the model as Hermes reports it.
 - **Hermes's desktop can still write over this app's change** with its own retry.
 
 ## Considered options
