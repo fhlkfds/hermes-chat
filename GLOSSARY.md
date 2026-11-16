@@ -454,7 +454,7 @@ The rail's Usage screen: the Usage and Cost Hermes stored for each chat started 
 _Avoid_: dashboard, stats, report, billing
 
 **Budget**:
-A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0188).
+A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0190).
 _Avoid_: quota, cap, spending limit (Hermes enforces none)
 
 **Context window**:
