@@ -78,9 +78,13 @@ function drag(source: Element, target: Element, clientY: number, { drop = true }
   return allowed;
 }
 
-/** Signed in, with "Nightly backup" open and a reply streaming in it. */
-async function replying() {
+/** A Hermes that doesn't list /steer, so Send now can't steer. */
+const noSteer = (server: FakeHermes) => (server.commandCatalog = ["context"]);
+
+/** Signed in, with "Nightly backup" open and a reply streaming in it. `setup` changes the server before it starts. */
+async function replying(setup?: (server: FakeHermes) => void) {
   const server = new FakeHermes();
+  setup?.(server);
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" })];
   server.transcripts = { backup: [{ role: "user", text: "Why did the backup fail?" }, { role: "assistant", text: "The restic repo was locked." }] };
   const hermes = await connect(server.openPipe);
@@ -329,8 +333,8 @@ describe("While Hermes replies", () => {
     expect(prompts(s.server)).toEqual(["Unlock it", "later"]);
   });
 
-  it("Send now stops the reply and sends that message next, without pausing the rest", async () => {
-    const s = await replying();
+  it("Send now stops the reply when /steer can't run, and sends that message next, without pausing the rest", async () => {
+    const s = await replying(noSteer);
     for (const t of ["first", "urgent"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = () => queueIn(document.body)!;
     await s.user.click(within(queue()).getByRole("button", { name: "Send queued message 2 now, stopping the reply" }));
@@ -365,7 +369,7 @@ describe("While Hermes replies", () => {
   });
 
   it("offers Pause to cancel Send now on a paused queue", async () => {
-    const s = await replying();
+    const s = await replying(noSteer);
     for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = () => queueIn(document.body)!;
     await s.user.click(within(queue()).getByRole("button", { name: "Pause" }));

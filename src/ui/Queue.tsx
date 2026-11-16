@@ -137,7 +137,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               item={item}
               index={i}
               count={items.length}
-              state={item.id === rush ? "Now" : paused ? "Paused" : i === 0 ? "Next" : "Queued"}
+              state={item.id === rush?.id ? "Now" : paused ? "Paused" : i === 0 ? "Next" : "Queued"}
               running={!!chat.running}
               mark={over === i ? "insert-before" : over === items.length && i === items.length - 1 ? "insert-after" : ""}
               dragged={dragging === item.id}
