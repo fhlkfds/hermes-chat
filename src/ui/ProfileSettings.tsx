@@ -95,11 +95,15 @@ export function failureText(l: Locale, f: ProfileFailure, name: string): string 
     case "gone":
       return w.form.gone(name);
     case "refused":
-      return w.form.refused(f.detail);
+      return f.detail ? w.form.refused(f.detail) : w.form.refusedNoReason;
     case "lost":
       return w.form.lost(f.message);
     case "unsent":
       return f.message;
+    case "contended":
+      return w.form.contended;
+    case "noCheck":
+      return w.form.noCheck;
   }
 }
 

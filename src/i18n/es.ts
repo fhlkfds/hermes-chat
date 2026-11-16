@@ -336,6 +336,9 @@ export const es: Catalogue = {
       lost: (why) => `Hermes no lo confirmó, así que puede que haya ocurrido o no: ${why}`,
       gone: (name) => `Hermes ya no tiene ${name}. Puede que otro cliente lo haya renombrado o borrado.`,
       refused: (detail) => `Hermes lo rechazó: ${detail}`,
+      refusedNoReason: "Hermes no lo guardó, y no dijo por qué.",
+      contended: "Hermes siguió cambiando este bot mientras se guardaba, así que no se escribió nada. Inténtalo de nuevo.",
+      noCheck: "Este Hermes no puede comprobar si los ajustes de un bot cambiaron en otro sitio, así que no se envió nada. Actualizar Hermes añade la comprobación.",
     },
     del: {
       title: (name) => `¿Borrar el perfil «${name}»?`,

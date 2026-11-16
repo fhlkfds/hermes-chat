@@ -113,10 +113,13 @@ export function readProfileRows(res: unknown): ProfileRow[] {
   return toProfileRows(res);
 }
 
-/** Each change Settings → Profiles makes, by the Hermes route it goes through. */
-export type ProfileAction = "create" | "rename" | "describe" | "describeAuto" | "setModel" | "remove";
+/**
+ * Each change Settings → Profiles and the Bots view make, by the Hermes route or JSON-RPC method it goes through.
+ * `botLook` writes the Bot Mode block and `botPicture` the profile's avatar (ADR 0187).
+ */
+export type ProfileAction = "create" | "rename" | "describe" | "describeAuto" | "setModel" | "remove" | "botLook" | "botPicture";
 
-/** Each action's route, as Hermes's router declares it, for the note on a server without it. */
+/** Each action's route or method, as Hermes declares it, for the note on a server without it. */
 export const PROFILE_ROUTES: Record<ProfileAction, string> = {
   create: "POST /api/profiles",
   rename: "PATCH /api/profiles/{name}",
@@ -124,40 +127,67 @@ export const PROFILE_ROUTES: Record<ProfileAction, string> = {
   describeAuto: "POST /api/profiles/{name}/describe-auto",
   setModel: "PUT /api/profiles/{name}/model",
   remove: "DELETE /api/profiles/{name}",
+  botLook: "profiles.configure",
+  botPicture: "profiles.set_asset",
 };
 
 /**
  * How a profile call failed. `unsent`: it certainly didn't reach Hermes (not connected, or refused before sending).
- * `noRoute`: this Hermes has no route for it. `gone`: Hermes has no such profile. `refused`: Hermes refused it with a
- * reason and changed nothing. `lost`: no answer came, or Hermes failed partway (a timeout, a dropped connection, a
- * 5xx), so it may or may not have happened.
+ * `noRoute`: this Hermes has no route for it. `gone`: Hermes has no such profile. `refused`: Hermes refused it and
+ * changed nothing; `status` is its HTTP status or JSON-RPC code and `detail` its reason, 0 and "" when it gave none.
+ * `lost`: no answer came, or Hermes failed partway (a timeout, a dropped connection, a 5xx), so it may or may not have
+ * happened. `contended`: Hermes kept changing the bot's Bot Mode settings through every attempt, so nothing was
+ * written. `noCheck`: this Hermes reports no revision to check a Bot Mode write against, so nothing was sent.
  */
 export type ProfileFailure =
   | { kind: "unsent"; message: string }
   | { kind: "noRoute"; action: ProfileAction }
   | { kind: "gone"; detail: string }
   | { kind: "refused"; status: number; detail: string }
-  | { kind: "lost"; message: string };
+  | { kind: "lost"; message: string }
+  | { kind: "contended" }
+  | { kind: "noCheck" };
+
+function failureWords(f: ProfileFailure): string {
+  switch (f.kind) {
+    case "noRoute":
+      return `This Hermes server has no route for ${PROFILE_ROUTES[f.action]}.`;
+    case "gone":
+      return f.detail;
+    case "refused":
+      return f.detail || "Hermes didn't save it, and didn't say why.";
+    case "unsent":
+    case "lost":
+      return f.message;
+    case "contended":
+      return "Hermes kept changing this bot while it saved, so nothing was written.";
+    case "noCheck":
+      return "This Hermes can't check a bot's settings for changes made elsewhere, so nothing was sent.";
+  }
+}
 
 export class ProfileError extends Error {
   constructor(readonly failure: ProfileFailure) {
-    super(
-      failure.kind === "noRoute"
-        ? `This Hermes server has no route for ${PROFILE_ROUTES[failure.action]}.`
-        : failure.kind === "gone" || failure.kind === "refused"
-          ? failure.detail
-          : failure.message,
-    );
+    super(failureWords(failure));
   }
 }
 
 const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Sorts a failed call to `action`'s route. */
+/** JSON-RPC "method not found", and `profiles.*`'s code for a profile Hermes doesn't have (`_resolve_profile`). */
+const NO_SUCH_METHOD = -32601;
+const NO_SUCH_PROFILE = 4064;
+
+/** Sorts a failed call to `action`'s route or method. */
 export function profileFailure(e: unknown, action: ProfileAction): ProfileFailure {
   if (e instanceof ProfileError) return e.failure;
   if (e instanceof RouteMissingError) return { kind: "noRoute", action };
   if (e instanceof CapabilityUnsupportedError) return { kind: "unsent", message: e.message };
+  // A JSON-RPC error. Hermes's 4xxx codes refuse the request and change nothing; a 5xxx is a failure partway.
+  const code = isObj(e) && typeof e.code === "number" ? e.code : undefined;
+  if (code === NO_SUCH_METHOD) return { kind: "noRoute", action };
+  if (code === NO_SUCH_PROFILE) return { kind: "gone", detail: said(e) };
+  if (code !== undefined && code >= 4000 && code < 5000) return { kind: "refused", status: code, detail: said(e) };
   if (e instanceof RestError) {
     const detail = e.detail;
     if (e.status === 405 || (e.status === 404 && /^(not found$|no such api endpoint\b)/i.test(detail))) return { kind: "noRoute", action };

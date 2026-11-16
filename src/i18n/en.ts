@@ -352,6 +352,9 @@ export const en = {
       lost: (why: string) => `Hermes didn't confirm it, so it may or may not have happened: ${why}`,
       gone: (name: string) => `Hermes no longer has ${name}. Another client may have renamed or deleted it.`,
       refused: (detail: string) => `Hermes refused it: ${detail}`,
+      refusedNoReason: "Hermes didn't save it, and didn't say why.",
+      contended: "Hermes kept changing this bot while it saved, so nothing was written. Try again.",
+      noCheck: "This Hermes can't check a bot's settings for changes made elsewhere, so nothing was sent. Updating Hermes adds the check.",
     },
     del: {
       title: (name: string) => `Delete profile “${name}”?`,

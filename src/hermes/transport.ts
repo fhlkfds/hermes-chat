@@ -29,7 +29,7 @@ import { McpApi } from "./mcp";
 import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
-import { ProfilesApi, toProfileRows } from "./profiles";
+import { ProfilesApi, profileFailure, toProfileRows, type ProfileFailure } from "./profiles";
 import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
@@ -56,7 +56,28 @@ import type { Restored, RollbackIO } from "./fileUndo";
 import type { AppMethod } from "./canonicalVerbs";
 import { policyOf } from "./chatKind";
 import { projectStored, type TranscriptMessage } from "./storedTranscript";
-import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
+import {
+  BOT_BLOCK_FIELDS,
+  BOT_CHAT_TITLE,
+  BOT_LOOK_SAME,
+  BotChats,
+  BotModeUnsupportedError,
+  blockFor,
+  blockOf,
+  configureParams,
+  isBotChat,
+  isBotChatTitle,
+  lacksPictureKeys,
+  lookOf,
+  rosterOf,
+  rosterRows,
+  type Bot,
+  type BotBlock,
+  type BotBlockLook,
+  type BotLook,
+  type Revision,
+} from "./bots";
+import { plan, settle as settleEdits, type EditResult, type Edits, type Outcomes } from "./fieldMerge";
 import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
 import { projectContextFiles, type ChatContext, type ProjectContextFiles } from "./projectContextFiles";
 import { withContext } from "./projectContext";
@@ -388,6 +409,8 @@ const questionSpec = <Q extends QuestionItem>(i: Q) => QUESTIONS[i.kind] as unkn
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+/** How many times a bot's block is written before giving up, when another client keeps writing it between the read and the write. Hermes's desktop tries three times too. */
+const BOT_SAVE_ATTEMPTS = 3;
 /** The most pages of 100 stored rows the Run view reads back to find where a reply's turn began. */
 const RUN_PAGES = 5;
 /** "No window here shows this chat" (`NOT_SHOWN_CODE`, `tui_gateway/server_requests.py`): one client declining. */
@@ -2086,10 +2109,16 @@ export class Hermes {
    * Hermes has no Bot Mode.
    */
   async bots(): Promise<Bot[]> {
+    return (await this.readBotRoster()).bots;
+  }
+
+  /** One `profiles.list`, kept as the roster every view shows, with its rows as Hermes sent them for a bot's look. */
+  private async readBotRoster(): Promise<{ bots: Bot[]; rows: Record<string, unknown>[] }> {
     const gen = this.generation;
     const n = ++this.rosterReads.started;
     try {
-      const bots = rosterOf(await this.request("profiles.list", {}));
+      const result = await this.request("profiles.list", {});
+      const bots = rosterOf(result);
       if (gen === this.generation && n > this.rosterReads.landed) {
         this.rosterReads.landed = n;
         this.botChatIds = new Map(bots.map((b) => [b.profile, new Set(b.botChat ? [b.botChat.id, b.botChat.resolvedId] : [])]));
@@ -2097,7 +2126,7 @@ export class Hermes {
         this.update({ bots: { roster: bots, at: Date.now() }, botPictures: pictures });
         this.readBotPictures(gen, bots);
       }
-      return bots;
+      return { bots, rows: rosterRows(result) ?? [] };
     } catch (e) {
       const unsupported =
         e instanceof BotModeUnsupportedError ? e : e instanceof RpcError && e.code === NO_SUCH_METHOD ? new BotModeUnsupportedError("This Hermes has no profiles.list, so it has no Bot Mode.") : undefined;
@@ -2145,6 +2174,123 @@ export class Hermes {
     const res = obj(await this.request("profiles.get_asset", { name: profile, asset: "avatar" }));
     const data = res?.found === true && typeof res.data === "string" ? res.data : "";
     return /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(data) ? data : undefined;
+  }
+
+  /**
+   * A profile's look as Hermes has it now, read through the roster so every view sees the same read. `picture` is
+   * read only when asked for, and is null for a profile without one. Undefined when Hermes doesn't list the profile.
+   */
+  private async readLook(profile: string, withPicture: boolean): Promise<{ look: BotBlockLook; picture?: string | null; block: BotBlock; revision: Revision | undefined } | undefined> {
+    const row = (await this.readBotRoster()).rows.find((r) => String(r.name).trim() === profile);
+    if (!row) return undefined;
+    const picture = !withPicture ? undefined : row.has_avatar === true ? ((await this.botAvatar(profile)) ?? null) : null;
+    return { look: lookOf(row), ...(picture !== undefined && { picture }), ...blockOf(row) };
+  }
+
+  /** A bot's look as Hermes has it now, for Edit bot to open on. Undefined when Hermes doesn't list the profile. */
+  async botLook(profile: string): Promise<BotLook | undefined> {
+    const read = await this.readLook(profile, true);
+    return read && { ...read.look, picture: read.picture ?? null };
+  }
+
+  /**
+   * Saves `edits` to a bot's look, each field only where Hermes still has what the owner was shown (fieldMerge.ts
+   * `plan`, ADR 0187), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
+   * sends every other key back as just read; when Hermes says the block moved meanwhile, it is read and judged again,
+   * always against what the owner was shown. The picture goes first through `profiles.set_asset`, which has no such
+   * check. Never rejects: a failure is that field's outcome. The roster every view shows is read again as part of it.
+   */
+  async editBot(profile: string, edits: Edits<BotLook>): Promise<EditResult<BotLook>> {
+    const failed = (failure: ProfileFailure) => ({ kind: "failed", failure }) as const;
+    const all = (failure: ProfileFailure): EditResult<BotLook> => ({ fields: Object.fromEntries(Object.keys(edits).map((k) => [k, failed(failure)])) });
+    const gone: ProfileFailure = { kind: "gone", detail: `Hermes lists no profile named ${profile}.` };
+    const pictureEdit = edits.picture;
+    const blockEdits: Edits<BotBlockLook> = Object.fromEntries(BOT_BLOCK_FIELDS.flatMap((k) => (edits[k] ? [[k, edits[k]]] : [])));
+    const read = (withPicture: boolean) => this.readLook(profile, withPicture);
+    let cur: Awaited<ReturnType<typeof read>>;
+    try {
+      cur = await read(!!pictureEdit);
+    } catch (e) {
+      return all(profileFailure(e, "botLook"));
+    }
+    if (!cur) return all(gone);
+    // A picture's save ends with a block write, so a Hermes that can't check one gets neither.
+    if (cur.revision === undefined) return all({ kind: "noCheck" });
+    const out: Outcomes<BotLook> = {};
+
+    let pictureWritten = false;
+    if (pictureEdit) {
+      const p = plan({ picture: pictureEdit }, { picture: cur.picture ?? null }, { picture: BOT_LOOK_SAME.picture });
+      out.picture = p.settled.picture;
+      if ("picture" in p.write)
+        try {
+          const to = pictureEdit.to;
+          await this.request("profiles.set_asset", { name: profile, asset: "avatar", ...(to === null ? { clear: true } : { data: to }) });
+          pictureWritten = true;
+          out.picture = { kind: "saved" };
+        } catch (e) {
+          out.picture = failed(profileFailure(e, "botPicture"));
+        }
+    }
+    // The profile's picture is now the owner's, stored by this save or an earlier one: the block must say so too.
+    const picture = pictureEdit && out.picture?.kind === "saved" ? { cleared: pictureEdit.to === null } : undefined;
+    let pictureKeysFailure: ProfileFailure | undefined;
+
+    for (let attempt = 1; ; attempt++) {
+      const p = plan(blockEdits, cur.look, BOT_LOOK_SAME);
+      Object.assign(out, p.settled);
+      const pictureKeys = !!picture && lacksPictureKeys(cur.block, picture);
+      const fail = (failure: ProfileFailure) => {
+        for (const k of Object.keys(p.write) as (keyof BotBlockLook)[]) out[k] = failed(failure);
+        if (pictureKeys) pictureKeysFailure = failure;
+      };
+      if (!Object.keys(p.write).length && !pictureKeys) break;
+      let answer: unknown;
+      try {
+        answer = await this.request("profiles.configure", configureParams(profile, blockFor(cur.block, p.write, picture), cur.revision!));
+      } catch (e) {
+        fail(profileFailure(e, "botLook"));
+        break;
+      }
+      const applied = obj(obj(answer)?.applied);
+      if (applied?.ui_meta === true) {
+        for (const k of Object.keys(p.write) as (keyof BotBlockLook)[]) out[k] = { kind: "saved" };
+        break;
+      }
+      if (!obj(applied?.ui_meta_conflicts)) {
+        // The 64 KB limit on the block, or an exception inside Hermes: nothing was written, and no reason is given.
+        fail({ kind: "refused", status: 0, detail: "" });
+        break;
+      }
+      if (attempt === BOT_SAVE_ATTEMPTS) {
+        fail({ kind: "contended" });
+        break;
+      }
+      // Another client wrote the block between the read and the write. Read it again and judge every field again.
+      const next = await read(false).catch((e: unknown) => profileFailure(e, "botLook"));
+      if (!next || "kind" in next) {
+        fail(next ?? gone);
+        break;
+      }
+      cur = next;
+    }
+
+    // The picture read back below is the one to show. An ask still out for the old one is dropped by its new token,
+    // and the roster read doesn't ask a second time; if the read-back fails, the next roster read asks again.
+    const asks = this.pictureAsks?.asks;
+    if (pictureWritten) asks?.set(profile, {});
+    const gen = this.generation;
+    const back = await read(!!pictureEdit).catch(() => undefined);
+    if (back?.picture !== undefined && gen === this.generation) {
+      const { [profile]: _, ...others } = this.snapshot.botPictures;
+      this.update({ botPictures: back.picture === null ? others : { ...others, [profile]: back.picture } });
+    } else if (pictureWritten) asks?.delete(profile);
+    const now: Partial<BotLook> | undefined = back && { ...back.look, ...(back.picture !== undefined && { picture: back.picture }) };
+    const fields = settleEdits(out, edits, now, BOT_LOOK_SAME);
+    // A picture whose block keys didn't save isn't done: Hermes's desktop would still draw the old kind of face. It
+    // stays an edit, so the next Save writes the keys. A lost answer that the read-back shows landed is done.
+    if (pictureKeysFailure && picture && fields.picture?.kind === "saved" && !(back && !lacksPictureKeys(back.block, picture))) fields.picture = failed(pictureKeysFailure);
+    return { fields, ...(now && { now }) };
   }
 
   /**
@@ -5511,6 +5657,8 @@ export class Hermes {
     // A method that changes something, for a capability Hermes lacks, isn't sent.
     const refused = this.capabilities.refuses({ rpc: method });
     if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
+    const lacking = this.capabilities.lacks({ rpc: method });
+    if (lacking) return Promise.reject(new RouteMissingError(lacking));
     const id = this.nextId++;
     const done = new Promise((resolve, reject) => {
       const ms = SLOW_RPC.has(method) ? SLOW_RPC_ANSWER_MS : RPC_ANSWER_MS;
