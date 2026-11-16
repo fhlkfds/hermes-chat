@@ -33,7 +33,32 @@ export type BoardTask = {
   /** What the task's completion recorded (`tasks.result`): a worker's whole answer, where `summary` may be a line. */
   result?: string;
   comments: number;
+  /** How many tasks it waits on and how many wait on it, as the board counts them. */
+  links: LinkCounts;
+  /** The model its runs use instead of its bot's (`model_override`), and that model's provider when one was picked. */
+  model?: string;
+  provider?: string;
 };
+export type LinkCounts = { parents: number; children: number };
+/** A task's dependency links, by task id: the tasks it waits on (`parents`), and the tasks that wait on it. */
+export type TaskLinks = { parents: string[]; children: string[] };
+/** A linked task as `GET tasks/{id}` names it, so a link to a task not on the board still has a title. */
+export type LinkedTask = { id: string; title: string; status: string };
+/** A task's sheet: the task, its comments oldest first, its links and the linked tasks Hermes still has. */
+export type TaskDetail = { task: BoardTask; comments: TaskComment[]; links: TaskLinks; linked: LinkedTask[] };
+/** A model picked for a task: a model of a provider from the catalog, or a model typed in, with no provider. */
+export type ModelPick = { model: string; provider?: string };
+/** A provider and the models Hermes offers of it for a task (`GET model-options`). */
+export type ModelProvider = { slug: string; label: string; models: string[] };
+/** A profile a task can be given to, with the model it runs on when Hermes says. */
+export type BotProfile = { name: string; model?: string };
+/** How the server's dispatcher treats new cards (`GET orchestration`, `kanban.*` in its config). */
+export type Orchestration = { autoDecompose: boolean; autoPromoteChildren: boolean };
+/**
+ * Hermes's guess of what a task will take (`POST estimate`): a token count and a size, from a model. Never a cost:
+ * Hermes calls it a rough guess. `ok: false` carries Hermes's reason, such as no title.
+ */
+export type Estimate = { ok: true; tokens: number; size?: "S" | "M" | "L"; rationale: string } | { ok: false; reason: string };
 export type BoardColumn = { name: string; tasks: BoardTask[] };
 /** The current board, one column per status. `assignees`: the profiles a task can be given to. */
 export type Board = { columns: BoardColumn[]; assignees: string[] };
@@ -69,8 +94,36 @@ function parseBoardTask(v: unknown, column: string): BoardTask[] {
       ...(typeof v.latest_summary === "string" && v.latest_summary && { summary: v.latest_summary }),
       ...(typeof v.result === "string" && v.result.trim() && { result: v.result }),
       comments: typeof v.comment_count === "number" ? v.comment_count : 0,
+      links: { parents: count(v.link_counts, "parents"), children: count(v.link_counts, "children") },
+      ...(typeof v.model_override === "string" && v.model_override && { model: v.model_override }),
+      ...(typeof v.model_override === "string" && v.model_override && typeof v.provider_override === "string" && v.provider_override && { provider: v.provider_override }),
     },
   ];
+}
+
+const count = (v: unknown, key: string) => (isObj(v) && typeof v[key] === "number" && Number.isInteger(v[key]) && v[key] > 0 ? v[key] : 0);
+
+const parseLinks = (v: unknown): TaskLinks => ({ parents: isObj(v) ? strings(v.parents) : [], children: isObj(v) ? strings(v.children) : [] });
+
+const parseLinked = (v: unknown): LinkedTask[] =>
+  isObj(v) && typeof v.id === "string" && v.id ? [{ id: v.id, title: textOrEmpty(v.title) || v.id, status: textOrEmpty(v.status) }] : [];
+
+/** Whether two reads of a task's links name the same links, in any order. */
+export const sameLinks = (a: TaskLinks, b: TaskLinks) => {
+  const same = (x: string[], y: string[]) => x.length === y.length && x.every((id) => y.includes(id));
+  return same(a.parents, b.parents) && same(a.children, b.children);
+};
+
+/** A done or archived task holds up nothing: Hermes counts only the others when it makes a task ready. */
+export const isOpen = (status: string) => status !== "done" && status !== "archived";
+
+function parseEstimate(res: unknown): Estimate {
+  if (isObj(res) && res.ok === true && typeof res.est_tokens === "number" && res.est_tokens > 0) {
+    const size = res.complexity === "S" || res.complexity === "M" || res.complexity === "L" ? res.complexity : undefined;
+    return { ok: true, tokens: Math.round(res.est_tokens), ...(size && { size }), rationale: textOrEmpty(res.rationale) };
+  }
+  const reason = isObj(res) && typeof res.reason === "string" && res.reason ? res.reason : "Hermes gave no guess.";
+  return { ok: false, reason };
 }
 
 const parseBoard = (res: unknown): Board => ({
@@ -142,13 +195,18 @@ export class KanbanApi {
     return parseWorkflow(await this.rest("GET", `${BASE}/workflow`));
   }
 
-  /** The full task (the board cuts its summary short) and its comments, oldest first. */
-  async loadTask(id: string): Promise<{ task: BoardTask; comments: TaskComment[] }> {
+  /**
+   * The full task (the board cuts its summary short), its comments, oldest first, and its links. The task itself has
+   * no link counts here, so they are counted from its links.
+   */
+  async loadTask(id: string): Promise<TaskDetail> {
     const res = await this.rest("GET", taskPath(id));
-    const task = isObj(res) ? parseBoardTask(res.task, "")[0] : undefined;
-    if (!task) throw new Error(`Hermes answered task ${id} with something this app doesn't read.`);
-    const comments = (isObj(res) && Array.isArray(res.comments) ? res.comments : []).flatMap(parseComment).sort((a, b) => a.at - b.at || a.id - b.id);
-    return { task, comments };
+    const read = isObj(res) ? parseBoardTask(res.task, "")[0] : undefined;
+    if (!read || !isObj(res)) throw new Error(`Hermes answered task ${id} with something this app doesn't read.`);
+    const comments = (Array.isArray(res.comments) ? res.comments : []).flatMap(parseComment).sort((a, b) => a.at - b.at || a.id - b.id);
+    const links = parseLinks(res.links);
+    const linked = (Array.isArray(res.link_tasks) ? res.link_tasks : []).flatMap(parseLinked);
+    return { task: { ...read, links: { parents: links.parents.length, children: links.children.length } }, comments, links, linked };
   }
 
   /**
@@ -167,6 +225,79 @@ export class KanbanApi {
   async editTask(id: string, changes: Partial<TaskFields>): Promise<BoardTask | undefined> {
     const res = await this.rest("PATCH", taskPath(id), changes);
     return isObj(res) ? parseBoardTask(res.task, "")[0] : undefined;
+  }
+
+  /**
+   * Gives the task a model of its own, or with none back to its bot's. Hermes takes the provider only with a model, and
+   * a model sent without one clears the provider, so both always go together.
+   */
+  async setModel(id: string, pick: ModelPick | undefined): Promise<BoardTask | undefined> {
+    const body = pick ? { model_override: pick.model, ...(pick.provider && { provider_override: pick.provider }) } : { clear_model_override: true };
+    const res = await this.rest("PATCH", taskPath(id), body);
+    return isObj(res) ? parseBoardTask(res.task, "")[0] : undefined;
+  }
+
+  /** Makes `child` wait on `parent`. `gated`: the child was ready, and went back to todo until the parent is done. */
+  async addLink(parent: string, child: string): Promise<{ gated: boolean }> {
+    const res = await this.rest("POST", `${BASE}/links`, { parent_id: parent, child_id: child });
+    return { gated: isObj(res) && res.gated === true };
+  }
+
+  /** Removes the link. False when there was none, and nothing was written. */
+  async removeLink(parent: string, child: string): Promise<boolean> {
+    const res = await this.rest("DELETE", `${BASE}/links?${new URLSearchParams({ parent_id: parent, child_id: child })}`);
+    return isObj(res) && res.ok === true;
+  }
+
+  /** The profiles a task can be given to: those on the server's disk and those the board's tasks name. */
+  async assignees(): Promise<string[]> {
+    const res = await this.rest("GET", `${BASE}/assignees`);
+    return (isObj(res) && Array.isArray(res.assignees) ? res.assignees : []).flatMap((a) => (isObj(a) && typeof a.name === "string" && a.name ? [a.name] : []));
+  }
+
+  async profiles(): Promise<BotProfile[]> {
+    const res = await this.rest("GET", `${BASE}/profiles`);
+    return (isObj(res) && Array.isArray(res.profiles) ? res.profiles : []).flatMap((p): BotProfile[] =>
+      isObj(p) && typeof p.name === "string" && p.name ? [{ name: p.name, ...(typeof p.model === "string" && p.model && { model: p.model }) }] : [],
+    );
+  }
+
+  /** The models a task may be given, by provider. Hermes answers none when it can't build the list. */
+  async modelOptions(): Promise<ModelProvider[]> {
+    const res = await this.rest("GET", `${BASE}/model-options`);
+    return (isObj(res) && Array.isArray(res.providers) ? res.providers : []).flatMap((p): ModelProvider[] => {
+      if (!isObj(p) || typeof p.slug !== "string" || !p.slug) return [];
+      const models = strings(p.models).filter(Boolean);
+      return models.length ? [{ slug: p.slug, label: typeof p.label === "string" && p.label ? p.label : p.slug, models }] : [];
+    });
+  }
+
+  /** Hermes defaults both settings to on when its config doesn't name them, and answers them so. */
+  async orchestration(): Promise<Orchestration> {
+    const res = await this.rest("GET", `${BASE}/orchestration`);
+    if (!isObj(res) || typeof res.auto_decompose !== "boolean") throw new Error("Hermes answered the dispatch settings with something this app doesn't read.");
+    return { autoDecompose: res.auto_decompose, autoPromoteChildren: res.auto_promote_children !== false };
+  }
+
+  /**
+   * Whether a bot reviewer takes the profile's assigned review cards first (`kanban.review_dispatch`, on unless set
+   * otherwise), from the profile's config, read as Hermes reads it.
+   */
+  async reviewDispatch(profile: string): Promise<boolean> {
+    const res = await this.rest("GET", `api/config?${new URLSearchParams({ profile })}`);
+    if (!isObj(res)) throw new Error("Hermes answered its config with something this app doesn't read.");
+    const v = isObj(res.kanban) && "review_dispatch" in res.kanban ? res.kanban.review_dispatch : true;
+    return !!v && !(Array.isArray(v) && !v.length) && !(isObj(v) && !Object.keys(v).length);
+  }
+
+  /** A token guess for a task not created yet. Writes nothing. */
+  async estimate(title: string, body: string): Promise<Estimate> {
+    return parseEstimate(await this.rest("POST", `${BASE}/estimate`, { title: title.trim(), ...(body.trim() && { body }) }));
+  }
+
+  /** A token guess for a task from its saved title and description. Writes nothing. */
+  async estimateTask(id: string): Promise<Estimate> {
+    return parseEstimate(await this.rest("POST", `${taskPath(id)}/estimate`));
   }
 
   async addComment(id: string, body: string): Promise<void> {

@@ -177,17 +177,272 @@ describe("the Work page", () => {
   });
 });
 
+/** A plan: Plan (done) and Fetch (running) come before Build (todo), which an archived card also led to; Notes stands alone. */
+function planned() {
+  const s = new FakeHermes();
+  const k = s.kanban;
+  const plan = k.add("default", { title: "Plan the work", status: "done" });
+  const fetch = k.add("default", { title: "Fetch the data", status: "running", assignee: "researcher" });
+  const build = k.add("default", { title: "Build it", status: "todo", assignee: "writer" });
+  const old = k.add("default", { title: "Old spike", status: "archived" });
+  k.add("default", { title: "Notes", assignee: "researcher" });
+  k.links.push({ parent: plan.id, child: build.id }, { parent: fetch.id, child: build.id }, { parent: old.id, child: build.id });
+  return { s, plan, fetch, build, old };
+}
+
+async function openPlanned(p = planned()) {
+  await signIn(p.s);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Work" }));
+  await screen.findByText("4 tasks on the current board");
+  return { user, ...p };
+}
+
+async function sheetOf(user: ReturnType<typeof userEvent.setup>, title: string) {
+  await user.click(card(title));
+  return screen.findByRole("dialog", { name: title });
+}
+
+describe("planning on the Work page (issue #604)", () => {
+  it("draws the board's links as a graph, with a ghost for a card not on the board and unlinked cards apart", async () => {
+    const { user, plan, fetch, build, old } = await openPlanned();
+    await user.click(screen.getByRole("button", { name: "Graph" }));
+    await waitFor(() => expect(document.querySelectorAll("[data-edge]")).toHaveLength(3));
+    expect([...document.querySelectorAll("[data-edge]")].map((e) => e.getAttribute("data-edge")).sort()).toEqual(
+      [`${plan.id} ${build.id}`, `${fetch.id} ${build.id}`, `${old.id} ${build.id}`].sort(),
+    );
+    const ghost = screen.getByText("Old spike").closest<HTMLElement>(".work-card")!;
+    expect(ghost.classList).toContain("ghost");
+    expect(within(ghost).getByText("archived, not on this board")).toBeTruthy();
+    expect(within(card("Build it")).getByText("Waits on Plan the work, Fetch the data, Old spike.")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Not linked" })).getByText("Notes")).toBeTruthy();
+    await user.click(card("Build it"));
+    expect(await screen.findByRole("dialog", { name: "Build it" })).toBeTruthy();
+  });
+
+  it("reads a linked card's links again on Refresh", async () => {
+    const { user, s, build } = await openPlanned();
+    await user.click(screen.getByRole("button", { name: "Graph" }));
+    await waitFor(() => expect(document.querySelectorAll("[data-edge]")).toHaveLength(3));
+    const reads = () => s.restRequests.filter((r) => r.path === `/api/plugins/kanban/tasks/${build.id}`).length;
+    const before = reads();
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(reads()).toBe(before + 1));
+  });
+
+  it("warns that removing a todo card's last open parent makes it ready, and sends nothing until confirmed", async () => {
+    const { user, s, fetch, build } = await openPlanned();
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Fetch the data" }));
+    const confirm = within(links).getByRole("group", { name: "Confirm the change" });
+    expect(confirm.textContent).toContain("Build it stops waiting on Fetch the data.");
+    expect(confirm.textContent).toContain(
+      "Build it waits on nothing else after this. Hermes makes it ready at once, and the dispatcher starts it on its next tick, about a minute, if it has a bot or this server sets kanban.default_assignee.",
+    );
+    expect(s.kanban.writes).toEqual([]);
+    await user.click(within(confirm).getByRole("button", { name: "Remove link" }));
+    await waitFor(() => expect(within(links).queryByText("Fetch the data")).toBeNull());
+    expect(s.kanban.writes).toEqual([`DELETE links ${fetch.id} ${build.id}`]);
+    await waitFor(() => expect(within(column("ready")).getByText("Build it")).toBeTruthy());
+  });
+
+  it("doesn't warn when the card still waits on another open card", async () => {
+    const { user, s, build } = await openPlanned();
+    const other = s.kanban.add("default", { title: "Review the API", status: "todo" });
+    s.kanban.links.push({ parent: other.id, child: build.id });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Fetch the data" }));
+    expect(within(links).getByRole("group", { name: "Confirm the change" }).textContent).not.toMatch(/waits on nothing else/);
+  });
+
+  it("sends nothing when another parent finished after the confirm, and shows the warning the owner didn't see", async () => {
+    const { user, s, build } = await openPlanned();
+    const other = s.kanban.add("default", { title: "Review the API", status: "todo" });
+    s.kanban.links.push({ parent: other.id, child: build.id });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Fetch the data" }));
+    expect(within(links).getByRole("group", { name: "Confirm the change" }).textContent).not.toMatch(/waits on nothing else/);
+    s.kanban.find(other.id)!.status = "done";
+    await user.click(within(links).getByRole("button", { name: "Remove link" }));
+    const again = await within(links).findByRole("group", { name: "Confirm the change" });
+    await waitFor(() => expect(again.textContent).toMatch(/waits on nothing else after this/));
+    expect(again.textContent).toContain("This changed since you confirmed, so nothing was sent yet.");
+    expect(s.kanban.writes).toEqual([]);
+  });
+
+  it("says a ready card goes back to todo when it's made to wait, and adds the link from the sheet", async () => {
+    const { user, s, fetch } = await openPlanned();
+    const notes = s.kanban.boards.default.tasks.find((t) => t.title === "Notes")!;
+    const sheet = await sheetOf(user, "Notes");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await waitFor(() => expect(within(links).getByText("Nothing")).toBeTruthy());
+    await user.selectOptions(within(links).getByRole("combobox", { name: "Add a card it waits on" }), fetch.id);
+    const confirm = within(links).getByRole("group", { name: "Confirm the change" });
+    expect(confirm.textContent).toContain("Notes is ready, so it goes back to todo until Fetch the data is done.");
+    await user.click(within(confirm).getByRole("button", { name: "Add link" }));
+    await waitFor(() => expect(within(links).getByText("Fetch the data")).toBeTruthy());
+    expect(s.kanban.writes).toEqual([`POST links {"parent_id":"${fetch.id}","child_id":"${notes.id}"}`]);
+    expect(within(links).getByText("Notes went back to todo until Fetch the data is done.")).toBeTruthy();
+  });
+
+  it("sends nothing when the card's links changed since the sheet showed them, and shows them as they are", async () => {
+    const { user, s, plan, build } = await openPlanned();
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await within(links).findByRole("button", { name: "Remove Plan the work" });
+    const other = s.kanban.add("default", { title: "Ask legal", status: "todo" });
+    s.kanban.links.push({ parent: other.id, child: build.id });
+    await user.click(within(links).getByRole("button", { name: "Remove Plan the work" }));
+    await user.click(within(links).getByRole("button", { name: "Remove link" }));
+    await waitFor(() => expect(within(links).getByRole("alert").textContent).toMatch(/links changed since the sheet showed them, so nothing was sent/));
+    expect(within(links).getByText("Ask legal")).toBeTruthy();
+    expect(s.kanban.writes).toEqual([]);
+    expect(s.kanban.links.some((l) => l.parent === plan.id)).toBe(true);
+  });
+
+  it("keeps the links locked after a lost answer until a read shows the change, and Try again sends nothing twice", async () => {
+    const { user, s, plan, build } = await openPlanned();
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Plan the work" }));
+    s.kanban.failNext = "lost";
+    await user.click(within(links).getByRole("button", { name: "Remove link" }));
+    await waitFor(() => expect(within(links).getByRole("alert").textContent).toMatch(/It may have gone through: Refresh to check, or Try again/));
+    expect((within(links).getByRole("button", { name: "Remove Fetch the data" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(links).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(within(links).getByText("That change is already there.")).toBeTruthy());
+    expect(s.kanban.writes).toEqual([`DELETE links ${plan.id} ${build.id}`]);
+    expect((within(links).getByRole("button", { name: "Remove Fetch the data" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("gives a card that hasn't started a bot and a model, one PATCH each, and shows no pickers on a running card", async () => {
+    const { user, s, build } = await openPlanned();
+    let sheet = await sheetOf(user, "Build it");
+    const picks = within(sheet).getByRole("region", { name: "Bot and model" });
+    const bot = within(picks).getByRole("combobox", { name: "Bot" });
+    await waitFor(() => expect(within(bot).getByRole("option", { name: "researcher (claude-sonnet-5-5)" })).toBeTruthy());
+    await user.selectOptions(bot, "researcher");
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("Build it goes to researcher.");
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("Once it's ready, the dispatcher starts it on its next tick.");
+    // Unassigning never promises that nothing runs it: a server's kanban.default_assignee takes unassigned cards.
+    await user.click(within(picks).getByRole("button", { name: "Cancel" }));
+    await user.selectOptions(bot, "");
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("unless this server sets kanban.default_assignee");
+    await user.click(within(picks).getByRole("button", { name: "Cancel" }));
+    await user.selectOptions(bot, "researcher");
+    await user.click(within(picks).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.kanban.find(build.id)!.assignee).toBe("researcher"));
+    const model = within(picks).getByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(model.matches(":disabled")).toBe(false));
+    await user.selectOptions(model, within(model).getByRole("option", { name: "claude-opus-5-5" }));
+    expect(within(picks).getByRole("group", { name: "Confirm the change" }).textContent).toContain("Build it runs on claude-opus-5-5 from Anthropic instead of its bot's model.");
+    await user.click(within(picks).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.kanban.find(build.id)!.model_override).toBe("claude-opus-5-5"));
+    await waitFor(() => expect(model.matches(":disabled")).toBe(false));
+    await user.selectOptions(model, "");
+    await user.click(within(picks).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.kanban.find(build.id)!.model_override).toBeNull());
+    expect(s.kanban.writes).toEqual([
+      `PATCH ${build.id} {"assignee":"researcher"}`,
+      `PATCH ${build.id} {"model_override":"claude-opus-5-5","provider_override":"anthropic"}`,
+      `PATCH ${build.id} {"clear_model_override":true}`,
+    ]);
+    await user.click(within(sheet).getByRole("button", { name: "Close" }));
+    sheet = await sheetOf(user, "Fetch the data");
+    await within(sheet).findByText("Comments");
+    expect(within(sheet).queryByRole("region", { name: "Bot and model" })).toBeNull();
+    expect(within(sheet).getByText("A running card can't be made to wait on another card.")).toBeTruthy();
+  });
+
+  it("offers a typed model when Hermes has no model list", async () => {
+    const p = planned();
+    p.s.kanban.modelOptions = [];
+    const { user, s, build } = await openPlanned(p);
+    const picks = within(await sheetOf(user, "Build it")).getByRole("region", { name: "Bot and model" });
+    const typed = await within(picks).findByRole("textbox", { name: "Model" });
+    await user.type(typed, "local/llama");
+    await user.click(within(picks).getByRole("button", { name: "Use" }));
+    await user.click(within(picks).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(s.kanban.writes).toEqual([`PATCH ${build.id} {"model_override":"local/llama"}`]));
+  });
+
+  it("calls an estimate a token guess, never a cost, and writes nothing", async () => {
+    const { user, s } = await openPlanned();
+    await user.click(screen.getByRole("button", { name: "New task" }));
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    expect((within(dialog).getByRole("button", { name: "Estimate" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(within(dialog).getByRole("textbox", { name: "Title" }), "Write it up");
+    await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    const guess = await within(dialog).findByText(/^Token guess: about/);
+    expect(guess.textContent).toBe("Token guess: about 5,100 tokens, size S");
+    const box = guess.closest(".work-estimate")!;
+    expect(box.textContent).toContain("A model's rough guess of tokens, not a cost.");
+    expect(box.textContent!.replace("not a cost", "")).not.toMatch(/cost|\$|price/i);
+    await user.keyboard("{Escape}");
+    const sheet = await sheetOf(user, "Build it");
+    s.kanban.estimateAnswer = { ok: false, reason: "auxiliary client unavailable" };
+    await user.click(within(sheet).getByRole("button", { name: "Estimate" }));
+    expect(await within(sheet).findByText("No token guess: auxiliary client unavailable")).toBeTruthy();
+    expect(s.kanban.writes).toEqual([]);
+  });
+
+  it("says how this server dispatches, for each setting, and never that cards wait for the owner", async () => {
+    for (const [settings, says] of [
+      [{ auto_decompose: true, auto_promote_children: true }, ["Hermes splits triage cards into linked cards on its own.", "A split's cards that wait on no other open card are made ready at once; the rest wait until those cards are done."]],
+      [{ auto_decompose: false, auto_promote_children: false }, ["Triage cards wait until someone moves them.", "A split's cards wait in todo until the dispatcher's next tick, which makes ready those that wait on no open card."]],
+    ] as const) {
+      const p = planned();
+      p.s.kanban.orchestration = { ...settings };
+      await openPlanned(p);
+      const line = await screen.findByText(says[0], { exact: false });
+      for (const said of says) expect(line.textContent).toContain(said);
+      expect(line.textContent).toContain("A ready card with a bot starts on the dispatcher's next tick (every 60 s by default) while the server's gateway runs it.");
+      expect(line.textContent).not.toMatch(/nothing runs|until you say|until the owner/i);
+      expect(line.closest("[title]")!.getAttribute("title")).toMatch(/kanban\.auto_decompose.*kanban\.auto_promote_children/);
+      cleanup();
+      await Promise.all(running.splice(0).map((h) => h.close()));
+    }
+  });
+
+  it("hides the dispatch line and the token guess on a plugin without their routes", async () => {
+    const p = planned();
+    p.s.kanban.without.add("orchestration").add("estimate");
+    const { user } = await openPlanned(p);
+    await waitFor(() => expect(screen.queryByText(/Dispatch/)).toBeNull());
+    await user.click(screen.getByRole("button", { name: "New task" }));
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Title" }), "Write it up");
+    // The first estimate finds the route missing; after that the button is gone.
+    if (within(dialog).queryByRole("button", { name: "Estimate" })) await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    await waitFor(() => expect(within(dialog).queryByRole("button", { name: "Estimate" })).toBeNull());
+  });
+});
+
 describe("the Work page on its own", () => {
-  const board: Board = { columns: [{ name: "ready", tasks: [{ id: "t_1", title: "Research", body: "", assignee: "", status: "ready", priority: 0, comments: 0 }] }], assignees: [] };
+  const board: Board = { columns: [{ name: "ready", tasks: [{ id: "t_1", title: "Research", body: "", assignee: "", status: "ready", priority: 0, comments: 0, links: { parents: 0, children: 0 } }] }], assignees: [] };
   const workflow = { columns: [{ key: "ready", label: "Ready", dropTarget: true }], manual: {} };
   const stub = (over: Partial<WorkApi>): WorkApi => ({
     loadBoard: async () => board,
     loadWorkflow: async () => workflow,
-    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [] }),
+    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [] }),
     createTask: async () => ({}),
     editTask: async () => undefined,
     addComment: async () => {},
     moveTask: async () => undefined,
+    setModel: async () => undefined,
+    addLink: async () => ({ gated: false }),
+    removeLink: async () => true,
+    assignees: async () => [],
+    profiles: async () => [],
+    modelOptions: async () => [],
+    orchestration: async () => ({ autoDecompose: true, autoPromoteChildren: true }),
+    estimate: async () => ({ ok: false, reason: "no" }),
+    estimateTask: async () => ({ ok: false, reason: "no" }),
     ...over,
   });
 
@@ -198,6 +453,21 @@ describe("the Work page on its own", () => {
     });
     render(<Work api={api} connected onClose={() => {}} />);
     await waitFor(() => expect(screen.getByRole("note").textContent).toMatch(/no Kanban plugin/));
+  });
+
+  it("keeps focus in New task while it asks for a token guess, so Escape still closes it", async () => {
+    const user = userEvent.setup();
+    let asked = 0;
+    render(<Work api={stub({ estimate: () => (asked++, new Promise(() => {})) })} connected onClose={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "New task" }));
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Title" }), "Write it up");
+    await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    await within(dialog).findByText(/Asking Hermes for a token guess/);
+    await user.click(within(dialog).getByRole("button", { name: "Estimate" }));
+    expect(asked).toBe(1);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("doesn't read the board while the task sheet saves an edit", async () => {

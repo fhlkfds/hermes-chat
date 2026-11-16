@@ -257,7 +257,7 @@ describe("Diagnostics' write checks (ADR 0169)", () => {
     return { hermes, chat, id: id! };
   }
 
-  it("settles both on a Hermes that has them, and changes no toolset and answers no Approval", { timeout: 10_000 }, async () => {
+  it("settles each on a Hermes that has them, and changes no toolset or link and answers no Approval", { timeout: 10_000 }, async () => {
     const server = new FakeHermes();
     const { hermes, id } = await waiting(server);
     const writesBefore = writesSent(server).length;
@@ -265,9 +265,18 @@ describe("Diagnostics' write checks (ADR 0169)", () => {
     expect(hermes.capabilities.get("toolsetSwitches")).toMatchObject({ state: "supported", source: "probed" });
     expect(hermes.capabilities.get("approvalAnswers")).toMatchObject({ state: "supported", source: "probed" });
     expect(hermes.capabilities.get("approvalAnswers").why).toMatch(/doesn't run turns in a process of their own/);
-    // The one PUT names the toolset no toolset is, and FastAPI refused its body: no toolset changed.
-    expect(writesSent(server).slice(writesBefore).map((r) => [r.method, r.path])).toEqual([["PUT", "/api/tools/toolsets/__hermes_chat_probe__"]]);
+    expect(hermes.capabilities.get("workLinks")).toMatchObject({ state: "supported", source: "probed" });
+    expect(hermes.capabilities.get("workEstimate")).toMatchObject({ state: "supported", source: "probed" });
+    // The one PUT names the toolset no toolset is, and FastAPI refused its body: no toolset changed. The link went from
+    // a task to itself and the estimate had no title, which Hermes refuses before writing or asking a model.
+    expect(writesSent(server).slice(writesBefore).map((r) => [r.method, r.path])).toEqual([
+      ["PUT", "/api/tools/toolsets/__hermes_chat_probe__"],
+      ["POST", "/api/plugins/kanban/links"],
+      ["POST", "/api/plugins/kanban/estimate"],
+    ]);
     expect(server.toolsetWrites).toEqual([]);
+    expect(server.kanban.links).toEqual([]);
+    expect(server.kanban.estimates).toEqual([]);
     // approval.respond named a session and request no Approval has: the waiting one is still waiting.
     expect(rpcSent(server, "approval.respond").map((r) => r.params)).toEqual([{ session_id: "__hermes_chat_probe__", request_id: "__hermes_chat_probe__", choice: "deny" }]);
     expect(server.approvalAnswers).toEqual([]);

@@ -45,7 +45,8 @@ const NEW: Record<string, unknown> = {
   "GET api/cron/jobs": [],
   "GET api/webhooks": { enabled: true, subscriptions: [] },
   "GET api/fs/list": { path: "/", entries: [] },
-  "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },
+  "GET api/plugins/kanban/boards": { boards: [{ slug: "default", is_current: true }], current: "default" },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
+  "GET api/plugins/kanban/model-options": { providers: [] },
 };
 
 const noRoute = () => answered(404, "Not Found");
@@ -83,6 +84,7 @@ function scripted(answers: Record<string, unknown>) {
     get: (pathAndQuery) => answer(`GET ${pathAndQuery.split("?")[0]}`).then((v) => (typeof v === "string" ? v : JSON.stringify(v))),
     rpc: (method) => answer(`RPC ${method}`),
     put: (pathAndQuery) => answer(`PUT ${pathAndQuery.split("?")[0]}`).then((v) => JSON.stringify(v)),
+    post: (pathAndQuery) => answer(`POST ${pathAndQuery.split("?")[0]}`).then((v) => JSON.stringify(v)),
   };
   return { io, calls, answers };
 }
@@ -152,6 +154,11 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       automations: "supported",
       outputs: "supported",
       kanban: "supported",
+      workDispatch: "supported",
+      workPickers: "supported",
+      // Only Diagnostics' write checks, or a write, can learn these.
+      workLinks: "unknown",
+      workEstimate: "unknown",
       botMode: "supported",
       // Only a chat's own subagent.list can learn this.
       subagents: "unknown",
@@ -693,6 +700,46 @@ describe("checking again", () => {
       await t.caps.checkWrites();
       expect([t.caps.get("toolsetSwitches").state, t.caps.get("approvalAnswers").state], `case ${i}`).toEqual([switches, approvals]);
     }
+  });
+
+  it("reads the Work page's link and estimate checks, which change nothing", async () => {
+    const LINKS = "POST api/plugins/kanban/links";
+    const ESTIMATE = "POST api/plugins/kanban/estimate";
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ [LINKS]: answered(400, "a task cannot depend on itself"), [ESTIMATE]: { ok: false, reason: "a title is required to estimate" } }, "supported", "supported"],
+      // The hot-mount fallback's own 404, or a 405: the plugin has no such route.
+      [{ [LINKS]: noRoute(), [ESTIMATE]: answered(405, "Method Not Allowed") }, "unsupported", "unsupported"],
+      // A link Hermes took, or an estimate it made, shows nothing it should.
+      [{ [LINKS]: { ok: true, gated: false }, [ESTIMATE]: { ok: true, est_tokens: 10 } }, "unknown", "unknown"],
+      [{ [LINKS]: answered(502, "bad gateway"), [ESTIMATE]: answered(503, "busy") }, "unreachable", "unreachable"],
+    ];
+    for (const [i, [answers, links, estimate]] of cases.entries()) {
+      const t = store({ ...NEW, ...answers });
+      await connectAndCheck(t);
+      await t.caps.checkWrites();
+      expect([t.caps.get("workLinks").state, t.caps.get("workEstimate").state], `case ${i}`).toEqual([links, estimate]);
+    }
+  });
+
+  it("finds the Work page's dispatch settings and pickers from their reads, and the plugin without them", async () => {
+    const t = store(NEW);
+    await connectAndCheck(t);
+    expect([t.caps.get("workDispatch").state, t.caps.get("workPickers").state]).toEqual(["supported", "supported"]);
+    const old = store({ ...NEW, "GET api/plugins/kanban/orchestration": undefined, "GET api/plugins/kanban/model-options": undefined });
+    await connectAndCheck(old);
+    expect([old.caps.get("workDispatch").state, old.caps.get("workPickers").state, old.caps.get("kanban").state]).toEqual(["unsupported", "unsupported", "supported"]);
+  });
+
+  it("refuses a link or an estimate on a plugin without its route, and still takes the board's own writes", async () => {
+    const t = store(NEW);
+    await connectAndCheck(t);
+    t.caps.observeWrite(1, { route: "api/plugins/kanban/estimate", verb: "POST" }, noRoute());
+    expect(t.caps.get("kanban").state).toBe("supported");
+    expect(t.caps.refuses({ rest: "POST", path: "api/plugins/kanban/tasks/t_1/estimate" })).toBe("workEstimate");
+    expect(t.caps.refuses({ rest: "POST", path: "api/plugins/kanban/links" })).toBeUndefined();
+    expect(t.caps.refuses({ rest: "PATCH", path: "api/plugins/kanban/tasks/t_1" })).toBeUndefined();
+    t.caps.observeWrite(1, { route: "api/plugins/kanban/links", verb: "POST" }, noRoute());
+    expect(t.caps.refuses({ rest: "DELETE", path: "api/plugins/kanban/links?parent_id=a&child_id=b" })).toBe("workLinks");
   });
 
   it("checks everything when asked, from diagnostics", async () => {

@@ -72,12 +72,19 @@ async function signedIn() {
       if (!res.ok) throw new RestError(res.status, text.slice(0, 300));
       return text;
     },
+    post: async (path, body) => {
+      sent.push(`POST ${path.split("?")[0]}`);
+      const res = await send("POST", path, body);
+      const text = await res.text();
+      if (!res.ok) throw new RestError(res.status, text.slice(0, 300));
+      return text;
+    },
   };
   return { io, ready: await ready, rpc, sent, close: () => ws.close() };
 }
 
 describe.skipIf(!BASE)("diagnostics against a real dashboard", () => {
-  it("reads what the server is and checks every feature, by reading and the two write checks", async () => {
+  it("reads what the server is and checks every feature, by reading and the write checks", async () => {
     const live = await signedIn();
     const store = new CapabilityStore(live.io, () => 1, Date.now, 15_000, 0);
     store.connected(1, "default", live.ready, live.rpc("client.capabilities", { server_requests: true }));
@@ -88,10 +95,11 @@ describe.skipIf(!BASE)("diagnostics against a real dashboard", () => {
     expect(snap.checking).toBe(false);
     expect(snap.facts.protocol).toBe("legacy");
     expect(snap.facts.version ?? snap.facts.build ?? snap.facts.commit).toBeTruthy();
-    // Only reads went out, and the two write checks: GETs, the JSON-RPC methods the contract names as reads, a PUT for
-    // the toolset no toolset is, and approval.respond for an Approval no session has.
+    // Only reads went out, and the write checks: GETs, the JSON-RPC methods the contract names as reads, a PUT for the
+    // toolset no toolset is, approval.respond for an Approval no session has, a link from a task to itself and an
+    // estimate with no title.
     const reads = /^RPC (client\.capabilities|gateway\.capabilities|projects\.list|commands\.catalog|session\.active_list|learning\.detail|profiles\.list|subagent\.roster)$/;
-    const writeChecks = new Set(["PUT api/tools/toolsets/__hermes_chat_probe__", "RPC approval.respond"]);
+    const writeChecks = new Set(["PUT api/tools/toolsets/__hermes_chat_probe__", "RPC approval.respond", "POST api/plugins/kanban/links", "POST api/plugins/kanban/estimate"]);
     expect(live.sent.filter((s) => !s.startsWith("GET ") && !reads.test(s) && !writeChecks.has(s))).toEqual([]);
     for (const c of CAPABILITIES) expect(["supported", "unsupported", "unknown", "unreachable"]).toContain(snap.caps[c.id].state);
     for (const pair of (process.env.HERMES_LIVE_EXPECT ?? "").split(",").filter(Boolean)) {
