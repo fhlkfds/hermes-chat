@@ -79,7 +79,7 @@ export async function undoFiles(io: RollbackIO, view: FoundFiles, chosen: Undoab
     const parsed = parseRollbackDiff(back.stat, back.diff);
     const after = await Promise.all(sent.map((o) => (o.outcome === "restored" ? io.readText(o.file.abs) : undefined)));
     // Hermes answers a diff it failed to make as an empty one, so a file whose text didn't change wasn't restored.
-    const differs = (o: FileOutcome, n: number) => !!fileIn(parsed, o.file.rel) || after[n] === shown.texts.get(o.file.abs);
+    const differs = (o: FileOutcome, n: number) => !!fileIn(parsed, o.file.rel) || (after[n] !== undefined && after[n] === shown.texts.get(o.file.abs));
     return {
       kind: "done",
       files: sent.map((o, n): FileOutcome => {

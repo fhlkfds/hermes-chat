@@ -76,6 +76,14 @@ describe("a reply's file changes", () => {
     expect(await undoFiles(blind, view, [undoable(view, "b.txt")])).toMatchObject({ kind: "done", files: [{ outcome: "unconfirmed" }] });
   });
 
+  it("says a restore is unconfirmed when the file could be read neither before nor after", async () => {
+    const { load, io } = await edited();
+    const unreadable = { ...io, readText: () => Promise.resolve(undefined) };
+    const view = await found(load());
+    const blind = { ...view, shown: { ...view.shown, texts: new Map([[undoable(view, "b.txt").abs, undefined]]) } };
+    expect(await undoFiles(unreadable, blind, [undoable(view, "b.txt")])).toMatchObject({ kind: "done", files: [{ outcome: "unconfirmed" }] });
+  });
+
   it("restores nothing when the files changed since the preview", async () => {
     const { server, load, io } = await edited();
     const view = await found(load());
