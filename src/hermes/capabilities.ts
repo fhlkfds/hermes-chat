@@ -531,8 +531,9 @@ function turnIsolationOf(text: string): boolean | undefined {
 export function checkpointsSettingOf(text: string): boolean | undefined {
   const config: unknown = JSON.parse(text);
   if (!isObj(config)) return undefined;
-  const v = isObj(config.checkpoints) ? config.checkpoints.enabled : undefined;
-  return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : v === true;
+  // Hermes also takes the old `checkpoints: true` form, and reads `enabled` with Python's `bool()` (`tui_gateway/checkpoints.py:24`).
+  const v = typeof config.checkpoints === "boolean" ? config.checkpoints : isObj(config.checkpoints) ? config.checkpoints.enabled : undefined;
+  return typeof v === "string" ? ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()) : typeof v === "number" ? v !== 0 : v === true;
 }
 /** JSON-RPC "invalid params", and Hermes's own code for params its contract refuses: the method is there, in another shape. */
 const BAD_PARAMS = new Set([-32602, 4000]);

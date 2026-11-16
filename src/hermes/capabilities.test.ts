@@ -18,6 +18,7 @@ import {
   stateOfFailure,
   statusFacts,
   type CapabilityIO,
+  checkpointsSettingOf,
 } from "./capabilities";
 import { RpcError } from "./transport";
 import { RestError } from "./pipe";
@@ -748,5 +749,12 @@ describe("the copied report", () => {
     const t = store({ ...NEW, "GET api/files": answered(502, "token=abcd1234secret") });
     await connectAndCheck(t);
     expect(t.caps.get("serverFiles").why).not.toContain("abcd1234secret");
+  });
+});
+
+describe("checkpointsSettingOf", () => {
+  it("reads checkpoints.enabled as Hermes does, the old `checkpoints: true` form included", () => {
+    const of = (checkpoints: unknown) => checkpointsSettingOf(JSON.stringify({ checkpoints }));
+    expect([of({ enabled: true }), of({ enabled: false }), of(true), of(false), of({ enabled: 1 }), of({ enabled: 0 }), of({ enabled: "yes" }), of({})]).toEqual([true, false, true, false, true, false, true, false]);
   });
 });

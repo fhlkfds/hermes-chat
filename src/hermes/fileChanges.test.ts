@@ -20,6 +20,11 @@ const write = (id: string, path: string, content: string, result = '{"bytes_writ
   status: "done",
   result,
 });
+/** An `inline_diff` of one hunk, drawn as Hermes draws it but without the colours. */
+const drawn = (path: string, removed: string[], added: string[]) =>
+  ["  ┊ review diff", `a/${path} → b/${path}`, `@@ -1,${removed.length} +1,${added.length} @@`, ...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join("\n");
+const section = (path: string, removed: string[], added: string[]) =>
+  [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${removed.length} +1,${added.length} @@`, ...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join("\n");
 const patch = (id: string, path: string, inlineDiff?: string): Tool => ({
   kind: "tool",
   id,
@@ -84,6 +89,15 @@ describe("checkpointBefore", () => {
     const list = [cp("c2", 101), cp("c1", 100)];
     expect(checkpointBefore(list, turn({ prevEndedAt: 100.2 }))).toEqual({ kind: "ambiguous" });
     expect(checkpointBefore(list, turn({ prevEndedAt: 98.7 }))).toEqual({ kind: "found", checkpoint: cp("c1", 100) });
+  });
+
+  it("takes one from the second after the previous reply ended, since git rounds a checkpoint's time down", () => {
+    expect(checkpointBefore([cp("c1", 101)], turn({ startedAt: 100.6, prevEndedAt: 100.2 }))).toEqual({ kind: "found", checkpoint: cp("c1", 101) });
+    expect(checkpointBefore([cp("c1", 104)], turn({ endedAt: 104.6 }))).toEqual({ kind: "found", checkpoint: cp("c1", 104) });
+  });
+
+  it("finds none for a reply with no time to start from, rather than the oldest the folder keeps", () => {
+    expect(checkpointBefore([cp("c1", 50)], turn({ startedAt: undefined }))).toEqual({ kind: "none" });
   });
 
   it("bounds a turn Hermes started by the end of the one before", () => {
@@ -202,9 +216,35 @@ describe("planFiles", () => {
   });
 
   it("judges a hand edit against a later reply's edit of the same file, and says a later reply edited it", () => {
-    const items = [user("u1", 100), write("t1", "a.txt", "one\n"), reply("r1", 101), user("u2", 102), write("t2", "/tmp/work/a.txt", "two\n"), reply("r2", 103)];
+    const items = [
+      user("u1", 100),
+      { ...write("t1", "a.txt", "one\n"), inlineDiff: drawn("a.txt", ["zero"], ["one"]) },
+      reply("r1", 101),
+      user("u2", 102),
+      { ...write("t2", "/tmp/work/a.txt", "two\n"), inlineDiff: drawn("/tmp/work/a.txt", ["one"], ["two"]) },
+      reply("r2", 103),
+    ];
     const [first] = replyFiles(items, FOLDER);
     const texts = new Map([["/tmp/work/a.txt", "two\n"]]);
-    expect(planFiles(first, items, FOLDER, parseRollbackDiff("a.txt | 2 +-", ""), texts)[0]).toMatchObject({ state: "undoable", handEdit: "as-left", laterReply: true });
+    expect(planFiles(first, items, FOLDER, parseRollbackDiff("a.txt | 2 +-", section("a.txt", ["zero"], ["two"])), texts)[0]).toMatchObject({ state: "undoable", handEdit: "as-left", laterReply: true });
+  });
+
+  it("sees a written file's checkpoint is older than what the bot replaced, though the file is exactly as written", () => {
+    const items = [user("u1", 100), { ...write("t1", "a.txt", "two\n"), inlineDiff: drawn("a.txt", ["mine"], ["two"]) }, reply("r1", 101)];
+    const [r] = replyFiles(items, FOLDER);
+    const texts = new Map([["/tmp/work/a.txt", "two\n"]]);
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("a.txt | 2 +-", section("a.txt", ["zero"], ["two"])), texts)[0]).toMatchObject({ handEdit: "edited" });
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("a.txt | 2 +-", section("a.txt", ["mine"], ["two"])), texts)[0]).toMatchObject({ handEdit: "as-left" });
+  });
+
+  it("won't restore a file whose name git would read as a pattern", () => {
+    const items = [user("u1", 100), patch("t1", "foo[1].txt", B_DIFF), patch("t2", ":(icase)x.txt", B_DIFF), reply("r1", 101)];
+    const [r] = replyFiles(items, FOLDER);
+    expect(planFiles(r, items, FOLDER, parseRollbackDiff("foo[1].txt | 2 +-\n :(icase)x.txt | 2 +-", ""), new Map()).map((f) => f.state)).toEqual(["pattern", "pattern"]);
+  });
+
+  it("shows no diff for a long path whose stat tail fits more than one section", () => {
+    const diff = `${section("src/one/index.ts", ["a"], ["b"])}\n${section("src/two/index.ts", ["c"], ["d"])}`;
+    expect(parseRollbackDiff(".../index.ts | 2 +-", diff).files).toEqual([{ path: ".../index.ts", created: false }]);
   });
 });

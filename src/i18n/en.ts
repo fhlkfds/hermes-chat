@@ -44,6 +44,7 @@ export const en = {
       createdNote: "A one-file restore can't take a file away. Delete it by hand if you don't want it.",
       unchanged: "As it was before this reply: nothing to undo.",
       outside: "Outside the chat's folder, which Hermes's checkpoints don't cover.",
+      pattern: "Its name has characters that Hermes's one-file restore would read as a pattern, which could restore other files too. Restore it by hand.",
       handEdited: "Edited by hand since the bot's last change. Undo would overwrite those edits.",
       handUnknown: "Highwing can't tell whether this file was edited by hand since the bot's last change. Undo would overwrite any such edits.",
       laterReply: "A later reply changed this file too. Undo also takes back that change.",
@@ -56,7 +57,7 @@ export const en = {
       outcome: {
         restored: (path: string) => `${path}: restored.`,
         "still-differs": (path: string) => `${path}: Hermes answered success but the file still differs.`,
-        unconfirmed: (path: string, why: string) => `${path}: Hermes restored it, but Highwing couldn't read the diff back to check: ${why}`,
+        unconfirmed: (path: string, why: string) => `${path}: Hermes restored it, but Highwing couldn't check that it did: ${why}`,
         failed: (path: string, why: string) => `${path}: not restored. ${why}`,
         "not-tried": (path: string) => `${path}: not tried, since an earlier file failed.`,
       },

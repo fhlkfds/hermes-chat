@@ -40,6 +40,7 @@ export const es: Catalogue = {
       createdNote: "Restaurar un solo archivo no puede quitar un archivo. Bórralo a mano si no lo quieres.",
       unchanged: "Como estaba antes de esta respuesta: no hay nada que deshacer.",
       outside: "Fuera de la carpeta del chat, que los puntos de control de Hermes no cubren.",
+      pattern: "Su nombre tiene caracteres que la restauración de un archivo de Hermes leería como un patrón, que podría restaurar también otros archivos. Restáuralo a mano.",
       handEdited: "Editado a mano después del último cambio del bot. Deshacer sobrescribiría esas ediciones.",
       handUnknown: "Highwing no puede saber si este archivo se editó a mano después del último cambio del bot. Deshacer sobrescribiría esas ediciones.",
       laterReply: "Una respuesta posterior también cambió este archivo. Deshacer también revierte ese cambio.",
@@ -52,7 +53,7 @@ export const es: Catalogue = {
       outcome: {
         restored: (path) => `${path}: restaurado.`,
         "still-differs": (path) => `${path}: Hermes respondió que sí, pero el archivo sigue siendo distinto.`,
-        unconfirmed: (path, why) => `${path}: Hermes lo restauró, pero Highwing no pudo volver a leer el diff para comprobarlo: ${why}`,
+        unconfirmed: (path, why) => `${path}: Hermes lo restauró, pero Highwing no pudo comprobarlo: ${why}`,
         failed: (path, why) => `${path}: no restaurado. ${why}`,
         "not-tried": (path) => `${path}: no se intentó, porque falló un archivo anterior.`,
       },

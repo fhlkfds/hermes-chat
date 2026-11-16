@@ -40,13 +40,15 @@ export type RelPath = string & { readonly [relPath]: true };
 
 /**
  * What undoing one of a reply's files would do. `outside`: not in the chat's folder, which checkpoints don't cover.
- * `unchanged`: as it was in the checkpoint, so there is nothing to undo. `created`: the reply made it, and a one-file
+ * `unchanged`: as it was in the checkpoint, so there is nothing to undo. `pattern`: its name has characters git would
+ * read as a pattern in a one-file restore, which could restore other files too. `created`: the reply made it, and a one-file
  * restore can't take a file away. `undoable`: restoring it puts back the checkpoint's copy. `laterReply`: a later reply
  * edited it too, and the undo takes that back as well.
  */
 export type FilePlan =
   | { state: "outside"; path: string }
   | { state: "unchanged"; path: string; rel: RelPath; abs: string }
+  | { state: "pattern"; path: string; rel: RelPath; abs: string }
   | { state: "created"; path: string; rel: RelPath; abs: string; section?: string }
   | { state: "undoable"; path: string; rel: RelPath; abs: string; handEdit: HandEdit; laterReply: boolean; section?: string };
 export type UndoableFile = Extract<FilePlan, { state: "undoable" }>;
@@ -144,13 +146,15 @@ export function parseCheckpointList(answer: unknown): { enabled: boolean; checkp
 
 /**
  * The checkpoint taken before `reply`'s first edit: the oldest from the seconds the reply ran in, leaving out the ones
- * Hermes takes before a restore. Hermes keeps whole seconds, so one from the second the previous reply ended in is
- * ambiguous, and never guessed at.
+ * Hermes takes before a restore. Git keeps a checkpoint's time rounded down to the second, so one from the second the
+ * previous reply ended in is ambiguous, and never guessed at. A reply with no time to start from has none: any
+ * checkpoint the folder still keeps would do.
  */
 export function checkpointBefore(list: Checkpoint[], reply: ReplyFiles): CheckpointMatch {
   const from = reply.startedAt ?? reply.prevEndedAt;
-  const lo = from === undefined ? -Infinity : Math.floor(from);
-  const hi = Math.ceil(reply.endedAt);
+  if (from === undefined) return { kind: "none" };
+  const lo = Math.floor(from);
+  const hi = Math.floor(reply.endedAt);
   let oldest: Checkpoint | undefined;
   for (const c of list) {
     if (c.reason.startsWith(BEFORE_RESTORE) || c.at < lo || c.at > hi) continue;
@@ -158,7 +162,7 @@ export function checkpointBefore(list: Checkpoint[], reply: ReplyFiles): Checkpo
     if (!oldest || c.at <= oldest.at) oldest = c;
   }
   if (!oldest) return { kind: "none" };
-  if (reply.prevEndedAt !== undefined && oldest.at <= Math.ceil(reply.prevEndedAt)) return { kind: "ambiguous" };
+  if (reply.prevEndedAt !== undefined && oldest.at <= Math.floor(reply.prevEndedAt)) return { kind: "ambiguous" };
   return { kind: "found", checkpoint: oldest };
 }
 
@@ -187,7 +191,8 @@ export function parseRollbackDiff(stat: string, diff: string): ParsedRollbackDif
     const bar = line.lastIndexOf(" | ");
     if (bar < 0) return [];
     const path = line.slice(0, bar).trim();
-    const section = sections.find((s) => statNames(path, s.path))?.diff;
+    const named = sections.filter((s) => statNames(path, s.path));
+    const section = named.length === 1 ? named[0].diff : undefined;
     const created = !!section && (/^new file mode /m.test(section) || /^--- \/dev\/null$/m.test(section));
     return [{ path, created, ...(section !== undefined && { section }) }];
   });
@@ -277,15 +282,23 @@ export function placeIn(folder: string | undefined, path: string): { rel: RelPat
 }
 
 /**
- * A file the last edit left in part (a `patch`) is as the bot left it only if the diff since the checkpoint is all the
- * bot's too. A file a `write_file` left whole needs no more than `handEdit`'s exact match.
+ * A file is as the bot left it only if the diff since the checkpoint is all the bot's too. Checkpoints belong to the
+ * folder, so the one found can be older than the file just before this reply, and restoring it would bring back
+ * older text than the bot replaced, even for a file a `write_file` left exactly as written.
  */
-function judged(byLastEdit: HandEdit, last: FileEdit, section: string | undefined, since: FileEdit[]): HandEdit {
-  if (byLastEdit !== "as-left" || (last.tool === "write_file" && last.content !== undefined)) return byLastEdit;
+function judged(byLastEdit: HandEdit, section: string | undefined, since: FileEdit[]): HandEdit {
+  if (byLastEdit !== "as-left") return byLastEdit;
   if (section === undefined) return "unknown";
   const all = botMadeAll(section, since);
   return all === undefined ? "unknown" : all ? "as-left" : "edited";
 }
+
+/**
+ * Whether git would read `rel` as a pattern: Hermes checks a one-file restore out with `git checkout <hash> -- <path>`
+ * and no literal pathspecs (`tools/checkpoint_manager.py:1343` at `bf0203a`), so `foo[1].txt` also restores `foo1.txt`
+ * (measured with git 2.47), and a leading `:` is pathspec magic.
+ */
+const pathspecMagic = (rel: string) => rel.startsWith(":") || /[*?[\\]/.test(rel);
 
 /**
  * What undoing each of `reply`'s files would do, against the diff from its checkpoint (`diff`) and each file's text now
@@ -299,6 +312,7 @@ export function planFiles(reply: ReplyFiles, items: Item[], folder: string | und
     const placed = placeIn(folder, path);
     if (!placed) return { state: "outside", path };
     const { rel, abs } = placed;
+    if (pathspecMagic(rel)) return { state: "pattern", path, rel, abs };
     const file = fileIn(diff, rel);
     if (!file) return { state: "unchanged", path, rel, abs };
     const section = file.section !== undefined ? { section: file.section } : {};
@@ -308,6 +322,6 @@ export function planFiles(reply: ReplyFiles, items: Item[], folder: string | und
     const since = [...ofFile(reply), ...later];
     const last = since.at(-1)!;
     const laterReply = later.length > 0;
-    return { state: "undoable", path, rel, abs, handEdit: judged(handEdit(current.get(abs), last), last, file.section, since), laterReply, ...section };
+    return { state: "undoable", path, rel, abs, handEdit: judged(handEdit(current.get(abs), last), file.section, since), laterReply, ...section };
   });
 }

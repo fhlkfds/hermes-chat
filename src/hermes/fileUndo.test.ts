@@ -68,6 +68,14 @@ describe("a reply's file changes", () => {
     expect(restores(server)).toEqual([expect.objectContaining({ file_path: "b.txt" })]);
   });
 
+  it("says a restore is unconfirmed when the file can't be read back, since a failed diff looks like an empty one", async () => {
+    const { load, io } = await edited();
+    const view = await found(load());
+    let restored = false;
+    const blind = { ...io, restoreFile: (h: string, f: Parameters<typeof io.restoreFile>[1]) => io.restoreFile(h, f).finally(() => (restored = true)), readText: (abs: string) => (restored ? Promise.resolve(undefined) : io.readText(abs)) };
+    expect(await undoFiles(blind, view, [undoable(view, "b.txt")])).toMatchObject({ kind: "done", files: [{ outcome: "unconfirmed" }] });
+  });
+
   it("restores nothing when the files changed since the preview", async () => {
     const { server, load, io } = await edited();
     const view = await found(load());

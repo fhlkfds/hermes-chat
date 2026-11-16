@@ -144,6 +144,7 @@ function FileRow({ file, blocked, onUndo }: { file: FilePlan; blocked: boolean; 
       </div>
       {file.state === "unchanged" && <p className="repo-notice">{l.unchanged}</p>}
       {file.state === "outside" && <p className="repo-notice">{l.outside}</p>}
+      {file.state === "pattern" && <p className="repo-notice">{l.pattern}</p>}
       {file.state === "created" && <p className="repo-notice">{l.createdNote}</p>}
       {file.state === "undoable" && <Warnings file={file} />}
       {(file.state === "undoable" || file.state === "created") && (section ? <div className="repo-review-diff"><PatchFile diff={section} /></div> : <p className="repo-notice">{l.notShown}</p>)}
