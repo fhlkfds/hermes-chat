@@ -2195,7 +2195,7 @@ export class Hermes {
 
   /**
    * Saves `edits` to a bot's look, each field only where Hermes still has what the owner was shown (fieldMerge.ts
-   * `plan`, ADR 0187), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
+   * `plan`, ADR 0188), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
    * sends every other key back as just read; when Hermes says the block moved meanwhile, it is read and judged again,
    * always against what the owner was shown. The picture goes first through `profiles.set_asset`, which has no such
    * check. Never rejects: a failure is that field's outcome. The roster every view shows is read again as part of it.
@@ -2245,9 +2245,13 @@ export class Hermes {
         if (pictureKeys) pictureKeysFailure = failure;
       };
       if (!Object.keys(p.write).length && !pictureKeys) break;
+      if (cur.revision === undefined) {
+        fail({ kind: "noCheck" });
+        break;
+      }
       let answer: unknown;
       try {
-        answer = await this.request("profiles.configure", configureParams(profile, blockFor(cur.block, p.write, picture), cur.revision!));
+        answer = await this.request("profiles.configure", configureParams(profile, blockFor(cur.block, p.write, picture), cur.revision));
       } catch (e) {
         fail(profileFailure(e, "botLook"));
         break;
@@ -2267,12 +2271,17 @@ export class Hermes {
         break;
       }
       // Another client wrote the block between the read and the write. Read it again and judge every field again.
-      const next = await read(false).catch((e: unknown) => profileFailure(e, "botLook"));
-      if (!next || "kind" in next) {
-        fail(next ?? gone);
+      try {
+        const next = await read(false);
+        if (!next) {
+          fail(gone);
+          break;
+        }
+        cur = next;
+      } catch (e) {
+        fail(profileFailure(e, "botLook"));
         break;
       }
-      cur = next;
     }
 
     // The picture read back below is the one to show. An ask still out for the old one is dropped by its new token,
