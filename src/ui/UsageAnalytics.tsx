@@ -109,7 +109,7 @@ const TABS: { id: UsageTab; label: string }[] = [
 
 /**
  * The Usage screen: Spending, where tokens and recorded cost add up (ADR 0026), and Budgets, the limits kept for this
- * connection and how far each has got (ADR 0187).
+ * connection and how far each has got (ADR 0188).
  */
 export function UsageAnalytics({
   budgets,

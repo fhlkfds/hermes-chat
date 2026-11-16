@@ -447,6 +447,7 @@ export function ChatPane({
   footer,
   onUsage,
   headActions,
+  goalBar,
   queue,
   queueApi,
   subagents,
@@ -525,6 +526,8 @@ export function ChatPane({
   footer?: ReactNode;
   onUsage?: () => void;
   headActions?: ReactNode;
+  /** The chat's goal bar (GoalBar.tsx), above the queue and the message box. */
+  goalBar?: ReactNode;
   queue?: ChatQueue;
   queueApi?: QueueApi;
   /** Steer, Stop and output for the chat's Subagents; without it the panel only shows them. */
@@ -1142,6 +1145,7 @@ export function ChatPane({
           card.focus();
         }}
       />
+      {goalBar}
       {queueApi && <QueuePanel chat={chat} queue={queue} status={status} api={queueApi} />}
       {policy.readOnly === "imported" ? (
         // ADR 0031: an imported transcript is a record, not a session Hermes can carry on as it was.

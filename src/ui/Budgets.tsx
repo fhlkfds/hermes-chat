@@ -1,4 +1,4 @@
-// Usage → Budgets (ADR 0187): the limits kept on this computer for this connection, what each has spent in its period,
+// Usage → Budgets (ADR 0188): the limits kept on this computer for this connection, what each has spent in its period,
 // where it is heading and the chats behind it. Everything shown comes from the connection's budget watch
 // (budgetWatch.ts): this tab reads nothing from Hermes itself and holds no copy of the budgets.
 import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react";

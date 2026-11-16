@@ -57,7 +57,8 @@
 // is a number and one whose `name` is an object, each between two messages, as a misbehaving server might send.
 // HV_LIST=<n> adds n Active, read chats to `default`, one an hour apart, so its Inbox is longer than the list panel.
 // HV_DISK=<folder> copies a real folder on this computer, at its own full path, into the server's disk the preview reads
-// and lists (`GET /api/fs/read-text`, `GET /api/fs/list`), so a reply's paths name files a real ssh shell also finds.
+// and lists (`GET /api/fs/read-text`, `GET /api/fs/list`), so a reply's paths name files a real ssh shell also finds. It
+// also puts them in the managed files (`GET /api/files`) that Server files and a project's Context card read.
 // HV_DELAY_MS=<ms> holds each /api/ answer that long, as a distant server's round trip would.
 // HV_FAIL_PATCH=<id>,<id> answers 503 to every edit (PATCH) of those sessions, as a server that fails a write does.
 // HV_MEMORY_URL=<url> is the address `default`'s Honcho gives for its documentation and its API key's "Get one" link.
@@ -121,13 +122,16 @@ if (process.env.HV_BAD_HISTORY === "1") {
 
 const disk = (dir: string) => {
   server.serverDirs.add(dir);
+  server.managedFiles.nodes[dir] = { dir: true };
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, e.name);
     if (e.isDirectory()) disk(path);
     else if (e.isFile()) {
       // FakeHermes keeps a file as text, or a binary one as a character per byte (a PDF, a Word file).
       const bytes = readFileSync(path);
-      server.serverFiles[path] = bytes.toString(isUtf8(bytes) ? "utf8" : "latin1");
+      const text = isUtf8(bytes);
+      server.serverFiles[path] = bytes.toString(text ? "utf8" : "latin1");
+      server.managedFiles.nodes[path] = text ? { text: bytes.toString("utf8") } : { bytes: bytes.toString("latin1") };
     }
   }
 };
@@ -274,6 +278,8 @@ function toolsReply(sessionId: string) {
 
 server.kanban.wakeDelayMs = 2_000;
 server.kanban.wakeWith = (sid, _stored, text, user_row_id) => replyTo(sid, "", text, { user_row_id });
+// A goal's next turn starts once the last one is judged, as Hermes's does (fakeGoals.ts, ADR 0187).
+server.goalTurn = (sid, prompt) => setTimeout(() => replyTo(sid, prompt), 2_000);
 
 // The subagents a "delegate" prompt started, as `subagent.start` / `subagent.complete` payloads carry them
 // (`tools/delegate_tool.py` at the deployed `f0d94882`). Each is also in Hermes's registry, for `subagent.list`.

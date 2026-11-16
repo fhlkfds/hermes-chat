@@ -89,6 +89,14 @@ Needs `commands.catalog`, `command.dispatch`, and `slash.exec` on `/api/ws`. Che
 
 Running skills from the composer also needs `commands.catalog` to list skills (its `skills` field), and Settings → Skills' `GET /api/skills` and `GET /api/config`. Without any of them, the menus show no skills, "$" opens nothing, and text naming a skill is sent as an ordinary message.
 
+## Standing missions
+
+Needs `session.control.read` and `session.control` on `/api/ws`, the `session.control.update` event, and `/goal` through `command.dispatch` as Hermes's own command. Hermes has all of them from `v2026.9.7` (`session.control.update` from `v2026.9.14`), and they are the same at `b200f5bc`, `bf0203a` and `f0d9488`, so the owner's server has them. Checked with `session.control.read` for a chat id no chat has: "session not found" (4001) means Hermes has the method, and "method not found" (-32601) means it doesn't. The check then reads `commands.catalog`: `/goal` must be listed as `/goal`, and no quick or plugin command may take the name, because `command.dispatch` would run that instead, and `session.control`'s goal actions go through it too. When Hermes can't list its quick and plugin commands, the state is Unknown.
+
+Without it, **Set a goal** doesn't show, typing `/goal` says why, and chats show no goal bar. A canonical gateway address has these methods too, but the app doesn't connect to one (ADR 0174).
+
+Every call needs the chat live on the server, which opening it does. A goal moves only after a turn of a chat live in the dashboard, so with the app closed an idle chat with only a goal closes after 20 seconds, and after a server restart nothing moves it until the chat is opened. Each check runs on the server as Hermes's own user, with no approval, for up to 300 seconds, and the fourth failure in a row pauses the goal; neither limit can be changed from `/goal`. The turn budget is the profile's `goals.max_turns` (read from `GET /api/config`, 20 by default), since Hermes takes no budget for each goal. See ADR 0187.
+
 ## The inbox
 
 Needs `session.active_list` on `/api/ws` to show work running in other profiles. Without it, the inbox still lists Unread chats and Failed messages in every profile, and says that it can't see running work elsewhere.
@@ -190,7 +198,7 @@ Needs `subagent.roster` on `/api/ws`, which counts the background subagents and 
 
 ## Budgets
 
-Usage → Budgets needs nothing new for a budget on the server, a profile or a project: it adds up the chat totals Usage analytics already reads from `GET /api/sessions` (ADR 0026). A budget on a model also needs `GET /api/analytics/models`, Hermes's spending for each model it called, counted per call. Hermes `bf0203a` and `f0d9488` have it. Checked with `GET /api/analytics/models?days=1`. Without it, a model budget shows no figure and sends no alert, and says why. The route takes only whole days back from now, so a model budget counts the last 24 hours, 7 days or 30 days. Its sums include Hermes's helper tasks and subagent runs, have no cache-write count, and count a model Hermes can't price as $0 (ADR 0187).
+Usage → Budgets needs nothing new for a budget on the server, a profile or a project: it adds up the chat totals Usage analytics already reads from `GET /api/sessions` (ADR 0026). A budget on a model also needs `GET /api/analytics/models`, Hermes's spending for each model it called, counted per call. Hermes `bf0203a` and `f0d9488` have it. Checked with `GET /api/analytics/models?days=1`. Without it, a model budget shows no figure and sends no alert, and says why. The route takes only whole days back from now, so a model budget counts the last 24 hours, 7 days or 30 days. Its sums include Hermes's helper tasks and subagent runs, have no cache-write count, and count a model Hermes can't price as $0 (ADR 0188).
 
 ## Run view
 
@@ -198,6 +206,7 @@ The Run view under a reply draws its turn as steps (ADR 0178). It needs nothing 
 
 - **Tool steps.** With `display.tool_progress` set to `off`, Hermes sends tool events only for file edits, `delegate_task`, `clarify`, a few card tools and a failed call's completion. A run the app watched then misses the other tool steps, and the Run view says so. A run read from stored history still has them. A `HERMES_TUI_TOOL_PROGRESS` setting on the server overrides the config, and the app can't see it.
 - **Turn ids.** `bf0203a` sends no `turn_id` on `message.start`; `f0d9488` does. The recorder pairs a turn's events by their order on the session, which works with both, and Diagnostics shows which this Hermes is once a reply starts.
+- **Drops.** Hermes replays no events when a chat is resumed after a dropped connection. The resume says whether the turn still runs (`running`) and which requests it still waits on (`open_requests`), so the Run view shows the time between as Not heard, adds the Questions Hermes asked meanwhile, and draws a turn that finished meanwhile from the stored rows.
 
 What it can't show, on any Hermes: no event carries a server time, so every start and end is when the app heard it. Only a tool's `duration_s` is measured by Hermes. A model call has no event, so its edges and tokens are inferred from the events around it and the `session.usage` counters, sent at most once a second. Cost is kept per chat, so a turn's cost is the change across it, and a step's isn't known. A tool call has no failure flag, so failure is judged from its result. A retry that recovered leaves no trace. A stored row has only the time its step ended. Each of these is marked or said in the view.
 

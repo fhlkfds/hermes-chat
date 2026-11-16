@@ -263,6 +263,10 @@ _Avoid_: aside, background question, `/background` (Hermes's command for a separ
 A command the owner types at the start of the composer, after a "/", picked from the menu that opens there or typed in full. Each is either an action of this app or a command Hermes runs for the chat, and says which. Only the commands in the app's list run; any other text starting with "/" is sent as an ordinary message. Picking from the menu only fills the command in; Enter then runs it. A command that can't run says why and keeps the text. Deleting asks first, as it does in the chat list. The same menu lists the profile's skills after the commands (see Skill) (ADR 0015).
 _Avoid_: quick command (Hermes's word for commands defined in its config), shortcut, macro
 
+**Goal** (standing mission):
+An outcome the owner gives a chat for Hermes to keep working toward, turn after turn, until it is done, the owner pauses or clears it, or it uses up the profile's turn budget. It may carry what must not change and a check: a shell command that must exit 0 before Hermes's judge model is asked whether the goal is done. Hermes keeps the goal and runs the check on the server. The goal bar above the message box shows it, with Pause, Resume and Clear. A goal moves only while its chat is live on the server (ADR 0187).
+_Avoid_: task (a Work card), loop and heartbeat (Hermes's other standing work, on a clock), gate (Hermes's word for a check)
+
 **Template**:
 A message the owner reuses, kept in a library on this computer: a name, an optional description, the message with blanks to fill in (`{host}`, `{port=22}`, `{notes...?}`), and optionally the one project it is offered in. Filling one in shows the whole message as it will be; Insert puts it in the composer and never sends. With a draft already there, the owner chooses to replace it or add after it, and Cancel leaves it alone. Templates are data: nothing in one runs (ADR 0028).
 _Avoid_: snippet, macro, prompt (for the template itself), quick command (Hermes's own)
@@ -442,7 +446,7 @@ The rail's Usage screen: the Usage and Cost Hermes stored for each chat started 
 _Avoid_: dashboard, stats, report, billing
 
 **Budget**:
-A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0187).
+A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0188).
 _Avoid_: quota, cap, spending limit (Hermes enforces none)
 
 **Context window**:

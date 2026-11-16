@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Usage → Budgets (Budgets.tsx, ADR 0187): adding a budget, and what a budget shows: spent with its caveats, the
+// Usage → Budgets (Budgets.tsx, ADR 0188): adding a budget, and what a budget shows: spent with its caveats, the
 // forecast, the top chats, and the four things the tab must say plainly. Hermes is a fixture behind the budget watch.
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

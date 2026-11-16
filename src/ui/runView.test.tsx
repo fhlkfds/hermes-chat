@@ -7,6 +7,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
 import { connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
+import { RunDialog } from "./RunView";
+import type { Run } from "../hermes/flightRecorder";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 
@@ -129,5 +131,33 @@ describe("The Run view", () => {
     await within(dialog).findByText(/What this app heard live/);
     // Hermes measured the tool; the model step before it took no time here, so it is left out.
     expect(rows(dialog).map(rowText)).toEqual(["terminal400 ms", "Error"]);
+  });
+
+  it("marks the time it heard nothing of a turn, a Question asked meanwhile and a tool whose end it never heard", async () => {
+    const at = 1_000_000;
+    const inferred = (ms: number) => ({ ms, measured: false });
+    const run: Run = {
+      source: "watched",
+      start: at,
+      end: at + 9000,
+      outcome: "complete",
+      steps: [
+        { kind: "tool", id: "t0", name: "terminal", callId: "k1", start: at, end: at + 9000, length: inferred(9000), endUnheard: true },
+        { kind: "gap", id: "g1", start: at + 1000, end: at + 6000, length: inferred(5000) },
+        { kind: "question", id: "q2", what: "clarify", summary: "Which logs?", outcome: "The turn ended", start: at + 6000, end: at + 9000, length: inferred(3000), late: true },
+      ],
+    };
+    const user = userEvent.setup();
+    render(<RunDialog api={{ read: async () => ({ run }) }} onClose={() => {}} />);
+    const dialog = await screen.findByRole("dialog", { name: "Run of this reply" });
+    await within(dialog).findByText(/What this app heard live/);
+    expect(rows(dialog).map(rowText)).toEqual(["terminal≈9.0 s (inferred)", "Not heard≈5.0 s (inferred)", "Question≈3.0 s (inferred)"]);
+    expect(dialog.textContent).toContain("Steps Hermes took while this app couldn't hear it are missing.");
+    await user.click(rows(dialog)[1]);
+    expect(dialog.textContent).toContain("so it heard nothing of the turn until it reconnected");
+    await user.click(rows(dialog)[2]);
+    expect(dialog.textContent).toContain("Hermes asked it while this app couldn't hear, so it was asked before this.");
+    await user.click(rows(dialog)[0]);
+    expect(dialog.textContent).toContain("This app didn't hear it end, so it is drawn until the turn was next heard going on, or to the turn's end.");
   });
 });
