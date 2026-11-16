@@ -84,6 +84,35 @@ for (const t of [
   { title: "Clean up old snapshots", status: "done", assignee: "ops", latest_summary: "Freed 412 GB on tank/media." },
 ])
   server.kanban.add("default", t);
+// `?graph=1`: a board for the Graph view instead, shaped like a busy one: long titles, blocked cards with their
+// summaries, long assignee names, links that skip a layer, and a link to an archived card (synthetic).
+if (query.get("graph")) {
+  server.kanban.boards.default.tasks = [];
+  const add = (title: string, status: string, assignee: string, more: { body?: string; latest_summary?: string; priority?: number; tenant?: string } = {}) =>
+    server.kanban.add("default", { title, status, assignee, ...more }).id;
+  const rules = add("Build and validate the detection rule pack for the lab firewall", "blocked", "hephaestus", { priority: 10, tenant: "homelab", latest_summary: "The staging manager's API answers 502 since the upgrade, so no rule loads." });
+  const dash = add("Build visual original-design dashboard for the NAS fleet", "blocked", "vista", { latest_summary: "Revised HTML layout waits on the owner's sign-off." });
+  const switches = add("Inventory upgraded switches and record their firmware versions", "done", "work-email-manager", { priority: 5, body: "## Objective Compare every switch against the vendor's latest firmware." });
+  const prompts = add("Author 20 copy-ready prompts for the onboarding flow", "done", "prometheus", { body: "task_id: assigned by the orchestrator from the onboarding plan." });
+  const anchors = add("Revise the anchors in the integration playbook", "todo", "daedalus", { priority: 5, body: "Add the new endpoints and drop the retired ones." });
+  const skill = add("Serve skill catalog over the gateway", "todo", "anvil", { body: "task_id: assigned by the orchestrator." });
+  const firmware = add("Explain the firmware rollout plan to the team", "done", "wazuh", { priority: 5, body: "## Objective Explain the order the switches upgrade in." });
+  const copy = add("Correct prompt batch wording after review", "done", "prometheus", { body: "task_id: card owner asked for plainer words." });
+  const specs = add("Finalize 20 feature specs for the release train", "done", "prometheus", { body: "task_id: this card closes the spec round." });
+  const audit = add("Synthesize audit findings into one report", "done", "orchestrator", { body: "Combine the outputs of every audit card." });
+  const squid = add("Configure squid proxy for the build hosts", "done", "prompt-engineer", { body: "Implement squid config with the allow list." });
+  const ship = add("Ship the rule pack to production", "done", "threat-detection-engineer");
+  const costs = add("Hermes Cost Dashboard rollout and tuning", "done", "orchestrator", { priority: 4, body: "Roll out to every profile, then tune the alerts." });
+  const tests = add("Phase 2: agent flow tests across every profile and gateway", "done", "prompt-engineer", { priority: 3, body: "## Objective Build the agent flow suite." });
+  const retired = add("Retire the old Grafana dashboards", "archived", "ops");
+  const tuned = add("Tune the threat-detection alerts after a week in production", "done", "threat-detection-engineer");
+  for (const [parent, child] of [
+    [rules, anchors], [dash, skill], [switches, firmware], [prompts, copy],
+    [anchors, specs], [skill, audit], [copy, squid], [switches, audit], [prompts, squid],
+    [specs, ship], [audit, costs], [squid, tests], [retired, costs], [ship, tuned],
+  ])
+    server.kanban.link(parent, child);
+}
 server.kanban.boards.default.tasks[2].comments = [
   { id: 1, author: "researcher", body: "Started with restic: first backup of tank/media took 3 h 10 min.", created_at: ago(90) },
   { id: 2, author: "dashboard", body: "Include restore times for a single file too.", created_at: ago(30) },

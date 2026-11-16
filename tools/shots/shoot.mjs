@@ -16,6 +16,53 @@ const click = (sel, text) =>
      if (!el) throw new Error("no " + ${JSON.stringify(sel + " " + (text ?? ""))}); el.click(); })()`;
 const scrollTo = (sel) => `document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: "start" })`;
 const key = (k, mods = {}) => `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true, ...${JSON.stringify(mods)} }))`;
+// The Work graph as drawn: no line of a card's text cut by its row or its card, no card over another, no status over
+// the card's meta line, and each arrow from its parent's right middle to its child's left middle over no other card.
+const legibleGraph = `(() => {
+  const bad = [];
+  const nodes = [...document.querySelectorAll(".work-node")];
+  if (nodes.length < 10) throw new Error("only " + nodes.length + " graph cards");
+  const idOf = (n) => n.querySelector(".work-meta code").textContent;
+  const rect = (n) => n.getBoundingClientRect();
+  const textRects = (el) => { const r = document.createRange(); r.selectNodeContents(el); return [...r.getClientRects()].filter((b) => b.height > 0); };
+  for (const n of nodes) {
+    const card = rect(n);
+    const s = getComputedStyle(n);
+    const inside = { top: card.top + parseFloat(s.borderTopWidth), bottom: card.bottom - parseFloat(s.borderBottomWidth) };
+    for (const row of [...n.children].filter((c) => getComputedStyle(c).position !== "absolute")) {
+      const r = rect(row);
+      const clip = getComputedStyle(row).overflowY === "visible" ? inside : { top: Math.max(r.top, inside.top), bottom: Math.min(r.bottom, inside.bottom) };
+      const lines = textRects(row);
+      const cut = lines.filter((b) => b.top < clip.bottom - 0.5 && b.bottom > clip.bottom + 0.5 || b.top < clip.top - 0.5 && b.bottom > clip.top + 0.5);
+      if (cut.length) bad.push(idOf(n) + " " + row.className + ": a line " + cut[0].height.toFixed(1) + "px tall cut at " + (clip.bottom - cut[0].top).toFixed(1) + "px");
+      if (!lines.some((b) => b.top >= clip.top - 0.5 && b.bottom <= clip.bottom + 0.5)) bad.push(idOf(n) + " " + row.className + ": no whole line shows");
+    }
+    const status = n.querySelector(".work-node-status");
+    const shown = (c) => textRects(c).map((b) => getComputedStyle(c).overflowX === "visible" ? b : { left: b.left, right: Math.min(b.right, rect(c).right) });
+    const meta = [...n.querySelector(".work-meta").children].filter((c) => c !== status).flatMap(shown);
+    if (status && meta.some((b) => b.right > rect(status).left && b.left < rect(status).right)) bad.push(idOf(n) + ": status covers the meta line");
+    if (status && rect(status).right > card.right - parseFloat(s.borderRightWidth) - parseFloat(s.paddingRight) + 0.5) bad.push(idOf(n) + ": status cut at the card's edge");
+  }
+  for (const a of nodes) for (const b of nodes) {
+    const p = rect(a), q = rect(b);
+    if (a !== b && idOf(a) < idOf(b) && p.left < q.right && q.left < p.right && p.top < q.bottom && q.top < p.bottom) bad.push(idOf(a) + " overlaps " + idOf(b));
+  }
+  const byId = new Map(nodes.map((n) => [idOf(n), rect(n)]));
+  const svg = document.querySelector(".work-edges").getBoundingClientRect();
+  for (const path of document.querySelectorAll(".work-edges path[data-edge]")) {
+    const [from, to] = path.dataset.edge.split(" ");
+    const near = (pt, x, y) => Math.abs(svg.left + pt.x - x) < 1 && Math.abs(svg.top + pt.y - y) < 1;
+    const f = byId.get(from), t = byId.get(to), length = path.getTotalLength();
+    if (!near(path.getPointAtLength(0), f.right, (f.top + f.bottom) / 2)) bad.push(path.dataset.edge + ": starts off its card's right middle");
+    if (!near(path.getPointAtLength(length), t.left, (t.top + t.bottom) / 2)) bad.push(path.dataset.edge + ": ends off its card's left middle");
+    for (let at = 0; at <= length; at += 2) {
+      const pt = path.getPointAtLength(at), x = svg.left + pt.x, y = svg.top + pt.y;
+      const over = [...byId].find(([id, r]) => id !== from && id !== to && x > r.left + 1 && x < r.right - 1 && y > r.top + 1 && y < r.bottom - 1);
+      if (over) { bad.push(path.dataset.edge + ": crosses " + over[0]); break; }
+    }
+  }
+  if (bad.length) throw new Error(bad.length + " problems:\\n" + bad.slice(0, 40).join("\\n"));
+})()`;
 // The chat list's sections (ADR 0036): three chats moved out of Settled, two of them snoozed (as another window would
 // leave them), and a reply running in "NAS disk usage" so it shows in Working.
 const sections = `(async () => {
@@ -177,6 +224,10 @@ const scenes = {
   work: { query: "", ...hd, steps: [click("button[aria-label='Work']")] },
   "work-task": { query: "", steps: [click("button[aria-label='Work']"), click(".work-card", "Compare three NAS backup tools")] },
   "work-new": { query: "", steps: [click("button[aria-label='Work']"), click(".btn", "New task")] },
+  // The Graph view of a busy board (`?graph=1`), and the same at the largest interface size, each measured by `legibleGraph`.
+  "work-graph": { query: "?graph=1", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph")] },
+  "work-graph-check": { query: "?graph=1", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph"), legibleGraph] },
+  "work-graph-large": { query: "?graph=1&size=20", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph"), legibleGraph] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
   "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },
