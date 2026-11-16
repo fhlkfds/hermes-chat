@@ -158,6 +158,16 @@ describe("Settings → Profiles' calls", () => {
     expect(saved).toEqual({ fields: { model: { kind: "saved" } }, now: { description: "", model: { provider: "custom:stub", model: "FAKE" } } });
   });
 
+  it("Edit doesn't count a lost provider change as saved when Hermes still has the old provider with the same model name", async () => {
+    const { server, api } = await signedIn((s) => (s.profileModel.work = { model: "gpt-6.1", provider: "openai", reasoning_effort: "medium", fast: false }));
+    server.beforeProfileField = () => {
+      throw new Error("The connection dropped.");
+    };
+    const saved = await api.edit("work", { model: { from: { provider: "openai", model: "gpt-6.1" }, to: { provider: "azure", model: "gpt-6.1" } } });
+    expect(server.profileModel.work).toMatchObject({ provider: "openai", model: "gpt-6.1" });
+    expect(saved.fields.model).toMatchObject({ kind: "failed", failure: { kind: "lost" } });
+  });
+
   it("Edit shows a model another client saved straight after this one's, whatever spelling Hermes gives the provider", async () => {
     const { server, api } = await signedIn((s) => (s.providerIds = { Stub: "custom:stub" }));
     server.beforeProfileField = () => queueMicrotask(() => (server.profileModel.work = { ...server.profileModel.work!, model: "fake-large" }));

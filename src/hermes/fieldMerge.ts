@@ -64,8 +64,9 @@ export function plan<F extends object>(edits: Edits<F>, theirs: F, same: Same<F>
  *   failed `lost` and now = to → saved
  *   saved and now ≠ to         → changedElsewhere { theirs: now } (someone wrote after us; theirs is shown, not ours)
  *   anything else              → unchanged
- * A field `now` doesn't cover keeps its outcome. `landed`: how to tell a field Hermes stores in its own spelling has
- * `to` (a model's provider becomes its canonical id), where plain sameness would call our own write someone else's.
+ * A field `now` doesn't cover keeps its outcome. `landedAs`: how to tell a written field Hermes stores in its own
+ * spelling has `to` (a model's provider becomes its canonical id), where plain sameness would call our own write
+ * someone else's.
  */
 export function settle<F extends object>(outcomes: Outcomes<F>, edits: Edits<F>, now: Partial<F> | undefined, same: Same<F>, landedAs: Partial<Same<F>> = {}): Outcomes<F> {
   if (!now) return outcomes;
@@ -77,9 +78,9 @@ export function settle<F extends object>(outcomes: Outcomes<F>, edits: Edits<F>,
     out[k] = o;
     if (!e || !(k in now)) continue;
     const theirs = now[k] as F[typeof k];
-    const landed = (landedAs[k] ?? same[k])(theirs, e.to);
-    if (o.kind === "failed" && o.failure.kind === "lost" && landed) out[k] = { kind: "saved" };
-    else if (o.kind === "saved" && !landed) out[k] = { kind: "changedElsewhere", theirs };
+    // A lost write counts as landed only on Hermes's exact value: a looser match could be the old value it still has.
+    if (o.kind === "failed" && o.failure.kind === "lost" && same[k](theirs, e.to)) out[k] = { kind: "saved" };
+    else if (o.kind === "saved" && !(landedAs[k] ?? same[k])(theirs, e.to)) out[k] = { kind: "changedElsewhere", theirs };
   }
   return out;
 }
