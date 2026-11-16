@@ -2,7 +2,7 @@
 // The Bots view in the running app, against a fake Hermes as the deployed f0d94882 (ADR 0066): what each bot's row
 // shows, that a row opens the bot's Bot Chat in its profile and keeps it out of the chat list, that the pen starts an
 // ordinary chat there, that /new in a Bot Chat compacts it, that the chat list panel shows the bots while a Bot Chat is
-// open (bot mode), that a Hermes without Bot Mode shows no Bots button, and each row's menu (ADR 0187): Edit bot,
+// open (bot mode), that a Hermes without Bot Mode shows no Bots button, and each row's menu (ADR 0188): Edit bot,
 // Clone, Pin, Hide, Delete and Open in Settings → Profiles.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -28,7 +28,7 @@ afterEach(async () => {
   cleanup();
   await Promise.all(running.splice(0).map((h) => h.close()));
   localStorage.clear();
-  // Nothing the view does may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0187).
+  // Nothing the view does may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0188).
   for (const server of servers.splice(0)) expect(server.uncheckedConfigures()).toEqual([]);
 });
 

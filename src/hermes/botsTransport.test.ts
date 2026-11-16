@@ -11,7 +11,7 @@ const servers: FakeHermes[] = [];
 afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(running.splice(0).map((h) => h.close()));
-  // No test here may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0187).
+  // No test here may send a Bot Mode write that Hermes wouldn't check against another client's (ADR 0188).
   for (const server of servers.splice(0)) expect(server.uncheckedConfigures()).toEqual([]);
 });
 
@@ -325,7 +325,7 @@ describe("keeping Bot Chats out of the list and search", () => {
   });
 });
 
-describe("Editing a bot (ADR 0187)", () => {
+describe("Editing a bot (ADR 0188)", () => {
   const png = (tail: string) => `data:image/png;base64,${btoa(`\x89PNG\r\n\x1a\n${tail}`)}`;
   const SHOWN = png("shown");
   const MINE = png("mine");

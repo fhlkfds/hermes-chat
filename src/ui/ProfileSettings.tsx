@@ -695,7 +695,7 @@ type FormStates = { name?: FieldState; create?: FieldState } & { [K in keyof Pro
 };
 
 /**
- * What Edit bot adds to the Edit form (ADR 0187): the bot's name in Bot Mode, its colour and its picture. `look`: the
+ * What Edit bot adds to the Edit form (ADR 0188): the bot's name in Bot Mode, its colour and its picture. `look`: the
  * look as read when the dialog opened, which is what its saves are checked against. `edit`: `Hermes.editBot`.
  */
 export type BotSection = { look: BotLook; edit: (profile: string, edits: Edits<BotLook>) => Promise<EditResult<BotLook>> };
@@ -761,7 +761,7 @@ export type FormResult = { notice?: Notice; select?: string; edit?: string };
  * own route, in order: description, model, then the name, so the earlier calls still use the old name. A failed field
  * keeps the dialog open, marked with Hermes's words; the fields that saved stay saved.
  *
- * Edit never writes over a change made elsewhere since the dialog opened (ADR 0187): each field is saved only where
+ * Edit never writes over a change made elsewhere since the dialog opened (ADR 0188): each field is saved only where
  * Hermes still has what the form last showed. One that changed keeps the owner's text, shows Hermes's value with Use
  * Hermes's, and a second Save then replaces it knowingly. The name is changed last, and only once every other field
  * saved.

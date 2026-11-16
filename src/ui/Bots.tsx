@@ -2,7 +2,7 @@
 // Chat's last message and what it is doing. A row opens the bot's Bot Chat, found by title every time (bots.ts); the
 // pen beside it starts an ordinary chat in the bot's profile. The same rows (`BotList`) fill the chat list panel while
 // a Bot Chat is open (bot mode). New bot makes a profile through Settings → Profiles' New profile form, and the new
-// bot's row is shown once the roster is read again (ADR 0164). In the Bots view each row has a menu (ADR 0187): Edit
+// bot's row is shown once the roster is read again (ADR 0164). In the Bots view each row has a menu (ADR 0188): Edit
 // bot, Clone, Pin, Hide and Delete, through Settings → Profiles' own dialogs and `Hermes.editBot`, which never writes
 // over a change made elsewhere. Every word comes from the catalogue (ADR 0100).
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";

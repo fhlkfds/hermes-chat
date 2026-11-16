@@ -116,7 +116,7 @@ export function readProfileRows(res: unknown): ProfileRow[] {
 
 /**
  * Each change Settings → Profiles and the Bots view make, by the Hermes route or JSON-RPC method it goes through.
- * `botLook` writes the Bot Mode block and `botPicture` the profile's avatar (ADR 0187).
+ * `botLook` writes the Bot Mode block and `botPicture` the profile's avatar (ADR 0188).
  */
 export type ProfileAction = "create" | "rename" | "describe" | "describeAuto" | "setModel" | "remove" | "botLook" | "botPicture";
 
@@ -338,7 +338,7 @@ export class ProfilesApi {
 
   /**
    * Saves `edits` to `name`'s description and model, each only where Hermes still has what the owner was shown
-   * (fieldMerge.ts `plan`, ADR 0187). It reads the list first and again after, and writes through `describe` and
+   * (fieldMerge.ts `plan`, ADR 0188). It reads the list first and again after, and writes through `describe` and
    * `setModel`. Hermes has no compare-and-swap on these routes, so a change that lands between that read and the write
    * is overwritten, as with the persona (ADR 0014). Never rejects: a failure is that field's outcome.
    */
