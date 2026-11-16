@@ -349,6 +349,27 @@ describe("Send now (ADR 0187)", () => {
     expect(q.texts()).toEqual(["one", "two"]);
   });
 
+  it("holds the queue through Pause and Resume until Hermes answers the steer, so the message never goes twice", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id, undefined);
+    await flush();
+    q.hermes().pauseQueue("c1");
+    await q.finish();
+    q.hermes().resumeQueue("c1");
+    await flush();
+    expect(q.sent()).toEqual([]);
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined)).toBeUndefined();
+    expect(steers(q)).toBe(1);
+
+    answer();
+    await out;
+    await flush();
+    expect(q.chat().items).toContainEqual(expect.objectContaining({ kind: "user", text: "one", steer: true }));
+    expect(q.sent().map((p) => p.text)).toEqual(["two"]);
+  });
+
   it("doesn't steer while a queued message is being edited: the chosen one goes next, with its saved words, once the reply ends and the edit closes", async () => {
     const q = await replying();
     for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);

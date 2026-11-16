@@ -3251,18 +3251,25 @@ export class Hermes {
     }
     this.setQueue(chatId, { ...q, rush: { id, steering: true } });
     const sameProfile = () => this.profile === profile;
-    const stillWanted = () => sameProfile() && this.snapshot.queues[chatId]?.rush?.id === id;
+    const stillMarked = () => sameProfile() && this.snapshot.queues[chatId]?.rush?.id === id;
+    const unmark = () => {
+      const { rush: _, ...rest } = this.snapshot.queues[chatId]!;
+      this.setQueue(chatId, rest);
+    };
     let res: "steered" | "not running";
     try {
       res = await this.steer(chatId, item.text);
     } catch (e) {
-      if (!stillWanted()) return undefined;
-      const { rush: _, ...rest } = this.snapshot.queues[chatId]!;
-      this.setQueue(chatId, rest);
-      return errorText(e);
+      if (!stillMarked()) return undefined;
+      unmark();
+      return e instanceof ConnectionLostError ? undefined : errorText(e);
     }
-    if (res === "steered" && sameProfile()) this.removeQueued(chatId, id);
-    else if (res === "not running" && stillWanted()) this.rushNext(chatId, id);
+    if (res === "steered") {
+      if (sameProfile()) this.removeQueued(chatId, id);
+    } else if (stillMarked()) {
+      if (this.snapshot.queues[chatId]!.paused === undefined) this.rushNext(chatId, id);
+      else unmark();
+    }
     return undefined;
   }
 
@@ -3303,7 +3310,9 @@ export class Hermes {
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
     const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: why });
+    // A steer Hermes hasn't answered can't be called back, so its mark holds the queue until the answer comes.
+    const unanswered = rush?.steering ? { rush } : {};
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || (rush && !rush.steering))) this.setQueue(chatId, { ...q, ...unanswered, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
