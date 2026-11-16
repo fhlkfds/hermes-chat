@@ -2655,7 +2655,6 @@ export function Main({
   linkJobRef.current = linkJob;
   const linkRan = useRef("");
   const isCurrent = (job: LinkJob) => linkJobRef.current?.at === job.at && linkJobRef.current.attempt === job.attempt;
-  /** What the job's notices call the chat it opens: a chat link's, or a row of a search across connections. */
   const opened = (job: Pick<LinkJob, "reveal">) => (hitOf(job.reveal) ? "search result" : "linked chat");
   const hereLabel = connectionLabel(connectionKey(connection));
   // With more than one connection live, every chat says which server and profile it is on (ADR 0125).
@@ -2704,7 +2703,7 @@ export function Main({
         const pane = panesRef.current.find((p) => p.chatId === found.chatId)?.key ?? activeKeyRef.current;
         const reveal = job.reveal;
         const hit = hitOf(reveal);
-        // Already asked, just above. A search's hit opens as a picked result does, at the words it matched.
+        // Already asked, just above.
         openChat(found.chatId, { pane, keepSettings: true, picked: hit && { ...found, snippet: hit.snippet, find: hit.find, role: hit.role } });
         setSettingsOpen(false);
         if (!reveal) requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(pane)}"] .composer textarea`)?.focus());

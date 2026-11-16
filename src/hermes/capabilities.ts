@@ -574,7 +574,6 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     // Hermes answers a blank `q` with no results before it reads its store, so the check searches nothing.
     probe: { kind: "rest", path: (profile) => `api/sessions/search?${new URLSearchParams({ q: "", profile })}`, maxBytes: 64 * 1024, shape: (b) => isObj(b) && isList(b.results) },
     routes: [/^api\/sessions\/search$/],
-    // A Hermes older than the route reads "search" as a chat's id, and answers as `GET /api/sessions/{id}` does.
     missing: (f) => (f.status === 404 && f.reason === "Session not found" ? 'Hermes has no chat search: it read "search" as a chat\'s id (it answered 404).' : undefined),
   },
 ];
@@ -693,7 +692,6 @@ export function stateOfFailure(f: Failure): { state: CapabilityState; why: strin
   return { state: "unreachable", why: f.reason };
 }
 
-/** What a failed read of one of `spec`'s own routes or methods means for it, with why. */
 function stateOfReadFailure(spec: CapabilitySpec, f: Failure): { state: CapabilityState; why: string } {
   const missing = spec.missing?.(f);
   return missing ? { state: "unsupported", why: missing } : stateOfFailure(f);

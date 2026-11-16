@@ -19,7 +19,6 @@ const day = (daysAgo: number) => {
 
 const saved = (name: string): SavedConnection => ({ id: name.toLowerCase(), name, mode: "url", sshTarget: "", url: `https://${name.toLowerCase()}.example.com`, username: "owner", addedAt: 0 });
 
-/** A chat as a fixture names it: its id, title, how many days ago it was active, one message, and anything else of its row. */
 type Seed = [id: string, title: string, daysAgo: number, said: string, over?: Partial<SessionRow>];
 
 /** A FakeHermes holding `profiles`, each with its chats. `default` is always one of them. */
@@ -76,7 +75,6 @@ function relay() {
         getLimited: (pathAndQuery, maxBytes) => counted(pathAndQuery, () => pipe.getLimited(pathAndQuery, maxBytes)),
       };
     };
-  /** Lets go of the held requests `which` picks, the oldest first, at most `count` of them. */
   const release = (which: (h: { server: string; path: string }) => boolean = () => true, count = Infinity) => {
     const going = flight.held.filter(which).slice(0, count);
     flight.held = flight.held.filter((h) => !going.includes(h));
@@ -120,7 +118,6 @@ async function fleet({ alpha = serverWith(alphaChats()), bravo = serverWith(brav
   return { alpha, bravo, a, b, live, search, ...wire };
 }
 
-/** The profiles a server was asked to search for words, in the order the requests came. */
 const searched = (server: FakeHermes) => server.restRequests.filter((r) => r.path === "/api/sessions/search" && r.query.get("q")).map((r) => r.query.get("profile"));
 const where = (o: EverywhereOutcome) => o.rows.map((r) => [r.server, r.ref.profile, r.hit.title]);
 const outcomes = (o: EverywhereOutcome) => Object.fromEntries(o.connections.map((c) => [c.server, c.outcome]));
@@ -277,7 +274,6 @@ describe("Searching Everywhere", { timeout: 20_000 }, () => {
     ]);
     expect(recent.noModel).toBe(0);
 
-    // Hermes was asked for its most each time, and for nothing about models or dates.
     const asked = [...alpha.restRequests, ...bravo.restRequests].filter((r) => r.path === "/api/sessions/search" && r.query.get("q")).map((r) => [...r.query.keys()].sort().join(" ") + ` limit=${r.query.get("limit")}`);
     expect(new Set(asked)).toEqual(new Set(["exclude_sources limit profile q limit=100"]));
   });
@@ -312,7 +308,6 @@ describe("Searching Everywhere", { timeout: 20_000 }, () => {
     await until(() => flight.held.some((h) => h.server === "Bravo" && h.path === "api/profiles"));
     release((h) => h.path === "api/profiles");
     await until(() => flight.held.some((h) => h.server === "Bravo" && h.path === "api/sessions/search"));
-    // One of Bravo's searches answers; its profiles still waiting for a slot are never sent.
     release((h) => h.server === "Bravo" && h.path === "api/sessions/search", 1);
     await until(() => flight.held.every((h) => h.server === "Alpha"));
     flight.holding = false;

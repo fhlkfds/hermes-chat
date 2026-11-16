@@ -46,7 +46,6 @@ export type EverywhereOutcome = {
   done: boolean;
 };
 
-/** One live connection's Hermes, as far as the search reads it. `Hermes` is one. */
 type Searched = {
   getSnapshot(): { status: ConnectionStatus };
   capabilities: { get(id: "chatSearch"): Pick<Capability, "state" | "why"> };
@@ -123,7 +122,6 @@ export async function searchEverywhere(filter: EverywhereFilter, { live, signal,
   return derive(slots, checks);
 }
 
-/** The outcome the slots hold, so a partial outcome and the whole one are worked out the same way. */
 function derive(slots: Slots, checks: Pick<ChatFilter, "model" | "from" | "to">): EverywhereOutcome {
   const here = checkedHere(checks);
   const rows: EverywhereRow[] = [];

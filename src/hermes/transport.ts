@@ -2070,7 +2070,6 @@ export class Hermes {
     return { hits, capped: rows.length >= FILTER_SEARCH_LIMIT };
   }
 
-  /** The rows Hermes's search gives for `q` in `profile`, at most `limit`. */
   private async searchRows(profile: string, q: string, limit: number, sources?: Source[]): Promise<SearchRow[]> {
     const query = new URLSearchParams({ q, profile, limit: String(limit), ...sourceQuery(sources) });
     const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results?: SearchRow[] } | null;
@@ -2078,7 +2077,6 @@ export class Hermes {
     return res.results;
   }
 
-  /** What no search shows: an archived chat (unless asked for), a chat deleted here, or a Bot Chat. */
   private leftOut(profile: string, r: SearchRow, archived: boolean): boolean {
     return (!archived && this.isArchived(profile, r)) || this.deleted.has(profile, r.id) || this.isBotChatRow(profile, r);
   }
@@ -2122,7 +2120,6 @@ export class Hermes {
     return { ...this.toHit(profile, r, c), settled: c?.settled ?? settled };
   }
 
-  /** A row of `profile` as a search alone tells it, with no word on whether it is Settled. */
   private toHit(profile: string, r: SearchRow, c: Chat | undefined): Omit<Hit, "snippet"> {
     return {
       chatId: r.id,
@@ -5905,7 +5902,6 @@ function snippetParts(snippet: string): Found["snippet"] {
     .flatMap((text, i) => (!text ? [] : i % 2 ? [{ text, hit: true }] : [{ text }]));
 }
 
-/** What a search row matched: its snippet, and for a message hit, the message's kind and what find-in-chat looks for. */
 function matchedWords(q: string, r: SearchRow): Pick<Found, "snippet" | "role" | "find"> {
   const snippet = snippetParts(r.snippet ?? "");
   const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;

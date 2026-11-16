@@ -38,13 +38,10 @@ function filterParts(f: ChatFilter, tags: ScopeTags): { key: string; label: stri
 const noModelNote = (n: number) =>
   `Hermes didn't record a model for ${n} chat${n === 1 ? "" : "s"} that matched everything else, so the model filter left ${n === 1 ? "it" : "them"} out.`;
 
-/** "a", "a and b", "a, b and c". */
 const listed = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
 
-/** Where to search: the profile on screen, or every profile of every live connection. */
 type Scope = "profile" | "everywhere";
 
-/** One result as the list draws it, whichever scope found it. `where`: its server and bot, in Everywhere. */
 type ShownRow = { key: string; hit: Hit; badge?: string; where?: string; open: () => void };
 
 /**
@@ -134,7 +131,6 @@ export function SearchPalette({
   const [results, setResults] = useState<{ key: string; tags?: ScopeTags | null; text?: string; outcome?: FilterOutcome }>({ key: "{}" });
   const [scope, setScope] = useState<Scope>("profile");
   const [bot, setBot] = useState("");
-  // What Everywhere looks for: the words, and the filters that mean the same in every profile.
   const farFilter: EverywhereFilter = { text: tidy.text ?? "", ...(bot.trim() && { bot: bot.trim() }), ...(tidy.model && { model: tidy.model }), ...(tidy.from && { from: tidy.from }), ...(tidy.to && { to: tidy.to }) };
   const farKey = JSON.stringify(farFilter);
   const [far, setFar] = useState<{ key: string; text?: string; outcome?: EverywhereOutcome }>({ key: "" });
@@ -175,8 +171,6 @@ export function SearchPalette({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- search again only when the scope, the filter (by its `key`) or the tags it names change; `tidy` and `onRun` are new every render, so listing them would restart the search on every render
   }, [scope, key, tagDep]);
-  // Everywhere: the rows so far show as each bot answers. A new filter, or leaving the scope, stops the search, so its
-  // requests still waiting for a slot are never sent.
   useEffect(() => {
     if (scope !== "everywhere" || !everywhere) return;
     setError(undefined);
@@ -218,7 +212,6 @@ export function SearchPalette({
     setNote(undefined);
     setFilter((f) => ({ ...f, ...patch }));
   };
-  // In Everywhere, the parts it applies: the tags, sources and state picked for the profile stay as they were, unseen.
   const parts = [
     ...(wide && farFilter.bot ? [{ key: "bot", label: `Bot: ${farFilter.bot}`, clear: () => setBot("") }] : []),
     ...filterParts(wide ? { model: tidy.model, from: tidy.from, to: tidy.to } : tidy, tags).map((p) => ({ ...p, clear: () => set(p.clear) })),

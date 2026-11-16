@@ -73,7 +73,6 @@ beforeAll(() => {
     { role: "user", text: "The NAS backup failed again." },
   ];
 
-  // A Hermes older than its search route: `GET /api/sessions/search` is answered as a chat's id would be.
   const charlie = servers[CHARLIE];
   charlie.sessions = [row("c-old", 1, { pinned: true, title: "Charlie backup" })];
   charlie.transcripts["c-old"] = [{ role: "user", text: "The backup failed here too." }];
@@ -151,7 +150,6 @@ describe("Search's Everywhere scope", () => {
     expect(found).toHaveLength(103);
     expect(found.some(([title]) => title === "Charlie backup")).toBe(false);
 
-    // The profile that hit Hermes's 100 says so, and the server with no chat search is named with why.
     expect(notes().some((n) => /at most 100 chats per bot\. ops on Alpha hit that, so more chats may match there/.test(n))).toBe(true);
     expect(notes().some((n) => /^charlie\.example\.com wasn't searched, so none of its bots is here\. Hermes has no chat search/.test(n))).toBe(true);
     // Charlie was asked once at most before the app knew, and its other requests were never sent.
@@ -167,7 +165,6 @@ describe("Search's Everywhere scope", () => {
     expect(within(palette()).queryByRole("button", { name: /^Tag \d+ results?/ })).toBeNull();
     expect(within(palette()).queryByRole("button", { name: /Manage tags/ })).toBeNull();
 
-    // The bot filter decides which profiles are asked.
     const before = servers[ALPHA].restRequests.length;
     await userEvent.type(bar().getByLabelText("Bot"), "wor");
     await waitFor(() => expect(rows()).toEqual([["Deploy backup", "Alpha · work"]]), { timeout: 10_000 });
@@ -181,7 +178,6 @@ describe("Search's Everywhere scope", () => {
     // The 100 chats in ops have no model recorded.
     expect(notes().some((n) => /didn't record a model for 100 chats/.test(n))).toBe(true);
 
-    // Back in the profile on screen the words are kept, and its own filters and actions are there again.
     await userEvent.click(within(palette()).getByRole("button", { name: "This profile" }));
     expect(words().value).toBe(WORDS);
     for (const label of ["Tag", "Source", "State", "Model"]) expect(bar().getByLabelText(label)).toBeTruthy();
