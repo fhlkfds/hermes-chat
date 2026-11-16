@@ -50,6 +50,8 @@ export type CapabilityId =
   | "workPickers"
   | "workLinks"
   | "workEstimate"
+  | "workReclaim"
+  | "workReassign"
   | "botMode"
   | "subagents"
   | "subagentRoster"
@@ -104,6 +106,8 @@ type Probe =
  * Hermes's answer, or its failure, says of the capability.
  */
 type WriteCheck = {
+  /** What it sends, as Diagnostics names it in a list: "a Work link from a card to itself". */
+  says: string;
   send: (io: CapabilityIO, profile: string) => Promise<unknown>;
   /** A read sent alongside, for what the write's answer alone can't tell; undefined when it fails. */
   context?: (io: CapabilityIO, profile: string) => Promise<unknown>;
@@ -162,6 +166,24 @@ const rosterWithoutBotChats = (r: unknown) =>
 /** The name a check gives where it must name something, so nothing real is read. */
 export const PROBE_NAME = "__hermes_chat_probe__";
 
+const KANBAN = "^api\\/plugins\\/kanban\\/";
+/**
+ * The writes of the Work page's parts past the board, each guarded by its own capability. The kanban capability's
+ * guard is built from them, so a plugin without one of these routes still has the board.
+ */
+const WORK_PART_WRITES = {
+  workLinks: [/^api\/plugins\/kanban\/links$/],
+  workEstimate: [/^api\/plugins\/kanban\/estimate$/, /^api\/plugins\/kanban\/tasks\/[^/]+\/estimate$/],
+  workReclaim: [/^api\/plugins\/kanban\/runs\/\d+\/terminate$/],
+  workReassign: [/^api\/plugins\/kanban\/tasks\/[^/]+\/reassign$/],
+} satisfies Partial<Record<CapabilityId, RegExp[]>>;
+const BOARD_WRITES = new RegExp(
+  `${KANBAN}(?!${Object.values(WORK_PART_WRITES)
+    .flat()
+    .map((r) => r.source.slice(KANBAN.length))
+    .join("|")})`,
+);
+
 /**
  * The capability contract: what each feature needs, how it is checked, which writes it guards, and what the app does
  * without it. The order is the order Connection diagnostics lists them in.
@@ -199,6 +221,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     // method is there but doesn't reach a waiting Approval (`tui_gateway/compute_host_bridge.py`), so the profile's
     // `dashboard.turn_isolation` decides.
     writeCheck: {
+      says: "an answer to an Approval no chat has",
       send: (io) => io.rpc("approval.respond", { session_id: PROBE_NAME, request_id: PROBE_NAME, choice: "deny" }),
       context: (io, profile) => io.get(`api/config?${new URLSearchParams({ profile })}`, 2 * 1024 * 1024).then(turnIsolationOf),
       read: (o, isolation) => {
@@ -323,6 +346,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     // false. FastAPI refuses the body (422) before `toggle_toolset` runs (`hermes_cli/web_routers/tools.py` at
     // `f0d94882`), and a Hermes that took it would refuse the unknown name (400) before reading the config.
     writeCheck: {
+      says: "a switch for a toolset no toolset is named",
       send: (io, profile) => io.put(`api/tools/toolsets/${PROBE_NAME}?${new URLSearchParams({ profile })}`, { enabled: "probe" }),
       read: (o) => {
         if ("answer" in o) return { state: "unknown", why: "Hermes took the write check, which it should refuse, so this app won't say the switches work." };
@@ -467,8 +491,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "work",
     probe: { kind: "rest", path: () => "api/plugins/kanban/boards", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.boards) },
     routes: [/^api\/plugins\/kanban\/boards$/],
-    // Not the planning routes: a plugin without one of them still has the board, and each is guarded on its own.
-    writeRoutes: [/^api\/plugins\/kanban\/(?!links$|estimate$|tasks\/[^/]+\/estimate$)/],
+    writeRoutes: [BOARD_WRITES],
   },
   {
     id: "workDispatch",
@@ -501,6 +524,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     // A link from a task to itself: `kanban_db.link_tasks` refuses it (400) before it reads the board, at `b200f5bc`,
     // `bf0203a` and `f0d9488`. A plugin without the route answers FastAPI's own 404 or a 405.
     writeCheck: {
+      says: "a Work link from a card to itself",
       send: (io) => io.post("api/plugins/kanban/links", { parent_id: PROBE_NAME, child_id: PROBE_NAME }),
       read: (o) => {
         if ("answer" in o) return { state: "unknown", why: "Hermes took a link from a task to itself, which it should refuse, so this app won't say links work." };
@@ -508,7 +532,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
         return stateOfFailure(o.failure);
       },
     },
-    writeRoutes: [/^api\/plugins\/kanban\/links$/],
+    writeRoutes: WORK_PART_WRITES.workLinks,
   },
   {
     id: "workEstimate",
@@ -520,6 +544,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     notChecked: "Checked when Diagnostics opens, or once a token guess is asked for.",
     // An estimate with no title: `_run_estimate` answers `ok: false` before it asks any model, so nothing is spent.
     writeCheck: {
+      says: "a Work token guess with no title",
       send: (io) => io.post("api/plugins/kanban/estimate", { title: "" }).then((t) => JSON.parse(t) as unknown),
       read: (o) => {
         if ("answer" in o)
@@ -529,7 +554,48 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
         return stateOfFailure(o.failure);
       },
     },
-    writeRoutes: [/^api\/plugins\/kanban\/estimate$/, /^api\/plugins\/kanban\/tasks\/[^/]+\/estimate$/],
+    writeRoutes: WORK_PART_WRITES.workEstimate,
+  },
+  {
+    id: "workReclaim",
+    label: "Work reclaim",
+    usedBy: "Reclaim in a running Work card's sheet",
+    needs: "POST /api/plugins/kanban/runs/{id}/terminate.",
+    without: "A running card's sheet shows its run but offers no Reclaim.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a run is reclaimed.",
+    // Run ids start at 1, so run 0 can't exist: the plugin looks for it and answers its own 404 before it changes
+    // anything (verified at `bf0203a`). A plugin without the route answers FastAPI's bare `Not Found`.
+    writeCheck: {
+      says: "a Work reclaim of run 0, which no card has",
+      send: (io) => io.post("api/plugins/kanban/runs/0/terminate", {}),
+      read: (o) => {
+        if ("answer" in o) return { state: "unknown", why: "Hermes took a stop for run 0, which no card has, so this app won't say Reclaim works." };
+        if (o.failure.status === 404 && /run 0 not found/i.test(o.failure.reason)) return { state: "supported", why: "Hermes looked for run 0 and found none, as it does when it has the route." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: WORK_PART_WRITES.workReclaim,
+  },
+  {
+    id: "workReassign",
+    label: "Work stop and reassign",
+    usedBy: "Stop and Reassign in a running Work card's sheet",
+    needs: "POST /api/plugins/kanban/tasks/{id}/reassign.",
+    without: "A running card's sheet shows its run but offers no Stop or Reassign. The card can still be moved, and blocking it says that its bot keeps working.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a running card is stopped or reassigned.",
+    // A card that doesn't exist: the plugin refuses it (409) and writes nothing (verified at `bf0203a`).
+    writeCheck: {
+      says: "a Work reassign of a card that doesn't exist",
+      send: (io) => io.post(`api/plugins/kanban/tasks/${PROBE_NAME}/reassign`, { profile: "", reclaim_first: false }),
+      read: (o) => {
+        if ("answer" in o) return { state: "unknown", why: "Hermes took a reassign of a card that doesn't exist, so this app won't say Stop and Reassign work." };
+        if (o.failure.status === 409) return { state: "supported", why: "Hermes refused to reassign a card that doesn't exist, as it does when it has the route." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: WORK_PART_WRITES.workReassign,
   },
   {
     id: "botMode",
