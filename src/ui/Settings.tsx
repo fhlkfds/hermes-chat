@@ -391,7 +391,7 @@ export function SettingsScreen({
   showDiagnostics?: { id?: CapabilityId };
   /** The profile's Bot Desktop, for Diagnostics' browser check. */
   screen?: Pick<ScreenApi, "status">;
-  /** Reads the profile's `display.tool_progress`, for Diagnostics' flight recorder rows (ADR 0177). */
+  /** Reads the profile's `display.tool_progress`, for Diagnostics' flight recorder rows (ADR 0178). */
   toolProgress?: () => Promise<ToolProgress>;
   /** Diagnostics → Logs (ADR 0033, 0087); without it Diagnostics has no Logs. */
   logs?: LogsWiring;

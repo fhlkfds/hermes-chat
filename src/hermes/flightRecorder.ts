@@ -1,4 +1,4 @@
-// The flight recorder (ADR 0177): one reply's turn drawn as a list of steps, each with how long it took and whether it
+// The flight recorder (ADR 0178): one reply's turn drawn as a list of steps, each with how long it took and whether it
 // failed. A turn the app watched is drawn from the events it heard, each kept in memory with when it arrived. A turn it
 // didn't watch is drawn from Hermes's stored rows. Hermes sends no server time and no step cost, so every time and token
 // figure here is the app's inference, except a tool's `duration_s`, which Hermes measures itself

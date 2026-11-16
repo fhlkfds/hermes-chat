@@ -32,7 +32,7 @@ The work a chat handed off, come back: the card at the start of the turn Hermes 
 _Avoid_: notification, wake message, delegation result (fine in conversation)
 
 **Run view**:
-One reply's turn drawn as a waterfall of steps: the model's calls, tool calls, Approvals and Questions, and Hermes's status lines, each with how long it took and whether it failed; a click shows a step's arguments and result. **Run**, under a reply, opens it. A reply this app watched is drawn from the events it heard, kept in memory only, each with when it arrived; any other from the chat's stored rows. A tool's length is Hermes's own measurement; every other time, token count and the turn's cost are the app's inference, marked with ≈ (ADR 0177).
+One reply's turn drawn as a waterfall of steps: the model's calls, tool calls, Approvals and Questions, and Hermes's status lines, each with how long it took and whether it failed; a click shows a step's arguments and result. **Run**, under a reply, opens it. A reply this app watched is drawn from the events it heard, kept in memory only, each with when it arrived; any other from the chat's stored rows. A tool's length is Hermes's own measurement; every other time, token count and the turn's cost are the app's inference, marked with ≈ (ADR 0178).
 _Avoid_: trace, timeline, flight recorder (the feature's name in the issue tracker; fine in conversation)
 
 **Snoozed**:

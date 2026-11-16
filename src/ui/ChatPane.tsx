@@ -527,7 +527,7 @@ export function ChatPane({
   followUp?: FollowUpHost;
   compare?: Comparing;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
-  /** Opens a reply's Run view (ADR 0177). */
+  /** Opens a reply's Run view (ADR 0178). */
   onRun?: (itemId: string) => void;
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };

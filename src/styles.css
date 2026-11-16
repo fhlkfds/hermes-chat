@@ -4274,7 +4274,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
   .rec-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 30%, transparent); }
 }
 
-/* ---------- Run view (RunView.tsx, ADR 0177) ---------- */
+/* ---------- Run view (RunView.tsx, ADR 0178) ---------- */
 .leave-overlay .leave-dialog.run-dialog { max-width: min(760px, calc(100% - 32px)); width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; }
 .run-title svg { color: var(--accent); }
 .run-summary { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }

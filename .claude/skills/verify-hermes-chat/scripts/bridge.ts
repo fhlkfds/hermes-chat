@@ -10,7 +10,7 @@
 //   a prompt with "background" in it starts two background subagents and ends its turn while they run.
 //   a prompt that starts with `tools` runs a turn with tool calls as Hermes sends and stores one, in real time: a
 //   `terminal` call, then a `read_file` that fails, each with Hermes's `duration_s`, `session.usage` after each model
-//   call, and stored rows with `timestamp` and `tool_calls` (FakeHermes.toolTurn), for the Run view (ADR 0177).
+//   call, and stored rows with `timestamp` and `tool_calls` (FakeHermes.toolTurn), for the Run view (ADR 0178).
 //   a prompt with "approval" in it asks the owner to approve a command, and its reply waits for the answer.
 //   a prompt that starts with "fail" ends its reply with an error, as a provider failure does.
 //   a prompt that starts with "math" gets a reply with inline and display math and a Mermaid diagram (#350), and one

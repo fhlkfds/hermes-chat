@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Run view on screen (issue #602, ADR 0177): Run under a reply opens its steps as a waterfall, from what the app
+// The Run view on screen (issue #602, ADR 0178): Run under a reply opens its steps as a waterfall, from what the app
 // heard live or from the stored rows, with every inferred figure marked and each step's arguments and result a click away.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

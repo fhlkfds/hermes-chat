@@ -4306,7 +4306,7 @@ function ChatView({
   // Edit and Regenerate (ADR 0035): the message the dialog is open for, and the versions of this chat's turns.
   const [replayFrom, setReplayFrom] = useState<{ itemId: string; kind: ReplayKind }>();
   useEffect(() => setReplayFrom(undefined), [chatId, profile]);
-  // The Run view (ADR 0177): the reply it is open for, if any.
+  // The Run view (ADR 0178): the reply it is open for, if any.
   const [runOf, setRunOf] = useState<string>();
   useEffect(() => setRunOf(undefined), [chatId, profile]);
   const links = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().branches.links);

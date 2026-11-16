@@ -1,4 +1,4 @@
-// The Run view (ADR 0177): a reply's turn as a waterfall of model calls, tool calls, Questions and status lines, each
+// The Run view (ADR 0178): a reply's turn as a waterfall of model calls, tool calls, Questions and status lines, each
 // with how long it took and whether it failed. Every figure the app inferred, rather than Hermes measured, is marked.
 import { useEffect, useId, useRef, useState } from "react";
 import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Wrench } from "lucide-react";

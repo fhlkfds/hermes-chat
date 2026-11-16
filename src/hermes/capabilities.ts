@@ -447,7 +447,7 @@ export type ServerFacts = {
   flagsWhy?: string;
   /**
    * Whether `message.start` carries `turn_id` on this connection: `bf0203a` sends none, so the flight recorder pairs a
-   * turn's events by order (ADR 0177). Undefined until a turn starts.
+   * turn's events by order (ADR 0178). Undefined until a turn starts.
    */
   turnIds?: boolean;
 };

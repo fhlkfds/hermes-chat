@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The flight recorder (ADR 0177): a reply's turn as steps, from the events the app heard or from Hermes's stored rows.
+// The flight recorder (ADR 0178): a reply's turn as steps, from the events the app heard or from Hermes's stored rows.
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes, row, type ToolTurnPlan } from "./fakeHermes";
 import { connect, type Hermes } from "./transport";

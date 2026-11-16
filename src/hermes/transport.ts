@@ -808,7 +808,7 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
-  /** What the app heard of each chat's turns, in memory, for the Run view (ADR 0177). */
+  /** What the app heard of each chat's turns, in memory, for the Run view (ADR 0178). */
   private recorder = new FlightRecorder();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
   private unprompted = new Set<string>();
@@ -4142,7 +4142,7 @@ export class Hermes {
     return end && start && start !== "unknown" ? replyUsage(start, end) : undefined;
   }
 
-  /** Keeps a session event in the chat's running turn, with when it arrived, for the Run view (ADR 0177). */
+  /** Keeps a session event in the chat's running turn, with when it arrived, for the Run view (ADR 0178). */
   private record(chatId: string, type: string, p: Record<string, unknown>) {
     const at = Date.now();
     const h = ((): Heard | undefined => {
@@ -4200,7 +4200,7 @@ export class Hermes {
   }
 
   /**
-   * One reply's run, for the Run view (ADR 0177): from what the app heard, if it watched the reply's turn, otherwise from
+   * One reply's run, for the Run view (ADR 0178): from what the app heard, if it watched the reply's turn, otherwise from
    * Hermes's stored rows. With it, the profile's `display.tool_progress`, or undefined when it couldn't be read.
    */
   async run(chatId: string, itemId: string): Promise<{ run: Run; toolProgress?: ToolProgress }> {
@@ -4221,7 +4221,7 @@ export class Hermes {
     return { run: storedRun(rows), toolProgress: await config };
   }
 
-  /** The profile's `display.tool_progress`, from `GET /api/config`: whether Hermes sends ordinary tool steps (ADR 0177). */
+  /** The profile's `display.tool_progress`, from `GET /api/config`: whether Hermes sends ordinary tool steps (ADR 0178). */
   async toolProgress(): Promise<ToolProgress> {
     return toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
   }

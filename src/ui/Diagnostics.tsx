@@ -113,7 +113,7 @@ export function DiagnosticsSettings({
   copyText?: (text: string) => Promise<void>;
   /** `display.status` for the profile in use, which says whether its Bot Desktop has a browser. */
   screen?: Pick<ScreenApi, "status">;
-  /** Reads the profile's `display.tool_progress`, for the flight recorder's rows (ADR 0177). */
+  /** Reads the profile's `display.tool_progress`, for the flight recorder's rows (ADR 0178). */
   toolProgress?: () => Promise<ToolProgress>;
 }) {
   const snap = useCapabilities(store);
@@ -375,7 +375,7 @@ function BotDesktopSection({ screen, connected, profile }: { screen: Pick<Screen
 type ProgressCheck = { kind: "checking" } | { kind: "read"; mode: ToolProgress } | { kind: "failed"; why: string };
 
 /**
- * What the Run view gets from this Hermes (ADR 0177): whether the profile's tool steps are sent live, from its
+ * What the Run view gets from this Hermes (ADR 0178): whether the profile's tool steps are sent live, from its
  * `display.tool_progress`, read when the connection opens or the profile changes and on Check again; and whether
  * `message.start` carries turn ids, seen on this connection's first reply. An answer for an earlier profile is dropped.
  */

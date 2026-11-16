@@ -216,7 +216,7 @@ describe("Connection diagnostics", () => {
     expect(within(row$("Projects")).getByText("Supported")).toBeTruthy();
   });
 
-  it("says whether tool steps are sent for the profile and whether turns are named, for the Run view (ADR 0177)", async () => {
+  it("says whether tool steps are sent for the profile and whether turns are named, for the Run view (ADR 0178)", async () => {
     const store = scriptedStore(NEW);
     act(() => store.connected(1, "default", {}, Promise.resolve({ server_requests: ["approval"] })));
     const toolProgress = vi.fn(async () => "off" as const);
