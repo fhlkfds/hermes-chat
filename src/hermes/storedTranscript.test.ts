@@ -31,7 +31,7 @@ describe("projectStored", () => {
     expect(shown).toEqual([
       { role: "user", text: PREAMBLE, row_id: 1, timestamp: 1_794_840_001 },
       { role: "assistant", text: "Checking the root filesystem first.", row_id: 2, timestamp: 1_794_840_002 },
-      { role: "tool", name: "terminal", context: "df -h /", tool_call_id: "call_1", args: { command: "df -h /" }, timestamp: 1_794_840_003 },
+      { role: "tool", name: "terminal", context: "df -h /", content: '{"output": "61% /", "exit_code": 0}', tool_call_id: "call_1", args: { command: "df -h /" }, timestamp: 1_794_840_003 },
       { role: "assistant", text: "Nothing needs cleaning tonight.", row_id: 4, timestamp: 1_794_840_004 },
     ]);
   });
@@ -51,7 +51,7 @@ describe("projectStored", () => {
       row(4, "tool", "results", { tool_call_id: "c1" }),
       row(5, "user", "  [System: indented marker]"),
     ]);
-    expect(shown).toEqual([{ role: "tool", name: "web_search", context: "disk usage", tool_call_id: "c1", args: { query: "disk usage" }, timestamp: 1_794_840_004 }]);
+    expect(shown).toEqual([{ role: "tool", name: "web_search", context: "disk usage", content: "results", tool_call_id: "c1", args: { query: "disk usage" }, timestamp: 1_794_840_004 }]);
   });
 
   it("names a tool step with no call on record by its stored tool name, then as a tool", () => {
@@ -86,7 +86,7 @@ describe("projectStored", () => {
     expect(shown[0].text).toBe("What is this?\n[image]plain");
   });
 
-  it("keeps a stored result only for the edit tools, and each row's display facts", () => {
+  it("keeps every tool's stored result, and each row's display facts", () => {
     const meta = '{"tool_result_metadata":{"inline_diff":"--- a\\n+++ b"}}';
     const shown = projectStored([
       row(1, "assistant", "", { tool_calls: [call("w", "write_file", { path: "/tmp/a", content: "x" }), call("t", "terminal", { command: "ls" })] }),
@@ -95,7 +95,7 @@ describe("projectStored", () => {
       row(4, "user", "Result of the delegated task", { display_kind: "returned" }),
     ]);
     expect(shown[0]).toMatchObject({ name: "write_file", content: '{"bytes_written": 1}', display_metadata: meta });
-    expect(shown[1]).not.toHaveProperty("content");
+    expect(shown[1]).toMatchObject({ name: "terminal", content: "a" });
     expect(shown[2]).toMatchObject({ role: "user", display_kind: "returned" });
   });
 

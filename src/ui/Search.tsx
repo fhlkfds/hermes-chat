@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ListFilter, Search, Tag as TagIcon, X } from "lucide-react";
 import { STATE_LABEL, isEmptyFilter, tidyFilter, type ChatFilter, type ChatState, type FilterOutcome } from "../hermes/chatFilter";
+import { policyOf } from "../hermes/chatKind";
 import { SOURCE_LABEL, type Found, type Source } from "../hermes/model";
 import { previewBulk, type BulkPreview, type ScopeTags } from "../hermes/tags";
 import { SourceIcon, Spinner, highlight, useReturnFocus } from "./bits";
@@ -266,7 +267,7 @@ export function SearchPalette({
               <div className="hit-title">
                 <SourceIcon source={f.source} />
                 <span className="hit-name">{highlight(f.title, results.text ?? "", "hl")}</span>
-                {f.archived ? <span className="badge">Archived</span> : f.settled && <span className="badge">Settled</span>}
+                {f.archived ? <span className="badge">Archived</span> : policyOf(f).readOnly === "jobRun" ? <span className="badge">Job run</span> : f.settled && <span className="badge">Settled</span>}
                 <span className="hit-time">{l.fmt.age(f.updatedAt)}</span>
               </div>
               <HitTags tags={tags} chatId={f.chatId} model={tidy.model || tidy.text ? f.model : undefined} />

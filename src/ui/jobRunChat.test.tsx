@@ -122,6 +122,8 @@ describe("A job run's chat", () => {
     expect(pane().textContent).toContain("You are running as a scheduled cron job");
     expect(pane().textContent).toMatch(/terminal/);
     expect(pane().textContent).toContain("df -h /");
+    await app.user.click(within(pane()).getByRole("button", { name: /terminal/ }));
+    expect(pane().textContent).toContain('"output": "61% /"');
     expect(within(pane()).getByText(REPLY)).toBeTruthy();
     expect(pane().textContent).toContain("A scheduled job ran this chat.");
     expect(pane().textContent).not.toMatch(/Imported from|moves it to Active/);
@@ -210,6 +212,7 @@ describe("Finding job runs", () => {
     const app = await launch();
     await filterBySource(app.user, "Scheduled jobs");
     await waitFor(() => expect(hits()).toEqual([RUN_TITLE]));
+    expect([...palette().querySelectorAll(".hit-row .badge")].map((e) => e.textContent)).toEqual(["Job run"]);
     const asked = app.s.restRequests.filter((r) => r.path === "/api/sessions" && r.query.get("sources")).at(-1)!;
     expect(asked.query.get("sources")).toBe("cron");
     expect(asked.query.has("exclude_sources")).toBe(false);

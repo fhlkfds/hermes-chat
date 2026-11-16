@@ -1,6 +1,7 @@
 // A chat's history as its transcript shows it, worked out from its stored rows (`GET /api/sessions/{id}/messages`) for a
 // chat Hermes takes no session for. It follows what `session.resume` does to the same rows
-// (`tui_gateway/session_history.py` `_history_to_messages` at v0.23.1), so both ways of reading a chat show it alike.
+// (`tui_gateway/session_history.py` `_history_to_messages` at v0.23.1), so both ways of reading a chat show it alike,
+// but for one thing: every tool's result is kept, where `session.resume` keeps only the edit tools'.
 import { callsOf, type StoredCall } from "./flightRecorder";
 import { isObj, nonEmptyText, optionalText } from "./values";
 
@@ -29,8 +30,6 @@ export type TranscriptMessage = {
 };
 
 const ROLES = new Set(["user", "assistant", "tool", "system"]);
-/** The tools whose stored result the transcript keeps, for their edit cards. */
-const RESULT_KEPT = new Set(["write_file", "patch", "skill_manage"]);
 const CONTEXT_MAX = 80;
 
 /** The argument Hermes previews each tool by, then the ones it tries for any other tool (`agent/display.py`). */
@@ -94,7 +93,9 @@ export function projectStored(rows: readonly unknown[]): TranscriptMessage[] {
           role,
           name,
           ...(context && { context }),
-          ...(RESULT_KEPT.has(name) && { content: row.content }),
+          // `session.resume` keeps only the edit tools' results, to stay small; these rows are read whole anyway, and a
+          // run's results are the record of what it did.
+          ...(row.content != null && { content: row.content }),
           ...(tool_call_id && { tool_call_id }),
           ...(call?.args && { args: call.args }),
           ...shared,
