@@ -80,6 +80,8 @@ export const APP_METHODS = [
   "session.close",
   "session.compress",
   "session.context_breakdown",
+  "session.control",
+  "session.control.read",
   "session.create",
   "session.cwd.set",
   "session.events.since",
@@ -285,6 +287,24 @@ export const APP_VERBS: AppVerb[] = [
   },
   // `arxiv` is a skill Hermes bundles, so a new home has it.
   { method: "command.dispatch", shape: "a skill", params: (s) => ({ name: "arxiv", arg: "", session_id: s.sid }), route: "authority", answer: "ok" },
+  // Standing missions (ADR 0187): routes and params from the gateway's source at `f0d94882` (`gateway/session_commands.py`
+  // `_AUTOMATION_COMMANDS`, `gateway/session_ancillary.py` `read`, `gateway/session_control_actions.py` `control`).
+  {
+    method: "command.dispatch",
+    shape: "/goal",
+    params: (s) => ({ name: "goal", arg: "-- Ship the release", session_id: s.sid }),
+    route: "authority",
+    answer: "ok",
+    unprobed: "it sets a goal, which starts turns once its message is sent",
+  },
+  { method: "session.control.read", params: (s) => ({ session_id: s.sid }), route: "authority", answer: "ok", unprobed: "added after the recording" },
+  {
+    method: "session.control",
+    params: (s) => ({ session_id: s.sid, action: "goal.pause" }),
+    route: "authority",
+    answer: "ok",
+    unprobed: "it changes the chat's goal",
+  },
   { method: "slash.exec", params: (s) => ({ command: "/context", session_id: s.sid }), route: "authority", answer: "ok" },
   { method: "prompt.btw", params: (s) => ({ session_id: s.sid, text: "A side question" }), route: "authority", answer: "ok" },
 

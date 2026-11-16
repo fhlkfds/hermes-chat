@@ -444,7 +444,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .saved-note b { font-weight: 600; }
 
 .msg { line-height: 1.7; font-size: calc(14.5rem / 14); }
-.msg.user { align-self: flex-end; max-width: 82%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.msg.user { align-self: flex-end; max-width: 100%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .bubble-text {
   background: var(--raised-2); padding: 10px 16px; border-radius: 18px 18px 6px 18px; white-space: pre-wrap; max-width: 100%; overflow-x: auto;
 }
@@ -668,6 +668,62 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .send.queue-btn { background: var(--accent-soft); color: var(--accent); }
 .send.queue-btn:hover:not(:disabled) { background: var(--accent); color: var(--on-text); }
 .send.queue-btn:disabled { background: var(--raised-2); color: var(--faint); }
+
+/* A chat's goal (GoalBar.tsx, ADR 0187), above the queue and the composer, as wide as they are. */
+.goal-bar {
+  width: calc(100% - 56px); max-width: var(--chat-width); margin: 0 auto 8px; border: 1px solid var(--line-2); border-left: 3px solid var(--accent);
+  border-radius: 12px; background: var(--raised); font-size: calc(12.5rem / 14); max-height: 40vh; overflow-y: auto;
+}
+.goal-bar.paused { border-left-color: var(--warn); }
+.goal-bar.done { border-left-color: var(--ok); }
+.goal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 6px 8px 6px 6px; }
+.goal-toggle {
+  flex: 1 1 14em; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 4px; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); text-align: left; font: inherit; cursor: pointer;
+}
+.goal-toggle:hover { background: var(--raised-2); }
+.goal-icon { flex: none; color: var(--accent); }
+.goal-title { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-state { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.goal-state.paused { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.goal-state.done { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.goal-meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+.goal-actions { display: flex; gap: 6px; margin-left: auto; }
+.goal-btn { height: 26px; padding: 0 10px; font-size: calc(12rem / 14); }
+.goal-why, .goal-wait, .goal-error { margin: 0; padding: 0 12px 6px 30px; display: flex; gap: 6px; align-items: flex-start; line-height: 1.45; }
+.goal-why { color: var(--warn); }
+.goal-wait { color: var(--muted); }
+.goal-error { color: var(--bad); }
+.goal-why svg, .goal-wait svg, .goal-error svg { flex: none; margin-top: 3px; }
+.goal-details { padding: 2px 12px 10px 30px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); }
+.goal-details p { margin: 0; line-height: 1.5; }
+.goal-section h3 { margin: 6px 0 3px; font-size: calc(12rem / 14); font-weight: 600; color: var(--text-2); }
+.goal-contract { margin: 6px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; }
+.goal-contract > div { display: contents; }
+.goal-contract dt { color: var(--muted); }
+.goal-contract dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.goal-subgoals { margin: 0; padding-left: 20px; }
+.goal-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.goal-checks li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.goal-command { font-family: var(--mono); font-size: var(--mono-size); color: var(--text); overflow-wrap: anywhere; }
+.goal-result { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.goal-result.ok { color: var(--ok); }
+.goal-result.bad { color: var(--bad); }
+.goal-verdict { font-weight: 600; text-transform: capitalize; color: var(--text); }
+.goal-live { margin-top: 2px; }
+.leave-overlay .leave-dialog.goal-dialog { max-width: min(560px, calc(100% - 32px)); }
+.goal-form { display: flex; flex-direction: column; gap: 12px; }
+.goal-field { display: flex; flex-direction: column; gap: 4px; }
+.goal-field input { width: 100%; box-sizing: border-box; }
+.goal-preview {
+  margin: 0; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--code-bg); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: var(--mono-size); line-height: 1.5;
+}
+.goal-danger { align-items: flex-start; }
+@media (max-width: 640px) {
+  .goal-bar { width: calc(100% - 32px); }
+  .goal-actions { margin-left: 0; }
+}
 
 /* The chat's queue (Queue.tsx), above the composer and as wide as it. */
 .queue {

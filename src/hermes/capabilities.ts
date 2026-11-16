@@ -23,6 +23,7 @@ import { redactSecrets } from "./secrets";
 import { RestError, type RestMethod } from "./pipe";
 import { errorText, isObj } from "./values";
 import type { AppMethod } from "./canonicalVerbs";
+import { listServerCommands } from "./commands";
 
 /** The features whose server support is tracked. */
 export type CapabilityId =
@@ -31,6 +32,7 @@ export type CapabilityId =
   | "approvalAnswers"
   | "projects"
   | "commands"
+  | "standingMissions"
   | "liveSessions"
   | "memory"
   | "toolsets"
@@ -140,6 +142,11 @@ export type CapabilitySpec = {
   actions?: CapabilityAction[];
   /** Why it is unknown before anything has settled it, when no check will. */
   notChecked?: string;
+  /**
+   * What settles it differs by profile, so it starts unknown on each connection, a profile switch included, and is
+   * checked again: nothing it guards goes until then.
+   */
+  perProfile?: boolean;
 };
 
 const isList = (v: unknown) => Array.isArray(v);
@@ -236,6 +243,39 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     probe: { kind: "rpc", method: "commands.catalog", params: (profile) => ({ profile }), shape: isObj },
     methods: ["commands.catalog"],
     writeMethods: /^(command\.dispatch|slash\.exec)$/,
+  },
+  {
+    id: "standingMissions",
+    label: "Standing missions",
+    usedBy: "Set a goal, and the goal bar above a chat's message box",
+    needs: "session.control.read and session.control on /api/ws, and /goal as Hermes's own command in commands.catalog.",
+    without: "Set a goal doesn't show, and chats show no goal bar.",
+    anchor: "standing-missions",
+    // `session.control.read` for a session no chat has fails "session not found" (4001) before reading anything
+    // (`tui_gateway/methods_session_control.py`). A quick or plugin command named `goal` runs instead of Hermes's
+    // `/goal`, and so do `session.control`'s goal actions, which go through `command.dispatch` (ADR 0187).
+    probe: {
+      kind: "rpc",
+      method: "session.control.read",
+      params: () => ({ session_id: PROBE_NAME }),
+      shape: isObj,
+      context: (io, profile) => listServerCommands(io.rpc, profile).catch((e: unknown) => errorText(e)),
+      read: (o, list) => {
+        const has = "answer" in o ? isObj(o.answer) : o.failure.rpcCode === SESSION_NOT_FOUND;
+        if (!has) return "answer" in o ? { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." } : stateOfFailure(o.failure);
+        if (typeof list === "string" || list === undefined)
+          return { state: "unknown", why: `Hermes has session.control, but couldn't say whether /goal is its own${list ? `: ${list}` : "."}` };
+        const commands = list as Awaited<ReturnType<typeof listServerCommands>>;
+        if (commands.replaced.has("goal"))
+          return { state: "unsupported", why: "Hermes has session.control, but a quick or plugin command called /goal would run instead of Hermes's own, so Highwing doesn't set goals here." };
+        if (commands.unsure.has("goal"))
+          return { state: "unknown", why: "Hermes has session.control, but couldn't list its quick and plugin commands, so it can't tell whether one would run instead of /goal." };
+        if (!commands.listed.has("goal")) return { state: "unsupported", why: "Hermes has session.control, but doesn't list /goal as its own command." };
+        return { state: "supported", why: "Hermes has session.control.read and session.control, and /goal is its own command." };
+      },
+    },
+    writeMethods: /^session\.control$/,
+    perProfile: true,
   },
   {
     id: "liveSessions",
@@ -929,6 +969,11 @@ export class CapabilityStore {
     // The canonical protocol never gets this far (`ProtocolMismatchError`), so a connection that is up is legacy.
     this.set({ facts: { ...this.snap.facts, protocol: protocolOf(ready), turnIds: undefined }, stale: false });
     this.setCap("chat", { state: "supported", source: "advertised", why: "Hermes speaks the legacy session protocol on this connection." });
+    for (const c of CAPABILITIES)
+      if (c.perProfile) {
+        this.missing.delete(c.id);
+        this.setCapRaw(c.id, fresh()[c.id]);
+      }
     const learnt = (declinesNotShown: boolean, approvals: Pick<Capability, "state" | "why">) => {
       if (!this.current(scope)) return;
       this.set({ facts: { ...this.snap.facts, declinesNotShown } });
