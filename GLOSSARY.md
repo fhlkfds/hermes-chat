@@ -445,6 +445,10 @@ _Avoid_: price, spend, bill (except for a cost the provider reported)
 The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Its Reply time section is the one part from this computer: the Reply times kept for the chats counted (ADR 0181). Export CSV saves the chats counted where the owner picks (ADR 0026).
 _Avoid_: dashboard, stats, report, billing
 
+**Budget**:
+A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0188).
+_Avoid_: quota, cap, spending limit (Hermes enforces none)
+
 **Context window**:
 What the model reads on each call in a chat: Hermes's instructions, the tool descriptions, instruction files, memory, and the conversation, up to the model's limit. The status bar's meter shows how full it is, and its **context inspector** shows what fills it, as Hermes measures and estimates it. Hermes's total is labelled Exact (the provider's count), Partly estimated, or Estimated; its split by category is always its estimate (ADR 0025).
 _Avoid_: context (alone, for memory), prompt, tokens (for the window)

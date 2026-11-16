@@ -74,7 +74,7 @@ import type { PathKind, ServerPath } from "./paths";
 import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
-import type { UsageIo } from "./usageAnalytics";
+import type { BudgetIo } from "./budgetWatch";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import type { ReplyTime } from "./replyTimes";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
@@ -5611,7 +5611,7 @@ export class Hermes {
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
    * names its profile, and reads only while connected. Reply times are this computer's own (replyTimes.ts).
    */
-  usageIo(): UsageIo {
+  usageIo(): BudgetIo {
     const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
     return {
       page: async (profile, offset, limit) => {
@@ -5621,6 +5621,7 @@ export class Hermes {
       },
       session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
       hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+      models: (profile, days) => get(`api/analytics/models?${new URLSearchParams({ days: String(days), profile })}`),
       replyTimes: (profile) => this.cache.loadReplyTimes(profile),
     };
   }

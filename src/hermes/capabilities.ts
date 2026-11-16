@@ -52,7 +52,8 @@ export type CapabilityId =
   | "workEstimate"
   | "botMode"
   | "subagents"
-  | "subagentRoster";
+  | "subagentRoster"
+  | "modelUsage";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -557,6 +558,16 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "subagents-in-chats-not-opened",
     probe: { kind: "rpc", method: "subagent.roster", params: (profile) => ({ profile }), shape: (r) => isObj(r) && isList(r.sessions) },
     methods: ["subagent.roster"],
+  },
+  {
+    id: "modelUsage",
+    label: "Model budgets",
+    usedBy: "Usage → Budgets, for a budget on a model",
+    needs: "GET /api/analytics/models, Hermes's spending for each model it called.",
+    without: "A budget on a model shows no figure and sends no alert. Budgets on the server, a profile or a project still work.",
+    anchor: "budgets",
+    probe: { kind: "rest", path: (profile) => `api/analytics/models?${new URLSearchParams({ days: "1", profile })}`, maxBytes: 2 * 1024 * 1024, shape: (b) => isObj(b) && isList(b.models) },
+    routes: [/^api\/analytics\/models$/],
   },
 ];
 

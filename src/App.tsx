@@ -95,7 +95,8 @@ import { useWindowTitle, windowTitle } from "./ui/windowTitle";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
-import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { UsageAnalytics, type UsageTab } from "./ui/UsageAnalytics";
+import { BudgetOpener, BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
 import { Work } from "./ui/Work";
 import type { WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
@@ -296,6 +297,27 @@ const keepDraft = (key: string, text: string) => {
 };
 const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
+/** Where a budget notification's click goes: Usage → Budgets on its connection, made the one shown first (ADR 0188). */
+const budgetOpener = new BudgetOpener();
+/** A budget watch per live connection (budgetWatch.ts), kept in step with them by `Screens`. */
+const budgetWatches = new BudgetWatches((id) => {
+  const m = liveConnections().get(id);
+  if (!m) return undefined;
+  const c = m.connection;
+  return {
+    io: m.hermes.usageIo(),
+    shelves: budgetShelves(localStorage, c),
+    notify: notifyFor(c),
+    open: () => () => budgetOpener.open(id),
+    connected: () => m.hermes.getSnapshot().status === "connected",
+    watchStatus: m.hermes.subscribe,
+    listProfiles: () => m.hermes.profiles(),
+    projects: (profile) => {
+      const s = savedProjects.read(projectScope(c, profile));
+      return { chats: s.chats, known: s.known };
+    },
+  };
+});
 const savedContextLedger = contextLedger(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
@@ -474,6 +496,12 @@ function Screens({ links }: { links: LinkInbox }) {
   // The live connections (ADR 0125). The target's `Hermes` is `hermes`; the others carry on in the background.
   const registry = liveConnections();
   useSyncExternalStore(registry.subscribe, registry.getSnapshot);
+  // Each live connection's budgets are checked while it is live, the target's and the background ones' alike.
+  useEffect(() => {
+    const sync = () => budgetWatches.sync(registry.list().map((m) => ({ id: m.connection.id, instance: m.hermes })));
+    sync();
+    return registry.subscribe(sync);
+  }, [registry]);
   const overview = registry.overview();
   // A message to open a chat on another live connection once it is the target: an inbox entry or a chat link for it.
   const [opening, setOpening] = useState<{ link: ChatLink; at: number; connection: string; reveal?: LinkReveal }>();
@@ -818,6 +846,18 @@ function Screens({ links }: { links: LinkInbox }) {
   // own notifications are Main's.
   const openElsewhereRef = useRef(openElsewhere);
   openElsewhereRef.current = openElsewhere;
+  // A budget notification from a background connection makes it the target; its Budgets open once it shows. An unsaved
+  // edit asks first, as a chat link to another connection does; Keep editing drops the opening.
+  const switchToRef = useRef(switchTo);
+  switchToRef.current = switchTo;
+  useEffect(() => {
+    budgetOpener.switchTo = (id) => {
+      const m = registry.get(id);
+      if (!m) return budgetOpener.cancel(id);
+      void (editGuard.current?.() ?? Promise.resolve(true)).then((go) => (go ? void switchToRef.current(m.connection) : budgetOpener.cancel(id)));
+    };
+    return () => void (budgetOpener.switchTo = undefined);
+  }, [registry]);
   useEffect(() => {
     const stops = registry.list().map((m) =>
       m.hermes.onNoticeOpen((card) => {
@@ -1373,6 +1413,24 @@ export function Main({
   const [filesPath, setFilesPath] = useState<string>();
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
+  const [usageTab, setUsageTab] = useState<UsageTab>("spending");
+  const budgets = useSyncExternalStore(budgetWatches.subscribe, () => budgetWatches.of(connection.id));
+  // A budget notification's click opens Usage → Budgets here, as the rail's Usage would.
+  useEffect(() => {
+    if (!connection.id) return;
+    const id = connection.id;
+    return budgetOpener.showing(id, () =>
+      guardRef.current(() => {
+        setProjectOpen(false);
+        setSettingsOpen(false);
+        setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
+        setRepoOpen(false);
+        setWorkOpen(false);
+        setUsageTab("budgets");
+        setUsageOpen(true);
+      }),
+    );
+  }, [connection.id]);
   // The Work page, the kanban board of bot work (Work.tsx, ADR 0171), covers the chat panes too.
   const [workOpen, setWorkOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
@@ -3717,6 +3775,9 @@ export function Main({
         ) : usageOpen ? (
           <UsageAnalytics
             key={profile}
+            budgets={budgets}
+            tab={usageTab}
+            onTab={setUsageTab}
             io={usageIo}
             profile={profile}
             listProfiles={listProfiles}

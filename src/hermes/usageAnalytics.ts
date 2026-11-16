@@ -241,6 +241,9 @@ async function eachLimited<T>(items: T[], limit: number, fn: (t: T) => Promise<v
 
 export type Progress = { profile: string; read: number };
 
+/** A compression segment's key in `collectUsage`'s `finished` map. */
+export const segmentKey = (profile: string, id: string) => `${profile}\n${id}`;
+
 /**
  * Reads every chat started in `period` in each profile: newest first, until a page passes the period's start, at most
  * `MAX_PAGES` pages. Each page also carries every pinned chat, out of order; those are kept only when in the period.
@@ -251,7 +254,22 @@ export async function collectUsage(
   io: UsageIo,
   profiles: string[],
   period: Period,
-  { signal, onProgress, now = Date.now }: { signal?: AbortSignal; onProgress?: (p: Progress) => void; now?: () => number } = {},
+  {
+    signal,
+    onProgress,
+    now = Date.now,
+    finished,
+  }: {
+    signal?: AbortSignal;
+    onProgress?: (p: Progress) => void;
+    now?: () => number;
+    /**
+     * Compression segments already read, by profile and id (`segmentKey`). A segment that isn't its chat's latest is
+     * finished, so its usage can't change: one found here isn't read again, and one read is added. The budget watch
+     * keeps this across its checks (budgetWatch.ts).
+     */
+    finished?: Map<string, ChatUsage | undefined>;
+  } = {},
 ): Promise<UsageDataset> {
   const chats: UsageChat[] = [];
   const reads: ProfileRead[] = [];
@@ -322,6 +340,11 @@ export async function collectUsage(
     let missing = 0;
     for (const id of others) {
       checkLive(signal);
+      const key = segmentKey(chat.profile, id);
+      if (id !== chat.id && finished?.has(key)) {
+        segments.push({ id, usage: finished.get(key) });
+        continue;
+      }
       if (budget <= 0) {
         missing++;
         segmentsSkipped++;
@@ -331,7 +354,9 @@ export async function collectUsage(
       try {
         const row = await io.session(chat.profile, id);
         checkLive(signal);
-        segments.push({ id, usage: chatUsageOf(row, now()) });
+        const usage = chatUsageOf(row, now());
+        segments.push({ id, usage });
+        if (id !== chat.id) finished?.set(key, usage);
       } catch (e) {
         if (e instanceof StaleRead) throw e;
         checkLive(signal);
