@@ -180,6 +180,29 @@ describe("The Subagents panel", () => {
     }
   });
 
+  it("keeps a line open on its own tool call when a late one is slotted in above it", async () => {
+    const widths = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("tool-preview") ? 500 : 0;
+    });
+    try {
+      const { server, user, runtime } = await auditing();
+      act(() => server.event(runtime, "subagent.tool", who("sa-auth", "Read the auth code", { tool_name: "grep", tool_preview: "verify_token", tool_count: 3 })));
+      await user.click(within(panel()).getByRole("button", { name: /Subagents/ }));
+      await user.click(within(panel()).getByRole("button", { name: /Read the auth code/ }));
+      await user.click(await within(panel()).findByRole("button", { name: /grep\s*verify_token/ }));
+
+      act(() => server.event(runtime, "subagent.tool", who("sa-auth", "Read the auth code", { tool_name: "terminal", tool_preview: "git log", tool_count: 2 })));
+      const lines = within(within(panel()).getByRole("list", { name: "What it did" })).getAllByRole("button");
+      expect(lines.map((b) => [b.querySelector(".tool-name")!.textContent, b.getAttribute("aria-expanded")])).toEqual([
+        ["read_file", "false"],
+        ["terminal", "false"],
+        ["grep", "true"],
+      ]);
+    } finally {
+      widths.mockRestore();
+    }
+  });
+
   it("points to the chat's waiting Approval, and leaves answering it to the owner", async () => {
     const { server, user, runtime } = await auditing();
     act(() => void server.askApproval(runtime));
