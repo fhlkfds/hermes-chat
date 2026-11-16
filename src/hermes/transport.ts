@@ -4282,12 +4282,15 @@ export class Hermes {
     if (h) this.recorder.hear(chatId, h);
   }
 
-  /** Ends the chat's recorded turn with its replies, as the transcript now shows them, and returns it. */
+  /**
+   * Ends the chat's recorded turn with its replies and errors, as the transcript now shows them, and returns it. A turn
+   * that failed with no reply opens its Run view from its error.
+   */
   private endRecording(chatId: string, type: string, p: Record<string, unknown>, from: string | null | undefined): WatchedTurn | undefined {
     const at = Date.now();
     const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
     const begin = turnFrom(items, from);
-    const replies = items.slice(begin < 0 ? turnStart(items) : begin).flatMap((i) => (i.kind === "assistant" ? [i.id] : []));
+    const replies = items.slice(begin < 0 ? turnStart(items) : begin).flatMap((i) => (i.kind === "assistant" || i.kind === "error" ? [i.id] : []));
     const receipt = (p.persisted_turn ?? {}) as PersistedTurn;
     const replyRow = typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
     const failure = textOf(p.error ?? (p.status === "error" ? (p.failure_reason ?? "The turn failed.") : undefined));
@@ -4314,9 +4317,14 @@ export class Hermes {
     const profile = this.profile;
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const reply = chat?.items.find((i) => i.id === itemId);
-    if (!chat || reply?.kind !== "assistant") throw new Error("This reply isn't in the chat any more.");
+    if (!chat || (reply?.kind !== "assistant" && reply?.kind !== "error")) throw new Error("This reply isn't in the chat any more.");
     const config = this.toolProgress().catch(() => undefined);
     const watched = this.recorder.find(chatId, reply);
+    if (reply.kind === "error") {
+      if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+      // An error item has no stored row to read the turn back from.
+      throw new Error("This app didn't watch this failed turn, so its steps can't be shown.");
+    }
     // A recording cut short is missing steps the stored rows still have, when they can be read back that far.
     if (watched?.truncated && reply.rowId !== undefined) {
       const rows = await this.turnRowsOf(profile, chatId, reply.rowId).catch(() => undefined);
