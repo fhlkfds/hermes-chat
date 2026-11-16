@@ -45,7 +45,7 @@ import { AttemptLog, tauriAttemptStore } from "./hermes/attempts";
 import { readMethods } from "./hermes/signInMethods";
 import { PreferredRoutes, type RouteHealth, routesOf, sshAddressOf } from "./hermes/routes";
 import { signInError, testSignIn, type SignInError, type TestOutcome } from "./hermes/setup";
-import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found, type SentReference } from "./hermes/model";
+import { isOutgoing, isWaiting, type Attachment, type Chat, type ConnectionStatus, type Found, type Hit, type SentReference } from "./hermes/model";
 import { shortName, type ModelCatalog, type ModelPick } from "./hermes/models";
 import { ChatList, Rail, leavingNote } from "./ui/Sidebar";
 import { type ChatLink, type ConnectionRefs, checkConnection, connectionKey, connectionLabel, connectionRefs, formatChatLink, locateChat, parseChatLink } from "./hermes/chatLinks";
@@ -61,7 +61,7 @@ import { policyOf } from "./hermes/chatKind";
 import { jobRunTitle } from "./hermes/cronJobs";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { blocksRestore, inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxAcks, type InboxEntry } from "./hermes/inbox";
-import { LiveConnections, attention as attentionOf, withoutServer, type LiveSummary } from "./hermes/liveConnections";
+import { LiveConnections, attention as attentionOf, withoutServer, type ChatRef, type LiveSummary } from "./hermes/liveConnections";
 import { handoffs as handoffsOf, nextHandoffChange, outstandingIds, type Handoff, type StopWaiting } from "./hermes/dispatched";
 import { ChatPane, type Comparing, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
 import type { ChatPin } from "./ui/ChatMenu";
@@ -169,8 +169,12 @@ const INBOX_CHECK_EVERY_MS = 30_000;
 const TOAST_MS = 5_000;
 const ACTION_TOAST_MS = 15_000;
 
-/** The card or message to show in a chat once it opens: an item, or else the chat's waiting Approval. */
-type LinkReveal = { itemId?: string; approval: boolean };
+/**
+ * What to show in a chat once it opens: a card or message, or else the chat's waiting Approval; or the words a search
+ * across connections matched there (`hit`, everywhere.ts), which find-in-chat goes to.
+ */
+type LinkReveal = { itemId?: string; approval: boolean } | { hit: Hit };
+const hitOf = (reveal: LinkReveal | undefined): Hit | undefined => (reveal && "hit" in reveal ? reveal.hit : undefined);
 /** A short notice above the composer; `undo` puts back what it reports. `at` restarts the timer for a repeat. */
 type Toast = { text: string; undo?: () => void; action?: { label: string; run: () => void }; at: number };
 
@@ -474,7 +478,8 @@ function Screens({ links }: { links: LinkInbox }) {
   const registry = liveConnections();
   useSyncExternalStore(registry.subscribe, registry.getSnapshot);
   const overview = registry.overview();
-  // A message to open a chat on another live connection once it is the target: an inbox entry or a chat link for it.
+  // A message to open a chat on a live connection, once it is the target: an inbox entry or notification from a
+  // background connection, or a row of a search across them.
   const [opening, setOpening] = useState<{ link: ChatLink; at: number; connection: string; reveal?: LinkReveal }>();
   // Connect asked at the limit: the live connections to choose one to disconnect from.
   const [atLimit, setAtLimit] = useState<SavedConnection>();
@@ -800,18 +805,26 @@ function Screens({ links }: { links: LinkInbox }) {
   }, [goodLink?.at, linkOwner?.connection.id]);
   const linkHere = opening && opening.connection === connection?.id ? opening : linkElsewhere || linkAwaits ? undefined : goodLink;
 
-  /** An inbox entry on a background connection: that connection becomes the target, and its chat opens there. */
-  const openElsewhere = (e: InboxEntry) => {
-    const m = e.server && registry.get(e.server.id);
+  /**
+   * Opens a chat on a live connection, whichever profile it is in. Its connection becomes the composer target if it
+   * isn't, and Main opens the chat as it opens a chat link: looked up first, asking before it leaves a profile
+   * (ADR 0037). Nothing happens when the connection is no longer live.
+   */
+  const openAt = (ref: ChatRef, reveal?: LinkReveal) => {
+    const m = registry.resolve(ref);
     if (!m) return;
-    const approval = e.kind === "approval" && !e.ended;
     setOpening({
-      link: { connection: savedConnectionRefs.refFor(m.connection), profile: e.profile, chatId: e.chatId },
+      link: { connection: savedConnectionRefs.refFor(m.connection), profile: ref.profile, chatId: ref.chatId },
       at: Date.now(),
       connection: m.connection.id,
-      ...((e.itemId || approval) && { reveal: { itemId: e.itemId, approval } }),
+      ...(reveal && { reveal }),
     });
-    void switchTo(m.connection);
+    if (registry.target() !== m) void switchTo(m.connection);
+  };
+  /** An inbox entry on a background connection: that connection becomes the target, and its chat opens there. */
+  const openElsewhere = (e: InboxEntry) => {
+    const approval = e.kind === "approval" && !e.ended;
+    if (e.server) openAt({ connection: e.server.id, profile: e.profile, chatId: e.chatId }, e.itemId || approval ? { itemId: e.itemId, approval } : undefined);
   };
   // A notification clicked from a background connection opens its chat there, as its inbox entry does. The target's
   // own notifications are Main's.
@@ -1202,8 +1215,8 @@ export function Main({
   onSignOut: () => Promise<void>;
   updates?: Updater;
   /**
-   * A chat link to open (ADR 0037); `at` tells one from the next. Main takes it with `onLinkTaken`. `reveal`: the card or
-   * message to show once the chat is open, for an inbox entry or notification from a background connection.
+   * A chat link to open (ADR 0037); `at` tells one from the next. Main takes it with `onLinkTaken`. `reveal`: what to
+   * show once the chat is open, for an inbox entry or notification from a background connection, or a search's hit.
    */
   link?: { link: ChatLink; at: number; reveal?: LinkReveal };
   onLinkTaken?: (at: number) => void;
@@ -1812,13 +1825,14 @@ export function Main({
       newTab = false,
       worktree,
       subagent,
-    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart; subagent?: SubagentId } = {},
+      picked,
+    }: { pane?: string; remember?: boolean; fresh?: boolean; keepSettings?: boolean; newTab?: boolean; worktree?: WorktreeStart; subagent?: SubagentId; picked?: Found } = {},
   ) => {
     const go = () => {
       navGen.current++;
       setPanelHidden(true);
       if (newTab) setPanes((ps) => ps.map((p) => (p.key === pane && !p.tabs.includes(id) ? { ...p, tabs: [...p.tabs, id] } : p)));
-      patchPane(pane, { chatId: id, picked: undefined, jump: undefined, subagent: subagent && id ? { chatId: id, id: subagent, at: Date.now() } : undefined, worktree, ...(fresh && { draftError: undefined }) });
+      patchPane(pane, { chatId: id, picked: picked && { found: picked, at: Date.now() }, jump: undefined, subagent: subagent && id ? { chatId: id, id: subagent, at: Date.now() } : undefined, worktree, ...(fresh && { draftError: undefined }) });
       activeKeyRef.current = pane;
       setActiveKey(pane);
       setReopening(undefined);
@@ -2626,6 +2640,8 @@ export function Main({
   linkJobRef.current = linkJob;
   const linkRan = useRef("");
   const isCurrent = (job: LinkJob) => linkJobRef.current?.at === job.at && linkJobRef.current.attempt === job.attempt;
+  /** What the job's notices call the chat it opens: a chat link's, or a row of a search across connections. */
+  const opened = (job: Pick<LinkJob, "reveal">) => (hitOf(job.reveal) ? "search result" : "linked chat");
   const hereLabel = connectionLabel(connectionKey(connection));
   // With more than one connection live, every chat says which server and profile it is on (ADR 0125).
   const serverBadge = servers.length > 1 ? `${"name" in connection ? connection.name : hereLabel} · ${profile}` : undefined;
@@ -2671,11 +2687,13 @@ export function Main({
         setLinkJob(undefined);
         hermes.reveal(found);
         const pane = panesRef.current.find((p) => p.chatId === found.chatId)?.key ?? activeKeyRef.current;
-        // Already asked, just above.
-        openChat(found.chatId, { pane, keepSettings: true });
+        const reveal = job.reveal;
+        const hit = hitOf(reveal);
+        // Already asked, just above. A search's hit opens as a picked result does, at the words it matched.
+        openChat(found.chatId, { pane, keepSettings: true, picked: hit && { ...found, snippet: hit.snippet, find: hit.find, role: hit.role } });
         setSettingsOpen(false);
-        if (job.reveal) setFocusItem({ pane, chatId: found.chatId, ...job.reveal });
-        else requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(pane)}"] .composer textarea`)?.focus());
+        if (!reveal) requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-pane="${CSS.escape(pane)}"] .composer textarea`)?.focus());
+        else if (!("hit" in reveal)) setFocusItem({ pane, chatId: found.chatId, ...reveal });
       },
       "leave",
       stayed(job),
@@ -2739,13 +2757,13 @@ export function Main({
       located = await locateChat<Found>(job.link, hermes);
     } catch (e) {
       if (!isCurrent(job) || movedOn()) return;
-      return failLink(`Highwing couldn't look the linked chat up: ${errorText(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
+      return failLink(`Highwing couldn't look the ${opened(job)} up: ${errorText(e)}`, [{ label: "Try again", onClick: () => retryLink(job) }]);
     }
     if (!isCurrent(job) || movedOn()) return;
     if (located.kind === "no-profile")
-      return failLink(`This server has no profile named ${p} now. It may have been renamed or deleted, so the linked chat wasn't opened.`);
+      return failLink(`This server has no profile named ${p} now. It may have been renamed or deleted, so the ${opened(job)} wasn't opened.`);
     if (located.kind === "no-chat")
-      return failLink(`The ${p} profile has no chat with this link's id. It may have been deleted, so there's nothing to open.`);
+      return failLink(`The ${p} profile has no chat with this ${hitOf(job.reveal) ? "search result" : "link"}'s id. It may have been deleted, so there's nothing to open.`);
     const found = located.found;
     if (p === hermes.profile) return openLinked(job, found);
     const snap = hermes.getSnapshot();
@@ -2785,17 +2803,17 @@ export function Main({
       (linkJob.stage === "confirm" && linkJob.found
         ? {
             kind: "confirm",
-            text: `${leavingNote(profile, chats) ?? ""} Switch to ${linkJob.link.profile} to open the linked chat?`.trim(),
+            text: `${leavingNote(profile, chats) ?? ""} Switch to ${linkJob.link.profile} to open the ${opened(linkJob)}?`.trim(),
             actions: [{ label: `Switch to ${linkJob.link.profile}`, onClick: () => switchForLink(linkJob, linkJob.found!) }],
           }
         : {
             kind: "pending",
             text:
               linkJob.stage === "wait"
-                ? `The linked chat opens once Hermes is connected. Nothing is sent.`
+                ? `The ${opened(linkJob)} opens once Hermes is connected. Nothing is sent.`
                 : linkJob.stage === "switch"
-                  ? `Switching to ${linkJob.link.profile} to open the linked chat…`
-                  : `Opening the linked chat in ${linkJob.link.profile}…`,
+                  ? `Switching to ${linkJob.link.profile} to open the ${opened(linkJob)}…`
+                  : `Opening the ${opened(linkJob)} in ${linkJob.link.profile}…`,
           }));
   const closeLinkNotice = () => {
     linkJobRef.current = undefined;
