@@ -157,7 +157,8 @@ export function StatusBar({
 }: {
   chat: Chat;
   status: ConnectionStatus;
-  context: ContextApi;
+  /** Left out for a chat with no session to measure or compact. */
+  context?: ContextApi;
 }) {
   const items = useShown();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -174,7 +175,7 @@ export function StatusBar({
       }}
     >
       {/* Keyed by the chat's session: a new one starts the inspector afresh, and an answer for the old one is dropped. */}
-      {has("context") && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
+      {has("context") && context && <ContextMeter key={`${chat.id}/${chat.runtimeId}`} chat={chat} status={status} api={context} />}
       <span className="status-gap" />
       {has("model") && chat.model && (
         <span className="status-item" title="The model this chat uses">
