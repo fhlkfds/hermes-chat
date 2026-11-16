@@ -42,6 +42,7 @@ function scriptedStore(answers: Record<string, unknown>) {
     get: (p) => answer(`GET ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
     rpc: (m) => answer(`RPC ${m}`),
     put: (p) => answer(`PUT ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
+    post: (p) => answer(`POST ${p.split("?")[0]}`).then((v) => JSON.stringify(v)),
   };
   return new CapabilityStore(io, () => 1, Date.now, 500, 0);
 }
@@ -64,7 +65,8 @@ const NEW = {
   "GET api/cron/jobs": [],
   "GET api/webhooks": { subscriptions: [] },
   "GET api/fs/list": {},
-  "GET api/plugins/kanban/boards": { boards: [] },
+  "GET api/plugins/kanban/boards": { boards: [] },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
+  "GET api/plugins/kanban/model-options": { providers: [] },
 };
 
 function diagnostics(store: CapabilityStore, props: Partial<Parameters<typeof DiagnosticsSettings>[0]> = {}) {
@@ -312,6 +314,39 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
     visible(screen.getByText("Unsecure"));
     visible(within(row$("Skills")).getByText("Couldn't check"));
     visible(within(row$("Skills")).getByText(/Needs:/));
+  });
+});
+
+describe("Work dispatch (issue #604)", () => {
+  const work = (orchestration: () => Promise<{ autoDecompose: boolean; autoPromoteChildren: boolean }>, review: () => Promise<boolean>) => ({
+    orchestration,
+    reviewDispatch: vi.fn(review),
+  });
+  const value = (name: RegExp) => screen.getByText(name).closest<HTMLElement>(".diag-fact")!;
+
+  it("shows whether the server splits triage cards, makes their cards ready, and has a bot review first", async () => {
+    const w = work(async () => ({ autoDecompose: true, autoPromoteChildren: false }), async () => true);
+    diagnostics(scriptedStore(NEW), { work: w, profile: "coder" });
+    const section = screen.getByRole("region", { name: "Work dispatch" });
+    await waitFor(() => expect(within(value(/kanban\.auto_decompose/)).getByText("On")).toBeTruthy());
+    expect(within(value(/kanban\.auto_promote_children/)).getByText("Off")).toBeTruthy();
+    expect(within(value(/kanban\.review_dispatch, profile coder/)).getByText("On")).toBeTruthy();
+    expect(w.reviewDispatch).toHaveBeenCalledWith("coder");
+    expect(section.textContent).not.toMatch(/nothing runs/i);
+  });
+
+  it("says which setting it couldn't read, and leaves the others", async () => {
+    diagnostics(scriptedStore(NEW), { work: work(() => Promise.reject(new RestError(404, `{"detail":"Not Found"}`)), async () => false) });
+    await waitFor(() => expect(within(value(/kanban\.review_dispatch/)).getByText("Off")).toBeTruthy());
+    expect(within(value(/kanban\.auto_decompose/)).getByText(/^Couldn't read/)).toBeTruthy();
+  });
+
+  it("isn't shown on a Hermes without the kanban plugin", async () => {
+    const store = scriptedStore({ ...NEW, "GET api/plugins/kanban/boards": undefined });
+    diagnostics(store, { work: work(async () => ({ autoDecompose: true, autoPromoteChildren: true }), async () => true) });
+    act(() => store.connected(1, "default", {}, Promise.resolve({})));
+    await waitFor(() => expect(store.getSnapshot().caps.kanban.state).toBe("unsupported"));
+    expect(screen.queryByRole("region", { name: "Work dispatch" })).toBeNull();
   });
 });
 

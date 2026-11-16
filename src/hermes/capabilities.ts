@@ -10,7 +10,7 @@
 // 2. What the app's own traffic shows: every dashboard GET and JSON-RPC request the screens make is observed, so a
 //    route that answered, or one that is missing, settles that capability without asking again.
 // 3. A check, only for what neither of those settled: one request per capability that only reads, with a time limit.
-//    Two capabilities have no read to check them by, so Diagnostics sends each one named request shaped like a write,
+//    A few capabilities have no read to check them by, so Diagnostics sends each one named request shaped like a write,
 //    which changes nothing, while it is open (`WriteCheck`, ADR 0169). Nothing else is written to find out, and nothing
 //    at all on connect.
 //
@@ -43,6 +43,10 @@ export type CapabilityId =
   | "automations"
   | "outputs"
   | "kanban"
+  | "workDispatch"
+  | "workPickers"
+  | "workLinks"
+  | "workEstimate"
   | "botMode"
   | "subagents"
   | "subagentRoster";
@@ -376,7 +380,69 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     anchor: "work",
     probe: { kind: "rest", path: () => "api/plugins/kanban/boards", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.boards) },
     routes: [/^api\/plugins\/kanban\/boards$/],
-    writeRoutes: [/^api\/plugins\/kanban\//],
+    // Not the planning routes: a plugin without one of them still has the board, and each is guarded on its own.
+    writeRoutes: [/^api\/plugins\/kanban\/(?!links$|estimate$|tasks\/[^/]+\/estimate$)/],
+  },
+  {
+    id: "workDispatch",
+    label: "Work dispatch settings",
+    usedBy: "The Dispatch line on the Work page",
+    needs: "GET /api/plugins/kanban/orchestration.",
+    without: "The Work page doesn't say whether this server splits triage cards or makes their cards ready on its own.",
+    anchor: "work",
+    probe: { kind: "rest", path: () => "api/plugins/kanban/orchestration", maxBytes: 64 * 1024, shape: (b) => isObj(b) && typeof b.auto_decompose === "boolean" },
+    routes: [/^api\/plugins\/kanban\/orchestration$/],
+  },
+  {
+    id: "workPickers",
+    label: "Work bot and model pickers",
+    usedBy: "Bot and model in a Work card's sheet",
+    needs: "GET /api/plugins/kanban/model-options, assignees and profiles.",
+    without: "A card's sheet has no Bot and model pickers. Edit still sets a card's assignee.",
+    anchor: "work",
+    probe: { kind: "rest", path: () => "api/plugins/kanban/model-options", maxBytes: 512 * 1024, shape: (b) => isObj(b) && isList(b.providers) },
+    routes: [/^api\/plugins\/kanban\/model-options$/, /^api\/plugins\/kanban\/assignees$/, /^api\/plugins\/kanban\/profiles$/],
+  },
+  {
+    id: "workLinks",
+    label: "Work links",
+    usedBy: "Adding and removing links in a Work card's sheet",
+    needs: "POST and DELETE /api/plugins/kanban/links.",
+    without: "A card's sheet doesn't show its links or offer to change them. The Graph view still draws them.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a link is changed.",
+    // A link from a task to itself: `kanban_db.link_tasks` refuses it (400) before it reads the board, at `b200f5bc`,
+    // `bf0203a` and `f0d9488`. A plugin without the route answers FastAPI's own 404 or a 405.
+    writeCheck: {
+      send: (io) => io.post("api/plugins/kanban/links", { parent_id: PROBE_NAME, child_id: PROBE_NAME }),
+      read: (o) => {
+        if ("answer" in o) return { state: "unknown", why: "Hermes took a link from a task to itself, which it should refuse, so this app won't say links work." };
+        if (o.failure.status === 400 && /depend on itself/i.test(o.failure.reason)) return { state: "supported", why: "Hermes refused a link from a task to itself before changing anything, as it does when it has the route." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: [/^api\/plugins\/kanban\/links$/],
+  },
+  {
+    id: "workEstimate",
+    label: "Work estimate",
+    usedBy: "The token guess in New task and a Work card's sheet",
+    needs: "POST /api/plugins/kanban/estimate and /api/plugins/kanban/tasks/{id}/estimate.",
+    without: "New task and a card's sheet offer no token guess.",
+    anchor: "work",
+    notChecked: "Checked when Diagnostics opens, or once a token guess is asked for.",
+    // An estimate with no title: `_run_estimate` answers `ok: false` before it asks any model, so nothing is spent.
+    writeCheck: {
+      send: (io) => io.post("api/plugins/kanban/estimate", { title: "" }).then((t) => JSON.parse(t) as unknown),
+      read: (o) => {
+        if ("answer" in o)
+          return isObj(o.answer) && o.answer.ok === false && typeof o.answer.reason === "string" && /title/i.test(o.answer.reason)
+            ? { state: "supported", why: "Hermes asked for a title before guessing, without asking any model." }
+            : { state: "unknown", why: "Hermes answered the check in a way this app doesn't expect." };
+        return stateOfFailure(o.failure);
+      },
+    },
+    writeRoutes: [/^api\/plugins\/kanban\/estimate$/, /^api\/plugins\/kanban\/tasks\/[^/]+\/estimate$/],
   },
   {
     id: "botMode",
@@ -624,6 +690,8 @@ export type CapabilityIO = {
   rpc(method: AppMethod, params: Record<string, unknown>): Promise<unknown>;
   /** A dashboard `PUT`, for a write check only (`WriteCheck`). */
   put(pathAndQuery: string, body: unknown): Promise<string>;
+  /** A dashboard `POST`, for a write check only (`WriteCheck`). */
+  post(pathAndQuery: string, body: unknown): Promise<string>;
 };
 
 /** Per request, so one slow route can't hold up the rest. The checks run side by side. */

@@ -312,3 +312,72 @@ describe("Guardrail: a model Hermes flags as expensive", () => {
     await expect(api.applyMain(saved, d, true)).rejects.toThrow("Still too expensive.");
   });
 });
+
+describe("The Project instructions model (ADR 0177)", () => {
+  const stored = (server: FakeHermes) => server.modelConfig.unslottedAuxiliary.project_instructions;
+
+  it("is unset at first, and Write with AI runs on Text generation's task and model", async () => {
+    const { api, saved } = await setup();
+    expect(saved.instructions).toBeUndefined();
+    expect(await api.instructionsModel()).toEqual({ task: "title_generation", provider: "openrouter", model: "deepseek/deepseek-v4-flash", follows: "text" });
+  });
+
+  it("follows Text generation onto the main model when that's on auto, still sending Text generation's task", async () => {
+    const { server, api } = await setup();
+    server.modelConfig.auxiliary.title_generation = { provider: "auto", model: "" };
+    expect(await api.instructionsModel()).toEqual({ task: "title_generation", provider: "openrouter", model: "z-ai/glm-5.3-flash", follows: "main" });
+  });
+
+  it("is written with PUT /api/config, read back by load, and then runs Write with AI on its own task", async () => {
+    const { server, api, saved } = await setup();
+    await api.applyInstructions(saved, { provider: "openai-codex", model: "gpt-6.1-mini", effort: "low" });
+    expect(writes(server)).toEqual([
+      [
+        "PUT /api/config",
+        {
+          config: {
+            auxiliary: {
+              project_instructions: { provider: "openai-codex", model: "gpt-6.1-mini", reasoning_effort: "low", base_url: "", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" },
+            },
+          },
+        },
+      ],
+    ]);
+    // `/api/model/set` refuses the task, and `/api/model/auxiliary` never lists it, as on a real Hermes.
+    expect(server.modelConfig.auxiliary.project_instructions).toBeUndefined();
+    const fresh = await api.load();
+    expect(fresh.instructions).toEqual({ provider: "openai-codex", model: "gpt-6.1-mini", effort: "low" });
+    expect(fresh.auxiliary.map((t) => t.task)).not.toContain("project_instructions");
+    expect(await api.instructionsModel()).toEqual({ task: "project_instructions", provider: "openai-codex", model: "gpt-6.1-mini" });
+    // Text generation keeps its own model.
+    expect(fresh.auxiliary.find((t) => t.task === "title_generation")).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4-flash" });
+
+    // Inherit is no override; the same provider leaves its endpoint keys alone.
+    server.restRequests.length = 0;
+    await api.applyInstructions(fresh, { provider: "openai-codex", model: "gpt-6.1-sol", effort: AUX_INHERIT });
+    expect(writes(server)).toEqual([["PUT /api/config", { config: { auxiliary: { project_instructions: { provider: "openai-codex", model: "gpt-6.1-sol", reasoning_effort: "" } } } }]]);
+    expect((await api.load()).instructions).toEqual({ provider: "openai-codex", model: "gpt-6.1-sol", effort: AUX_INHERIT });
+  });
+
+  it("clears a stale endpoint and key when its provider changes, and points a user-defined endpoint at its own URL", async () => {
+    const server = new FakeHermes();
+    server.modelConfig.catalog.push({ slug: "custom:lan", name: "LAN box", models: ["qwen-4"], capabilities: {}, api_url: "http://10.0.0.5:8080/v1" });
+    server.modelConfig.unslottedAuxiliary.project_instructions = { provider: "openrouter", model: "deepseek/deepseek-v4-pro", api_key: "sk-or-old", key_env: "OPENROUTER_API_KEY", api_key_env: "OPENROUTER_OLD_KEY" };
+    const api = (await connect(server.openPipe, "default")).modelSettings;
+    const saved = await api.load();
+    await api.applyInstructions(saved, { provider: "custom:lan", model: "qwen-4", effort: AUX_INHERIT });
+    expect(stored(server)).toEqual({ provider: "custom:lan", model: "qwen-4", reasoning_effort: "", base_url: "http://10.0.0.5:8080/v1", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" });
+  });
+
+  it("follows Text generation again once unset, with every key it wrote emptied, and a block on auto counts as unset", async () => {
+    const { server, api, saved } = await setup();
+    await api.applyInstructions(saved, { provider: "nous", model: "hermes-5-70b", effort: "none" });
+    await api.applyInstructions(await api.load(), undefined);
+    expect(stored(server)).toEqual({ provider: "", model: "", reasoning_effort: "", base_url: "", api_key: "", api: "", key_env: "", api_key_env: "", api_mode: "" });
+    expect((await api.load()).instructions).toBeUndefined();
+    expect((await api.instructionsModel()).task).toBe("title_generation");
+
+    server.modelConfig.unslottedAuxiliary.project_instructions = { provider: "auto", model: "" };
+    expect((await api.load()).instructions).toBeUndefined();
+  });
+});

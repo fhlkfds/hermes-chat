@@ -409,9 +409,11 @@ export class FakeHermes {
   dropOnPrompt?: "stored" | "lost";
   /**
    * What the model answers every `llm.oneshot` call with, unless `oneshotFailure` says why it failed. A function answers
-   * each call from what it was told and given.
+   * each call from what it was told and given, and the task and model it ran on.
    */
-  oneshotAnswer: string | ((call: { instructions: string; input: string }) => string) = "A new title";
+  oneshotAnswer: string | ((call: { instructions: string; input: string; task: string; model: string }) => string) = "A new title";
+  /** Providers Hermes on the server has no sign-in or key for: an `llm.oneshot` whose task runs on one fails. */
+  signedOut = new Set<string>();
   /**
    * The profile's Bot Desktop (`display.*`, tui_gateway/methods_display.py at v2026.9.24; ADR 0039): its status and who
    * holds it. Undefined: a Hermes without it, which answers "method not found". `profiles`: fields that differ for the
@@ -1150,10 +1152,14 @@ export class FakeHermes {
     "llm.oneshot": (r) => {
       if (!String(r.params.instructions ?? "").trim() && !String(r.params.input ?? "").trim())
         return this.fail(r.id, 4030, "llm.oneshot requires a template or instructions/input");
+      const task = String(r.params.task || "title_generation");
+      const runsOn = this.oneshotModel(task);
       const answer = () => {
         if (this.oneshotFailure !== undefined) return this.fail(r.id, 5030, `one-shot generation failed: ${this.oneshotFailure}`);
+        if (this.signedOut.has(runsOn.provider)) return this.fail(r.id, 5030, `one-shot generation failed: ${signedOutText(runsOn.provider)}`);
         const a = this.oneshotAnswer;
-        this.respond(r.id, { text: typeof a === "string" ? a : a({ instructions: String(r.params.instructions ?? ""), input: String(r.params.input ?? "") }) });
+        const call = { instructions: String(r.params.instructions ?? ""), input: String(r.params.input ?? ""), task, model: runsOn.model };
+        this.respond(r.id, { text: typeof a === "string" ? a : a(call) });
       };
       if (this.oneshotGate) void this.oneshotGate.then(answer);
       else answer();
@@ -1526,6 +1532,7 @@ export class FakeHermes {
     }),
     "GET /api/config": ({ query }) => ({
       model: this.modelConfig.model.default,
+      auxiliary: { ...structuredClone(this.modelConfig.auxiliary), ...structuredClone(this.modelConfig.unslottedAuxiliary) },
       skills: this.skills.config(query.get("profile") || "default"),
       agent: { ...this.modelConfig.agent },
       delegation: { ...this.modelConfig.delegation },
@@ -1533,6 +1540,7 @@ export class FakeHermes {
       dashboard: { turn_isolation: this.turnIsolation },
       // Merged over Hermes's defaults, where `tool_progress` is `all`. YAML reads a bare `off` as false.
       display: { tool_progress: this.toolProgress[query.get("profile") || "default"] ?? "all" },
+      ...(this.kanban.reviewDispatch !== undefined && { kanban: { review_dispatch: this.kanban.reviewDispatch } }),
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
       // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
       ...(this.mcp.servers[query.get("profile") || "default"] && { mcp_servers: this.mcp.servers[query.get("profile") || "default"] }),
@@ -1554,9 +1562,14 @@ export class FakeHermes {
       const config = body?.config;
       if (!config || typeof config !== "object")
         throw new RestError(422, `{"detail":[{"type":"missing","loc":["body","config"],"msg":"Field required"}]}`);
-      const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown> };
+      const c = config as { agent?: Record<string, string>; delegation?: Record<string, unknown>; auxiliary?: Record<string, Record<string, string>> };
       Object.assign(this.modelConfig.agent, c.agent ?? {});
       Object.assign(this.modelConfig.delegation, c.delegation ?? {});
+      for (const [task, block] of Object.entries(c.auxiliary ?? {})) {
+        const slots = this.modelConfig.auxiliary;
+        if (slots[task]) Object.assign(slots[task], block);
+        else this.modelConfig.unslottedAuxiliary[task] = { ...this.modelConfig.unslottedAuxiliary[task], ...block };
+      }
       await this.voiceProviders.mergeConfig(query.get("profile") || "default", config as Record<string, unknown>);
       return { ok: true };
     },
@@ -2981,6 +2994,17 @@ export class FakeHermes {
     return { ok: true, scope, tasks: [task], provider, model, ...("reasoning_effort" in body ? { reasoning_effort: effort } : {}) };
   }
 
+  /**
+   * The model an `llm.oneshot` for `task` runs on (`_resolve_task_provider_model` at `f0d9488`): `auxiliary.<task>` for
+   * any task, slot or not, and the main model when that block is missing or its provider is empty or `auto`.
+   */
+  private oneshotModel(task: string): { provider: string; model: string } {
+    const block = this.modelConfig.auxiliary[task] ?? this.modelConfig.unslottedAuxiliary[task] ?? {};
+    const provider = String(block.provider ?? "").trim();
+    if (!provider || provider.toLowerCase() === "auto") return { provider: this.modelConfig.model.provider, model: this.modelConfig.model.default };
+    return { provider, model: String(block.model ?? "").trim() };
+  }
+
   private frame(f: unknown) {
     this.raw(JSON.stringify(f));
   }
@@ -2999,7 +3023,13 @@ export type FakeModelConfig = {
   agent: { reasoning_effort: string; service_tier: string };
   /** `delegation` as `GET /api/config` returns it, defaults filled in. */
   delegation: Record<string, unknown>;
+  /** The helper tasks Hermes has slots for (`_aux_task_slots()`): `/api/model/auxiliary` lists them and `/api/model/set` sets them. */
   auxiliary: Record<string, FakeAuxSlot>;
+  /**
+   * `auxiliary.<task>` blocks for tasks with no slot, such as `project_instructions` (ADR 0177): only `PUT /api/config`
+   * writes them and only `GET /api/config` returns them, yet `llm.oneshot` runs its task on one.
+   */
+  unslottedAuxiliary: Record<string, Record<string, string>>;
   catalog: FakeProvider[];
   /** "provider/model" -> [input, output] $ per million tokens, for models priced above Hermes's threshold. */
   expensive: Record<string, [number, number]>;
@@ -3025,6 +3055,7 @@ export function fakeModelConfig(): FakeModelConfig {
       approval: { provider: "auto", model: "", reasoning_effort: "none" },
       review: { provider: "auto", model: "" },
     },
+    unslottedAuxiliary: {},
     catalog: [
       { slug: "openrouter", name: "OpenRouter", models: openrouter, capabilities: caps(openrouter) },
       { slug: "nous", name: "Nous Portal", models: nous, capabilities: caps(nous) },
@@ -3033,6 +3064,12 @@ export function fakeModelConfig(): FakeModelConfig {
     expensive: { "openrouter/anthropic/claude-fable-5.1": [30, 150], "nous/anthropic/claude-fable-5.1": [30, 150] },
     modelMap: [],
   };
+}
+
+/** How Hermes's `_resolve_call_client` says it has no credentials for `provider` (as `titleModelUnavailable` reads them). */
+function signedOutText(provider: string): string {
+  if (provider === "nous") return "Nous Portal runtime credentials unavailable: Hermes is not logged into Nous Portal. (code: nous_auth_missing)";
+  return `Provider '${provider}' is set in config.yaml but no API key was found.`;
 }
 
 /** `SessionDB.session_unread`: activity postdates the read watermark, and `null` means read. */
@@ -3484,7 +3521,12 @@ export type KanbanRow = {
   /** What the task's completion recorded (`tasks.result`, `kanban_db.complete_task`). */
   result?: string | null;
   comments?: { id: number; author: string; body: string; created_at: number }[];
+  model_override?: string | null;
+  provider_override?: string | null;
 };
+
+/** The kanban plugin's routes past the board's own, each of which a test may leave out (`FakeKanban.without`). */
+export type KanbanExtraRoute = "links" | "assignees" | "profiles" | "model-options" | "orchestration" | "estimate";
 
 const KANBAN_COLUMNS = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"];
 /** The plugin's `GET workflow`, as a fixture: the dispatcher's columns (scheduled, running, review) take no drop. */
@@ -3535,6 +3577,28 @@ export class FakeKanban {
   wakeWith?: (runtimeId: string, stored: string, text: string, userRowId: number) => void;
   private seq = 0;
   private runSeq = 0;
+  /** Dependency links (`task_links`): the child waits on the parent. */
+  links: { parent: string; child: string }[] = [];
+  /** Routes this plugin lacks, each answering FastAPI's own 404 `Not Found`, as an older plugin does. */
+  without = new Set<KanbanExtraRoute>();
+  /** `GET profiles`: each profile and the model it runs on. */
+  profiles: { name: string; model: string; provider: string }[] = [
+    { name: "researcher", model: "claude-sonnet-5-5", provider: "anthropic" },
+    { name: "writer", model: "", provider: "" },
+  ];
+  /** `GET model-options`; empty, as Hermes answers when it can't build the list. */
+  modelOptions: { slug: string; label: string; models: string[] }[] = [
+    { slug: "anthropic", label: "Anthropic", models: ["claude-sonnet-5-5", "claude-opus-5-5"] },
+    { slug: "openrouter", label: "OpenRouter", models: ["qwen/qwen3-coder"] },
+  ];
+  /** `kanban.auto_decompose` and `kanban.auto_promote_children`, as `GET orchestration` answers them. */
+  orchestration = { auto_decompose: true, auto_promote_children: true };
+  /** `kanban.review_dispatch` in the config, when it names it. */
+  reviewDispatch?: boolean;
+  /** What `POST estimate` answers for a task with a title, in place of the guess made from its text. */
+  estimateAnswer?: Record<string, unknown>;
+  /** Every estimate asked for, as `title|body`. Estimates write nothing, so they aren't in `writes`. */
+  estimates: string[] = [];
 
   constructor(private server: FakeHermes) {}
 
@@ -3605,10 +3669,15 @@ export class FakeKanban {
   }
 
   route(req: RestRequest): (() => unknown) | undefined {
-    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments)?)?$/.exec(req.path);
-    if (!m || this.missing) return undefined;
-    const [, what, rawId, comments] = m;
-    if (req.method !== "GET") return what === "tasks" ? () => this.write(req.method, rawId && decodeURIComponent(rawId), !!comments, req.body ?? {}) : undefined;
+    if (this.missing) return undefined;
+    const extra = /^\/api\/plugins\/kanban\/(links|assignees|profiles|model-options|orchestration|estimate)$/.exec(req.path)?.[1] as KanbanExtraRoute | undefined;
+    if (extra) return this.without.has(extra) ? undefined : this.extraRoute(extra, req);
+    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments|\/estimate)?)?$/.exec(req.path);
+    if (!m) return undefined;
+    const [, what, rawId, sub] = m;
+    if (sub === "/estimate") return req.method === "POST" && !this.without.has("estimate") ? () => this.estimateTask(decodeURIComponent(rawId)) : undefined;
+    const comments = !!sub;
+    if (req.method !== "GET") return what === "tasks" ? () => this.write(req.method, rawId && decodeURIComponent(rawId), comments, req.body ?? {}) : undefined;
     if (comments) return undefined;
     return () => {
       if (what === "workflow") return KANBAN_WORKFLOW;
@@ -3622,7 +3691,10 @@ export class FakeKanban {
       if (!board) this.refuse(404, `board '${slug}' does not exist`);
       if (what === "board")
         return {
-          columns: KANBAN_COLUMNS.filter((c) => c !== "archived").map((name) => ({ name, tasks: board.tasks.filter((t) => t.status === name).map(listed) })),
+          columns: KANBAN_COLUMNS.filter((c) => c !== "archived").map((name) => ({
+            name,
+            tasks: board.tasks.filter((t) => t.status === name).map((t) => ({ ...listed(t), link_counts: this.linkCounts(t.id) })),
+          })),
           assignees: ["researcher", "writer"],
           tenants: [],
           latest_event_id: 0,
@@ -3630,8 +3702,115 @@ export class FakeKanban {
         };
       const task = board.tasks.find((t) => t.id === decodeURIComponent(rawId ?? ""));
       if (!task) this.refuse(404, `task '${rawId}' does not exist`);
-      return { task: listed(task), events: [], runs: task.runs, comments: task.comments ?? [], links: [] };
+      const links = this.linksOf(task.id);
+      // `_link_tasks`: a linked task Hermes no longer has is left out.
+      const link_tasks = [...new Set([...links.parents, ...links.children])].flatMap((id) => {
+        const t = this.find(id);
+        return t ? [{ id: t.id, title: t.title, status: t.status }] : [];
+      });
+      return { task: listed(task), events: [], runs: task.runs, comments: task.comments ?? [], links, link_tasks };
     };
+  }
+
+  /** `_links_for`: the task's parents and children, each sorted by id. */
+  linksOf(id: string) {
+    return {
+      parents: this.links.filter((l) => l.child === id).map((l) => l.parent).sort(),
+      children: this.links.filter((l) => l.parent === id).map((l) => l.child).sort(),
+    };
+  }
+
+  private linkCounts(id: string) {
+    const { parents, children } = this.linksOf(id);
+    return { parents: parents.length, children: children.length };
+  }
+
+  /** Makes `child` wait on `parent`, as `kanban_db.link_tasks` does: true when a ready child went back to todo. */
+  link(parent: string, child: string): boolean {
+    if (parent === child) this.refuse(400, "a task cannot depend on itself");
+    const missing = [parent, child].filter((id) => !this.find(id));
+    if (missing.length) this.refuse(400, `unknown task(s): ${missing.join(", ")}`);
+    const kid = this.find(child)!;
+    if (kid.status === "running") this.refuse(400, `cannot link ${parent} -> ${child}: child is already running`);
+    const below = (from: string, seen = new Set<string>()): boolean =>
+      from === parent || (!seen.has(from) && (seen.add(from), this.links.some((l) => l.parent === from && below(l.child, seen))));
+    if (below(child)) this.refuse(400, `linking ${parent} -> ${child} would create a cycle`);
+    if (!this.links.some((l) => l.parent === parent && l.child === child)) this.links.push({ parent, child });
+    if (!["done", "archived"].includes(this.find(parent)!.status) && kid.status === "ready") {
+      kid.status = "todo";
+      return true;
+    }
+    return false;
+  }
+
+  /** `kanban_db.unlink_tasks`, then `recompute_ready`: a todo task none of whose parents is open becomes ready. */
+  unlink(parent: string, child: string): boolean {
+    const before = this.links.length;
+    this.links = this.links.filter((l) => !(l.parent === parent && l.child === child));
+    if (this.links.length === before) return false;
+    for (const t of Object.values(this.boards).flatMap((b) => b.tasks))
+      if (t.status === "todo" && this.linksOf(t.id).parents.every((p) => ["done", "archived"].includes(this.find(p)?.status ?? "done"))) t.status = "ready";
+    return true;
+  }
+
+  private extraRoute(route: KanbanExtraRoute, req: RestRequest): (() => unknown) | undefined {
+    const { method, body = {}, query } = req;
+    switch (`${method} ${route}`) {
+      case "POST links":
+      case "DELETE links":
+        return () => this.linkWrite(method, method === "POST" ? body : { parent_id: query.get("parent_id"), child_id: query.get("child_id") });
+      case "GET assignees": {
+        const names = new Set([...this.profiles.map((p) => p.name), ...Object.values(this.boards).flatMap((b) => b.tasks.flatMap((t) => (t.assignee ? [t.assignee] : [])))]);
+        return () => ({ assignees: [...names].sort().map((name) => ({ name, on_disk: this.profiles.some((p) => p.name === name), counts: {} })) });
+      }
+      case "GET profiles":
+        return () => ({
+          profiles: this.profiles.map((p, i) => ({ ...p, is_default: i === 0, description: "", description_auto: false, skill_count: 0 })),
+        });
+      case "GET model-options":
+        return () => ({ providers: this.modelOptions });
+      case "GET orchestration":
+        return () => ({
+          orchestrator_profile: "",
+          default_assignee: "",
+          ...this.orchestration,
+          resolved_orchestrator_profile: "default",
+          resolved_default_assignee: "default",
+          active_profile: "default",
+        });
+      case "POST estimate":
+        return () => this.estimate(String(body.title ?? ""), typeof body.body === "string" ? body.body : "");
+    }
+    // A route the plugin has, for another method.
+    return () => this.refuse(405, "Method Not Allowed");
+  }
+
+  /** `POST links` and `DELETE links?parent_id=&child_id=`, logged in `writes` as the page sent them. */
+  private linkWrite(method: string, ends: Record<string, unknown>) {
+    const parent = String(ends.parent_id ?? "");
+    const child = String(ends.child_id ?? "");
+    this.writes.push(method === "POST" ? `POST links ${JSON.stringify(ends)}` : `DELETE links ${parent} ${child}`);
+    const fail = this.failNext;
+    this.failNext = undefined;
+    if (typeof fail === "number") this.refuse(fail, "refused");
+    const answer = method === "POST" ? { ok: true, gated: this.link(parent, child) } : { ok: this.unlink(parent, child) };
+    if (fail === "lost") throw new Error("error sending request: connection reset");
+    return answer;
+  }
+
+  /** `_run_estimate`: no title is refused before any model is asked; otherwise a guess from the text's length. */
+  private estimate(title: string, body: string) {
+    if (!title.trim()) return { ok: false, reason: "a title is required to estimate" };
+    this.estimates.push(`${title}|${body}`);
+    if (this.estimateAnswer) return this.estimateAnswer;
+    const tokens = 4_000 + 100 * (title.length + body.length);
+    return { ok: true, est_tokens: tokens, complexity: tokens < 8_000 ? "S" : tokens < 20_000 ? "M" : "L", rationale: "Reads a few files and edits one.", model: "aux-model" };
+  }
+
+  private estimateTask(id: string) {
+    const task = this.find(id);
+    if (!task) this.refuse(404, `task ${id} not found`);
+    return this.estimate(task.title, task.body ?? "");
   }
 
   /** `POST tasks`, `PATCH tasks/{id}` and `POST tasks/{id}/comments`, as the plugin answers them. */
@@ -3666,7 +3845,17 @@ export class FakeKanban {
       if (typeof body.title === "string") task.title = body.title;
       if (typeof body.body === "string") task.body = body.body || null;
       if (typeof body.priority === "number") task.priority = body.priority;
-      if (typeof body.assignee === "string") task.assignee = body.assignee || null;
+      if (typeof body.assignee === "string") {
+        if (task.status === "running") this.refuse(409, `cannot reassign ${task.id}: currently running (claimed). Wait for completion or reclaim the stale lock first.`);
+        task.assignee = body.assignee || null;
+      }
+      if (body.clear_model_override === true || typeof body.model_override === "string") {
+        const model = body.clear_model_override === true ? "" : String(body.model_override).trim();
+        const provider = typeof body.provider_override === "string" ? body.provider_override.trim() : "";
+        if (provider && !model) this.refuse(400, "provider_override requires a model_override");
+        task.model_override = model || null;
+        task.provider_override = (model && provider) || null;
+      }
       if (typeof body.block_reason === "string") task.latest_summary = body.block_reason;
       if (typeof body.summary === "string") task.latest_summary = body.summary;
       if (typeof body.status === "string") this.move(task.id, body.status);
@@ -3683,5 +3872,5 @@ export class FakeKanban {
 
 /** A task as the routes list it: the stored row less what the plugin keeps to itself. */
 function listed({ subscribed: _, comments, ...t }: KanbanRow) {
-  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, ...t, comment_count: comments?.length ?? 0 };
+  return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, model_override: null, provider_override: null, reasoning_effort: null, ...t, comment_count: comments?.length ?? 0 };
 }
