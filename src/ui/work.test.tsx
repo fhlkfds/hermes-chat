@@ -524,6 +524,7 @@ describe("a running card's bot (issue #604)", () => {
     expect(confirm.textContent).toContain(`researcher stops working on Research the API (run ${id}), and the card is blocked with your reason, so the dispatcher doesn't start it again.`);
     expect(confirm.textContent).toContain("The app takes the card from researcher, which stops the run, then blocks the card, then gives it back to researcher.");
     expect(confirm.textContent).toContain("This server sets no kanban.default_assignee, so nothing starts the card between those steps.");
+    expect(confirm.textContent).toContain("If this run was a review, the card goes back to Review with no bot instead, and isn't blocked");
     expect((within(confirm).getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
     await user.type(within(confirm).getByRole("textbox", { name: "Why stop it?" }), "wrong repo");
     expect(k.writes).toEqual([]);
@@ -597,6 +598,7 @@ describe("a running card's bot (issue #604)", () => {
     await user.selectOptions(to, "writer");
     const confirm = within(run).getByRole("group", { name: "Confirm the change" });
     expect(confirm.textContent).toContain("and the card goes to writer.");
+    expect(confirm.textContent).toContain("If this run was a review, the card goes back to Review with writer.");
     k.failNext = "lost";
     await user.click(within(confirm).getByRole("button", { name: "Reassign to writer" }));
     await waitFor(() => expect(run.textContent).toContain("It's writer's. The dispatcher starts it on its next tick (every 60 s by default)."));
@@ -638,6 +640,22 @@ describe("a running card's bot (issue #604)", () => {
     expect(within(notes).getByRole("combobox", { name: "Move to" })).toBeTruthy();
     expect(within(notes).queryByRole("region", { name: "Bot run" })).toBeNull();
     expect(k.writes).toEqual([]);
+  });
+
+  it("gives the footer its moves back as soon as the sheet's own read shows the bot finished, before the board is read again", async () => {
+    const { s, k, task } = atWork();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    render(<Work api={hermes.kanban} connected onClose={() => {}} pollMs={60_000} watchMs={30} />);
+    await screen.findByText("Dispatch");
+    const user = userEvent.setup();
+    const { sheet, run } = await runOf(user, "Research the API");
+    expect(within(sheet).queryByRole("combobox", { name: "Move to" })).toBeNull();
+    k.move(task.id, "done");
+    await waitFor(() => expect(within(run).getByRole("heading", { name: "Last run" })).toBeTruthy());
+    expect(within(sheet).getByRole("combobox", { name: "Move to" })).toBeTruthy();
+    expect(within(sheet).queryByText(/A bot is working on this card/)).toBeNull();
+    expect(within(sheet).getByText("done", { selector: ".work-status" })).toBeTruthy();
   });
 
   it("hides only Reclaim on a plugin without terminate, and only Stop and Reassign on one without reassign, where blocking says the bot works on", async () => {

@@ -660,8 +660,8 @@ function TaskSheet({
   };
 
   const current = read && read.seen === seen ? read.task : task;
-  const targets = manualMoves(workflow, task, lacks);
-  const steered = task.status === "running" && !lacks.has("reassign");
+  const targets = manualMoves(workflow, current, lacks);
+  const steered = current.status === "running" && !lacks.has("reassign");
   const can = (to: string) => targets.some((c) => c.key === to);
   const changes = form && base.current ? taskEdits(base.current, form) : {};
   const canSave = !!form && validFields(form) && Object.keys(changes).length > 0;
@@ -768,7 +768,7 @@ function TaskSheet({
               <>
                 <div className="work-meta">
                   <code>{task.id}</code>
-                  <span className="work-status">{task.status}</span>
+                  <span className="work-status">{current.status}</span>
                   {current.priority !== 0 && <span>P{current.priority}</span>}
                   {current.assignee && (
                     <span>
@@ -935,7 +935,7 @@ function TaskSheet({
                   ))}
                 </select>
                 <span className="work-spacer" />
-                {task.status === "blocked" && can("ready") && (
+                {current.status === "blocked" && can("ready") && (
                   <button className="btn" disabled={busy} onClick={() => onMove("ready")}>
                     Unblock
                   </button>

@@ -68,7 +68,6 @@ function plan(order: RunOrder, d: Read): Step {
   const over = (outcome: Outcome): Step => ({ kind: "over", outcome });
 
   if (!order.progress.sent && (status !== "running" || live?.id !== seen.run || assignee !== seen.assignee)) {
-    if (action.kind === "reassign" && assignee === action.bot && live?.id !== seen.run) return over({ kind: "done", note: "That's already so." });
     return over({ kind: "changed", why: "This card changed since you confirmed, so nothing was sent. Here it is now." });
   }
 
@@ -124,11 +123,13 @@ export function previewOf(action: RunAction, task: BoardTask, run: TaskRun, defa
   const stops = `${bot} stops working on ${task.title} (run ${run.id})`;
   if (action.kind === "reclaim")
     return [`${stops}. The card goes back to ready, or to review if this run was a review.`, `From ready, the dispatcher starts it again with ${task.assignee || "its bot"} ${TICK}.`];
-  if (action.kind === "reassign") return [`${stops}, and the card goes to ${action.bot}.`, `The dispatcher starts it with ${action.bot} ${TICK}.`];
+  if (action.kind === "reassign")
+    return [`${stops}, and the card goes to ${action.bot}.`, `From ready, the dispatcher starts it with ${action.bot} ${TICK}. If this run was a review, the card goes back to Review with ${action.bot}.`];
   const chased = "The app stops that run too, and says so if one gets past the block.";
   return [
     `${stops}, and the card is blocked with your reason, so the dispatcher doesn't start it again.`,
     `Hermes has no single step for this. The app takes the card from ${bot}, which stops the run, then blocks the card, then gives it back to ${bot}.`,
+    "If this run was a review, the card goes back to Review with no bot instead, and isn't blocked, since Hermes doesn't block a card in Review. Your reason is kept with the stopped run either way.",
     defaultAssignee === undefined
       ? `If this server sets kanban.default_assignee, the dispatcher can start the card between those steps. ${chased}`
       : defaultAssignee
