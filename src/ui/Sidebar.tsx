@@ -982,6 +982,47 @@ function moveBetweenChats(e: KeyboardEvent<HTMLElement>) {
   rows[rows.indexOf(e.target as HTMLButtonElement) + (command === "rowDown" ? 1 : -1)]?.focus();
 }
 
+/** How many Settled chats the drawer draws when it opens, and how many more each Show more press adds (ADR 0184). */
+export const SETTLED_FIRST = 10;
+export const SETTLED_PAGE = 25;
+
+/**
+ * The open Settled drawer's rows: the first ten, then a Show more button for 25 more at a time (ADR 0184). The drawer
+ * mounts this only while open, so closing and reopening it starts at ten again. The chat on screen is always drawn,
+ * with the rows above it, so opening a Settled chat from a search still shows its row.
+ */
+function SettledList({ chats, selectedId, row }: { chats: Chat[]; selectedId: string | null; row: (c: Chat) => ReactNode }) {
+  const [shown, setShown] = useState(SETTLED_FIRST);
+  const upTo = Math.max(shown, chats.findIndex((c) => c.id === selectedId) + 1);
+  const rest = chats.length - upTo;
+  const list = useRef<HTMLDivElement>(null);
+  // A keyboard press moves focus to the first row it drew, so the keyboard carries on down the list once the button
+  // goes. A pointer click doesn't: a focused row shows its buttons, as a hovered one does.
+  const [focusFrom, setFocusFrom] = useState<number>();
+  useEffect(() => {
+    if (focusFrom === undefined) return;
+    list.current?.querySelectorAll<HTMLElement>(".row-open")[focusFrom]?.focus();
+    setFocusFrom(undefined);
+  }, [focusFrom]);
+  return (
+    <div className="settled-list" ref={list}>
+      {chats.slice(0, upTo).map(row)}
+      {rest > 0 && (
+        <button
+          className="settled-more"
+          onClick={(e) => {
+            setShown(upTo + SETTLED_PAGE);
+            if (e.detail === 0) setFocusFrom(upTo);
+          }}
+        >
+          Show {Math.min(SETTLED_PAGE, rest)} more
+        </button>
+      )}
+      {!chats.length && <div className="empty-hint">No settled chats.</div>}
+    </div>
+  );
+}
+
 /**
  * The chat list, in sections (snooze.ts `chatSections`, ADR 0063): Pinned, the chats the owner pinned (ADR 0085); the
  * Inbox, the chats that need the owner or are done; Snoozed; Archived; and Working, the chats Hermes is replying in, in
@@ -1351,12 +1392,7 @@ export function ChatList({
         // The drawer at the list's foot (ADR 0090): its header stays at the bottom however long the scroll above is.
         <div className={`settled-drawer ${settledOpen ? "open" : ""} ${dropOn === "settled" ? "drop" : ""}`} {...dropHandlers("settled")}>
           {header("settled", sections.settled, settledOpen)}
-          {settledOpen && (
-            <div className="settled-list">
-              {sections.settled.map((c) => row(c, "settled"))}
-              {!sections.settled.length && <div className="empty-hint">No settled chats.</div>}
-            </div>
-          )}
+          {settledOpen && <SettledList chats={sections.settled} selectedId={selectedId} row={(c) => row(c, "settled")} />}
         </div>
       )}
       {customFor && !customGone && (

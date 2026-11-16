@@ -13,7 +13,7 @@ The state of a chat the owner is currently working in: any chat that isn't Settl
 _Avoid_: open, live, current
 
 **Settled**:
-The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
+The state of a chat the owner has put out of the way. Settled chats sit in the Settled drawer at the foot of the chat list, closed until the owner opens it (ADR 0090). Opened, it shows the ten newest, and a Show more button adds 25 more a press (ADR 0184). Only the owner settles a chat; nothing settles on its own. A new message from another platform leaves a Settled chat where it is.
 _Avoid_: archived, done, closed
 
 **Settle** / **Unsettle**:
