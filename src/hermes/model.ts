@@ -146,6 +146,17 @@ export type QuestionKind = (typeof QUESTION_KINDS)[number];
 export type QuestionItem = Extract<Item, { kind: QuestionKind }>;
 export const isQuestion = (i: Item): i is QuestionItem => (QUESTION_KINDS as readonly string[]).includes(i.kind);
 
+/**
+ * What a closed Question says when Hermes stopped waiting without an answer from this app, on its card and its step in
+ * the Run view.
+ */
+export function endedNote(reason: string): string {
+  if (reason === "timeout") return "Timed out without an answer";
+  if (reason === "resolved") return "Answered in another Hermes client";
+  if (reason === "expired") return "Hermes had stopped waiting before your answer reached it";
+  return "Hermes stopped waiting for an answer";
+}
+
 /** How the owner closed a Clarify, Sudo password or Secret question from here: answered, or skipped. */
 export type Answered = "answered" | "skipped";
 

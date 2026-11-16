@@ -30,7 +30,7 @@ import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { ProfilesApi, profileFailure, toProfileRows, type ProfileFailure } from "./profiles";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { CheckTimesStore, noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -380,6 +380,12 @@ type InterruptResult = { status: "interrupted" | "not_interrupted" };
  * `open_requests`. An `approval` one carries `{request_id, command, description, choices, ...}` (research doc §6).
  */
 type ServerRequest = { id: string; method: string; params: Record<string, unknown> };
+
+/**
+ * A request for a Question card, with when the app heard of it, for the Run view. `late`: Hermes asked it while the app
+ * couldn't hear, and listed it when the chat was resumed.
+ */
+type Asked = { req: ServerRequest; at: number; late?: boolean };
 
 /**
  * The Questions the app shows as cards, by the request's method (`tui_gateway/contracts/server_requests.py`). `card`: the
@@ -799,7 +805,7 @@ export class Hermes {
    * which brings back what Hermes is still waiting on. */
   private resumeOnReconnect = new Set<string>();
   /** Requests for a session no chat holds yet: the resume that reattaches it can answer after Hermes writes them. */
-  private earlyRequests = new Map<string, ServerRequest[]>();
+  private earlyRequests = new Map<string, Asked[]>();
   /** Closed Question cards, answered here or that Hermes stopped waiting on, by request id. A resume replaces the
    * chat's cards with what Hermes lists, so this keeps one it lists again from coming back. */
   private closedQuestions = new PerProfile<QuestionItem>();
@@ -1823,6 +1829,8 @@ export class Hermes {
       this.pipeProfile = undefined;
       // Nothing checked for the old profile's connection lands now; the new one checks again.
       this.capabilities.disconnected();
+      // Nor is any more of its running turns heard, until the owner comes back and they are resumed.
+      this.recorder.drop(Date.now());
     }
     const canNotify = this.snapshot.chats.filter((c) => policyOf(c).inbox);
     const unread = canNotify.filter((c) => c.unread).length;
@@ -1971,8 +1979,25 @@ export class Hermes {
     const waiting = new Set(rows.map(obj).flatMap((r) => (r?.status === "waiting" ? [r.id] : [])));
     for (const [runtimeId, ids] of shown) {
       const chat = this.snapshot.chats.find((c) => c.runtimeId === runtimeId);
-      if (chat && !waiting.has(runtimeId)) this.patchChat(chat.id, (c) => ({ ...c, items: endWaiting(c.items, "not waiting", (i) => ids.has(i.id)) }));
+      if (chat && !waiting.has(runtimeId)) this.endCards(chat.id, "not waiting", (i) => ids.has(i.id));
     }
+  }
+
+  /**
+   * Closes the chat's waiting cards that `which` picks with why Hermes stopped waiting, when the app learns it outside
+   * the turn's events, and hears each close in the turn that asked it, for the Run view (ADR 0178). With `runtimeId`,
+   * only while the chat still holds that session.
+   */
+  private endCards(chatId: string, reason: string, which: (i: QuestionItem) => boolean = () => true, runtimeId?: string) {
+    const profile = this.profile;
+    let closed: string[] = [];
+    this.patchChat(chatId, (c) => {
+      if (runtimeId !== undefined && c.runtimeId !== runtimeId) return c;
+      closed = c.items.filter((i) => isWaiting(i) && which(i)).map((i) => i.id);
+      return { ...c, items: endWaiting(c.items, reason, which) };
+    });
+    const at = Date.now();
+    for (const id of closed) this.recorder.settled(profile, chatId, { kind: "settled", at, ids: [id], how: endedNote(reason) });
   }
 
   /**
@@ -3755,7 +3780,7 @@ export class Hermes {
     if (!chat || chat.running || policyOf(chat).session === "stored") return false;
     const profile = this.profile;
     this.deleted.set(profile, chatId, true);
-    this.recorder.forget(chatId);
+    this.recorder.forget(profile, chatId);
     this.pinWanted.delete(profile, chatId);
     this.archiveWanted.delete(profile, chatId);
 
@@ -3994,15 +4019,18 @@ export class Hermes {
     send: (runtimeId: string) => Promise<boolean>,
   ): Promise<void> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const profile = this.profile;
     if (this.snapshot.status === "connected" && !chat?.runtimeId) return;
     this.patchCard(chatId, card, change.show);
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
-      if (!(await send(chat.runtimeId))) this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
-      else {
+      if (!(await send(chat.runtimeId))) {
+        this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
+        this.recorder.settled(profile, chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: endedNote(change.stale) });
+      } else {
         const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
         // A Clarify answered a question at a time is still waiting until its last question is locked.
-        if (now && isQuestion(now) && now.answer) this.recorder.answered(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+        if (now && isQuestion(now) && now.answer) this.recorder.settled(profile, chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
       }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
@@ -4048,7 +4076,7 @@ export class Hermes {
     const read = this.request("session.events.since", { session_id: runtimeId, last_seen: Number.MAX_SAFE_INTEGER }, undefined, false);
     const res = obj(await read.catch(() => undefined));
     if (!Array.isArray(res?.open_requests) || res.open_requests.length) return;
-    this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, items: endWaiting(c.items, "resolved", (i) => asked.has(i.id)) } : c));
+    this.endCards(chatId, "resolved", (i) => asked.has(i.id), runtimeId);
   }
 
   /**
@@ -4462,7 +4490,7 @@ export class Hermes {
       if (payload.kind === "process" && typeof payload.text === "string") this.kanbanWatch.nudge(payload.text);
       const shown = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
       if (shown && typeof payload.kind === "string" && typeof payload.text === "string")
-        this.recorder.hear(shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
+        this.recorder.hear(this.profile, shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
       return;
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
@@ -4500,7 +4528,7 @@ export class Hermes {
       const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
       const began = Date.now();
       this.turnBegan.set(chat.id, began);
-      this.recorder.begin(chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
+      this.recorder.begin(this.profile, chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
       this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
@@ -4603,14 +4631,14 @@ export class Hermes {
           return counters && { kind: "usage", at, counters };
         }
         case "request.cancel":
-          return { kind: "settled", at, ids: [String(p.id)], how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+          return { kind: "settled", at, ids: [String(p.id)], how: endedNote(textOf(p.reason) ?? "") };
         case "approval.cancelled":
-          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: endedNote(textOf(p.reason) ?? "") };
         default:
           return undefined;
       }
     })();
-    if (h) this.recorder.hear(chatId, h);
+    if (h) this.recorder.hear(this.profile, chatId, h);
   }
 
   /**
@@ -4629,7 +4657,7 @@ export class Hermes {
       type === "error"
         ? { kind: "error", at, message: textOf(p.message) ?? "Hermes reported an error." }
         : { kind: "end", at, status: textOf(p.status) ?? "complete", ...(failure && { failure }), ...(countersOf(p.usage) && { counters: countersOf(p.usage) }) };
-    return this.recorder.end(chatId, h, replies, replyRow);
+    return this.recorder.end(this.profile, chatId, h, replies, replyRow);
   }
 
   /** The chat's cost as read after a recorded turn: only a read that succeeded after it ended counts. */
@@ -4650,7 +4678,7 @@ export class Hermes {
     const reply = chat?.items.find((i) => i.id === itemId);
     if (!chat || (reply?.kind !== "assistant" && reply?.kind !== "error")) throw new Error("This reply isn't in the chat any more.");
     const config = this.toolProgress().catch(() => undefined);
-    const watched = this.recorder.find(chatId, reply);
+    const watched = this.recorder.find(profile, chatId, reply);
     if (reply.kind === "error") {
       if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
       // An error item has no stored row to read the turn back from.
@@ -4804,19 +4832,23 @@ export class Hermes {
     }
     const sid = textOf(req.params.session_id) ?? "";
     const chat = this.snapshot.chats.find((c) => c.runtimeId === sid);
-    const card = questionCard(req);
-    if (chat && card) this.recorder.hear(chat.id, { kind: "ask", at: Date.now(), id: req.id, ...(card.kind === "approval" && { requestId: card.requestId }), what: card.kind, summary: questionSummary(card) });
-    if (chat) this.showQuestions(chat.id, [req]);
-    else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
+    const asked: Asked = { req, at: Date.now() };
+    if (chat) this.showQuestions(chat.id, [asked]);
+    else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), asked]);
   }
 
   /**
    * Adds a card for each Question the chat doesn't show yet. A request can be listed more than once. One whose card was
-   * closed stays closed; if the owner had answered it, the answer never reached Hermes, and the chat says so.
+   * closed stays closed; if the owner had answered it, the answer never reached Hermes, and the chat says so. Each is
+   * heard in the chat's running turn, for the Run view, the ones heard as they were asked first.
    */
-  private showQuestions(chatId: string, reqs: ServerRequest[]) {
+  private showQuestions(chatId: string, asked: Asked[]) {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
-    const cards = reqs.flatMap((r) => questionCard(r) ?? []);
+    for (const { req, at, late } of [...asked].sort((a, b) => Number(!!a.late) - Number(!!b.late))) {
+      const q = questionCard(req);
+      if (q) this.recorder.hear(this.profile, chatId, { kind: "ask", at, id: q.id, ...(q.kind === "approval" && { requestId: q.requestId }), what: q.kind, summary: questionSummary(q), ...(late && { late }) });
+    }
+    const cards = asked.flatMap((a) => questionCard(a.req) ?? []);
     const fresh = cards.filter((q) => !this.notified.has(`${runtimeId} ${q.id}`));
     for (const q of fresh) this.notified.add(`${runtimeId} ${q.id}`);
     if (fresh.length) {
@@ -4872,7 +4904,7 @@ export class Hermes {
     const ids = [...this.resumeOnReconnect].filter((id) => this.snapshot.chats.some((c) => c.id === id));
     this.resumeOnReconnect.clear();
     for (const id of ids)
-      this.track(this.resume(id).catch(() => this.patchChat(id, (c) => ({ ...c, items: endWaiting(c.items, "lost") }))));
+      this.track(this.resume(id).catch(() => this.endCards(id, "lost")));
   }
 
   /**
@@ -4903,6 +4935,7 @@ export class Hermes {
     clearTimeout(this.rosterTimer);
     clearInterval(this.heartbeat);
     this.abandonListSync();
+    this.recorder.drop(Date.now());
     if (keep && pipe?.reopen) this.socketClosed = pipe;
     // Lets the Rust side end the tunnel.
     else if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
@@ -5057,6 +5090,11 @@ export class Hermes {
           usage?: unknown;
         };
         this.runtimeOwners.set(res.session_id, { profile, chatId });
+        // A turn the app stopped hearing at a drop goes on being heard if it still runs. One that finished meanwhile is
+        // drawn from the stored rows, and the chat's cost is read after it, so the next turn is measured from there.
+        const rejoinedAt = Date.now();
+        const unheard = this.recorder.rejoin(profile, chatId, rejoinedAt, !!res.running);
+        if (unheard) this.track(this.refreshUsage(chatId).then(() => this.costAfter(chatId, unheard)));
         // A session reattached mid-turn has counters part of the way through it; a cold one has no agent yet, so its
         // counters start from zero once one is built (`_lazy_resume_info` carries no usage).
         const counters = countersOf((res.info as { usage?: unknown } | undefined)?.usage);
@@ -5075,10 +5113,12 @@ export class Hermes {
         this.staleItems.delete(chatId);
         const early = this.earlyRequests.get(res.session_id) ?? [];
         this.earlyRequests.delete(res.session_id);
-        const asking = [...(res.open_requests ?? []), ...early];
+        const asking: Asked[] = [...(res.open_requests ?? []).map((req) => ({ req, at: rejoinedAt, late: true })), ...early];
         // History has no cards. A card that was waiting when the connection dropped either comes back below, or
         // Hermes let go of the session meanwhile and the card stays, closed.
-        const lost = (items: Item[]) => endWaiting(items.filter((i) => isWaiting(i) && !asking.some((r) => r.id === i.id)), "lost");
+        const isLost = (i: Item) => isWaiting(i) && !asking.some((a) => a.req.id === i.id);
+        const lost = (items: Item[]) => endWaiting(items.filter(isLost), "lost");
+        const lostIds = (this.snapshot.chats.find((c) => c.id === chatId)?.items.slice(0, stale) ?? []).filter(isLost).map((i) => i.id);
         for (const i of this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [])
           if (isQuestion(i) && (i.answer || i.ended)) this.closedQuestions.set(profile, i.id, i);
         // The Saved copy, if shown, is among the stale items. Messages sent from here that Hermes hasn't confirmed go
@@ -5104,6 +5144,7 @@ export class Hermes {
         }));
         this.saveOutbox(chatId);
         this.saveTranscript(chatId);
+        for (const id of lostIds) this.recorder.settled(profile, chatId, { kind: "settled", at: rejoinedAt, ids: [id], how: endedNote("lost") });
         this.showQuestions(chatId, asking);
         this.track(this.listSubagents(chatId, res.session_id));
         return res.session_id;
@@ -5172,7 +5213,7 @@ export class Hermes {
     if (this.profile !== profile) return;
     if (now === undefined) {
       this.deleted.set(profile, chatId, true);
-      this.recorder.forget(chatId);
+      this.recorder.forget(profile, chatId);
       this.update({
         chats: this.snapshot.chats.filter((c) => c.id !== chatId),
         syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
