@@ -1,5 +1,5 @@
 // Hermes has no write that takes an idempotency key here, and none that stops a run and blocks its card in one step
-// (ADR 0188), so each ask is carried out as a loop: read the card, plan one write from that read alone, send it, read
+// (ADR 0191), so each ask is carried out as a loop: read the card, plan one write from that read alone, send it, read
 // again.
 import type { BoardTask, RunId, TaskDetail, TaskRun } from "./kanban";
 import { errorText } from "./values";

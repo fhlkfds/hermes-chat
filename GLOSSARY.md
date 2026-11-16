@@ -332,7 +332,7 @@ Hermes's rough guess, from a model, of how many tokens a Task will take, with a 
 _Avoid_: cost, price, estimate (fine in code)
 
 **Task run**:
-One time Hermes's dispatcher gave a Task to its bot. The bot works in a chat of its own, in the run's profile, and a Task's sheet shows its live run: the run number, the bot, when it started, its last heartbeat, and the tokens and last lines of that chat. A Task can have many runs, one after another. The sheet calls the one at work "the bot" and names a run "run N". **Stop** ends the run for good: the bot stops and the Task is blocked with the owner's reason, still with its bot. **Reclaim** stops this run only, and the dispatcher starts the Task again. **Reassign** stops this run and gives the Task to another bot. Each says what it does first, and sends nothing when the Task changed since (ADR 0188).
+One time Hermes's dispatcher gave a Task to its bot. The bot works in a chat of its own, in the run's profile, and a Task's sheet shows its live run: the run number, the bot, when it started, its last heartbeat, and the tokens and last lines of that chat. A Task can have many runs, one after another. The sheet calls the one at work "the bot" and names a run "run N". **Stop** ends the run for good: the bot stops and the Task is blocked with the owner's reason, still with its bot. **Reclaim** stops this run only, and the dispatcher starts the Task again. **Reassign** stops this run and gives the Task to another bot. Each says what it does first, and sends nothing when the Task changed since (ADR 0191).
 _Avoid_: worker (Hermes's worker is the process that waits for the bot), attempt, job
 
 **Office** / **Desk**:
