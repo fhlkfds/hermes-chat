@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Attaches every installer and package built for a v<version> tag to that tag's GitHub release (ADR 0080, ADR 0182).
+# Attaches every installer and package built for a v<version> tag to that tag's GitHub release (ADR 0080, ADR 0183).
 #
 #   scripts/release/attach-release.sh <tag> <folder holding the one built .exe> <folder holding the one built .deb>
 #

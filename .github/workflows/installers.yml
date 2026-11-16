@@ -1,7 +1,7 @@
 name: installers
 
 # Builds the Windows installer and the .deb. On a v<version> tag it also attaches both to that tag's GitHub release
-# (ADR 0080, ADR 0182).
+# (ADR 0080, ADR 0183).
 
 on:
   workflow_dispatch:

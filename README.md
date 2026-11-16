@@ -473,7 +473,7 @@ Download `hermes-chat_<version>_amd64.deb` from the latest [release](https://git
 sudo apt install ./hermes-chat_<version>_amd64.deb
 ```
 
-It is built on Ubuntu 24.04, so it needs Ubuntu 24.04, Debian 13 or newer, on x86_64. The `.sha256` file beside it holds its checksum (`sha256sum -c`). The package is called `highwing` (`sudo apt remove highwing` removes it). The command, icon and [chat links](#chat-links-and-the-desktop) are the Arch package's, but the launcher file is `Highwing.desktop`, so that is the name to give `xdg-mime default`. The app doesn't update a .deb install: to update, install a newer .deb the same way. Pushing a `v<version>` tag builds the package and attaches it to that release (ADR 0182).
+It is built on Ubuntu 24.04, so it needs Ubuntu 24.04, Debian 13 or newer, on x86_64. The `.sha256` file beside it holds its checksum (`sha256sum -c`). The package is called `highwing` (`sudo apt remove highwing` removes it). The command, icon and [chat links](#chat-links-and-the-desktop) are the Arch package's, but the launcher file is `Highwing.desktop`, so that is the name to give `xdg-mime default`. The app doesn't update a .deb install: to update, install a newer .deb the same way. Pushing a `v<version>` tag builds the package and attaches it to that release (ADR 0183).
 
 ## Install on Windows
 

@@ -188,7 +188,7 @@ A label the owner puts on chats, in one profile. A chat can have several tags, o
 _Avoid_: label (in the app), category, folder, project
 
 **Chat filter**:
-What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Job-run chats are found only when the Source asked for is Scheduled jobs. Applying a filter changes no chat (ADR 0106, ADR 0182).
+What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Job-run chats are found only when the Source asked for is Scheduled jobs. Applying a filter changes no chat (ADR 0106, ADR 0184).
 _Avoid_: query, view
 
 **Saved filter**:
@@ -582,7 +582,7 @@ One run of a Scheduled job, as Hermes recorded it: an agent session, or the outp
 _Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run's session opens as a Job-run chat, but it isn't one of the chats in the list)
 
 **Job-run chat**:
-The chat an agent Job run left: the Hermes session the run's agent worked in, with the prompt it got, its tool calls and its reply. It opens from **Open the chat** on the run in the job's history, from a search or Saved filter with the Scheduled jobs source, from Usage, or from a chat link. It is read-only. Hermes runs only the job in it and refuses a reply, so it has no composer, Edit, Regenerate or Branch. The app reads its stored messages and never resumes it, so opening it starts nothing on the server and doesn't mark it read. It stays out of the chat list, unread counts and the Inbox (ADR 0182).
+The chat an agent Job run left: the Hermes session the run's agent worked in, with the prompt it got, its tool calls and its reply. It opens from **Open the chat** on the run in the job's history, from a search or Saved filter with the Scheduled jobs source, from Usage, or from a chat link. It is read-only. Hermes runs only the job in it and refuses a reply, so it has no composer, Edit, Regenerate or Branch. The app reads its stored messages and never resumes it, so opening it starts nothing on the server and doesn't mark it read. It stays out of the chat list, unread counts and the Inbox (ADR 0184).
 _Avoid_: cron chat, cron session (Hermes's words, fine in server-side talk), run log, transcript (the transcript is what it shows)
 
 **Troubleshoot** (a Scheduled job):
