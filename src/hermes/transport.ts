@@ -2055,7 +2055,7 @@ export class Hermes {
 
   /**
    * One profile's search, for Everywhere (everywhere.ts): any profile, shown or not, and any role, so a background
-   * connection answers it too (ADR 0188, amending ADR 0125). It is one dashboard GET: nothing goes in the list, no shown
+   * connection answers it too (ADR 0190, amending ADR 0125). It is one dashboard GET: nothing goes in the list, no shown
    * profile changes, and whether a chat is Settled isn't read, so a `Hit` says nothing of it. Archived chats, chats
    * deleted here and Bot Chats are left out as `search` leaves them out; the Bot Chats' ids are known once
    * `knownBotChats` has answered. Always asks for the most Hermes gives. `capped`: Hermes gave that many, so more
