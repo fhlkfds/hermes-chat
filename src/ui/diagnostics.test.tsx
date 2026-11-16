@@ -56,6 +56,7 @@ const NEW = {
   "RPC session.active_list": { sessions: [] },
   "RPC subagent.roster": { sessions: [] },
   "RPC learning.detail": { ok: false },
+  "RPC rollback.list": Object.assign(new Error("session not found"), { code: 4001 }),
   "RPC profiles.list": { profiles: [{ name: "default", is_default: true, canonical_session: null }] },
   "GET api/tools/toolsets": [],
   "GET api/profiles/default/soul": {},

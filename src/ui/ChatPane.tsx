@@ -43,6 +43,8 @@ import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
 import { PathsIn, useLinkMenu, useOpenPreview, usePathsIn } from "./previewContext";
+import { FilesChip } from "./FileChanges";
+import { replyFiles } from "../hermes/fileChanges";
 import { ShowInChatContext, type ShowInChat } from "./showInChat";
 import { linkTarget, previewName, toolTargets, withoutBidi } from "../hermes/preview";
 import { type CommandHost, useSlashCommands } from "./SlashCommands";
@@ -451,6 +453,7 @@ export function ChatPane({
   branchedFrom,
   replay,
   variants,
+  onCheckpoints,
 }: {
   chat: Chat;
   notLoaded?: boolean;
@@ -532,6 +535,11 @@ export function ChatPane({
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
+  /**
+   * Asks once for what a reply's files-changed chip needs (`Hermes.checkCheckpoints`, ADR 0180). None: no chip, as for
+   * a Hermes without the checkpoint methods.
+   */
+  onCheckpoints?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const keys = useBindings();
@@ -616,6 +624,20 @@ export function ChatPane({
   }, [chat.items]), sameTurns);
   // App builds the versions again on every streamed delta.
   const byTurn = useStable(variants?.byTurn, sameVersions);
+  // How many files each finished reply changed, by its reply. The chips show once the chat's checkpoints check found
+  // its terminal isn't in a container, where Hermes takes no checkpoints (ADR 0180).
+  const filesOn = !!onCheckpoints;
+  const changedFiles = useStable(
+    useMemo(() => new Map(filesOn ? replyFiles(chat.items, chat.folder).map((r) => [r.replyId, r.paths.length]) : []), [filesOn, chat.items, chat.folder]),
+    sameMap,
+  );
+  const checkpointsRef = useRef(onCheckpoints);
+  checkpointsRef.current = onCheckpoints;
+  useEffect(() => {
+    if (changedFiles.size && chat.runtimeId && chat.checkpoints?.runtimeId !== chat.runtimeId) checkpointsRef.current?.();
+  }, [changedFiles.size, chat.runtimeId, chat.checkpoints?.runtimeId]);
+  const fileChips = filesOn && chat.checkpoints && chat.checkpoints.container !== true ? changedFiles : undefined;
+  const checkpointsOff = chat.checkpoints?.on === false;
   // A failed message can be sent again once Hermes is connected and the chat has no reply running.
   const canRetry = status === "connected" && !chat.loading && !chat.running;
   const findRef = useRef<HTMLInputElement>(null);
@@ -1047,6 +1069,8 @@ export function ChatPane({
               chatId={chat.id}
               onPickVariant={onPickVariant}
               onDismissSideQuestion={onDismissSideQuestion && dismissSide}
+              fileChips={fileChips}
+              checkpointsOff={checkpointsOff}
             />
           ))}
           {shown.to < chunks.length - 1 && <div className="transcript-gap" aria-hidden style={{ height: shown.after }} />}
@@ -1166,6 +1190,8 @@ const BlockView = memo(
     chatId,
     turn,
     onPickVariant,
+    filesChanged,
+    checkpointsOff,
   }: {
     block: Block;
     live: boolean;
@@ -1186,6 +1212,9 @@ const BlockView = memo(
     chatId: string;
     turn?: number;
     onPickVariant: (chatId: string, turn: number) => void;
+    /** For a finished reply that edited files: how many (ADR 0180). `checkpointsOff`: its profile takes no checkpoints. */
+    filesChanged?: number;
+    checkpointsOff?: boolean;
   }) {
     const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
     const nav = versions && current >= 0 && turn !== undefined && (
@@ -1254,6 +1283,7 @@ const BlockView = memo(
           {!live && nav}
           <StoredTime at={block.at} />
           {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
+          {filesChanged !== undefined && !live && <FilesChip chatId={chatId} replyId={block.id} count={filesChanged} off={!!checkpointsOff} />}
         </div>
       );
     if (block.kind === "error")
@@ -1291,7 +1321,9 @@ const BlockView = memo(
     a.versions === b.versions &&
     a.chatId === b.chatId &&
     a.turn === b.turn &&
-    a.onPickVariant === b.onPickVariant,
+    a.onPickVariant === b.onPickVariant &&
+    a.filesChanged === b.filesChanged &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /**
@@ -1322,6 +1354,8 @@ const TranscriptChunk = memo(
     chatId,
     onPickVariant,
     onDismissSideQuestion,
+    fileChips,
+    checkpointsOff,
   }: {
     blocks: (Block | SideBlock)[];
     live?: string;
@@ -1344,6 +1378,8 @@ const TranscriptChunk = memo(
     chatId: string;
     onPickVariant: (chatId: string, turn: number) => void;
     onDismissSideQuestion?: (id: string) => void;
+    fileChips?: Map<string, number>;
+    checkpointsOff: boolean;
   }) {
     return (
       <div className="transcript-chunk" data-chunk={blocks[0].id}>
@@ -1374,6 +1410,8 @@ const TranscriptChunk = memo(
                   chatId={chatId}
                   turn={turns.anchor.get(b.id)}
                   onPickVariant={onPickVariant}
+                  filesChanged={b.kind === "assistant" ? fileChips?.get(b.id) : undefined}
+                  checkpointsOff={checkpointsOff}
                 />
               )}
             </ErrorBoundary>
@@ -1405,7 +1443,9 @@ const TranscriptChunk = memo(
     a.byTurn === b.byTurn &&
     a.chatId === b.chatId &&
     a.onPickVariant === b.onPickVariant &&
-    a.onDismissSideQuestion === b.onDismissSideQuestion,
+    a.onDismissSideQuestion === b.onDismissSideQuestion &&
+    a.fileChips === b.fileChips &&
+    a.checkpointsOff === b.checkpointsOff,
 );
 
 /** A block that threw while it was drawn, in its place, so the rest of the chat keeps working (ADR 0137). */

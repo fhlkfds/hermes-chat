@@ -8,7 +8,7 @@ export type Returned = { title?: string; body: string; process: boolean };
 const KINDS: Record<string, boolean> = { async_delegation_complete: false, process_complete: true };
 
 /** `display_metadata` as an object: Hermes sends it as one, or as its JSON text from the stored row. */
-function metadata(raw: unknown): Record<string, unknown> | undefined {
+export function displayMetadata(raw: unknown): Record<string, unknown> | undefined {
   let parsed = raw;
   if (typeof parsed === "string") {
     try {
@@ -58,9 +58,9 @@ function cleaned(body: string): string {
  * The Returned result a stored user row is, or undefined for any other row. If nothing is left once the envelope goes,
  * the body is the whole text, so a result is never lost.
  */
-export function returnedItem(text: string, displayKind: unknown, displayMetadata: unknown): Returned | undefined {
+export function returnedItem(text: string, displayKind: unknown, metadata: unknown): Returned | undefined {
   if (typeof displayKind !== "string" || !Object.hasOwn(KINDS, displayKind)) return undefined;
-  const shown = metadata(displayMetadata)?.display_text;
+  const shown = displayMetadata(metadata)?.display_text;
   const title = typeof shown === "string" && shown.trim() ? shown.trim() : undefined;
   return { ...(title && { title }), body: resultBody(text) ?? text.trim(), process: KINDS[displayKind] };
 }

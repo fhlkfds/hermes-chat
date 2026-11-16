@@ -11,6 +11,7 @@ import { FakeVoiceProviders } from "./fakeVoiceProviders";
 import { FakeSkills } from "./fakeSkills";
 import { FakeServerFiles } from "./fakeServerFiles";
 import { FakeProjectContext } from "./fakeProjectContext";
+import { FakeCheckpoints, inlineDiff, type FakeEdit } from "./fakeCheckpoints";
 import { ScheduleError, isoIn, parseSchedule, upcomingRuns } from "./schedule";
 import { skillInvocationText } from "./skillCommands";
 
@@ -222,6 +223,8 @@ export function fakeEnv(): Record<string, Record<string, unknown>> {
 const DAY = 86_400;
 const MiB = 1024 * 1024;
 const now = () => Date.now() / 1000;
+/** What Hermes answers a checkpoint read or restore for a chat whose terminal runs in a container (`checkpoint_manager.py:818`). */
+const CONTAINER_REFUSAL = "Checkpoints are not taken for terminal.backend=docker: file paths belong to the container, not this host.";
 /** A faked failure: a dashboard answer is a `RestError` already, anything else the text Rust rejects with. */
 const thrown = (e: string | Error) => (typeof e === "string" ? new Error(e) : e);
 
@@ -490,6 +493,20 @@ export class FakeHermes {
    * file's text (or bytes, one char per byte); `{ dir: true }` is a folder.
    */
   serverFiles: Record<string, string | { dir: true }> = {};
+  /** The checkpoints Hermes keeps for each folder (`rollback.*`, fakeCheckpoints.ts), of the files in `serverFiles`. */
+  readonly checkpoints = new FakeCheckpoints(() => this.serverFiles, now);
+  /** False: a Hermes without `rollback.list`, `rollback.diff` and `rollback.restore`, which answers "method not found". */
+  rollbackMethods = true;
+  /**
+   * What the scripted turn a prompt saying "edit two files" runs does, in order, in the chat's folder: by default a
+   * write Hermes refuses, then a write and a patch of two files that `fileTurnSeed` puts there first if they're missing.
+   */
+  fileTurn: FakeEdit[] = [
+    { tool: "write_file", path: "notes.txt", content: "never written\n", refused: true },
+    { tool: "write_file", path: "a.txt", content: "alpha line one\nalpha line two (by the bot)\n" },
+    { tool: "patch", path: "b.txt", old: "beta original", new: "beta patched by the bot" },
+  ];
+  fileTurnSeed: Record<string, string> = { "a.txt": "alpha line one\n", "b.txt": "beta original\n", "notes.txt": "the owner's notes\n" };
   /** Every `POST /api/fs/write-text` that reached the server, in order (artifact saves, ADR 0029). `session`: the chat named. */
   readonly fsWrites: { profile: string; path: string; text: string; session?: string }[] = [];
   /**
@@ -925,9 +942,13 @@ export class FakeHermes {
       this.turns.add(runtimeId);
       if (stored) this.inflight.set(runtimeId, { stored, user: String(r.params.text ?? ""), assistant: "" });
       this.stopped.delete(runtimeId);
-      this.respond(r.id, { status: "streaming", ...(this.userRowId !== undefined && { user_row_id: this.userRowId }) });
       const prompt = String(r.params.text ?? "");
-      if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
+      const fileTurn = !!stored && /edit two files/i.test(prompt);
+      // The file turn's message has its stored row reported, as Hermes reports every message's, so its reply gets a time.
+      const userRow = this.userRowId ?? (fileTurn ? this.transcripts[stored!].at(-1)?.row_id : undefined);
+      this.respond(r.id, { status: "streaming", ...(userRow !== undefined && { user_row_id: userRow }) });
+      if (fileTurn) queueMicrotask(() => this.fileReply(runtimeId, stored!));
+      else if (stored && /dispatch/i.test(prompt)) queueMicrotask(() => this.kanban.dispatchReply(runtimeId, stored, prompt));
       else if (stored && /background/i.test(prompt)) queueMicrotask(() => this.backgroundReply(runtimeId, stored));
     },
     // Attachments stage server-side for the session's next turn (research doc §7; `tui_gateway/methods_prompt.py`
@@ -1326,6 +1347,29 @@ export class FakeHermes {
       this.respond(r.id, { ...this.sessionInfo, cwd });
     },
     "session.close": (r) => this.respond(r.id, { closed: true }),
+    // `tui_gateway/methods_tools.py:1123-1183` at `bf0203a`, as measured on a real Hermes (ADR 0180).
+    "rollback.list": (r) =>
+      this.rollback(r, (folder) => this.respond(r.id, this.checkpoints.on ? { enabled: true, checkpoints: this.checkpoints.list(folder) } : { enabled: false, checkpoints: [] })),
+    "rollback.diff": (r) =>
+      this.rollback(r, (folder, stored) => {
+        if (!r.params.hash) return this.fail(r.id, 4014, "hash required");
+        if (this.checkpoints.containerChats.has(stored)) return this.fail(r.id, 5022, CONTAINER_REFUSAL);
+        this.respond(r.id, this.checkpoints.diff(folder, String(r.params.hash)));
+      }),
+    // A whole-folder restore (no `file_path`) drops the chat's newest message of the owner's and all after it, whatever
+    // checkpoint it restores (`_rewind_active_session_history`).
+    "rollback.restore": (r) =>
+      this.rollback(r, (folder, stored) => {
+        if (!r.params.hash) return this.fail(r.id, 4014, "hash required");
+        if (this.checkpoints.containerChats.has(stored)) return this.respond(r.id, { success: false, error: CONTAINER_REFUSAL });
+        const file = typeof r.params.file_path === "string" && r.params.file_path ? r.params.file_path : undefined;
+        const result = this.checkpoints.restore(folder, String(r.params.hash), file);
+        if (result.success !== true || file) return this.respond(r.id, result);
+        const rows = this.transcripts[stored] ?? [];
+        const at = rows.map((m) => m.role === "user").lastIndexOf(true);
+        if (at >= 0) this.transcripts[stored] = rows.slice(0, at);
+        this.respond(r.id, { ...result, history_removed: at >= 0 ? rows.length - at : 0 });
+      }),
     // `tui_gateway/methods_tools.py` `tools.show`: the session's agent's tools grouped by toolset. An id it doesn't hold
     // falls back to the launch profile's config (`_session_toolsets(None)`), with no error.
     "tools.show": (r) => {
@@ -1540,6 +1584,7 @@ export class FakeHermes {
       dashboard: { turn_isolation: this.turnIsolation },
       // Merged over Hermes's defaults, where `tool_progress` is `all`. YAML reads a bare `off` as false.
       display: { tool_progress: this.toolProgress[query.get("profile") || "default"] ?? "all" },
+      checkpoints: { enabled: this.checkpoints.on, max_snapshots: this.checkpoints.max },
       ...(this.kanban.reviewDispatch !== undefined && { kanban: { review_dispatch: this.kanban.reviewDispatch } }),
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
       // The raw map, as `include_defaults=false` reads it: what Rust's MCP edit starts from (fakeMcp.ts).
@@ -2400,6 +2445,66 @@ export class FakeHermes {
       this.inflight.delete(sessionId);
     }
     this.frame({ jsonrpc: "2.0", method: "event", params: { type, session_id: sessionId, payload } });
+  }
+
+  /** Runs a `rollback.*` method on the live session it names, in that session's folder. */
+  private rollback(r: Request, run: (folder: string, stored: string) => void) {
+    if (!this.rollbackMethods) return this.fail(r.id, -32601, `unknown method: ${r.method}`);
+    const sid = String(r.params.session_id ?? "");
+    const stored = this.runtime.get(sid);
+    if (!stored) return this.fail(r.id, 4001, "session not found");
+    run(this.folderOf(sid, stored), stored);
+  }
+
+  /** The folder a live session works in: as it was set, or as its stored row has it. */
+  folderOf(runtimeId: string, stored: string) {
+    const row = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored);
+    return this.sessionCwd.get(runtimeId) ?? row?.cwd ?? this.hermesHome;
+  }
+
+  /**
+   * The scripted turn that edits files (`fileTurn`), as Hermes `bf0203a` ran one (measured): with checkpoints on and a
+   * terminal on the host, one checkpoint before the first edit; each edit's `tool.start` and `tool.complete` with its
+   * args, and for one that went through its `inline_diff`; its tool rows stored with that diff as `display_metadata`.
+   */
+  private fileReply(runtimeId: string, stored: string) {
+    const folder = this.folderOf(runtimeId, stored);
+    for (const [path, text] of Object.entries(this.fileTurnSeed)) if (typeof this.serverFiles[`${folder}/${path}`] !== "string") this.serverFiles[`${folder}/${path}`] = text;
+    this.event(runtimeId, "message.start");
+    if (this.checkpoints.on && !this.checkpoints.containerChats.has(stored)) this.checkpoints.take(folder, `before ${this.fileTurn[0]?.tool ?? "write_file"}`);
+    this.fileTurn.forEach((e, n) => {
+      const tool_id = `call_file_${n}`;
+      const args = e.tool === "write_file" ? { path: e.path, content: e.content } : { path: e.path, old_string: e.old, new_string: e.new };
+      this.event(runtimeId, "tool.start", { tool_id, name: e.tool, context: e.path, args });
+      const where = e.path.startsWith("/") ? e.path : `${folder}/${e.path}`;
+      const before = typeof this.serverFiles[where] === "string" ? (this.serverFiles[where] as string) : undefined;
+      if (e.tool === "write_file" && e.refused) {
+        const result = { error: `Refusing to overwrite ${e.path}: ${where} exists but this task has not seen its full current content.`, stale_write_blocked: true, path: e.path };
+        this.event(runtimeId, "tool.complete", { tool_id, name: e.tool, args, duration_s: 0.1, result });
+        this.storeMessage(stored, { role: "tool", tool_call_id: tool_id, name: e.tool, args, context: e.path, content: JSON.stringify(result) });
+        return;
+      }
+      const after = e.tool === "write_file" ? e.content : (before ?? "").replace(e.old, e.new);
+      this.serverFiles[where] = after;
+      const inline_diff = inlineDiff(e.path, before, after);
+      const result = e.tool === "write_file" ? { bytes_written: after.length } : { success: true, files_modified: [where] };
+      this.event(runtimeId, "tool.complete", { tool_id, name: e.tool, args, duration_s: 0.1, inline_diff, result });
+      this.storeMessage(stored, {
+        role: "tool",
+        tool_call_id: tool_id,
+        name: e.tool,
+        args,
+        context: e.path,
+        content: JSON.stringify(result),
+        display_metadata: { tool_result_metadata: { inline_diff } },
+      });
+    });
+    const text = "Done editing the files.";
+    const user_row_id = (this.transcripts[stored] ?? []).filter((m) => m.role === "user").at(-1)?.row_id;
+    this.event(runtimeId, "message.delta", { text });
+    this.storeMessage(stored, { role: "assistant", text });
+    const final_assistant_row_id = this.transcripts[stored].at(-1)!.row_id;
+    this.event(runtimeId, "message.complete", { text, status: "complete", persisted_turn: { user_row_id, final_assistant_row_id } });
   }
 
   /** A reply that starts two background subagents, as `delegate_task` in background mode reports them, and ends its turn while they run. */
