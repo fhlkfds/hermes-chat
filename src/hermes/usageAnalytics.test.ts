@@ -362,6 +362,17 @@ describe("Comparing with Hermes's own sums", () => {
     expect(crossCheck(data)[0]).toMatchObject({ complete: false, incomparable: "counts" });
   });
 
+  it("reads a chat's finished segments once across refreshes that share what they read, and its latest every time", async () => {
+    const row = { id: "t", started_at: NOW / 1000, _lineage_root_id: "r", _lineage_ids: ["r", "m", "t"], input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 };
+    const session = vi.fn(async (_p: string, id: string) => ({ id, input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 }));
+    const finished = new Map();
+    const io = { page: async () => ({ rows: [row], total: 1 }), session, hermesTotals };
+    await collectUsage(io, ["default"], week(), { finished });
+    const again = await collectUsage(io, ["default"], week(), { finished });
+    expect(session.mock.calls.map((c) => c[1])).toEqual(["m", "t", "t"]);
+    expect(again.chats[0].counts.input).toBe(30);
+  });
+
   it("compares when everything was read", async () => {
     const session = async (_p: string, id: string) => ({ id, input_tokens: 10, output_tokens: 1, cache_read_tokens: 0, api_call_count: 1 });
     const data = await collectUsage({ page: async () => ({ rows: [lineageRow(0)], total: 1 }), session, hermesTotals }, ["default"], week());

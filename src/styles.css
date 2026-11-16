@@ -2822,7 +2822,8 @@ label.memory-pick { cursor: pointer; }
 .bots-activity { display: inline-flex; align-items: center; gap: 4px; font-size: calc(12rem / 14); font-weight: 500; color: var(--accent); white-space: nowrap; }
 .bots-activity.is-needs-you { color: var(--warn); }
 .bots-row.is-hidden .bots-open { opacity: 0.6; }
-.bots-new { flex: none; margin-right: 4px; }
+.bots-new { flex: none; }
+.bots-more { flex: none; margin-right: 4px; }
 .bots-hidden { padding: 4px 8px; }
 .bots-hidden-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font-size: calc(12rem / 14); }
 .bots-hidden-toggle:hover { color: var(--text); }
@@ -4144,6 +4145,15 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .profile-dialog .field-label { justify-content: space-between; }
 .profile-dialog .field-label .btn { padding: 2px 9px; }
 .profile-model { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Edit bot's look: the color box with what it holds, and the picture as the row will show it. */
+.profile-color { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.profile-color input[type="color"] { flex: none; width: 44px; height: 30px; padding: 2px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 8px; cursor: pointer; }
+.profile-color input[type="color"]:disabled { cursor: default; opacity: 0.6; }
+.profile-picture { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* A field Hermes changed since the dialog opened: its value there, and the button that takes it. */
+.profile-conflict { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; color: var(--warn); line-height: 1.5; }
+.profile-conflict .link-btn { flex: none; }
+.profile-conflict-picture { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
 .profile-model select { flex: 0 1 200px; min-width: 0; background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 10px; color: var(--text); }
 .profile-model input { flex: 1 1 220px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 12px; outline: none; font-size: calc(13rem / 14); color: var(--text); }
 .profile-soul { min-height: 90px; }
@@ -4443,6 +4453,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .run-failed .run-bar.inferred { background: repeating-linear-gradient(135deg, var(--bad) 0 4px, transparent 4px 7px); border-color: var(--bad); }
 .run-bar.moment { width: 3px !important; min-width: 3px; border: 0; background: var(--muted); }
 .run-failed .run-bar.moment { background: var(--bad); }
+.run-gap .run-bar.inferred { background: none; border: 1px dashed var(--muted); }
 .run-took { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
 .run-detail { padding: 4px 8px 10px 26px; display: flex; flex-direction: column; gap: 8px; }
 .run-block-label { color: var(--faint); font-size: calc(12rem / 14); margin-bottom: 2px; }
@@ -4455,3 +4466,40 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
   .run-row { grid-template-columns: 1fr 64px; }
   .run-track { grid-column: 1 / -1; grid-row: 2; }
 }
+/* Usage → Spending and Budgets (ADR 0026, ADR 0188) */
+.usage-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 4px 0 14px; }
+.usage-tab { padding: 6px 12px; border-radius: 7px 7px 0 0; color: var(--muted); border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; }
+.usage-tab:hover { color: var(--text); }
+.usage-tab.on { color: var(--text-strong); background: var(--raised); border-color: var(--line); }
+.usage-tab:focus-visible { outline: 2px solid var(--line-3); outline-offset: -2px; }
+.budget-form { border: 1px solid var(--line-2); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; background: var(--raised); }
+.budget-form .usage-filters { margin: 0 0 8px; }
+.budget-form-actions { display: flex; gap: 8px; margin-top: 10px; }
+.budget-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.budget-card { border: 1px solid var(--line); background: var(--raised); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.budget-card.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.budget-card.bad { border-color: color-mix(in srgb, var(--bad) 65%, var(--line)); }
+.budget-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.budget-head h2 { margin: 0; font-size: calc(14rem / 14); overflow-wrap: anywhere; }
+.budget-head p { margin: 2px 0 0; }
+.budget-actions { display: flex; gap: 2px; flex: none; }
+.budget-figure { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.budget-spent { font-size: calc(20rem / 14); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.budget-share { color: var(--muted); font-variant-numeric: tabular-nums; }
+.budget-meter { position: relative; height: 10px; border-radius: 5px; background: var(--raised-3); margin: 6px 0 8px; overflow: hidden; }
+.budget-meter-fill { position: absolute; inset: 0 auto 0 0; background: var(--text-2); border-radius: 5px; }
+.budget-card.warn .budget-meter-fill { background: var(--warn); }
+.budget-card.bad .budget-meter-fill { background: var(--bad); }
+.budget-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-3); }
+.budget-forecast { margin: 6px 0 0; font-size: calc(12.5rem / 14); color: var(--text-2); line-height: 1.45; }
+.budget-gaps { margin: 8px 0 0; padding-left: 18px; }
+.budget-card .btn.small { margin-top: 8px; height: 28px; padding: 0 10px; }
+.budget-top { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.budget-top h3 { margin: 0 0 6px; font-size: calc(12.5rem / 14); color: var(--muted); font-weight: 600; }
+.budget-top ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.budget-top li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; font-size: calc(12.5rem / 14); }
+.budget-top li .muted { grid-column: 1; }
+.budget-chat { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text); font: inherit; min-width: 0; }
+button.budget-chat:hover { text-decoration: underline; }
+.budget-chat-amount { grid-column: 2; grid-row: 1; font-variant-numeric: tabular-nums; color: var(--text-2); text-align: right; }
+.budget-notes ul { padding-left: 18px; display: grid; gap: 4px; }

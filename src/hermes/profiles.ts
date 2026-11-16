@@ -19,6 +19,7 @@
 //   (400). It can answer `ok` with `settlement_pending: true` and a `retry_command`: the folder is gone, but Hermes
 //   hasn't finished settling the profile's identity, and a second delete would 404.
 import { CapabilityUnsupportedError, RouteMissingError } from "./capabilities";
+import { plan, settle, type EditResult, type Edits, type FieldOutcome, type Outcomes, type Same } from "./fieldMerge";
 import { deadline } from "./persona";
 import { RestError, type RestMethod } from "./pipe";
 import { isObj } from "./values";
@@ -113,10 +114,13 @@ export function readProfileRows(res: unknown): ProfileRow[] {
   return toProfileRows(res);
 }
 
-/** Each change Settings → Profiles makes, by the Hermes route it goes through. */
-export type ProfileAction = "create" | "rename" | "describe" | "describeAuto" | "setModel" | "remove";
+/**
+ * Each change Settings → Profiles and the Bots view make, by the Hermes route or JSON-RPC method it goes through.
+ * `botLook` writes the Bot Mode block and `botPicture` the profile's avatar (ADR 0189).
+ */
+export type ProfileAction = "create" | "rename" | "describe" | "describeAuto" | "setModel" | "remove" | "botLook" | "botPicture";
 
-/** Each action's route, as Hermes's router declares it, for the note on a server without it. */
+/** Each action's route or method, as Hermes declares it, for the note on a server without it. */
 export const PROFILE_ROUTES: Record<ProfileAction, string> = {
   create: "POST /api/profiles",
   rename: "PATCH /api/profiles/{name}",
@@ -124,40 +128,72 @@ export const PROFILE_ROUTES: Record<ProfileAction, string> = {
   describeAuto: "POST /api/profiles/{name}/describe-auto",
   setModel: "PUT /api/profiles/{name}/model",
   remove: "DELETE /api/profiles/{name}",
+  botLook: "profiles.configure",
+  botPicture: "profiles.set_asset",
 };
 
 /**
  * How a profile call failed. `unsent`: it certainly didn't reach Hermes (not connected, or refused before sending).
- * `noRoute`: this Hermes has no route for it. `gone`: Hermes has no such profile. `refused`: Hermes refused it with a
- * reason and changed nothing. `lost`: no answer came, or Hermes failed partway (a timeout, a dropped connection, a
- * 5xx), so it may or may not have happened.
+ * `noRoute`: this Hermes has no route for it. `gone`: Hermes has no such profile. `refused`: Hermes refused it and
+ * changed nothing; `status` is its HTTP status or JSON-RPC code and `detail` its reason, 0 and "" when it gave none.
+ * `lost`: no answer came, or Hermes failed partway (a timeout, a dropped connection, a 5xx), so it may or may not have
+ * happened. `contended`: Hermes kept changing the bot's Bot Mode settings through every attempt, so nothing was
+ * written. `noCheck`: this Hermes reports no revision to check a Bot Mode write against, so nothing was sent.
+ * `pictureUnconfirmed`: Hermes stored a bot's picture without confirming it, so its Bot Mode settings don't say it
+ * has one yet; Save again writes them.
  */
 export type ProfileFailure =
   | { kind: "unsent"; message: string }
   | { kind: "noRoute"; action: ProfileAction }
   | { kind: "gone"; detail: string }
   | { kind: "refused"; status: number; detail: string }
-  | { kind: "lost"; message: string };
+  | { kind: "lost"; message: string }
+  | { kind: "contended" }
+  | { kind: "noCheck" }
+  | { kind: "pictureUnconfirmed" };
+
+function failureWords(f: ProfileFailure): string {
+  switch (f.kind) {
+    case "noRoute":
+      return `This Hermes server has no route for ${PROFILE_ROUTES[f.action]}.`;
+    case "gone":
+      return f.detail;
+    case "refused":
+      return f.detail || "Hermes didn't save it, and didn't say why.";
+    case "unsent":
+    case "lost":
+      return f.message;
+    case "contended":
+      return "Hermes kept changing this bot while it saved, so nothing was written.";
+    case "noCheck":
+      return "This Hermes can't check a bot's settings for changes made elsewhere, so nothing was sent.";
+    case "pictureUnconfirmed":
+      return "Hermes stored the picture without confirming it, so the bot doesn't say it has one yet.";
+  }
+}
 
 export class ProfileError extends Error {
   constructor(readonly failure: ProfileFailure) {
-    super(
-      failure.kind === "noRoute"
-        ? `This Hermes server has no route for ${PROFILE_ROUTES[failure.action]}.`
-        : failure.kind === "gone" || failure.kind === "refused"
-          ? failure.detail
-          : failure.message,
-    );
+    super(failureWords(failure));
   }
 }
 
 const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Sorts a failed call to `action`'s route. */
+/** JSON-RPC "method not found", and `profiles.*`'s code for a profile Hermes doesn't have (`_resolve_profile`). */
+const NO_SUCH_METHOD = -32601;
+const NO_SUCH_PROFILE = 4064;
+
+/** Sorts a failed call to `action`'s route or method. */
 export function profileFailure(e: unknown, action: ProfileAction): ProfileFailure {
   if (e instanceof ProfileError) return e.failure;
   if (e instanceof RouteMissingError) return { kind: "noRoute", action };
   if (e instanceof CapabilityUnsupportedError) return { kind: "unsent", message: e.message };
+  // A JSON-RPC error. Hermes's 4xxx codes refuse the request and change nothing; a 5xxx is a failure partway.
+  const code = isObj(e) && typeof e.code === "number" ? e.code : undefined;
+  if (code === NO_SUCH_METHOD) return { kind: "noRoute", action };
+  if (code === NO_SUCH_PROFILE) return { kind: "gone", detail: said(e) };
+  if (code !== undefined && code >= 4000 && code < 5000) return { kind: "refused", status: code, detail: said(e) };
   if (e instanceof RestError) {
     const detail = e.detail;
     if (e.status === 405 || (e.status === 404 && /^(not found$|no such api endpoint\b)/i.test(detail))) return { kind: "noRoute", action };
@@ -175,6 +211,27 @@ export function profileFailure(e: unknown, action: ProfileAction): ProfileFailur
  * to 10 s for; describing one is an LLM call Hermes gives 60 s; a create seeds skills in a subprocess.
  */
 export const PROFILE_TIMEOUTS = { readMs: 30_000, createMs: 120_000, renameMs: 60_000, writeMs: 30_000, describeAutoMs: 90_000, removeMs: 60_000 };
+
+/**
+ * The profile fields Edit saves through REST: the description, and the main model. `model` is null for a profile with
+ * none; a row with only one of the pair keeps it, the other as "".
+ */
+export type ProfileFields = { description: string; model: { provider: string; model: string } | null };
+
+/**
+ * Hermes keeps a description with its outer whitespace trimmed and nothing else changed. A model is compared as
+ * `GET /api/profiles` reports it: `PUT …/model` stores the provider under its canonical id, whatever spelling it took.
+ */
+export const PROFILE_FIELDS_SAME: Same<ProfileFields> = {
+  description: (a, b) => a.trim() === b.trim(),
+  model: (a, b) => (a?.provider.trim() ?? "") === (b?.provider.trim() ?? "") && (a?.model.trim() ?? "") === (b?.model.trim() ?? ""),
+};
+
+/** A listed profile's description and model, as `ProfilesApi.edit` compares them. */
+export const profileFieldsOf = (row: Pick<ProfileRow, "description" | "model" | "provider">): ProfileFields => ({
+  description: row.description,
+  model: row.provider || row.model ? { provider: row.provider ?? "", model: row.model ?? "" } : null,
+});
 
 /** What a create answered. `modelError`: why Hermes didn't set the model it was given, in its words. */
 export type Created = { name: string; answered: boolean; modelSet: boolean; modelError?: string };
@@ -282,6 +339,46 @@ export class ProfilesApi {
   /** Sets `name`'s main model, whichever profile the app shows. */
   async setModel(name: string, provider: string, model: string): Promise<void> {
     await this.call("setModel", "PUT", this.path(name, "/model"), { provider, model }, this.timeouts.writeMs, `setting ${name}'s model`);
+  }
+
+  /**
+   * Saves `edits` to `name`'s description and model, each only where Hermes still has what the owner was shown
+   * (fieldMerge.ts `plan`, ADR 0189). It reads the list first and again after, and writes through `describe` and
+   * `setModel`. Hermes has no compare-and-swap on these routes, so a change that lands between that read and the write
+   * is overwritten, as with the persona (ADR 0014). Never rejects: a failure is that field's outcome.
+   */
+  async edit(name: string, edits: Edits<ProfileFields>): Promise<EditResult<ProfileFields>> {
+    const failed = <V>(failure: ProfileFailure): FieldOutcome<V> => ({ kind: "failed", failure });
+    const all = (failure: ProfileFailure): EditResult<ProfileFields> => ({
+      fields: { ...(edits.description && { description: failed(failure) }), ...(edits.model && { model: failed(failure) }) },
+    });
+    const held = (rows: ProfileRow[]) => rows.find((r) => r.name === name);
+    let row: ProfileRow | undefined;
+    try {
+      row = held(await this.list());
+    } catch (e) {
+      return all(profileFailure(e, "describe"));
+    }
+    if (!row) return all({ kind: "gone", detail: `Hermes lists no profile named ${name}.` });
+    const { write, settled } = plan(edits, profileFieldsOf(row), PROFILE_FIELDS_SAME);
+    const fields: Outcomes<ProfileFields> = { ...settled };
+    const saved = { kind: "saved" } as const;
+    if (write.description !== undefined)
+      fields.description = await this.describe(name, write.description).then(
+        () => saved,
+        (e: unknown) => failed(profileFailure(e, "describe")),
+      );
+    if (write.model)
+      fields.model = await this.setModel(name, write.model.provider, write.model.model.trim()).then(
+        () => saved,
+        (e: unknown) => failed(profileFailure(e, "setModel")),
+      );
+    else if (write.model === null) fields.model = failed({ kind: "unsent", message: "Hermes has no route that takes a profile's model away." });
+    const back = await this.list().then(held, () => undefined);
+    const now = back && profileFieldsOf(back);
+    // Hermes stores a provider under its canonical id ("Stub" reads back "custom:stub") and the model name as sent.
+    const landedAs = { model: (a: ProfileFields["model"], b: ProfileFields["model"]) => (a?.model.trim() ?? "") === (b?.model.trim() ?? "") };
+    return { fields: settle(fields, edits, now, PROFILE_FIELDS_SAME, landedAs), ...(now && { now }) };
   }
 
   /**

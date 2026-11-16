@@ -70,6 +70,7 @@ const NEW = {
   "GET api/fs/list": {},
   "GET api/plugins/kanban/boards": { boards: [] },  "GET api/plugins/kanban/orchestration": { auto_decompose: true, auto_promote_children: true },
   "GET api/plugins/kanban/model-options": { providers: [] },
+  "GET api/analytics/models": { models: [], totals: { total_sessions: 0 }, period_days: 1 },
 };
 
 function diagnostics(store: CapabilityStore, props: Partial<Parameters<typeof DiagnosticsSettings>[0]> = {}) {

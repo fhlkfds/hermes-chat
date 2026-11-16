@@ -52,7 +52,7 @@ import { type ChatLink, type ConnectionRefs, checkConnection, connectionKey, con
 import { desktopLinks, type LinkInbox } from "./hermes/tauriLinks";
 import { ChatLinkNotice, type LinkNoticeView } from "./ui/ChatLinkNotice";
 import { Inbox } from "./ui/Inbox";
-import { BotList, Bots, BOTS_REFRESH_MS } from "./ui/Bots";
+import { BotList, Bots, BOTS_REFRESH_MS, type BotEditWiring } from "./ui/Bots";
 import { Office } from "./ui/Office";
 import { EMPTY_OFFICE_MEMORY } from "./ui/OfficeBuilding";
 import { officeRooms, type Desk, type Room } from "./hermes/office";
@@ -96,7 +96,8 @@ import { useWindowTitle, windowTitle } from "./ui/windowTitle";
 import { LeaveMemoryEdit, useCloseGuard } from "./ui/LeaveMemoryEdit";
 import { tauriCloseGuard, type CloseGuard } from "./ui/tauriWindow";
 import { FileBrowser } from "./ui/FileBrowser";
-import { UsageAnalytics } from "./ui/UsageAnalytics";
+import { UsageAnalytics, type UsageTab } from "./ui/UsageAnalytics";
+import { BudgetOpener, BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
 import { Work } from "./ui/Work";
 import type { WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
@@ -301,6 +302,27 @@ const keepDraft = (key: string, text: string) => {
 };
 const savedConnectionRefs = connectionRefs(localStorage);
 const savedProjects = projectLinks(localStorage);
+/** Where a budget notification's click goes: Usage → Budgets on its connection, made the one shown first (ADR 0188). */
+const budgetOpener = new BudgetOpener();
+/** A budget watch per live connection (budgetWatch.ts), kept in step with them by `Screens`. */
+const budgetWatches = new BudgetWatches((id) => {
+  const m = liveConnections().get(id);
+  if (!m) return undefined;
+  const c = m.connection;
+  return {
+    io: m.hermes.usageIo(),
+    shelves: budgetShelves(localStorage, c),
+    notify: notifyFor(c),
+    open: () => () => budgetOpener.open(id),
+    connected: () => m.hermes.getSnapshot().status === "connected",
+    watchStatus: m.hermes.subscribe,
+    listProfiles: () => m.hermes.profiles(),
+    projects: (profile) => {
+      const s = savedProjects.read(projectScope(c, profile));
+      return { chats: s.chats, known: s.known };
+    },
+  };
+});
 const savedContextLedger = contextLedger(localStorage);
 const savedPersona = new PersonaStore(localStorage);
 // Applied as the app loads, so the chosen fonts show from the first screen.
@@ -479,6 +501,12 @@ function Screens({ links }: { links: LinkInbox }) {
   // The live connections (ADR 0125). The target's `Hermes` is `hermes`; the others carry on in the background.
   const registry = liveConnections();
   useSyncExternalStore(registry.subscribe, registry.getSnapshot);
+  // Each live connection's budgets are checked while it is live, the target's and the background ones' alike.
+  useEffect(() => {
+    const sync = () => budgetWatches.sync(registry.list().map((m) => ({ id: m.connection.id, instance: m.hermes })));
+    sync();
+    return registry.subscribe(sync);
+  }, [registry]);
   const overview = registry.overview();
   // A message to open a chat on a live connection, once it is the target: an inbox entry or notification from a
   // background connection, or a row of a search across them.
@@ -832,6 +860,18 @@ function Screens({ links }: { links: LinkInbox }) {
   // own notifications are Main's.
   const openElsewhereRef = useRef(openElsewhere);
   openElsewhereRef.current = openElsewhere;
+  // A budget notification from a background connection makes it the target; its Budgets open once it shows. An unsaved
+  // edit asks first, as a chat link to another connection does; Keep editing drops the opening.
+  const switchToRef = useRef(switchTo);
+  switchToRef.current = switchTo;
+  useEffect(() => {
+    budgetOpener.switchTo = (id) => {
+      const m = registry.get(id);
+      if (!m) return budgetOpener.cancel(id);
+      void (editGuard.current?.() ?? Promise.resolve(true)).then((go) => (go ? void switchToRef.current(m.connection) : budgetOpener.cancel(id)));
+    };
+    return () => void (budgetOpener.switchTo = undefined);
+  }, [registry]);
   useEffect(() => {
     const stops = registry.list().map((m) =>
       m.hermes.onNoticeOpen((card) => {
@@ -1321,6 +1361,7 @@ export function Main({
   const [showMemory, setShowMemory] = useState<object>();
   /** Set, each time anew, to open Settings → Diagnostics, at the capability a screen's note named. */
   const [showDiagnostics, setShowDiagnostics] = useState<{ id?: CapabilityId }>();
+  const [showProfile, setShowProfile] = useState<{ name: string; tab: "profiles" | "persona" }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
   // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a
@@ -1400,6 +1441,24 @@ export function Main({
   const [filesPath, setFilesPath] = useState<string>();
   // Usage analytics covers the chat panes too (ADR 0026). It reads Hermes afresh each time it opens.
   const [usageOpen, setUsageOpen] = useState(false);
+  const [usageTab, setUsageTab] = useState<UsageTab>("spending");
+  const budgets = useSyncExternalStore(budgetWatches.subscribe, () => budgetWatches.of(connection.id));
+  // A budget notification's click opens Usage → Budgets here, as the rail's Usage would.
+  useEffect(() => {
+    if (!connection.id) return;
+    const id = connection.id;
+    return budgetOpener.showing(id, () =>
+      guardRef.current(() => {
+        setProjectOpen(false);
+        setSettingsOpen(false);
+        setJobsOpen(false); setAutomationsOpen(false); setOfficeOpen(false);
+        setRepoOpen(false);
+        setWorkOpen(false);
+        setUsageTab("budgets");
+        setUsageOpen(true);
+      }),
+    );
+  }, [connection.id]);
   // The Work page, the kanban board of bot work (Work.tsx, ADR 0171), covers the chat panes too.
   const [workOpen, setWorkOpen] = useState(false);
   const usageIo = useMemo(() => hermes.usageIo(), [hermes]);
@@ -1720,6 +1779,7 @@ export function Main({
     setShowDiagnostics(undefined);
     setShowVoice(undefined);
     setShowSnapshots(undefined);
+    setShowProfile(undefined);
     setSettingsOpen(true);
   };
   openVoiceSettings.current = () => {
@@ -1734,6 +1794,12 @@ export function Main({
   const openDiagnostics = (id: CapabilityId) => {
     openSettings();
     setShowDiagnostics({ id });
+  };
+  /** Opens Settings → Profiles on profile `name`, or Settings → Persona on it, from a bot's menu in the Bots view. */
+  const openProfileSettings = (name: string, tab: "profiles" | "persona") => {
+    setBotsOpen(false);
+    openSettings();
+    setShowProfile({ name, tab });
   };
   /** Opens a page of the compatibility guide in the owner's browser. */
   const openGuide = (url: string) =>
@@ -2305,6 +2371,7 @@ export function Main({
   // A bot's row opens its Bot Chat, in the bot's own profile (ADR 0066): another profile is switched to first, as the
   // switcher does, and once its list has loaded the Bot Chat is looked up by title and opened in the active pane. It isn't
   // remembered for the next launch: what reopens a Bot Chat is its bot's row. The pen starts an ordinary chat there.
+  const botEdit = useMemo<BotEditWiring>(() => ({ look: (name) => hermes.botLook(name), edit: (name, edits) => hermes.editBot(name, edits) }), [hermes]);
   const loadBots = useCallback(() => hermes.bots(), [hermes]);
   const activityOf = (b: Bot, roster: readonly Bot[]) => {
     const ids = b.botChat ? [b.botChat.id, b.botChat.resolvedId] : [];
@@ -3336,12 +3403,12 @@ export function Main({
                 activity={activityOf}
                 profile={profile}
                 current={profile}
-                leaving={leavingNote(profile, chats)}
+                leaving={leavingNote(profile, chats, words.profiles.leaving)}
                 onOpen={(b) => openBot(b, "open")}
                 onNewChat={(b) => openBot(b, "new")}
               />
             ) : (
-              <div className="empty-hint">Reading the bots…</div>
+              <div className="empty-hint">{words.bots.reading}</div>
             ))
           }
             projectSwitcher={
@@ -3451,12 +3518,14 @@ export function Main({
           pictures={botPictures}
           load={loadBots}
           activity={activityOf}
-          leaving={leavingNote(profile, chats)}
+          leaving={leavingNote(profile, chats, words.profiles.leaving)}
           onOpen={(b) => openBot(b, "open")}
           onNewChat={(b) => openBot(b, "new")}
           onRefresh={() => void hermes.checkOtherProfiles()}
           onClose={() => setBotsOpen(false)}
           profiles={profilesWiring}
+          botEdit={botEdit}
+          onProfileSettings={openProfileSettings}
         />
       )}
       {inboxOpen && (
@@ -3680,6 +3749,7 @@ export function Main({
             capabilities={hermes.capabilities}
             openGuide={openGuide}
             showDiagnostics={showDiagnostics}
+            showProfile={showProfile}
             screen={hermes.screen}
             toolProgress={() => hermes.toolProgress()}
             work={hermes.kanban}
@@ -3748,6 +3818,9 @@ export function Main({
         ) : usageOpen ? (
           <UsageAnalytics
             key={profile}
+            budgets={budgets}
+            tab={usageTab}
+            onTab={setUsageTab}
             io={usageIo}
             profile={profile}
             listProfiles={listProfiles}
@@ -4354,7 +4427,8 @@ function ChatView({
         edit: (id, text) => hermes.editQueued(chat.id, id, text),
         remove: (id) => hermes.removeQueued(chat.id, id),
         moveTo: (id, index) => hermes.moveQueued(chat.id, id, index),
-        sendNow: (id) => hermes.sendQueuedNow(chat.id, id),
+        sendNow: (id) => hermes.sendQueuedNow(chat.id, id, commands.why(STEER)),
+        cantSteer: () => commands.why(STEER),
         pause: () => hermes.pauseQueue(chat.id),
         resume: () => hermes.resumeQueue(chat.id),
         hold: () => hermes.holdQueue(chat.id),

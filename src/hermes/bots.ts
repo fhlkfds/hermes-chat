@@ -1,5 +1,6 @@
 import { errorText, isObj } from "./values";
 import type { AppMethod } from "./canonicalVerbs";
+import type { Same } from "./fieldMerge";
 // Hermes's Bot Mode (ADR 0066, research doc "Bot Mode"). Each bot is a Hermes profile with a persistent identity, and
 // each has one Bot Chat: the profile's session titled exactly "Bot Chat". That title is the chat's only identity. It is
 // looked up by title on every open (`session.list {title, include_hidden: true}`), never by a session id kept here,
@@ -103,9 +104,8 @@ function botChatOf(v: unknown): BotChatRow | null {
  * Bot Chat yet.
  */
 export function rosterOf(result: unknown): Bot[] {
-  const rows = isObj(result) && Array.isArray(result.profiles) ? result.profiles : undefined;
-  if (!rows) throw new BotModeUnsupportedError("Hermes answered profiles.list without a list of profiles.");
-  const named = rows.filter((r): r is Record<string, unknown> & { name: string } => isObj(r) && !!trimmedOrEmpty(r.name));
+  const named = rosterRows(result);
+  if (!named) throw new BotModeUnsupportedError("Hermes answered profiles.list without a list of profiles.");
   if (named.some((r) => !("canonical_session" in r)))
     throw new BotModeUnsupportedError("This Hermes lists its profiles but doesn't report their Bot Chats, so it has no Bot Mode.");
   return named.map((r): Bot => {
@@ -126,6 +126,104 @@ export function rosterOf(result: unknown): Bot[] {
       lastActive: Math.max(botChat?.lastActive ?? 0, last),
     };
   });
+}
+
+/** The rows of a `profiles.list` answer that name their profile, as Hermes sent them; none for an answer without a list. */
+export function rosterRows(result: unknown): (Record<string, unknown> & { name: string })[] | undefined {
+  const rows = isObj(result) && Array.isArray(result.profiles) ? result.profiles : undefined;
+  return rows?.filter((r): r is Record<string, unknown> & { name: string } => isObj(r) && !!trimmedOrEmpty(r.name));
+}
+
+/**
+ * What the app edits of a bot's identity (ADR 0189). `title`, `color`, `pinned` and `hidden` live in the Bot Mode
+ * block, written together under its revision. `picture` is the profile's avatar, which Hermes stores without a
+ * revision. Values are normalised so they compare plainly: `title` is "" for none (the name then falls back as
+ * `botName` says), `color` is lowercase or null for Hermes's own, `picture` is a data URL or null.
+ */
+export type BotLook = { title: string; color: string | null; pinned: boolean; hidden: boolean; picture: string | null };
+
+/** The look fields that live in the Bot Mode block. */
+export const BOT_BLOCK_FIELDS = ["title", "color", "pinned", "hidden"] as const satisfies readonly (keyof BotLook)[];
+export type BotBlockLook = Pick<BotLook, (typeof BOT_BLOCK_FIELDS)[number]>;
+
+/** The largest picture Hermes stores (`profiles.set_asset`: 2 MB of image bytes). */
+export const BOT_PICTURE_MAX_BYTES = 2_000_000;
+
+/** A data URL's base64, without its label. */
+const payloadOf = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
+
+export const BOT_LOOK_SAME: Same<BotLook> = {
+  title: (a, b) => a.trim() === b.trim(),
+  color: (a, b) => (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase(),
+  pinned: (a, b) => a === b,
+  hidden: (a, b) => a === b,
+  // By its bytes: Hermes sniffs the format on the way in and labels the data URL it answers with what it found, so
+  // a picture sent under another label would never read back equal by its label.
+  picture: (a, b) => (a === null || b === null ? a === b : payloadOf(a) === payloadOf(b)),
+};
+
+/** The block fields of a bot's look, as one `profiles.list` row has them. Any colour is kept, unlike `rosterOf`, which shows only a hex one. */
+export function lookOf(row: Record<string, unknown>): BotBlockLook {
+  const meta = botMeta(row.ui_meta);
+  return { title: trimmedOrEmpty(meta?.title), color: trimmedOrEmpty(meta?.color).toLowerCase() || null, pinned: meta?.pinned === true, hidden: meta?.hidden === true };
+}
+
+/**
+ * The Bot Mode block as Hermes holds it, every key kept. Opaque: `blockOf` is its one maker and `blockFor` the one
+ * reader of its keys, so the block travels from a read to a write without anything else editing it.
+ */
+export type BotBlock = Readonly<Record<string, unknown>> & { readonly __brand: "BotBlock" };
+
+/** The block's compare-and-swap revision, as one `profiles.list` row reported it. Only `blockOf` makes one. */
+export type Revision = number & { readonly __brand: "Revision" };
+
+/**
+ * A row's Bot Mode block and its revision. A block never written is at revision 0. `revision` is undefined when the
+ * row reports no revisions at all: that Hermes can't check a write against another client's, so nothing is written.
+ */
+export function blockOf(row: Record<string, unknown>): { block: BotBlock; revision: Revision | undefined } {
+  const revisions = row.ui_meta_revisions;
+  const at = isObj(revisions) ? revisions["hermes-bots"] : undefined;
+  return {
+    block: (botMeta(row.ui_meta) ?? {}) as BotBlock,
+    revision: !isObj(revisions) ? undefined : ((typeof at === "number" && Number.isInteger(at) && at >= 0 ? at : 0) as Revision),
+  };
+}
+
+/** Whether the block lacks what Hermes's desktop needs to show the picture the profile now has (`blockFor`). */
+export const lacksPictureKeys = (block: BotBlock, picture: { cleared: boolean }) => block.custom !== true || block.imageKind !== (picture.cleared ? "shape" : "photo");
+
+/**
+ * The block to send: Hermes's block as just read, with only the written fields replaced, and the keys Hermes's
+ * desktop sets beside them (`edit-profile-look.ts`): a colour or picture change sets `custom: true`, and a picture
+ * sets `imageKind` to "photo", or "shape" when cleared. `picture`: the profile's avatar is now the owner's, whether
+ * this save stored it or an earlier one did. A title is written trimmed, "" included, and a null colour removes the
+ * key. Every other key is sent back exactly as read.
+ */
+export function blockFor(server: BotBlock, write: Partial<BotBlockLook>, picture?: { cleared: boolean }): Record<string, unknown> {
+  const block: Record<string, unknown> = { ...server };
+  if (write.title !== undefined) block.title = write.title.trim();
+  if (write.color !== undefined) {
+    if (write.color === null) delete block.color;
+    else block.color = write.color;
+    block.custom = true;
+  }
+  if (write.pinned !== undefined) block.pinned = write.pinned;
+  if (write.hidden !== undefined) block.hidden = write.hidden;
+  if (picture) {
+    block.custom = true;
+    block.imageKind = picture.cleared ? "shape" : "photo";
+  }
+  return block;
+}
+
+/**
+ * The only builder of `profiles.configure` params. Its revision is required and branded, so a write without an
+ * expected revision can't be typed. It sends the Bot Mode key alone, and no param Hermes's contract lacks: `f0d94882`
+ * refuses the whole request for one.
+ */
+export function configureParams(profile: string, block: Record<string, unknown>, revision: Revision): Record<string, unknown> {
+  return { name: profile, ui_meta: { "hermes-bots": block }, ui_meta_expected_revisions: { "hermes-bots": revision } };
 }
 
 /** Whether a listed or found chat is a Bot Chat, which the chat list and search leave out (ADR 0066). */

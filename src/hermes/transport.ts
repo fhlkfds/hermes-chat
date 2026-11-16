@@ -29,9 +29,9 @@ import { McpApi } from "./mcp";
 import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
-import { ProfilesApi, toProfileRows } from "./profiles";
+import { ProfilesApi, profileFailure, toProfileRows, type ProfileFailure } from "./profiles";
 import { FILTER_SEARCH_LIMIT } from "./chatFilter";
-import { APPROVAL_CHOICES, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Hit, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, sendNowRoute, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Hit, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { CheckTimesStore, noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -58,7 +58,28 @@ import type { Restored, RollbackIO } from "./fileUndo";
 import type { AppMethod } from "./canonicalVerbs";
 import { policyOf } from "./chatKind";
 import { projectStored, type TranscriptMessage } from "./storedTranscript";
-import { BOT_CHAT_TITLE, BotChats, BotModeUnsupportedError, isBotChat, isBotChatTitle, rosterOf, type Bot } from "./bots";
+import {
+  BOT_BLOCK_FIELDS,
+  BOT_CHAT_TITLE,
+  BOT_LOOK_SAME,
+  BotChats,
+  BotModeUnsupportedError,
+  blockFor,
+  blockOf,
+  configureParams,
+  isBotChat,
+  isBotChatTitle,
+  lacksPictureKeys,
+  lookOf,
+  rosterOf,
+  rosterRows,
+  type Bot,
+  type BotBlock,
+  type BotBlockLook,
+  type BotLook,
+  type Revision,
+} from "./bots";
+import { plan, settle as settleEdits, type EditResult, type Edits, type Outcomes } from "./fieldMerge";
 import { conflictOf, sessionNotFound, statusOf, type OpenPipe, type Pipe, type PipeEvent, type RestMethod, type Route, type Speech, type Transcript, type VoiceSetup } from "./pipe";
 import { projectContextFiles, type ChatContext, type ProjectContextFiles } from "./projectContextFiles";
 import { withContext } from "./projectContext";
@@ -75,7 +96,7 @@ import type { PathKind, ServerPath } from "./paths";
 import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
-import type { UsageIo } from "./usageAnalytics";
+import type { BudgetIo } from "./budgetWatch";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import type { ReplyTime } from "./replyTimes";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
@@ -362,6 +383,12 @@ type InterruptResult = { status: "interrupted" | "not_interrupted" };
 type ServerRequest = { id: string; method: string; params: Record<string, unknown> };
 
 /**
+ * A request for a Question card, with when the app heard of it, for the Run view. `late`: Hermes asked it while the app
+ * couldn't hear, and listed it when the chat was resumed.
+ */
+type Asked = { req: ServerRequest; at: number; late?: boolean };
+
+/**
  * The Questions the app shows as cards, by the request's method (`tui_gateway/contracts/server_requests.py`). `card`: the
  * card a request makes, or none when its params don't parse. `skip`: the result a Skip answers with (`ClarifyResult`
  * without `answers` is cancel-all; an empty `ValueResult` is skipped), none for a kind that can't be skipped. `value`:
@@ -390,6 +417,8 @@ const questionSpec = <Q extends QuestionItem>(i: Q) => QUESTIONS[i.kind] as unkn
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+/** How many times a bot's block is written before giving up, when another client keeps writing it between the read and the write. Hermes's desktop tries three times too. */
+const BOT_SAVE_ATTEMPTS = 3;
 /** The most pages of 100 stored rows the Run view reads back to find where a reply's turn began. */
 const RUN_PAGES = 5;
 /** "No window here shows this chat" (`NOT_SHOWN_CODE`, `tui_gateway/server_requests.py`): one client declining. */
@@ -777,7 +806,7 @@ export class Hermes {
    * which brings back what Hermes is still waiting on. */
   private resumeOnReconnect = new Set<string>();
   /** Requests for a session no chat holds yet: the resume that reattaches it can answer after Hermes writes them. */
-  private earlyRequests = new Map<string, ServerRequest[]>();
+  private earlyRequests = new Map<string, Asked[]>();
   /** Closed Question cards, answered here or that Hermes stopped waiting on, by request id. A resume replaces the
    * chat's cards with what Hermes lists, so this keeps one it lists again from coming back. */
   private closedQuestions = new PerProfile<QuestionItem>();
@@ -1801,6 +1830,8 @@ export class Hermes {
       this.pipeProfile = undefined;
       // Nothing checked for the old profile's connection lands now; the new one checks again.
       this.capabilities.disconnected();
+      // Nor is any more of its running turns heard, until the owner comes back and they are resumed.
+      this.recorder.drop(Date.now());
     }
     const canNotify = this.snapshot.chats.filter((c) => policyOf(c).inbox);
     const unread = canNotify.filter((c) => c.unread).length;
@@ -1949,8 +1980,25 @@ export class Hermes {
     const waiting = new Set(rows.map(obj).flatMap((r) => (r?.status === "waiting" ? [r.id] : [])));
     for (const [runtimeId, ids] of shown) {
       const chat = this.snapshot.chats.find((c) => c.runtimeId === runtimeId);
-      if (chat && !waiting.has(runtimeId)) this.patchChat(chat.id, (c) => ({ ...c, items: endWaiting(c.items, "not waiting", (i) => ids.has(i.id)) }));
+      if (chat && !waiting.has(runtimeId)) this.endCards(chat.id, "not waiting", (i) => ids.has(i.id));
     }
+  }
+
+  /**
+   * Closes the chat's waiting cards that `which` picks with why Hermes stopped waiting, when the app learns it outside
+   * the turn's events, and hears each close in the turn that asked it, for the Run view (ADR 0178). With `runtimeId`,
+   * only while the chat still holds that session.
+   */
+  private endCards(chatId: string, reason: string, which: (i: QuestionItem) => boolean = () => true, runtimeId?: string) {
+    const profile = this.profile;
+    let closed: string[] = [];
+    this.patchChat(chatId, (c) => {
+      if (runtimeId !== undefined && c.runtimeId !== runtimeId) return c;
+      closed = c.items.filter((i) => isWaiting(i) && which(i)).map((i) => i.id);
+      return { ...c, items: endWaiting(c.items, reason, which) };
+    });
+    const at = Date.now();
+    for (const id of closed) this.recorder.settled(profile, chatId, { kind: "settled", at, ids: [id], how: endedNote(reason) });
   }
 
   /**
@@ -2191,10 +2239,16 @@ export class Hermes {
    * Hermes has no Bot Mode.
    */
   async bots(): Promise<Bot[]> {
+    return (await this.readBotRoster()).bots;
+  }
+
+  /** One `profiles.list`, kept as the roster every view shows, with its rows as Hermes sent them for a bot's look. */
+  private async readBotRoster(): Promise<{ bots: Bot[]; rows: Record<string, unknown>[] }> {
     const gen = this.generation;
     const n = ++this.rosterReads.started;
     try {
-      const bots = rosterOf(await this.request("profiles.list", {}));
+      const result = await this.request("profiles.list", {});
+      const bots = rosterOf(result);
       if (gen === this.generation && n > this.rosterReads.landed) {
         this.rosterReads.landed = n;
         this.botChatIds = new Map(bots.map((b) => [b.profile, new Set(b.botChat ? [b.botChat.id, b.botChat.resolvedId] : [])]));
@@ -2202,7 +2256,7 @@ export class Hermes {
         this.update({ bots: { roster: bots, at: Date.now() }, botPictures: pictures });
         this.readBotPictures(gen, bots);
       }
-      return bots;
+      return { bots, rows: rosterRows(result) ?? [] };
     } catch (e) {
       const unsupported =
         e instanceof BotModeUnsupportedError ? e : e instanceof RpcError && e.code === NO_SUCH_METHOD ? new BotModeUnsupportedError("This Hermes has no profiles.list, so it has no Bot Mode.") : undefined;
@@ -2250,6 +2304,136 @@ export class Hermes {
     const res = obj(await this.request("profiles.get_asset", { name: profile, asset: "avatar" }));
     const data = res?.found === true && typeof res.data === "string" ? res.data : "";
     return /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(data) ? data : undefined;
+  }
+
+  /**
+   * A profile's look as Hermes has it now, read through the roster so every view sees the same read. `picture` is
+   * read only when asked for, and is null for a profile without one. Undefined when Hermes doesn't list the profile.
+   */
+  private async readLook(profile: string, withPicture: boolean): Promise<{ look: BotBlockLook; picture?: string | null; block: BotBlock; revision: Revision | undefined } | undefined> {
+    const row = (await this.readBotRoster()).rows.find((r) => String(r.name).trim() === profile);
+    if (!row) return undefined;
+    const picture = !withPicture ? undefined : row.has_avatar === true ? ((await this.botAvatar(profile)) ?? null) : null;
+    return { look: lookOf(row), ...(picture !== undefined && { picture }), ...blockOf(row) };
+  }
+
+  /** A bot's look as Hermes has it now, for Edit bot to open on. Undefined when Hermes doesn't list the profile. */
+  async botLook(profile: string): Promise<BotLook | undefined> {
+    const read = await this.readLook(profile, true);
+    return read && { ...read.look, picture: read.picture ?? null };
+  }
+
+  /**
+   * Saves `edits` to a bot's look, each field only where Hermes still has what the owner was shown (fieldMerge.ts
+   * `plan`, ADR 0189), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
+   * sends every other key back as just read; when Hermes says the block moved meanwhile, it is read and judged again,
+   * always against what the owner was shown. The picture goes first through `profiles.set_asset`, which has no such
+   * check. Never rejects: a failure is that field's outcome. The roster every view shows is read again as part of it.
+   */
+  async editBot(profile: string, edits: Edits<BotLook>): Promise<EditResult<BotLook>> {
+    const failed = (failure: ProfileFailure) => ({ kind: "failed", failure }) as const;
+    const all = (failure: ProfileFailure): EditResult<BotLook> => ({ fields: Object.fromEntries(Object.keys(edits).map((k) => [k, failed(failure)])) });
+    const gone: ProfileFailure = { kind: "gone", detail: `Hermes lists no profile named ${profile}.` };
+    const pictureEdit = edits.picture;
+    const blockEdits: Edits<BotBlockLook> = Object.fromEntries(BOT_BLOCK_FIELDS.flatMap((k) => (edits[k] ? [[k, edits[k]]] : [])));
+    const read = (withPicture: boolean) => this.readLook(profile, withPicture);
+    let cur: Awaited<ReturnType<typeof read>>;
+    try {
+      cur = await read(!!pictureEdit);
+    } catch (e) {
+      return all(profileFailure(e, "botLook"));
+    }
+    if (!cur) return all(gone);
+    // A picture's save ends with a block write, so a Hermes that can't check one gets neither.
+    if (cur.revision === undefined) return all({ kind: "noCheck" });
+    const out: Outcomes<BotLook> = {};
+
+    let pictureWritten = false;
+    if (pictureEdit) {
+      const p = plan({ picture: pictureEdit }, { picture: cur.picture ?? null }, { picture: BOT_LOOK_SAME.picture });
+      out.picture = p.settled.picture;
+      if ("picture" in p.write)
+        try {
+          const to = pictureEdit.to;
+          await this.request("profiles.set_asset", { name: profile, asset: "avatar", ...(to === null ? { clear: true } : { data: to }) });
+          pictureWritten = true;
+          out.picture = { kind: "saved" };
+        } catch (e) {
+          out.picture = failed(profileFailure(e, "botPicture"));
+        }
+    }
+    // The profile's picture is now the owner's, stored by this save or an earlier one: the block must say so too.
+    const picture = pictureEdit && out.picture?.kind === "saved" ? { cleared: pictureEdit.to === null } : undefined;
+    let pictureKeysFailure: ProfileFailure | undefined;
+
+    for (let attempt = 1; ; attempt++) {
+      const p = plan(blockEdits, cur.look, BOT_LOOK_SAME);
+      Object.assign(out, p.settled);
+      const pictureKeys = !!picture && lacksPictureKeys(cur.block, picture);
+      const fail = (failure: ProfileFailure) => {
+        for (const k of Object.keys(p.write) as (keyof BotBlockLook)[]) out[k] = failed(failure);
+        if (pictureKeys) pictureKeysFailure = failure;
+      };
+      if (!Object.keys(p.write).length && !pictureKeys) break;
+      if (cur.revision === undefined) {
+        fail({ kind: "noCheck" });
+        break;
+      }
+      let answer: unknown;
+      try {
+        answer = await this.request("profiles.configure", configureParams(profile, blockFor(cur.block, p.write, picture), cur.revision));
+      } catch (e) {
+        fail(profileFailure(e, "botLook"));
+        break;
+      }
+      const applied = obj(obj(answer)?.applied);
+      if (applied?.ui_meta === true) {
+        for (const k of Object.keys(p.write) as (keyof BotBlockLook)[]) out[k] = { kind: "saved" };
+        break;
+      }
+      if (!obj(applied?.ui_meta_conflicts)) {
+        // The 64 KB limit on the block, or an exception inside Hermes: nothing was written, and no reason is given.
+        fail({ kind: "refused", status: 0, detail: "" });
+        break;
+      }
+      if (attempt === BOT_SAVE_ATTEMPTS) {
+        fail({ kind: "contended" });
+        break;
+      }
+      // Another client wrote the block between the read and the write. Read it again and judge every field again.
+      try {
+        const next = await read(false);
+        if (!next) {
+          fail(gone);
+          break;
+        }
+        cur = next;
+      } catch (e) {
+        fail(profileFailure(e, "botLook"));
+        break;
+      }
+    }
+
+    // The picture read back below is the one to show. An ask still out for the old one is dropped by its new token,
+    // and the roster read doesn't ask a second time; if the read-back fails, the next roster read asks again.
+    const asks = this.pictureAsks?.asks;
+    if (pictureWritten) asks?.set(profile, {});
+    const gen = this.generation;
+    const back = await read(!!pictureEdit).catch(() => undefined);
+    if (back?.picture !== undefined && gen === this.generation) {
+      const { [profile]: _, ...others } = this.snapshot.botPictures;
+      this.update({ botPictures: back.picture === null ? others : { ...others, [profile]: back.picture } });
+    } else if (pictureWritten) asks?.delete(profile);
+    const now: Partial<BotLook> | undefined = back && { ...back.look, ...(back.picture !== undefined && { picture: back.picture }) };
+    const fields = settleEdits(out, edits, now, BOT_LOOK_SAME);
+    // A picture whose block keys aren't on Hermes isn't done: Hermes's desktop would still draw the old kind of face.
+    // It stays an edit, so the next Save writes the keys. That covers a block write that failed, and a picture whose
+    // own answer was lost, which the read-back shows stored but which no block write followed.
+    const wanted = pictureEdit && { cleared: pictureEdit.to === null };
+    const keysMissing = wanted && (back ? lacksPictureKeys(back.block, wanted) : !!pictureKeysFailure);
+    if (wanted && keysMissing && fields.picture?.kind === "saved")
+      fields.picture = failed(pictureKeysFailure ?? { kind: "pictureUnconfirmed" });
+    return { fields, ...(now && { now }) };
   }
 
   /**
@@ -3325,21 +3509,67 @@ export class Hermes {
   }
 
   /**
-   * Send now (ADR 0182): the queued message goes next, ahead of the rest, as soon as the chat can take it. A running
-   * reply is stopped first, and the stop doesn't pause the queue. Neither a pause nor a Failed message above holds it.
-   * The rest of the queue keeps its place and its pause. Pausing the queue, or a dropped connection, cancels it.
+   * Send now (ADR 0188), by `sendNowRoute`. A running reply is steered: the message stays in its place until Hermes
+   * takes it, then leaves the queue, and the reply and the rest of the queue carry on. Otherwise, or when Hermes had no
+   * reply to steer, it goes next, ahead of the rest, as soon as the chat can take it: a reply it can't be steered into
+   * is stopped for it, and that stop doesn't pause the queue. Neither a pause nor a Failed message above holds it. The
+   * rest keeps its place and its pause. Pausing the queue, removing the message, or a dropped connection cancels it,
+   * except that a pause can't cancel a steer Hermes hasn't answered, which holds the queue until the answer comes, and
+   * Send now in that chat does nothing meanwhile. While a queued message is being
+   * edited, a message that would be steered goes next instead, once the reply ends and the edit closes.
+   * `cantSteer`: why /steer can't run in the chat now, if it can't. Resolves with why Hermes refused the steer, which
+   * leaves the message where it was, unmarked; never rejects.
    */
-  sendQueuedNow(chatId: string, id: string) {
+  async sendQueuedNow(chatId: string, id: string, cantSteer: string | undefined): Promise<string | undefined> {
     const q = this.snapshot.queues[chatId];
     const item = q?.items.find((i) => i.id === id);
-    if (!q || !item) return;
-    this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
-    // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+    if (!q || !item || q.rush?.steering) return undefined;
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const profile = this.profile;
-    void this.resume(chatId).then(
-      () => (this.snapshot.queues[chatId]?.rush === id ? this.stop(chatId) : undefined),
-      (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
-    );
+    const route = sendNowRoute(item, chat ?? {}, cantSteer).by;
+    if (route === "steer" && this.queueHolds.has(chatId)) {
+      this.rushNext(chatId, id);
+      return undefined;
+    }
+    if (!chat?.runtimeId || route !== "steer") {
+      this.rushNext(chatId, id);
+      // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+      void this.resume(chatId).then(
+        () => (this.snapshot.queues[chatId]?.rush?.id === id ? this.stop(chatId) : undefined),
+        (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
+      );
+      return undefined;
+    }
+    this.setQueue(chatId, { ...q, rush: { id, steering: true } });
+    const sameProfile = () => this.profile === profile;
+    const stillMarked = () => sameProfile() && this.snapshot.queues[chatId]?.rush?.id === id;
+    const unmark = () => {
+      const { rush: _, ...rest } = this.snapshot.queues[chatId]!;
+      this.setQueue(chatId, rest);
+    };
+    let res: "steered" | "not running";
+    try {
+      res = await this.steer(chatId, item.text);
+    } catch (e) {
+      if (!stillMarked()) return undefined;
+      // The answer was lost, not refused: Hermes may have the words, so nothing in the queue goes until the owner looks.
+      if (e instanceof ConnectionLostError) this.pauseQueueFor(chatId, PAUSED.steerUnanswered);
+      unmark();
+      return e instanceof ConnectionLostError ? undefined : errorText(e);
+    }
+    if (res === "steered") {
+      if (sameProfile()) this.removeQueued(chatId, id);
+    } else if (stillMarked()) {
+      if (this.snapshot.queues[chatId]!.paused === undefined) this.rushNext(chatId, id);
+      else unmark();
+    }
+    return undefined;
+  }
+
+  private rushNext(chatId: string, id: string) {
+    const q = this.snapshot.queues[chatId];
+    const item = q?.items.find((i) => i.id === id);
+    if (q && item) this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: { id, steering: false } });
   }
 
   /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
@@ -3373,7 +3603,9 @@ export class Hermes {
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
     const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: why });
+    // A steer Hermes hasn't answered can't be called back, so its mark holds the queue until the answer comes.
+    const unanswered = rush?.steering ? { rush } : {};
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || (rush && !rush.steering))) this.setQueue(chatId, { ...q, ...unanswered, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
@@ -3381,7 +3613,7 @@ export class Hermes {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
     // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
-    const rush = next.items.some((i) => i.id === next.rush) && next.rush;
+    const rush = next.items.some((i) => i.id === next.rush?.id) && next.rush;
     if (next.items.length || next.paused !== undefined)
       queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }), ...(rush && { rush }) };
     else delete queues[chatId];
@@ -3408,7 +3640,8 @@ export class Hermes {
   private pump() {
     if (this.closing || this.snapshot.status !== "connected" || restartHold.on || this.role === "background") return;
     for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
-      const rush = q.items.find((i) => i.id === q.rush);
+      if (q.rush?.steering) continue;
+      const rush = q.items.find((i) => i.id === q.rush?.id);
       if (!q.items.length || (q.paused !== undefined && !rush) || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(this.profile, chatId)) continue;
@@ -3624,7 +3857,7 @@ export class Hermes {
     if (!chat || chat.running || policyOf(chat).session === "stored") return false;
     const profile = this.profile;
     this.deleted.set(profile, chatId, true);
-    this.recorder.forget(chatId);
+    this.recorder.forget(profile, chatId);
     this.pinWanted.delete(profile, chatId);
     this.archiveWanted.delete(profile, chatId);
 
@@ -3863,15 +4096,18 @@ export class Hermes {
     send: (runtimeId: string) => Promise<boolean>,
   ): Promise<void> {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const profile = this.profile;
     if (this.snapshot.status === "connected" && !chat?.runtimeId) return;
     this.patchCard(chatId, card, change.show);
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
-      if (!(await send(chat.runtimeId))) this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
-      else {
+      if (!(await send(chat.runtimeId))) {
+        this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
+        this.recorder.settled(profile, chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: endedNote(change.stale) });
+      } else {
         const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
         // A Clarify answered a question at a time is still waiting until its last question is locked.
-        if (now && isQuestion(now) && now.answer) this.recorder.answered(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+        if (now && isQuestion(now) && now.answer) this.recorder.settled(profile, chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
       }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
@@ -3917,7 +4153,7 @@ export class Hermes {
     const read = this.request("session.events.since", { session_id: runtimeId, last_seen: Number.MAX_SAFE_INTEGER }, undefined, false);
     const res = obj(await read.catch(() => undefined));
     if (!Array.isArray(res?.open_requests) || res.open_requests.length) return;
-    this.patchChat(chatId, (c) => (c.runtimeId === runtimeId ? { ...c, items: endWaiting(c.items, "resolved", (i) => asked.has(i.id)) } : c));
+    this.endCards(chatId, "resolved", (i) => asked.has(i.id), runtimeId);
   }
 
   /**
@@ -4331,7 +4567,7 @@ export class Hermes {
       if (payload.kind === "process" && typeof payload.text === "string") this.kanbanWatch.nudge(payload.text);
       const shown = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
       if (shown && typeof payload.kind === "string" && typeof payload.text === "string")
-        this.recorder.hear(shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
+        this.recorder.hear(this.profile, shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
       return;
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
@@ -4369,7 +4605,7 @@ export class Hermes {
       const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
       const began = Date.now();
       this.turnBegan.set(chat.id, began);
-      this.recorder.begin(chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
+      this.recorder.begin(this.profile, chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
       this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
@@ -4432,7 +4668,9 @@ export class Hermes {
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
     // A reply stopped for Send now ended as the owner asked: the message they chose goes, and the queue doesn't pause.
-    if ((type === "message.complete" || type === "error") && !this.snapshot.queues[chat.id]?.rush) {
+    const rush = this.snapshot.queues[chat.id]?.rush;
+    const stoppedForSendNow = rush !== undefined && !rush.steering;
+    if ((type === "message.complete" || type === "error") && !stoppedForSendNow) {
       const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
       if (why) this.pauseQueueFor(chat.id, why);
     }
@@ -4472,14 +4710,14 @@ export class Hermes {
           return counters && { kind: "usage", at, counters };
         }
         case "request.cancel":
-          return { kind: "settled", at, ids: [String(p.id)], how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+          return { kind: "settled", at, ids: [String(p.id)], how: endedNote(textOf(p.reason) ?? "") };
         case "approval.cancelled":
-          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: endedNote(textOf(p.reason) ?? "") };
         default:
           return undefined;
       }
     })();
-    if (h) this.recorder.hear(chatId, h);
+    if (h) this.recorder.hear(this.profile, chatId, h);
   }
 
   /**
@@ -4498,7 +4736,7 @@ export class Hermes {
       type === "error"
         ? { kind: "error", at, message: textOf(p.message) ?? "Hermes reported an error." }
         : { kind: "end", at, status: textOf(p.status) ?? "complete", ...(failure && { failure }), ...(countersOf(p.usage) && { counters: countersOf(p.usage) }) };
-    return this.recorder.end(chatId, h, replies, replyRow);
+    return this.recorder.end(this.profile, chatId, h, replies, replyRow);
   }
 
   /** The chat's cost as read after a recorded turn: only a read that succeeded after it ended counts. */
@@ -4519,7 +4757,7 @@ export class Hermes {
     const reply = chat?.items.find((i) => i.id === itemId);
     if (!chat || (reply?.kind !== "assistant" && reply?.kind !== "error")) throw new Error("This reply isn't in the chat any more.");
     const config = this.toolProgress().catch(() => undefined);
-    const watched = this.recorder.find(chatId, reply);
+    const watched = this.recorder.find(profile, chatId, reply);
     if (reply.kind === "error") {
       if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
       // An error item has no stored row to read the turn back from.
@@ -4673,19 +4911,23 @@ export class Hermes {
     }
     const sid = textOf(req.params.session_id) ?? "";
     const chat = this.snapshot.chats.find((c) => c.runtimeId === sid);
-    const card = questionCard(req);
-    if (chat && card) this.recorder.hear(chat.id, { kind: "ask", at: Date.now(), id: req.id, ...(card.kind === "approval" && { requestId: card.requestId }), what: card.kind, summary: questionSummary(card) });
-    if (chat) this.showQuestions(chat.id, [req]);
-    else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
+    const asked: Asked = { req, at: Date.now() };
+    if (chat) this.showQuestions(chat.id, [asked]);
+    else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), asked]);
   }
 
   /**
    * Adds a card for each Question the chat doesn't show yet. A request can be listed more than once. One whose card was
-   * closed stays closed; if the owner had answered it, the answer never reached Hermes, and the chat says so.
+   * closed stays closed; if the owner had answered it, the answer never reached Hermes, and the chat says so. Each is
+   * heard in the chat's running turn, for the Run view, the ones heard as they were asked first.
    */
-  private showQuestions(chatId: string, reqs: ServerRequest[]) {
+  private showQuestions(chatId: string, asked: Asked[]) {
     const runtimeId = this.snapshot.chats.find((c) => c.id === chatId)?.runtimeId;
-    const cards = reqs.flatMap((r) => questionCard(r) ?? []);
+    for (const { req, at, late } of [...asked].sort((a, b) => Number(!!a.late) - Number(!!b.late))) {
+      const q = questionCard(req);
+      if (q) this.recorder.hear(this.profile, chatId, { kind: "ask", at, id: q.id, ...(q.kind === "approval" && { requestId: q.requestId }), what: q.kind, summary: questionSummary(q), ...(late && { late }) });
+    }
+    const cards = asked.flatMap((a) => questionCard(a.req) ?? []);
     const fresh = cards.filter((q) => !this.notified.has(`${runtimeId} ${q.id}`));
     for (const q of fresh) this.notified.add(`${runtimeId} ${q.id}`);
     if (fresh.length) {
@@ -4741,7 +4983,7 @@ export class Hermes {
     const ids = [...this.resumeOnReconnect].filter((id) => this.snapshot.chats.some((c) => c.id === id));
     this.resumeOnReconnect.clear();
     for (const id of ids)
-      this.track(this.resume(id).catch(() => this.patchChat(id, (c) => ({ ...c, items: endWaiting(c.items, "lost") }))));
+      this.track(this.resume(id).catch(() => this.endCards(id, "lost")));
   }
 
   /**
@@ -4772,6 +5014,7 @@ export class Hermes {
     clearTimeout(this.rosterTimer);
     clearInterval(this.heartbeat);
     this.abandonListSync();
+    this.recorder.drop(Date.now());
     if (keep && pipe?.reopen) this.socketClosed = pipe;
     // Lets the Rust side end the tunnel.
     else if (pipe) this.droppedClosing = pipe.close().catch(() => {}).finally(() => (this.droppedClosing = undefined));
@@ -4926,6 +5169,11 @@ export class Hermes {
           usage?: unknown;
         };
         this.runtimeOwners.set(res.session_id, { profile, chatId });
+        // A turn the app stopped hearing at a drop goes on being heard if it still runs. One that finished meanwhile is
+        // drawn from the stored rows, and the chat's cost is read after it, so the next turn is measured from there.
+        const rejoinedAt = Date.now();
+        const unheard = this.recorder.rejoin(profile, chatId, rejoinedAt, !!res.running);
+        if (unheard) this.track(this.refreshUsage(chatId).then(() => this.costAfter(chatId, unheard)));
         // A session reattached mid-turn has counters part of the way through it; a cold one has no agent yet, so its
         // counters start from zero once one is built (`_lazy_resume_info` carries no usage).
         const counters = countersOf((res.info as { usage?: unknown } | undefined)?.usage);
@@ -4944,10 +5192,12 @@ export class Hermes {
         this.staleItems.delete(chatId);
         const early = this.earlyRequests.get(res.session_id) ?? [];
         this.earlyRequests.delete(res.session_id);
-        const asking = [...(res.open_requests ?? []), ...early];
+        const asking: Asked[] = [...(res.open_requests ?? []).map((req) => ({ req, at: rejoinedAt, late: true })), ...early];
         // History has no cards. A card that was waiting when the connection dropped either comes back below, or
         // Hermes let go of the session meanwhile and the card stays, closed.
-        const lost = (items: Item[]) => endWaiting(items.filter((i) => isWaiting(i) && !asking.some((r) => r.id === i.id)), "lost");
+        const isLost = (i: Item) => isWaiting(i) && !asking.some((a) => a.req.id === i.id);
+        const lost = (items: Item[]) => endWaiting(items.filter(isLost), "lost");
+        const lostIds = (this.snapshot.chats.find((c) => c.id === chatId)?.items.slice(0, stale) ?? []).filter(isLost).map((i) => i.id);
         for (const i of this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [])
           if (isQuestion(i) && (i.answer || i.ended)) this.closedQuestions.set(profile, i.id, i);
         // The Saved copy, if shown, is among the stale items. Messages sent from here that Hermes hasn't confirmed go
@@ -4973,6 +5223,7 @@ export class Hermes {
         }));
         this.saveOutbox(chatId);
         this.saveTranscript(chatId);
+        for (const id of lostIds) this.recorder.settled(profile, chatId, { kind: "settled", at: rejoinedAt, ids: [id], how: endedNote("lost") });
         this.showQuestions(chatId, asking);
         this.track(this.listSubagents(chatId, res.session_id));
         return res.session_id;
@@ -5041,7 +5292,7 @@ export class Hermes {
     if (this.profile !== profile) return;
     if (now === undefined) {
       this.deleted.set(profile, chatId, true);
-      this.recorder.forget(chatId);
+      this.recorder.forget(profile, chatId);
       this.update({
         chats: this.snapshot.chats.filter((c) => c.id !== chatId),
         syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
@@ -5547,7 +5798,7 @@ export class Hermes {
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
    * names its profile, and reads only while connected. Reply times are this computer's own (replyTimes.ts).
    */
-  usageIo(): UsageIo {
+  usageIo(): BudgetIo {
     const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
     return {
       page: async (profile, offset, limit) => {
@@ -5557,6 +5808,7 @@ export class Hermes {
       },
       session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
       hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+      models: (profile, days) => get(`api/analytics/models?${new URLSearchParams({ days: String(days), profile })}`),
       replyTimes: (profile) => this.cache.loadReplyTimes(profile),
     };
   }
@@ -5623,6 +5875,8 @@ export class Hermes {
     // A method that changes something, for a capability Hermes lacks, isn't sent.
     const refused = this.capabilities.refuses({ rpc: method });
     if (refused) return Promise.reject(new CapabilityUnsupportedError(refused));
+    const lacking = this.capabilities.lacks({ rpc: method });
+    if (lacking) return Promise.reject(new RouteMissingError(lacking));
     const id = this.nextId++;
     const done = new Promise((resolve, reject) => {
       const ms = SLOW_RPC.has(method) ? SLOW_RPC_ANSWER_MS : RPC_ANSWER_MS;
@@ -6016,6 +6270,7 @@ const PAUSED = {
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
+  steerUnanswered: "Hermes didn't answer a steer, so it may have gone into the reply. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 

@@ -38,7 +38,7 @@ Issue #222 asked for Hermes's Bot Mode, as the official Hermes desktop app has i
 ## Considered options
 
 - **A Bots section in the side panel.** Rejected. The side panel holds tools for the chat on screen (Preview, Terminal, Files, Screen). Bots span profiles, as the Inbox does, and they open chats.
-- **Editing a bot's name, picture and description.** Not built now. The routes exist: `profiles.configure` (with a compare-and-swap on `ui_meta`) and `profiles.set_asset`, both probed. But a Bot Mode title lives in `ui_meta['hermes-bots']`, beside presentation state that Hermes's desktop owns (sections, groups, pins). Writing there safely needs that compare-and-swap round trip, and it's a feature of its own. It can come later.
+- **Editing a bot's name, picture and description.** Not built then. ADR 0189 builds it since, with Pin and Hide, from a menu on each bot's row. The routes exist: `profiles.configure` (with a compare-and-swap on `ui_meta`) and `profiles.set_asset`, both probed. But a Bot Mode title lives in `ui_meta['hermes-bots']`, beside presentation state that Hermes's desktop owns (sections, groups, pins). Writing there safely needs that compare-and-swap round trip, and it's a feature of its own. It can come later.
 - **Hermes's hide sweep**, which re-hides rows titled "Bot Chat" that were created visible, with `session.set_hidden`. Rejected: it writes to sessions the owner didn't touch. Leaving such rows out of this app's list is enough here.
 - **Remembering the Bot Chat's id to open it faster.** Rejected for the reason Hermes gives: an id can dangle or point at another session, and a title can't.
 

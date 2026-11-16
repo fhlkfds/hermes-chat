@@ -115,6 +115,88 @@ describe("Settings → Profiles' calls", () => {
     expect(writes(server)).toEqual(["PUT /api/profiles/work/description", "PUT /api/profiles/research/model"]);
   });
 
+  it("Edit never overwrites a description changed elsewhere since it opened", async () => {
+    const { server, api } = await signedIn((s) => (s.profileMeta.work = { description: "Writes code" }));
+    const shown = (await api.list()).find((p) => p.name === "work")!;
+    server.profileMeta.work = { description: "Reviews pull requests" };
+    const saved = await api.edit("work", { description: { from: shown.description, to: "Writes and ships code" } });
+    expect(server.profileMeta.work.description).toBe("Reviews pull requests");
+    expect(saved).toEqual({ fields: { description: { kind: "changedElsewhere", theirs: "Reviews pull requests" } }, now: { description: "Reviews pull requests", model: null } });
+    expect(writes(server)).toEqual([]);
+  });
+
+  it("Edit never overwrites a model changed elsewhere, and still saves the description beside it", async () => {
+    const { server, api } = await signedIn((s) => (s.profileModel.work = { model: "gpt-6.1", provider: "openai", reasoning_effort: "medium", fast: false }));
+    server.profileModel.work = { ...server.profileModel.work, model: "gpt-6.1-mini" };
+    const saved = await api.edit("work", {
+      description: { from: "", to: "Writes code" },
+      model: { from: { provider: "openai", model: "gpt-6.1" }, to: { provider: "anthropic", model: "claude-fable-5" } },
+    });
+    expect(saved.fields).toEqual({ description: { kind: "saved" }, model: { kind: "changedElsewhere", theirs: { provider: "openai", model: "gpt-6.1-mini" } } });
+    expect(server.profileModel.work).toMatchObject({ provider: "openai", model: "gpt-6.1-mini" });
+    expect(writes(server)).toEqual(["PUT /api/profiles/work/description"]);
+  });
+
+  it("Edit saves what Hermes still has as shown, sends nothing for what it already has as asked, and reads both back", async () => {
+    const { server, api } = await signedIn((s) => (s.profileMeta.work = { description: "Writes code" }));
+    const saved = await api.edit("work", {
+      // Hermes keeps a description with its outer whitespace trimmed, so this one is already there.
+      description: { from: "", to: "  Writes code\n" },
+      model: { from: null, to: { provider: "openai", model: " gpt-6.1 " } },
+    });
+    expect(saved).toEqual({
+      fields: { description: { kind: "saved" }, model: { kind: "saved" } },
+      now: { description: "Writes code", model: { provider: "openai", model: "gpt-6.1" } },
+    });
+    expect(server.restRequests.filter((r) => r.method === "PUT").map((r) => [r.path, r.body])).toEqual([["/api/profiles/work/model", { provider: "openai", model: "gpt-6.1" }]]);
+  });
+
+  it("Edit counts a model as saved when Hermes stores its provider under another id, and reads that id back", async () => {
+    const { server, api } = await signedIn((s) => (s.providerIds = { Stub: "custom:stub" }));
+    const saved = await api.edit("work", { model: { from: null, to: { provider: "Stub", model: "FAKE" } } });
+    expect(server.profileModel.work).toMatchObject({ provider: "custom:stub", model: "FAKE" });
+    expect(saved).toEqual({ fields: { model: { kind: "saved" } }, now: { description: "", model: { provider: "custom:stub", model: "FAKE" } } });
+  });
+
+  it("Edit doesn't count a lost provider change as saved when Hermes still has the old provider with the same model name", async () => {
+    const { server, api } = await signedIn((s) => (s.profileModel.work = { model: "gpt-6.1", provider: "openai", reasoning_effort: "medium", fast: false }));
+    server.beforeProfileField = () => {
+      throw new Error("The connection dropped.");
+    };
+    const saved = await api.edit("work", { model: { from: { provider: "openai", model: "gpt-6.1" }, to: { provider: "azure", model: "gpt-6.1" } } });
+    expect(server.profileModel.work).toMatchObject({ provider: "openai", model: "gpt-6.1" });
+    expect(saved.fields.model).toMatchObject({ kind: "failed", failure: { kind: "lost" } });
+  });
+
+  it("Edit shows a model another client saved straight after this one's, whatever spelling Hermes gives the provider", async () => {
+    const { server, api } = await signedIn((s) => (s.providerIds = { Stub: "custom:stub" }));
+    server.beforeProfileField = () => queueMicrotask(() => (server.profileModel.work = { ...server.profileModel.work!, model: "fake-large" }));
+    const saved = await api.edit("work", { model: { from: null, to: { provider: "Stub", model: "FAKE" } } });
+    expect(saved.fields).toEqual({ model: { kind: "changedElsewhere", theirs: { provider: "custom:stub", model: "fake-large" } } });
+  });
+
+  it("Edit counts a description whose answer was lost as saved once the list has it, and one changed straight after as theirs", async () => {
+    const { server, api } = await signedIn((s) => (s.profileFieldLost = "The connection dropped."));
+    expect((await api.edit("work", { description: { from: "", to: "Writes code" } })).fields).toEqual({ description: { kind: "saved" } });
+    server.profileFieldLost = undefined;
+    // Another client's save lands between this one's write and its read-back.
+    server.beforeProfileField = () => queueMicrotask(() => (server.profileMeta.research = { description: "Theirs" }));
+    const second = await api.edit("research", { description: { from: "", to: "Reads papers" } });
+    expect(second.fields).toEqual({ description: { kind: "changedElsewhere", theirs: "Theirs" } });
+  });
+
+  it("Edit marks each field with its own failure, and a profile gone elsewhere fails them all unsent", async () => {
+    const { server, api } = await signedIn((s) => s.profileRoutesMissing.add("setModel"));
+    const saved = await api.edit("work", { description: { from: "", to: "Writes code" }, model: { from: null, to: { provider: "openai", model: "gpt-6.1" } } });
+    expect(saved.fields).toEqual({ description: { kind: "saved" }, model: { kind: "failed", failure: { kind: "noRoute", action: "setModel" } } });
+    expect(server.profileMeta.work.description).toBe("Writes code");
+    const before = writes(server).length;
+    const gone = await api.edit("nope", { description: { from: "", to: "x" }, model: { from: null, to: { provider: "openai", model: "gpt-6.1" } } });
+    expect(gone.fields).toEqual({ description: { kind: "failed", failure: expect.objectContaining({ kind: "gone" }) }, model: { kind: "failed", failure: expect.objectContaining({ kind: "gone" }) } });
+    expect(gone.now).toBeUndefined();
+    expect(writes(server)).toHaveLength(before);
+  });
+
   it("has Hermes write a description, or says why it couldn't", async () => {
     const { server, api } = await signedIn();
     expect(await api.describeAuto("work")).toEqual({ ok: true, description: "Writes and reviews code." });

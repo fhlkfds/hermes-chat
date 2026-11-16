@@ -136,8 +136,16 @@ Hermes's way of treating each profile as a bot with a lasting identity, each wit
 _Avoid_: agents mode, roster (Hermes's desktop calls its list that, but here it is the Bots view)
 
 **Bot**:
-A profile as the Bots view shows it: its name, picture and description, from Hermes. Its row shows its Bot Chat's last message, and whether it is Replying or Needs you. Clicking the row opens its Bot Chat; the pen beside it starts an ordinary chat in that profile. New bot (+) in the Bots view makes one: a new profile, through the New profile form (ADR 0164).
+A profile as the Bots view shows it: its name, picture and description, from Hermes. Its row shows its Bot Chat's last message, and whether it is Replying or Needs you. Clicking the row opens its Bot Chat; the pen beside it starts an ordinary chat in that profile. New bot (+) in the Bots view makes one: a new profile, through the New profile form (ADR 0164). The row's menu (⋯, a right-click, Shift+F10 or the Menu key) has Edit bot, Clone, Pin, Hide, Delete bot and Open in Settings → Profiles (ADR 0189).
 _Avoid_: agent (Hermes's own word for what runs the chat), assistant, persona (that is the profile's SOUL.md)
+
+**Bot look**:
+What Edit bot and a bot's menu change of how a bot shows: its name in Bot Mode, its colour, whether it is pinned or hidden, and its picture. The first four live in the profile's Bot Mode block on the server (`ui_meta['hermes-bots']`), beside what Hermes's desktop keeps there, which is never touched. The picture is the profile's avatar. A field is saved only where Hermes still has what the owner was shown (ADR 0189).
+_Avoid_: appearance (that is this app's own theme and fonts), avatar (Hermes's word for the picture alone), bot meta
+
+**Changed elsewhere**:
+What a field in Edit bot or Edit profile says when Hermes's value moved since the dialog showed it: another client saved it meanwhile. Nothing is written over it. The field keeps the owner's text and shows Hermes's value with Use Hermes's, and a second Save replaces it, since the owner has then seen it (ADR 0189).
+_Avoid_: conflict (in the interface), out of date, stale
 
 **Bot Chat**:
 A bot's one chat that always continues: the profile's chat titled exactly "Bot Chat". Hermes finds it by that title each time it opens, never by a remembered id or by which chat is newest. It is created only when the bot has none, with no message sent. It stays out of the chat list and search: the bot's row is the way to it. `/new` in it compacts it instead of starting a new chat (ADR 0066).
@@ -252,7 +260,7 @@ The text the owner has typed in a chat's composer and not sent. Each chat keeps 
 _Avoid_: unsent message, saved message
 
 **Queued message**:
-A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. **Send now** on one stops the running reply and sends that message next, past a pause and without the stop pausing the queue (ADR 0182). Highwing sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
+A message the owner lined up while Hermes replied, to go after the reply. Each chat has its own queue, and both panes of a chat show it. The owner can edit, reorder and remove queued messages, and pause and resume the queue. **Send now** on one steers it into the running reply, as `/steer` does, at the reply's next step, and the message leaves the queue once Hermes takes it. A message with files, or one in a chat where `/steer` can't run, stops the reply and goes next instead. With no reply running, it goes at once, past a pause (ADR 0188). Highwing sends them one at a time, each once the previous reply has ended and nothing in the chat waits on the owner. It sends them only while it is open, connected and showing their profile. The queue pauses on its own after a reply that was stopped, failed, or asked for an Approval. It also pauses when a queued message doesn't go, when the connection drops, and when the queue is loaded again after a restart or a profile switch. A queued message that goes becomes an outgoing message, and if Hermes doesn't take it, a Failed message. Queued messages and their attachments are kept on this computer, for each connection, profile and chat, never on the server (ADR 0018).
 _Avoid_: pending message, scheduled message, Hermes's queue (Hermes's own queue holds messages sent while a turn runs; this app doesn't use it as the queue)
 
 **Steered message**:
@@ -448,6 +456,10 @@ _Avoid_: price, spend, bill (except for a cost the provider reported)
 **Usage analytics**:
 The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Its Reply time section is the one part from this computer: the Reply times kept for the chats counted (ADR 0181). Export CSV saves the chats counted where the owner picks (ADR 0026).
 _Avoid_: dashboard, stats, report, billing
+
+**Budget**:
+A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0188).
+_Avoid_: quota, cap, spending limit (Hermes enforces none)
 
 **Context window**:
 What the model reads on each call in a chat: Hermes's instructions, the tool descriptions, instruction files, memory, and the conversation, up to the model's limit. The status bar's meter shows how full it is, and its **context inspector** shows what fills it, as Hermes measures and estimates it. Hermes's total is labelled Exact (the provider's count), Partly estimated, or Estimated; its split by category is always its estimate (ADR 0025).

@@ -177,6 +177,7 @@ describe("parseManifest", () => {
         "botMode",
         "subagents",
         "subagentRoster",
+        "modelUsage",
         "chatSearch",
       ]);
     });
