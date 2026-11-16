@@ -4,9 +4,9 @@ Highwing can update itself only as a standalone AppImage built with an update ke
 
 Nothing here publishes an AppImage. The repo has no AppImage release, signing key, update endpoint or `TAURI_SIGNING_PRIVATE_KEY` secret yet, so no installed copy updates itself today.
 
-The Windows installer and the `.deb` are published separately. Pushing a `v<version>` tag makes the `installers` workflow (`.github/workflows/installers.yml`) attach `hermes-chat_<version>_x64-setup.exe`, `hermes-chat_<version>_amd64.deb` and a `.sha256` for each to that tag's GitHub release, through `scripts/release/attach-release.sh`. The tag must match `tauri.conf.json`'s version (ADR 0080, ADR 0182). Those releases carry no `latest.json`.
+The Windows installer and the `.deb` are published separately. Pushing a `v<version>` tag makes the `installers` workflow (`.github/workflows/installers.yml`) attach `hermes-chat_<version>_x64-setup.exe`, `hermes-chat_<version>_amd64.deb` and a `.sha256` for each to that tag's GitHub release, through `scripts/release/attach-release.sh`. The tag must match `tauri.conf.json`'s version (ADR 0080, ADR 0183). Those releases carry no `latest.json`.
 
-The `.deb` is built on Ubuntu 24.04, so it installs on Ubuntu 24.04, Debian 13 or newer, with `sudo apt install ./hermes-chat_<version>_amd64.deb`. Its package is `highwing`, and its command, icon and launcher are the AUR package's (ADR 0182).
+The `.deb` is built on Ubuntu 24.04, so it installs on Ubuntu 24.04, Debian 13 or newer, with `sudo apt install ./hermes-chat_<version>_amd64.deb`. Its package is `highwing`, and its command, icon and launcher are the AUR package's (ADR 0183).
 
 ## Which copies update themselves
 
