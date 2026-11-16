@@ -4,7 +4,9 @@ Highwing can update itself only as a standalone AppImage built with an update ke
 
 Nothing here publishes an AppImage. The repo has no AppImage release, signing key, update endpoint or `TAURI_SIGNING_PRIVATE_KEY` secret yet, so no installed copy updates itself today.
 
-The Windows installer is published separately: pushing a `v<version>` tag makes the `windows-installer` workflow attach `hermes-chat_<version>_x64-setup.exe` and its `.sha256` to that tag's release, and the tag must match `tauri.conf.json`'s version (ADR 0080). Those releases carry no `latest.json`.
+The Windows installer and the `.deb` are published separately. Pushing a `v<version>` tag makes the `installers` workflow (`.github/workflows/installers.yml`) attach `hermes-chat_<version>_x64-setup.exe`, `hermes-chat_<version>_amd64.deb` and a `.sha256` for each to that tag's GitHub release, through `scripts/release/attach-release.sh`. The tag must match `tauri.conf.json`'s version (ADR 0080, ADR 0182). Those releases carry no `latest.json`.
+
+The `.deb` is built on Ubuntu 24.04, so it installs on Ubuntu 24.04, Debian 13 or newer, with `sudo apt install ./hermes-chat_<version>_amd64.deb`. Its package is `highwing`, and its command, icon and launcher are the AUR package's (ADR 0182).
 
 ## Which copies update themselves
 
@@ -12,7 +14,7 @@ The app decides at runtime, in `src-tauri/src/update.rs`, in this order:
 
 1. **A file pacman owns.** The app asks `pacman -Qqo` about the file it was installed as. Running from an AppImage, that is the AppImage itself (`$APPIMAGE`), because the binary runs from a temporary mount of it. Otherwise it's the binary. If a package owns that file, only the package manager replaces it. The updater never runs, even in an AppImage that carries an update key, so a package that ships the release AppImage is safe. The app asks pacman again right before a check and right before an install, in case a package took the file over while the app ran. Settings shows the package and its version, and for `hermes-chat-git` compares its commit with `main` (README, "Updates").
 2. **A standalone AppImage built with an update key.** `$APPIMAGE` is set, the binary's bundle type is AppImage, and the build carries `plugins.updater`. Tauri's updater checks the endpoint, downloads the new AppImage, verifies its signature against the public key built into the app, and replaces the AppImage. The new version runs after the owner restarts.
-3. **Anything else.** A source build (`npm run app`), a binary pulled out of an AppImage, an AppImage built without an update key, or a copy of the packaged binary somewhere pacman doesn't own. Settings says the copy isn't updated from here.
+3. **Anything else.** A `.deb` install, a source build (`npm run app`), a binary pulled out of an AppImage, an AppImage built without an update key, or a copy of the packaged binary somewhere pacman doesn't own. Settings says the copy isn't updated from here.
 
 A build without `plugins.updater` (the PKGBUILD's, and every build that doesn't pass `src-tauri/tauri.release.conf.json`) doesn't register the updater plugin at all.
 
@@ -88,7 +90,7 @@ To release:
 
 1. On a branch from `main`, run `npm run bump -- patch` (or `minor`, `major`, or an exact version such as `1.0.0-beta.1`). It writes the new version into `src-tauri/tauri.conf.json`, `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and nothing else (`scripts/release/version.mjs`).
 2. Commit as `Bump version to <version>`, with the merged pull requests it ships in the message, and open the pull request. CI fails when the five files disagree.
-3. After it merges, tag that merge commit `v<version>` and push the tag. The `windows-installer` workflow stops before building when the tag doesn't match all five files.
+3. After it merges, tag that merge commit `v<version>` and push the tag. The `installers` workflow stops before building when the tag doesn't match all five files.
 
 ## Version and channel rules
 

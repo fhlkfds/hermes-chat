@@ -258,6 +258,12 @@ describe("updater", () => {
     let { u } = setup({ update_install_kind: { kind: "unmanaged", version: "0.1.0" } });
     await u.check();
     expect(u.getSnapshot()).toMatchObject({ state: "unsupported", reason: expect.stringContaining("built it from source") });
+    ({ u } = setup({ update_install_kind: { kind: "unmanaged", version: "0.1.0", installer: "nsis" } }));
+    await u.check();
+    expect(u.getSnapshot()).toMatchObject({ state: "unsupported", reason: expect.stringContaining("run a newer installer") });
+    ({ u } = setup({ update_install_kind: { kind: "unmanaged", version: "0.1.0", installer: "deb" } }));
+    await u.check();
+    expect(u.getSnapshot()).toMatchObject({ state: "unsupported", reason: expect.stringContaining("install it with apt") });
     ({ u } = setup({ update_install_kind: { kind: "appImage", version: "0.1.0", updater: false } }));
     await u.check();
     expect(u.getSnapshot()).toMatchObject({ state: "unsupported", reason: expect.stringContaining("without an update key") });
