@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
 import { memoryCache } from "./memoryCache";
 import type { Item } from "./model";
+import type { ReplyUsage } from "./usage";
 import { connect, type Hermes } from "./transport";
 import { RestError } from "./pipe";
 
@@ -33,7 +34,14 @@ const replies = (hermes: Hermes, id: string) =>
     .getSnapshot()
     .chats.find((c) => c.id === id)!
     .items.filter((i): i is Extract<Item, { kind: "assistant" | "error" }> => i.kind === "assistant" || i.kind === "error")
-    .map((i) => [i.text, i.usage] as const);
+    .map((i) => [i.text, untimed(i.usage)] as const);
+
+/** A reply's token counts, without how long it took: "Reply time" below checks that. */
+function untimed(usage: ReplyUsage | undefined) {
+  if (!usage) return usage;
+  const { ms: _ms, ...counts } = usage;
+  return counts;
+}
 
 async function newChat(server = new FakeHermes()) {
   const hermes = await connect(server.openPipe);
@@ -306,7 +314,7 @@ describe("Usage per reply", () => {
     turn(server, server.runtimeIdOf("a")!, "Hello!", counters(100, 0, 10, 1), { persisted_turn: { complete: true, user_row_id: 41, final_assistant_row_id: 42 } });
     await hermes.idle();
     const measured = { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" };
-    expect(cache.loadTranscript("default", "a")?.items[1]).toEqual({ kind: "assistant", id: "a-1", text: "Hello!", rowId: 42, usage: measured });
+    expect(cache.loadTranscript("default", "a")?.items[1]).toEqual({ kind: "assistant", id: "a-1", text: "Hello!", rowId: 42, usage: { ...measured, ms: expect.any(Number) } });
 
     // Restarted: the Saved copy shows first, then the stored history replaces it.
     server.transcripts.a = [
@@ -351,6 +359,75 @@ describe("Usage per reply", () => {
     await hermes.idle();
 
     expect(replies(again, "a")).toEqual([["Hello!", { prompt: 100, output: 10, reasoning: 0, calls: 1, model: "z-ai/glm-5.3-flash" }]]);
+  });
+});
+
+describe("Reply time", () => {
+  /** Runs one turn whose `message.complete` arrives `ms` after its `message.start`, by the app's clock. */
+  async function timedTurn(server: FakeHermes, hermes: Hermes, rt: string, text: string, usage: unknown, ms: number, extra: Record<string, unknown> = {}) {
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    server.event(rt, "message.start");
+    server.event(rt, "message.delta", { text });
+    await hermes.idle();
+    clock.mockReturnValue(start + ms);
+    server.event(rt, "message.complete", { text, status: "complete", usage, ...extra });
+    await hermes.idle();
+    vi.restoreAllMocks();
+  }
+
+  it("is on the reply's usage, in its Saved copy, and kept for Usage analytics", async () => {
+    const server = new FakeHermes();
+    const cache = memoryCache();
+    const hermes = await connect(server.openPipe, undefined, cache);
+    const id = await hermes.newChat();
+    const rt = server.runtimeIdOf(id)!;
+    await hermes.send(id, "Disk usage?");
+    await timedTurn(server, hermes, rt, "82% used.", counters(1200, 4000, 300, 2), 12_400);
+
+    const reply = hermes.getSnapshot().chats.find((c) => c.id === id)!.items.at(-1);
+    expect(reply).toMatchObject({ kind: "assistant", usage: { prompt: 5200, output: 300, ms: 12_400 } });
+    expect(cache.loadTranscript("default", id)?.items.at(-1)).toMatchObject({ usage: { ms: 12_400 } });
+    expect(cache.loadReplyTimes("default")).toEqual([{ chat: id, at: expect.any(Number), ms: 12_400 }]);
+  });
+
+  it("isn't kept for a reply that was stopped or failed, though the reply still shows how long it ran", async () => {
+    const server = new FakeHermes();
+    const cache = memoryCache();
+    const hermes = await connect(server.openPipe, undefined, cache);
+    const id = await hermes.newChat();
+    const rt = server.runtimeIdOf(id)!;
+    await hermes.send(id, "Long job");
+    await timedTurn(server, hermes, rt, "Partial", counters(100, 0, 10, 1), 3000, { status: "interrupted" });
+    await hermes.send(id, "Again");
+    await timedTurn(server, hermes, rt, "Broke", counters(200, 0, 20, 2), 4000, { error: "provider down" });
+
+    expect(replies(hermes, id).length).toBeGreaterThan(0);
+    const timed = hermes
+      .getSnapshot()
+      .chats.find((c) => c.id === id)!
+      .items.flatMap((i) => (i.kind === "assistant" || i.kind === "error" ? [i.usage?.ms] : []));
+    expect(timed).toContain(3000);
+    expect(cache.loadReplyTimes("default")).toEqual([]);
+  });
+
+  it("isn't measured for a turn the app didn't see start, as after a reconnect part of the way through", async () => {
+    const server = new FakeHermes();
+    const cache = memoryCache();
+    const hermes = await connect(server.openPipe, undefined, cache);
+    const id = await hermes.newChat();
+    const rt = server.runtimeIdOf(id)!;
+    await hermes.send(id, "Hi");
+    server.event(rt, "message.start");
+    server.drop();
+    await hermes.reconnect();
+    await hermes.idle();
+    const rt2 = server.runtimeIdOf(id)!;
+    server.event(rt2, "message.complete", { text: "Late", status: "complete", usage: counters(70, 0, 7, 1) });
+    await hermes.idle();
+
+    expect(cache.loadReplyTimes("default")).toEqual([]);
   });
 });
 

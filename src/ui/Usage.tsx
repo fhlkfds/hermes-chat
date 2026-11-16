@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Chat } from "../hermes/model";
 import { costLabel, tokens, totalTokens, type ChatUsage, type ReplyUsage } from "../hermes/usage";
 import { useReturnFocus } from "./bits";
+import { lengthText } from "../hermes/values";
 import { useLocale, type Formats } from "../i18n/locale";
 
 const counter = (fmt: Formats) => (n: number | undefined) => (n === undefined ? "Not reported" : fmt.number(n));
@@ -28,26 +29,28 @@ export const REPLY_NOTES = {
     "Hermes didn't say how much of this input was cached. Until the cache has been read from, Hermes's live count looks the same whether input was sent uncached or written to the cache, so it isn't guessed.",
   split: "Hermes's live count doesn't tell cache reads from cache writes.",
   cost: "Hermes prices the whole chat, not each reply. The chat's usage, beside its title, shows its cost and splits cache reads from cache writes.",
+  time: "Time runs from Hermes starting the reply to finishing it, as Highwing timed it: Hermes doesn't record how long a reply took.",
 };
 
-/** The tokens one reply's turn took: a line under the reply, and its breakdown when clicked. */
+/** The tokens one reply's turn took, and how long it ran: a line under the reply, and its breakdown when clicked. */
 export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
   const full = counter(useLocale().fmt);
   const [open, setOpen] = useState(false);
   const id = useId();
   const split = usage.input !== undefined;
   // Without the split, all the input shows as "in".
-  const parts =
+  const counts =
     usage.input === undefined
       ? [`${tokens(usage.prompt)} in`, `${tokens(usage.output)} out`]
       : [`${tokens(usage.input)} in`, ...(usage.cache ? [`${tokens(usage.cache!)} cache`] : []), `${tokens(usage.output)} out`];
+  const parts = usage.ms === undefined ? counts : [...counts, lengthText(usage.ms)];
   return (
     <div className="reply-usage">
       <button
         className="usage-line"
         aria-expanded={open}
         aria-controls={id}
-        aria-label={`Tokens for this reply: ${parts.join(", ")}. ${open ? "Hide" : "Show"} breakdown`}
+        aria-label={`${usage.ms === undefined ? "Tokens" : "Tokens and time"} for this reply: ${parts.join(", ")}. ${open ? "Hide" : "Show"} breakdown`}
         onClick={() => setOpen((o) => !o)}
       >
         {parts.join(" · ")}
@@ -63,10 +66,12 @@ export function ReplyUsageLine({ usage }: { usage: ReplyUsage }) {
             <Row label="of which reasoning" value={full(usage.reasoning)} sub />
             <Row label="Model calls" value={full(usage.calls)} />
             {usage.model && <Row label="Model" value={usage.model} />}
+            {usage.ms !== undefined && <Row label="Time" value={lengthText(usage.ms)} />}
             <Row label="Cost" value="Not reported per reply" />
           </dl>
           <p className="usage-note">
             {split ? REPLY_NOTES.split : REPLY_NOTES.unsplit} {REPLY_NOTES.cost}
+            {usage.ms !== undefined && ` ${REPLY_NOTES.time}`}
           </p>
         </div>
       )}

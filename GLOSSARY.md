@@ -429,12 +429,16 @@ _Avoid_: local model (it may be hosted), custom provider (Hermes's older config 
 The tokens a chat's model calls took in and gave out: input, cache read and written, output and its reasoning, and how many calls. A chat's usage is Hermes's own total for every call in it, from any client and across model changes. A reply's usage is shown only for a reply this app watched from start to finish, and is kept as long as its Saved copy.
 _Avoid_: tokens (alone, for the whole breakdown), stats
 
+**Reply time**:
+How long a reply took, from Hermes starting its turn (`message.start`) to finishing it (`message.complete`), tool calls and waiting on the owner's answers included. Hermes records no time per reply, so the app times the replies it watches from start to finish: the time ends the reply's usage line, and each reply that finished is kept on this computer, the latest 1,000 per connection and profile, for the Usage screen's typical, average and longest reply (ADR 0181).
+_Avoid_: latency (that is the wait for the first word), duration (for a tool call's own `duration_s`), response time
+
 **Cost**:
 What a chat's usage cost, only as Hermes recorded it: reported by the provider, estimated, at least an estimate, included in a subscription, or unknown. It counts only the calls Hermes could price. The app keeps no prices of its own, and shows no cost per reply.
 _Avoid_: price, spend, bill (except for a cost the provider reported)
 
 **Usage analytics**:
-The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Nothing is kept on this computer; Export CSV saves the chats counted where the owner picks (ADR 0026).
+The rail's Usage screen: the Usage and Cost Hermes stored for each chat started in a period, added up across chats, models, where chats started, projects, profiles and days. A chat counts in the period it started in, with all its usage so far, and a compressed chat counts once. The total cost says how much of the usage Hermes priced and is never a bill. Hermes's own sums sit beside it for a period ending now, with its helper tasks and subagent runs, which no chat carries. Its Reply time section is the one part from this computer: the Reply times kept for the chats counted (ADR 0181). Export CSV saves the chats counted where the owner picks (ADR 0026).
 _Avoid_: dashboard, stats, report, billing
 
 **Context window**:

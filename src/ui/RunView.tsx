@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Activity, Bot, CircleAlert, Info, MessageCircleQuestion, TriangleAlert, Wrench } from "lucide-react";
 import { questionName, type Length, type Run, type Step, type ToolProgress } from "../hermes/flightRecorder";
 import { tokens, usd } from "../hermes/usage";
-import { errorText, plural } from "../hermes/values";
+import { errorText, lengthText, plural } from "../hermes/values";
 import { Spinner } from "./bits";
 import { useModal } from "./modal";
 
@@ -29,14 +29,6 @@ export function RunButton({ onOpen }: { onOpen: () => void }) {
 export type RunApi = { read: () => Promise<{ run: Run; toolProgress?: ToolProgress }> };
 
 type State = { phase: "loading" } | { phase: "failed"; why: string } | { phase: "ready"; run: Run; toolProgress?: ToolProgress };
-
-/** A length as people read it: 420 ms, 3.4 s, 2 min 5 s. */
-export function lengthText(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)} min ${s % 60} s`;
-}
 
 /** A length, with ≈ and "inferred" for one the app worked out rather than Hermes measured. */
 function Took({ length }: { length: Length }) {

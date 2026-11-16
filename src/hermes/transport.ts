@@ -73,6 +73,7 @@ import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
 import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
+import type { ReplyTime } from "./replyTimes";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 import { toolResultText } from "./toolResult";
 import { FlightRecorder, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type Run, type RunRow, type ToolProgress, type WatchedTurn } from "./flightRecorder";
@@ -221,6 +222,10 @@ export type ChatCache = {
   loadBranches(profile: string): BranchStore;
   /** False: storage refused it, so it lasts until the app closes. */
   saveBranches(profile: string, store: BranchStore): boolean;
+  /** How long the profile's finished replies took, oldest first (replyTimes.ts). */
+  loadReplyTimes(profile: string): ReplyTime[];
+  /** Keeps one more, dropping the oldest past `REPLY_TIMES_KEPT`. */
+  saveReplyTime(profile: string, t: ReplyTime): void;
 };
 /**
  * What clicking a notification about a waiting card does: `open` shows the card in its chat. `deny`, for an Approval
@@ -257,6 +262,8 @@ const noCache: ChatCache = {
   saveQueue: () => true,
   loadBranches: () => NO_BRANCHES,
   saveBranches: () => true,
+  loadReplyTimes: () => [],
+  saveReplyTime: () => {},
 };
 
 /** A row of dashboard REST `GET /api/sessions`; times are Unix seconds. */
@@ -815,6 +822,8 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
+  /** When each chat's running turn started (`message.start`), Unix ms: how long its reply took is timed from it. */
+  private turnBegan = new Map<string, number>();
   /** What the app heard of each chat's turns, in memory, for the Run view (ADR 0178). */
   private recorder = new FlightRecorder();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
@@ -4159,7 +4168,9 @@ export class Hermes {
       const from = this.usageFrom.get(session_id!);
       // A chat with nothing but the owner's messages has had no reply, so it has cost nothing before this turn.
       const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
-      this.recorder.begin(chat.id, Date.now(), from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
+      const began = Date.now();
+      this.turnBegan.set(chat.id, began);
+      this.recorder.begin(chat.id, began, from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
       this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
@@ -4172,11 +4183,18 @@ export class Hermes {
       if (task) this.kanbanWatch.add(task, chat.id);
     }
     this.record(chat.id, type, payload);
-    const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
+    const counted = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
+    const began = type === "message.complete" ? this.turnBegan.get(chat.id) : undefined;
+    const now = Date.now();
+    const ms = began === undefined ? undefined : Math.max(0, now - began);
+    const usage = counted && ms !== undefined ? { ...counted, ms } : counted;
+    // Only a reply that finished counts toward how long replies take: a stopped or failed one ended early.
+    if (ms !== undefined && (payload.status ?? "complete") === "complete" && !payload.error) this.cache.saveReplyTime(this.profile, { chat: chat.id, at: now, ms });
     const from = this.turnStart.get(chat.id);
     const unprompted = this.unprompted.has(chat.id);
     if (type === "message.complete" || type === "error") {
       this.turnStart.delete(chat.id);
+      this.turnBegan.delete(chat.id);
       this.unprompted.delete(chat.id);
     }
     // A turn that failed without a `message.complete` ends without counters, so the next one can't be measured.
@@ -4552,6 +4570,7 @@ export class Hermes {
     // Runtime sessions end with the connection.
     this.usageFrom.clear();
     this.turnStart.clear();
+    this.turnBegan.clear();
     this.unprompted.clear();
     this.earlySideAnswers.clear();
     this.sideAwaiting.clear();
@@ -5316,7 +5335,7 @@ export class Hermes {
   /**
    * How Usage analytics reads Hermes (usageAnalytics.ts, ADR 0026): the stored session rows, every source and archived
    * ones too, newest started first; one stored session by id; and Hermes's own sums for a rolling period. Every request
-   * names its profile, and reads only while connected.
+   * names its profile, and reads only while connected. Reply times are this computer's own (replyTimes.ts).
    */
   usageIo(): UsageIo {
     const get = async (pathAndQuery: string) => JSON.parse(await this.restGet(pathAndQuery)) as unknown;
@@ -5328,6 +5347,7 @@ export class Hermes {
       },
       session: (profile, id) => get(`${sessionPath(id)}?${new URLSearchParams({ profile })}`),
       hermesTotals: (profile, days) => get(`api/analytics/usage?${new URLSearchParams({ days: String(days), profile })}`),
+      replyTimes: (profile) => this.cache.loadReplyTimes(profile),
     };
   }
 

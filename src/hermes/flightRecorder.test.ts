@@ -295,7 +295,8 @@ describe("The Run view against FakeHermes", () => {
     const { hermes, chat } = await connected(server);
     await hermes.refreshUsage("nas");
     await hermes.send("nas", "How full is the NAS?");
-    await server.toolTurn(server.runtimeIdOf("nas")!, PLAN);
+    // Each step takes some time, as a real one does: at one millisecond for all, which reading falls in which step is chance.
+    await server.toolTurn(server.runtimeIdOf("nas")!, PLAN, () => new Promise((r) => setTimeout(r, 2)));
     await hermes.idle();
     const reply = lastReply(chat().items);
 
