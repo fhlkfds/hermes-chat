@@ -1,4 +1,4 @@
-// Everywhere search (GLOSSARY.md "Everywhere", issue #608): the words searched in every profile of every live
+// Everywhere search (GLOSSARY.md "Everywhere", ADR 0188, issue #608): the words searched in every profile of every live
 // connection, for a conversation the owner can't place on a bot or a server. Each profile is asked once, with Hermes's
 // own search, and every request goes through the live connections' shared slots (liveConnections.ts `readInTurn`), so
 // no more than four are in flight across the app. It only reads: nothing is put in any list, and no shown profile or

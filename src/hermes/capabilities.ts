@@ -529,7 +529,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     label: "Chat search",
     usedBy: "Search (Ctrl+K), in the profile on screen and Everywhere",
     needs: "GET /api/sessions/search.",
-    without: "Search in the profile on screen says Hermes has no such route. Everywhere leaves this server's profiles out and says why.",
+    without: "Search in the profile on screen says it couldn't search, with Hermes's reason. Everywhere leaves this server's profiles out and says why.",
     anchor: "chat-search",
     // Hermes answers a blank `q` with no results before it reads its store, so the check searches nothing.
     probe: { kind: "rest", path: (profile) => `api/sessions/search?${new URLSearchParams({ q: "", profile })}`, maxBytes: 64 * 1024, shape: (b) => isObj(b) && isList(b.results) },
