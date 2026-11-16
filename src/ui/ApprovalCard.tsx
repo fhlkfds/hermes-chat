@@ -2,7 +2,7 @@
 import { useCallback, useId, useRef, useState, type MouseEvent } from "react";
 import { ShieldAlert } from "lucide-react";
 import type { ApprovalChoice, ApprovalItem } from "../hermes/model";
-import { isBroadGrant, offeredChoices } from "../hermes/model";
+import { endedNote, isBroadGrant, offeredChoices } from "../hermes/model";
 
 const CHOICE_LABEL: Record<ApprovalChoice, string> = {
   once: "Approve once",
@@ -77,14 +77,6 @@ export function useDeliberate(movedAt: number) {
   return (act: () => void) => (e: MouseEvent) => {
     if (e.detail <= 1 && e.timeStamp - Math.max(shownAt, movedAt) >= ARM_MS) act();
   };
-}
-
-/** What a closed card says when Hermes stopped waiting without an answer from this app. */
-export function endedNote(reason: string): string {
-  if (reason === "timeout") return "Timed out without an answer";
-  if (reason === "resolved") return "Answered in another Hermes client";
-  if (reason === "expired") return "Hermes had stopped waiting before your answer reached it";
-  return "Hermes stopped waiting for an answer";
 }
 
 /**
