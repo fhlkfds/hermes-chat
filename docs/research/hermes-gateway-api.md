@@ -673,7 +673,7 @@ Read in `apps/desktop/src/AGENTS.md` ("Bot Mode"), `apps/desktop/src/plugins/her
 - **`PUT /api/profiles/{name}/description`** keeps the text with its outer whitespace trimmed and nothing else changed (probed with inner spaces, a tab and blank lines; all spaces is stored as `""`). **`PUT /api/profiles/{name}/model`** answers the provider as sent, but stores, and `GET /api/profiles` reports, the id `switch_model` resolves it to (probed: `Stub` with `FAKE` was stored as `custom:stub`; `stub` stayed `stub`).
 - **How Hermes's desktop saves the block** (`data.ts` `persistBotMetaPatch`, `edit-profile-look.ts`): up to three attempts, each reading the row and sending `{...block, ...patch}` with the revision. After a conflict it re-applies its patch to the fresh block, so a change another client made to the same field in between is written over. A colour, shape or picture change also sets `custom: true`, and a picture sets `imageKind` to `photo`, or `shape` when removed. Pin and Hide patch `pinned` and `hidden`.
 - **Bots talking to each other** isn't a client feature: `tools/bot_mode_dm.py` (`message_agent`) and `tui_gateway/methods_bot_relay.py` (`bot_relay.*`) run inside the agent, and the "Messaging other agents" prompt section is injected only into a session titled "Bot Chat" on a Bot-Mode-managed install, switched by `agent.bot_mode_protocol` (default on). A DM to a local bot runs `hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing`, so its own Bot Chat receives it, and the bot's row shows it like any other turn.
-- What the app does: ADR 0066, and ADR 0188 for what it writes.
+- What the app does: ADR 0066, and ADR 0189 for what it writes.
 
 ## Artifacts (editing Outputs, ADR 0029)
 

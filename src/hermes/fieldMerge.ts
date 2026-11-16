@@ -1,4 +1,4 @@
-// Saving fields another client may have changed meanwhile (ADR 0188): each edit carries the value the owner was shown
+// Saving fields another client may have changed meanwhile (ADR 0189): each edit carries the value the owner was shown
 // and the value they asked for, and a field is written only where Hermes still has what the owner was shown. Pure: the
 // transport (`Hermes.editBot`) and `ProfilesApi.edit` read, send and read back around it.
 import type { ProfileFailure } from "./profiles";

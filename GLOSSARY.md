@@ -136,15 +136,15 @@ Hermes's way of treating each profile as a bot with a lasting identity, each wit
 _Avoid_: agents mode, roster (Hermes's desktop calls its list that, but here it is the Bots view)
 
 **Bot**:
-A profile as the Bots view shows it: its name, picture and description, from Hermes. Its row shows its Bot Chat's last message, and whether it is Replying or Needs you. Clicking the row opens its Bot Chat; the pen beside it starts an ordinary chat in that profile. New bot (+) in the Bots view makes one: a new profile, through the New profile form (ADR 0164). The row's menu (⋯, a right-click, Shift+F10 or the Menu key) has Edit bot, Clone, Pin, Hide, Delete bot and Open in Settings → Profiles (ADR 0188).
+A profile as the Bots view shows it: its name, picture and description, from Hermes. Its row shows its Bot Chat's last message, and whether it is Replying or Needs you. Clicking the row opens its Bot Chat; the pen beside it starts an ordinary chat in that profile. New bot (+) in the Bots view makes one: a new profile, through the New profile form (ADR 0164). The row's menu (⋯, a right-click, Shift+F10 or the Menu key) has Edit bot, Clone, Pin, Hide, Delete bot and Open in Settings → Profiles (ADR 0189).
 _Avoid_: agent (Hermes's own word for what runs the chat), assistant, persona (that is the profile's SOUL.md)
 
 **Bot look**:
-What Edit bot and a bot's menu change of how a bot shows: its name in Bot Mode, its colour, whether it is pinned or hidden, and its picture. The first four live in the profile's Bot Mode block on the server (`ui_meta['hermes-bots']`), beside what Hermes's desktop keeps there, which is never touched. The picture is the profile's avatar. A field is saved only where Hermes still has what the owner was shown (ADR 0188).
+What Edit bot and a bot's menu change of how a bot shows: its name in Bot Mode, its colour, whether it is pinned or hidden, and its picture. The first four live in the profile's Bot Mode block on the server (`ui_meta['hermes-bots']`), beside what Hermes's desktop keeps there, which is never touched. The picture is the profile's avatar. A field is saved only where Hermes still has what the owner was shown (ADR 0189).
 _Avoid_: appearance (that is this app's own theme and fonts), avatar (Hermes's word for the picture alone), bot meta
 
 **Changed elsewhere**:
-What a field in Edit bot or Edit profile says when Hermes's value moved since the dialog showed it: another client saved it meanwhile. Nothing is written over it. The field keeps the owner's text and shows Hermes's value with Use Hermes's, and a second Save replaces it, since the owner has then seen it (ADR 0188).
+What a field in Edit bot or Edit profile says when Hermes's value moved since the dialog showed it: another client saved it meanwhile. Nothing is written over it. The field keeps the owner's text and shows Hermes's value with Use Hermes's, and a second Save replaces it, since the owner has then seen it (ADR 0189).
 _Avoid_: conflict (in the interface), out of date, stale
 
 **Bot Chat**:

@@ -135,7 +135,7 @@ export function rosterRows(result: unknown): (Record<string, unknown> & { name: 
 }
 
 /**
- * What the app edits of a bot's identity (ADR 0188). `title`, `color`, `pinned` and `hidden` live in the Bot Mode
+ * What the app edits of a bot's identity (ADR 0189). `title`, `color`, `pinned` and `hidden` live in the Bot Mode
  * block, written together under its revision. `picture` is the profile's avatar, which Hermes stores without a
  * revision. Values are normalised so they compare plainly: `title` is "" for none (the name then falls back as
  * `botName` says), `color` is lowercase or null for Hermes's own, `picture` is a data URL or null.

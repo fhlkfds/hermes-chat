@@ -363,7 +363,7 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
       { name: "describeAuto", method: "POST", route: /^api\/profiles\/[^/]+\/describe-auto$/, shown: "POST /api/profiles/{name}/describe-auto" },
       { name: "setModel", method: "PUT", route: /^api\/profiles\/[^/]+\/model$/, shown: "PUT /api/profiles/{name}/model" },
       { name: "remove", method: "DELETE", route: /^api\/profiles\/[^/]+$/, shown: "DELETE /api/profiles/{name}" },
-      // The Bots view's writes (ADR 0188). Actions here, not `botMode` write methods: a Hermes without one of them
+      // The Bots view's writes (ADR 0189). Actions here, not `botMode` write methods: a Hermes without one of them
       // still has its bots and their Bot Chats.
       { name: "botLook", rpc: "profiles.configure", shown: "profiles.configure" },
       { name: "botPicture", rpc: "profiles.set_asset", shown: "profiles.set_asset" },

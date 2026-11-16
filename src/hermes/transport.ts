@@ -2298,7 +2298,7 @@ export class Hermes {
 
   /**
    * Saves `edits` to a bot's look, each field only where Hermes still has what the owner was shown (fieldMerge.ts
-   * `plan`, ADR 0188), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
+   * `plan`, ADR 0189), and reads the look back. The block fields go in one compare-and-swap `profiles.configure` that
    * sends every other key back as just read; when Hermes says the block moved meanwhile, it is read and judged again,
    * always against what the owner was shown. The picture goes first through `profiles.set_asset`, which has no such
    * check. Never rejects: a failure is that field's outcome. The roster every view shows is read again as part of it.

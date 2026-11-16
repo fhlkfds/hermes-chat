@@ -1,4 +1,4 @@
-// The conflict rule of a field save (fieldMerge.ts, ADR 0188), without a transport: what is written, what is left
+// The conflict rule of a field save (fieldMerge.ts, ADR 0189), without a transport: what is written, what is left
 // alone because it changed elsewhere, and where a dialog's base may move after a save.
 import { describe, expect, it } from "vitest";
 import { allSaved, editsOf, plan, rebase, settle, type Same } from "./fieldMerge";
