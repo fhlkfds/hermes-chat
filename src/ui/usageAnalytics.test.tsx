@@ -197,6 +197,36 @@ describe("The Usage screen", () => {
     expect(screen.getByRole("combobox", { name: "Period" })).toHaveProperty("value", "7");
   });
 
+  it("says how long replies took in the chats shown, from the times this computer kept, and follows the filters", async () => {
+    const rows = [fixtureRow("a", 1, 1000), fixtureRow("b", 1, 2000, { model: "m2" }), fixtureRow("c", 1, 4000)];
+    const times = [
+      { chat: "a", at: 1, ms: 2_000 },
+      { chat: "a", at: 2, ms: 10_000 },
+      { chat: "b", at: 3, ms: 95_000 },
+      // A chat started before the period isn't shown, so its replies don't count.
+      { chat: "gone", at: 4, ms: 500_000 },
+    ];
+    const io: UsageIo = { page: async () => ({ rows, total: 3 }), session: vi.fn(), hermesTotals: async () => ({ totals: {} }), replyTimes: (p) => (p === "default" ? times : []) };
+    const user = userEvent.setup();
+    render(<UsageAnalytics {...props(io)} />);
+    const replyTile = (label: string) => within(screen.getByRole("region", { name: "Reply time" })).getByText(label).nextElementSibling!.textContent;
+    await waitFor(() => expect(replyTile("Replies timed")).toBe("3"));
+    expect(replyTile("Typical reply")).toBe("10.0 s");
+    expect(replyTile("Average")).toBe("35.7 s");
+    expect(replyTile("Longest")).toBe("1 min 35 s");
+    expect(screen.getByText("in 2 of 3 chats")).toBeTruthy();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "m1");
+    expect(replyTile("Replies timed")).toBe("2");
+    expect(replyTile("Typical reply")).toBe("6.0 s");
+  });
+
+  it("says when no reply in the chats shown has been timed", async () => {
+    const io: UsageIo = { page: async () => ({ rows: [fixtureRow("a", 1, 1000)], total: 1 }), session: vi.fn(), hermesTotals: async () => ({ totals: {} }) };
+    render(<UsageAnalytics {...props(io)} />);
+    await waitFor(() => expect(screen.getByRole("region", { name: "Reply time" }).textContent).toMatch(/No reply in these chats has been timed on this computer yet\./));
+  });
+
   it("filters by project as this computer keeps it, and by model, without reading Hermes again", async () => {
     const page = vi.fn(async () => ({ rows: [fixtureRow("a", 1, 1000), fixtureRow("b", 1, 2000, { model: "m2" }), fixtureRow("c", 1, 4000)], total: 3 }));
     const io: UsageIo = { page, session: vi.fn(), hermesTotals: async () => ({ totals: {} }) };

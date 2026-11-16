@@ -14,6 +14,7 @@ import { chatUsageOf, costLabel, tokens as shortTokens, usd, type ChatUsage, typ
 import { instantsOf, isoIn, knownZone } from "./schedule";
 import { statusOf } from "./pipe";
 import { errorText, nonEmptyText } from "./values";
+import type { ReplyTime } from "./replyTimes";
 
 const DAY = 86_400_000;
 /** Dashboard REST caps `GET /api/sessions` pages at 100. */
@@ -34,6 +35,8 @@ export type UsageIo = {
   session(profile: string, id: string): Promise<unknown>;
   /** `GET /api/analytics/usage?days=&profile=`: Hermes's own sums for sessions started in the last `days` days. */
   hermesTotals(profile: string, days: number): Promise<unknown>;
+  /** How long the profile's replies took, as this computer timed them: not read from Hermes (replyTimes.ts). */
+  replyTimes?(profile: string): readonly ReplyTime[];
 };
 
 export const COUNT_FIELDS = ["input", "cacheRead", "cacheWrite", "output", "reasoning", "calls"] as const;

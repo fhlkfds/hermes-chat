@@ -12,7 +12,7 @@
 // - `uiPrefs`: the chat to reopen and the model pick, kept per profile (`prefScope`), and templates tied to a project.
 // A test (profileLocalData.test.ts) reads every storage key the app's source names and fails on one that isn't listed
 // here or in `NOT_PER_PROFILE`.
-import { BRANCH_PREFIX, HELD_PREFIX, LIST_PREFIX, OUTBOX_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, QUEUE_PREFIX, TRANSCRIPT_PREFIX, moveLiveChatData } from "./chatCache";
+import { BRANCH_PREFIX, HELD_PREFIX, LIST_PREFIX, OUTBOX_PREFIX, PROFILE_PREFIX, PULLED_PREFIX, QUEUE_PREFIX, REPLY_TIMES_PREFIX, TRANSCRIPT_PREFIX, moveLiveChatData } from "./chatCache";
 import { type ScopeSource, connectionScope, inScope, isPrefOf, prefScope, scopeParts } from "./connections";
 import { DRAFT_PREFIX, type Drafts } from "./drafts";
 import { IMPORTS_KEY } from "./importTranscripts";
@@ -36,6 +36,7 @@ export const PROFILE_KEYS: readonly { prefix: string; suffix?: RegExp }[] = [
   { prefix: QUEUE_PREFIX },
   { prefix: HELD_PREFIX },
   { prefix: BRANCH_PREFIX },
+  { prefix: REPLY_TIMES_PREFIX },
   { prefix: DRAFT_PREFIX },
   { prefix: PERSONA_PREFIX, suffix: /\.(draft|earlier)$/ },
 ];
