@@ -83,8 +83,6 @@ A background connection (ADR 0125) works with the server as it is; it adds no en
 
 Search (Ctrl+K) needs `GET /api/sessions/search`, which searches one profile's chats for each request and gives at most 100 chats, one hit for each, with no message id. Hermes has had the route since `v2026.4.13`, and `b200f5bc`, `bf0203a` and `f0d94882` all serve it. Checked with `GET /api/sessions/search?q=&profile=`: Hermes answers a blank `q` with `{"results": []}` before it reads its store, so the check searches nothing.
 
-A Hermes older than the route reads `search` as a chat's id and answers 404 "Session not found". The app takes that answer, on this route only, to mean the route is missing.
-
 **Everywhere** (ADR 0190) sends that search once for each profile of each live connection, after one `GET /api/profiles` and one `profiles.list` for each connection. At most four of those requests are in flight at once across the connections. Without the route on a server, Search in the profile on screen says it couldn't search, with Hermes's reason, and Everywhere leaves that server's profiles out and says why. Hermes's search takes no date and no model, so Everywhere checks both on the at most 100 chats each profile answered, and says so.
 
 ## Projects

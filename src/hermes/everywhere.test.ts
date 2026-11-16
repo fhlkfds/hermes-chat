@@ -84,6 +84,13 @@ function relay() {
   return { flight, open, release };
 }
 
+/** A server whose search route is missing: FastAPI's own 404. */
+const noSearchRoute = (server: FakeHermes) => {
+  server.rest["GET /api/sessions/search"] = () => {
+    throw new RestError(404, '{"detail":"Not Found"}');
+  };
+};
+
 const running: { hermes: Hermes[]; live: LiveConnections }[] = [];
 afterEach(async () => {
   for (const { hermes, live } of running.splice(0)) {
@@ -280,13 +287,13 @@ describe("Searching Everywhere", { timeout: 20_000 }, () => {
 
   it("leaves out a connection found to have no chat search, with why, and sends it nothing", async () => {
     const bravo = serverWith(bravoChats());
-    delete bravo.rest["GET /api/sessions/search"];
+    noSearchRoute(bravo);
     const { search } = await fleet({ bravo });
     const before = bravo.restRequests.length;
 
     const o = await search({ text: "backup" });
 
-    expect(outcomes(o).Bravo).toEqual({ kind: "refused", why: expect.stringMatching(/no chat search.*answered 404/) });
+    expect(outcomes(o).Bravo).toEqual({ kind: "refused", why: expect.stringMatching(/no such route.*answered 404/) });
     expect(where(o)).toEqual([
       ["Alpha", "default", "Nightly backup"],
       ["Alpha", "work", "Deploy backup"],
@@ -299,7 +306,7 @@ describe("Searching Everywhere", { timeout: 20_000 }, () => {
   it("stops asking a connection once one answer shows it has no chat search, and asks it nothing the next time", async () => {
     const profiles = Object.fromEntries(Array.from({ length: 6 }, (_, i): [string, Seed[]] => [i ? `p${i}` : "default", [[`b${i}`, `Backup ${i}`, 1, "the backup ran"]]]));
     const bravo = serverWith(profiles);
-    delete bravo.rest["GET /api/sessions/search"];
+    noSearchRoute(bravo);
     // Searched before either connection has checked what its Hermes can do.
     const { search, flight, release } = await fleet({ bravo, settled: false });
     flight.holding = true;
@@ -314,7 +321,7 @@ describe("Searching Everywhere", { timeout: 20_000 }, () => {
     release();
     const o = await run;
 
-    expect(outcomes(o).Bravo).toEqual({ kind: "refused", why: expect.stringMatching(/no chat search/) });
+    expect(outcomes(o).Bravo).toEqual({ kind: "refused", why: expect.stringMatching(/no such route/) });
     expect(searched(bravo).length).toBeLessThan(6);
     expect(where(o).every(([server]) => server === "Alpha")).toBe(true);
     expect(where(o)).toHaveLength(3);

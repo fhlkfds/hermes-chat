@@ -8,7 +8,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
-import type { PipeEvent } from "../hermes/pipe";
+import { RestError, type PipeEvent } from "../hermes/pipe";
 import { liveRust } from "./liveRust";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -76,7 +76,9 @@ beforeAll(() => {
   const charlie = servers[CHARLIE];
   charlie.sessions = [row("c-old", 1, { pinned: true, title: "Charlie backup" })];
   charlie.transcripts["c-old"] = [{ role: "user", text: "The backup failed here too." }];
-  delete charlie.rest["GET /api/sessions/search"];
+  charlie.rest["GET /api/sessions/search"] = () => {
+    throw new RestError(404, '{"detail":"Not Found"}');
+  };
 });
 afterAll(cleanup);
 
@@ -151,7 +153,7 @@ describe("Search's Everywhere scope", () => {
     expect(found.some(([title]) => title === "Charlie backup")).toBe(false);
 
     expect(notes().some((n) => /at most 100 chats per bot\. ops on Alpha hit that, so more chats may match there/.test(n))).toBe(true);
-    expect(notes().some((n) => /^charlie\.example\.com wasn't searched, so none of its bots is here\. Hermes has no chat search/.test(n))).toBe(true);
+    expect(notes().some((n) => /^charlie\.example\.com wasn't searched, so none of its bots is here\. Hermes has no such route/.test(n))).toBe(true);
     // Charlie was asked once at most before the app knew, and its other requests were never sent.
     expect(servers[CHARLIE].restRequests.filter((r) => r.path === "/api/sessions/search" && r.query.get("q")).length).toBeLessThanOrEqual(1);
   }, 120_000);

@@ -65,10 +65,12 @@ describe("capabilities over the transport", () => {
     expect(hermes.capabilities.get("chatSearch")).toMatchObject({ state: "supported", source: "probed" });
     expect(server.restRequests.filter((r) => r.path === "/api/sessions/search").map((r) => r.query.get("q"))).toEqual([""]);
 
-    delete server.rest["GET /api/sessions/search"];
+    server.rest["GET /api/sessions/search"] = () => {
+      throw new RestError(404, '{"detail":"Not Found"}');
+    };
     await expect(hermes.searchIn("default", "deploy")).rejects.toThrow();
     await expectSoon(() => hermes.capabilities.get("chatSearch").state === "unsupported");
-    expect(hermes.capabilities.get("chatSearch").why).toMatch(/no chat search.*answered 404/);
+    expect(hermes.capabilities.get("chatSearch").why).toMatch(/no such route.*answered 404/);
 
     // A search that fails for a reason of the route's own, such as a profile Hermes doesn't have, shows the route is there.
     server.rest["GET /api/sessions/search"] = () => {
@@ -78,13 +80,6 @@ describe("capabilities over the transport", () => {
     await expectSoon(() => hermes.capabilities.get("chatSearch").state === "supported");
   });
 
-  it("finds no chat search on a Hermes older than the route, which answers the check as it answers for a chat's id", { timeout: 10_000 }, async () => {
-    const server = new FakeHermes();
-    delete server.rest["GET /api/sessions/search"];
-    const hermes = await signedIn(server);
-    await checked(hermes);
-    expect(hermes.capabilities.get("chatSearch")).toMatchObject({ state: "unsupported", source: "probed" });
-  });
 
   it("learns what a new Hermes has, reading only", { timeout: 10_000 }, async () => {
     const server = new FakeHermes();
