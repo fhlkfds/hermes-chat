@@ -1,9 +1,10 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
 // the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), removed, and
-// sent now, stopping the reply (ADR 0182); the queue can be paused and resumed.
+// sent now, steered into the running reply or, when it can't be, stopping it (ADR 0187); the queue can be paused and
+// resumed.
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { ArrowUp, GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
-import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, isOutgoing, isWaiting } from "../hermes/model";
+import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, type Rush, type SendNowRoute, isOutgoing, isWaiting, sendNowRoute } from "../hermes/model";
 import { composing, slotAt } from "./bits";
 import { useSpellCheck } from "./SpellCheckSettings";
 
@@ -14,8 +15,14 @@ export type QueueApi = {
   remove: (id: string) => void;
   /** Puts the message at place `index`, 0 first. */
   moveTo: (id: string, index: number) => void;
-  /** Sends the message as soon as it can go, stopping the running reply for it (ADR 0182). */
-  sendNow: (id: string) => void;
+  /**
+   * Send now (ADR 0187): steers the message into the running reply, or stops the reply for it when it can't be steered
+   * (`sendNowRoute`); with no reply running, sends it as soon as it can go. Resolves with why Hermes refused the steer,
+   * which leaves the message queued.
+   */
+  sendNow: (id: string) => Promise<string | undefined>;
+  /** Why /steer can't run in this chat now, if it can't. */
+  cantSteer: () => string | undefined;
   pause: () => void;
   resume: () => void;
   /** Keeps the queue from going while a message in it is edited; call the result when done. */
@@ -29,8 +36,9 @@ const QUEUED_DRAG = "application/x-hermes-queued";
 let queueDrag: { chat: string; id: string } | null = null;
 
 /** What the next queued message waits for, when the queue isn't paused. */
-function waitingFor(chat: Chat, status: ConnectionStatus, rush: boolean): string {
+function waitingFor(chat: Chat, status: ConnectionStatus, rush: Rush | undefined): string {
   if (status !== "connected") return "Waits for Hermes to connect.";
+  if (rush?.steering) return "Steering yours into the reply. It joins at the reply's next step…";
   if (rush && chat.running) return chat.stopping ? "Stopping the reply to send yours now…" : "Yours goes the moment this reply ends.";
   if (rush) return chat.items.some(isWaiting) ? "Yours goes once you've answered above." : "Sending yours now…";
   if (chat.items.some(isOutgoing)) return "Waits until the message above is sent, retried or dismissed.";
@@ -61,6 +69,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
 
   const rush = queue?.rush;
   const paused = queue?.paused !== undefined;
+  const cantSteer = chat.running ? api.cantSteer() : undefined;
   const move = (id: string, index: number) => {
     api.moveTo(id, index);
     setFocus({ id, index: 0 });
@@ -113,7 +122,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
           <ListOrdered size={13} aria-hidden />
           <span className="queue-title">Queued · {items.length}</span>
           <span className="queue-state" aria-live="polite">
-            {paused && !rush ? `Paused. ${queue!.paused}` : waitingFor(chat, status, !!rush)}
+            {paused && !rush ? `Paused. ${queue!.paused}` : waitingFor(chat, status, rush)}
           </span>
           {paused && !rush ? (
             <button className="btn queue-toggle" onClick={api.resume}>
@@ -138,7 +147,8 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               index={i}
               count={items.length}
               state={item.id === rush?.id ? "Now" : paused ? "Paused" : i === 0 ? "Next" : "Queued"}
-              running={!!chat.running}
+              route={sendNowRoute(item, chat, cantSteer)}
+              steering={item.id === rush?.id && rush.steering}
               mark={over === i ? "insert-before" : over === items.length && i === items.length - 1 ? "insert-after" : ""}
               dragged={dragging === item.id}
               api={api}
@@ -167,7 +177,8 @@ function QueueRow({
   index,
   count,
   state,
-  running,
+  route,
+  steering,
   mark,
   dragged,
   api,
@@ -179,7 +190,9 @@ function QueueRow({
   index: number;
   count: number;
   state: string;
-  running: boolean;
+  route: SendNowRoute;
+  /** Send now is steering it into the reply: its words are the ones Hermes got, so they can't be edited. */
+  steering: boolean;
   mark: string;
   dragged: boolean;
   api: QueueApi;
@@ -190,8 +203,14 @@ function QueueRow({
   const spellCheck = useSpellCheck();
   const [editing, setEditing] = useState<string>();
   const [gone, setGone] = useState(false);
+  // Why Hermes refused the last Send now's steer. It answers that one press, in the pane it was pressed in.
+  const [refused, setRefused] = useState<string>();
   const rowRef = useRef<HTMLLIElement>(null);
   const files = item.attachments?.length ?? 0;
+  const sendNow = () => {
+    setRefused(undefined);
+    void api.sendNow(item.id).then(setRefused);
+  };
   // Nothing in the queue goes while its words are being changed.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hold while an edit is open, release when it closes; `api` is a new object every render, so listing it would release and hold again on every render
   useEffect(() => (editing === undefined ? undefined : api.hold()), [editing === undefined]);
@@ -228,7 +247,7 @@ function QueueRow({
         if (e.target !== e.currentTarget || composing(e)) return;
         if (e.ctrlKey && e.key === "Enter") {
           e.preventDefault();
-          api.sendNow(item.id);
+          sendNow();
         } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
           e.preventDefault();
           onMove(index + (e.key === "ArrowUp" ? -1 : 1));
@@ -277,6 +296,11 @@ function QueueRow({
             </span>
           )}
           {gone && <span className="queue-gone">It had already gone, so the edit wasn't kept.</span>}
+          {refused && (
+            <span className="queue-gone" role="alert">
+              Hermes didn't take it as a steer: {refused}
+            </span>
+          )}
           {editing !== undefined && <span className="queue-keys">Enter to save · Esc to cancel</span>}
         </div>
       </div>
@@ -286,10 +310,16 @@ function QueueRow({
             <button
               className="icon-btn"
               data-action="send-now"
-              title={running ? "Send now: stops the reply (Ctrl+Enter)" : "Send now (Ctrl+Enter)"}
-              aria-label={`Send queued message ${index + 1} now${running ? ", stopping the reply" : ""}`}
+              title={
+                route.by === "steer"
+                  ? "Send now: steers it into the reply at its next step (Ctrl+Enter)"
+                  : route.by === "stop"
+                    ? `Send now: stops the reply. ${route.why} (Ctrl+Enter)`
+                    : "Send now (Ctrl+Enter)"
+              }
+              aria-label={`Send queued message ${index + 1} now${route.by === "steer" ? ", steering it into the reply" : route.by === "stop" ? ", stopping the reply" : ""}`}
               disabled={state === "Now"}
-              onClick={() => api.sendNow(item.id)}
+              onClick={sendNow}
             >
               <ArrowUp size={13} />
             </button>
@@ -298,7 +328,8 @@ function QueueRow({
               data-action="edit"
               title="Edit"
               aria-label={`Edit queued message ${index + 1}`}
-              onClick={() => (setGone(false), setEditing(item.text))}
+              disabled={steering}
+              onClick={() => (setGone(false), setRefused(undefined), setEditing(item.text))}
             >
               <Pencil size={13} />
             </button>
