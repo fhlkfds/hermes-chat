@@ -1,8 +1,8 @@
 // The chat's queue of messages waiting to go after its reply (ADR 0018), above the composer. Both panes of a chat show
-// the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), and removed;
-// the queue can be paused and resumed.
+// the same queue. Each message can be edited, dragged to another place or moved with Alt+↑/↓ (ADR 0071), removed, and
+// sent now, stopping the reply (ADR 0182); the queue can be paused and resumed.
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
+import { ArrowUp, GripVertical, ListOrdered, Paperclip, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type Queued, isOutgoing, isWaiting } from "../hermes/model";
 import { composing, slotAt } from "./bits";
 import { useSpellCheck } from "./SpellCheckSettings";
@@ -14,6 +14,8 @@ export type QueueApi = {
   remove: (id: string) => void;
   /** Puts the message at place `index`, 0 first. */
   moveTo: (id: string, index: number) => void;
+  /** Sends the message as soon as it can go, stopping the running reply for it (ADR 0182). */
+  sendNow: (id: string) => void;
   pause: () => void;
   resume: () => void;
   /** Keeps the queue from going while a message in it is edited; call the result when done. */
@@ -27,8 +29,10 @@ const QUEUED_DRAG = "application/x-hermes-queued";
 let queueDrag: { chat: string; id: string } | null = null;
 
 /** What the next queued message waits for, when the queue isn't paused. */
-function waitingFor(chat: Chat, status: ConnectionStatus): string {
+function waitingFor(chat: Chat, status: ConnectionStatus, rush: boolean): string {
   if (status !== "connected") return "Waits for Hermes to connect.";
+  if (rush && chat.running) return chat.stopping ? "Stopping the reply to send yours now…" : "Yours goes the moment this reply ends.";
+  if (rush) return chat.items.some(isWaiting) ? "Yours goes once you've answered above." : "Sending yours now…";
   if (chat.items.some(isOutgoing)) return "Waits until the message above is sent, retried or dismissed.";
   const asked = chat.items.find(isWaiting);
   if (asked) return asked.kind === "approval" ? "Waits for your answer to the Approval above." : "Waits for your answer to Hermes's question above.";
@@ -55,6 +59,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
   // The panel goes with its last message; the wrapper stays, so focus can be put back in the pane.
   if (!items.length) return <div ref={rootRef} />;
 
+  const rush = queue?.rush;
   const paused = queue?.paused !== undefined;
   const move = (id: string, index: number) => {
     api.moveTo(id, index);
@@ -108,9 +113,9 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
           <ListOrdered size={13} aria-hidden />
           <span className="queue-title">Queued · {items.length}</span>
           <span className="queue-state" aria-live="polite">
-            {paused ? `Paused. ${queue!.paused}` : waitingFor(chat, status)}
+            {paused && !rush ? `Paused. ${queue!.paused}` : waitingFor(chat, status, !!rush)}
           </span>
-          {paused ? (
+          {paused && !rush ? (
             <button className="btn queue-toggle" onClick={api.resume}>
               <Play size={12} /> Resume
             </button>
@@ -132,7 +137,8 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               item={item}
               index={i}
               count={items.length}
-              state={paused ? "Paused" : i === 0 ? "Next" : "Queued"}
+              state={item.id === rush ? "Now" : paused ? "Paused" : i === 0 ? "Next" : "Queued"}
+              running={!!chat.running}
               mark={over === i ? "insert-before" : over === items.length && i === items.length - 1 ? "insert-after" : ""}
               dragged={dragging === item.id}
               api={api}
@@ -161,6 +167,7 @@ function QueueRow({
   index,
   count,
   state,
+  running,
   mark,
   dragged,
   api,
@@ -172,6 +179,7 @@ function QueueRow({
   index: number;
   count: number;
   state: string;
+  running: boolean;
   mark: string;
   dragged: boolean;
   api: QueueApi;
@@ -215,10 +223,13 @@ function QueueRow({
       }}
       onDragEnd={(e) => e.target === e.currentTarget && onDrag(false)}
       aria-label={`Queued message ${index + 1} of ${count}${files ? `, ${files} ${files === 1 ? "file" : "files"}` : ""}: ${item.text}`}
-      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Delete"
+      aria-keyshortcuts="Control+Enter Alt+ArrowUp Alt+ArrowDown Delete"
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget || composing(e)) return;
-        if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        if (e.ctrlKey && e.key === "Enter") {
+          e.preventDefault();
+          api.sendNow(item.id);
+        } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
           e.preventDefault();
           onMove(index + (e.key === "ArrowUp" ? -1 : 1));
         } else if (e.key === "Delete") {
@@ -272,6 +283,16 @@ function QueueRow({
       <div className="queue-actions">
         {editing === undefined ? (
           <>
+            <button
+              className="icon-btn"
+              data-action="send-now"
+              title={running ? "Send now: stops the reply (Ctrl+Enter)" : "Send now (Ctrl+Enter)"}
+              aria-label={`Send queued message ${index + 1} now${running ? ", stopping the reply" : ""}`}
+              disabled={state === "Now"}
+              onClick={() => api.sendNow(item.id)}
+            >
+              <ArrowUp size={13} />
+            </button>
             <button
               className="icon-btn"
               data-action="edit"

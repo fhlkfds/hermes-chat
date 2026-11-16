@@ -249,6 +249,136 @@ describe("The queue pauses when the owner should look first", () => {
   });
 });
 
+describe("Send now (ADR 0182)", () => {
+  const interrupts = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "session.interrupt").length;
+
+  it("stops the reply, then sends the chosen message ahead of the rest, and the queue goes on after its reply", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    const three = q.queue()!.items[2];
+    q.hermes().sendQueuedNow("c1", three.id);
+    expect(q.texts()).toEqual(["three", "one", "two"]);
+    expect(q.queue()).toMatchObject({ rush: three.id });
+    await flush();
+    expect(interrupts(q)).toBe(1);
+    expect(q.chat()).toMatchObject({ running: true, stopping: true });
+    expect(q.sent()).toEqual([]);
+
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent()).toEqual([expect.objectContaining({ text: "three", queued: true })]);
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })] });
+
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["three", "one"]);
+  });
+
+  it("goes at once when no reply runs, though the queue is paused, and the rest stay paused", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "one");
+    q.hermes().enqueue("c1", "two");
+    q.hermes().pauseQueue("c1");
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    await flush();
+    expect(interrupts(q)).toBe(0);
+    expect(q.sent().map((p) => p.text)).toEqual(["two"]);
+    expect(q.queue()).toMatchObject({ items: [{ text: "one" }], paused: "You paused it." });
+    await q.finish();
+    expect(q.sent()).toHaveLength(1);
+  });
+
+  it("goes past a Failed message above, which stays for Retry", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "first");
+    q.hermes().enqueue("c1", "second");
+    q.server.rejectPrompt = { code: 4009, message: "session busy" };
+    await q.finish();
+    await flush();
+    q.server.rejectPrompt = undefined;
+    expect(q.queue()!.paused).toMatch(/didn't go/);
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id);
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["first", "second"]);
+    expect(q.chat().items.filter(isOutgoing)).toMatchObject([{ text: "first", outgoing: { state: "failed" } }]);
+  });
+
+  it("outlasts a Resume of the queue paused before it", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "one");
+    q.hermes().enqueue("c1", "two");
+    q.hermes().pauseQueue("c1");
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    q.hermes().resumeQueue("c1");
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent().map((p) => p.text)).toEqual(["two"]);
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" })] });
+  });
+
+  it("loads a chat not loaded yet and stops the reply loading finds", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "now");
+    q.server.reattachTurns = true;
+    const again = await q.relaunch();
+    expect(again.getSnapshot().queues.c1?.paused).toBeDefined();
+    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    await flush();
+    expect(q.chat()).toMatchObject({ running: true, stopping: true });
+    expect(interrupts(q)).toBe(1);
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent().map((p) => p.text)).toEqual(["now"]);
+  });
+
+  it("pauses the queue, saying why, when the chat it must load first can't be loaded, rather than wait on a later load's reply", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "now");
+    q.server.reattachTurns = true;
+    const again = await q.relaunch();
+    const sessions = q.server.sessions;
+    let failOnce = true;
+    Object.defineProperty(q.server, "sessions", { configurable: true, get: () => (failOnce ? ((failOnce = false), []) : sessions), set: () => {} });
+    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    await flush();
+    expect(again.getSnapshot().queues.c1).toEqual({ items: [expect.objectContaining({ text: "now" })], paused: expect.stringMatching(/^Couldn't load the chat: .*session not found/) });
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("is cancelled by Pause: the stopped reply then pauses the queue as Stop does", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "next");
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id);
+    q.hermes().pauseQueue("c1");
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "next" })], paused: "You paused it." });
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("is cancelled by removing the message: the stop then pauses what's left", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "keep");
+    q.hermes().enqueue("c1", "drop");
+    const drop = q.queue()!.items[1];
+    q.hermes().sendQueuedNow("c1", drop.id);
+    q.hermes().removeQueued("c1", drop.id);
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "keep" })] });
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent()).toEqual([]);
+    expect(q.queue()!.paused).toMatch(/stopped/);
+  });
+
+  it("isn't kept across a restart: the queue comes back paused, the chosen message first", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "one");
+    q.hermes().enqueue("c1", "two");
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    const again = await q.relaunch();
+    await again.open("c1");
+    await flush();
+    expect(again.getSnapshot().queues.c1).toEqual({ items: [expect.objectContaining({ text: "two" }), expect.objectContaining({ text: "one" })], paused: expect.stringContaining("closed") });
+    expect(q.sent()).toEqual([]);
+  });
+});
+
 describe("Uncertain sends, reconnects and restarts", () => {
   it("a drop after a queued message went out and before Hermes answered: no automatic second copy, before or after reconnecting", async () => {
     const q = await replying();

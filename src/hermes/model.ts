@@ -183,9 +183,11 @@ export type Queued = { id: string; text: string; attachments?: Attachment[] };
 /**
  * A chat's queue, kept on this computer per connection, profile and chat. `paused`: why it waits for the owner's
  * Resume (the owner paused it, or the last reply ended in a way the owner should look at first). `unsaved`: the last
- * write to this computer's storage failed, so it lasts only until the app closes.
+ * write to this computer's storage failed, so it lasts only until the app closes. `rush`: the id of the message the
+ * owner chose Send now on, which goes as soon as the reply it stopped has ended, paused or not (ADR 0182). Kept only
+ * while the app runs, and only while that message is still queued.
  */
-export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean };
+export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean; rush?: string };
 
 /** The most messages one chat's queue holds. */
 export const QUEUE_LIMIT = 20;
