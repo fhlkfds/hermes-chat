@@ -221,6 +221,20 @@ describe("The Usage screen", () => {
     expect(replyTile("Typical reply")).toBe("6.0 s");
   });
 
+  it("counts a compressed chat's timed replies even when a segment of it couldn't be read", async () => {
+    const tip = fixtureRow("tip", 1, 1000, { _lineage_root_id: "root", _lineage_ids: ["root", "tip"] });
+    const io: UsageIo = {
+      page: async () => ({ rows: [tip], total: 1 }),
+      session: async () => {
+        throw new Error("Hermes refused");
+      },
+      hermesTotals: async () => ({ totals: {} }),
+      replyTimes: () => [{ chat: "tip", at: 1, ms: 12_400 }],
+    };
+    render(<UsageAnalytics {...props(io)} />);
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Reply time" })).getByText("Longest").nextElementSibling!.textContent).toBe("12.4 s"));
+  });
+
   it("says when no reply in the chats shown has been timed", async () => {
     const io: UsageIo = { page: async () => ({ rows: [fixtureRow("a", 1, 1000)], total: 1 }), session: vi.fn(), hermesTotals: async () => ({ totals: {} }) };
     render(<UsageAnalytics {...props(io)} />);

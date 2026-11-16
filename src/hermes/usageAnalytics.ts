@@ -67,6 +67,8 @@ export type UsageChat = {
   provider?: string;
   archived: boolean;
   pinned: boolean;
+  /** Every session id Hermes listed for it: its row's, and each segment's, read or not. */
+  ids: string[];
   segments: Segment[];
   missing: number;
   counts: Counts;
@@ -185,6 +187,7 @@ export function chatOfRow(profile: string, row: unknown, readAt: number): { chat
     provider: nonEmptyText(r.billing_provider),
     archived: !!r.archived,
     pinned: !!r.pinned,
+    ids: [...new Set([id, root, ...lineage])],
     segments: [{ id: root, usage: chatUsageOf(r, readAt) }],
     missing: 0,
   });

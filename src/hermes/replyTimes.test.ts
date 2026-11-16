@@ -5,7 +5,7 @@ import { localChatCache } from "./chatCache";
 import { forgetProfileLocally, renameProfileLocally } from "./profileLocalData";
 import { REPLY_TIMES_KEPT, replyTimeStats, replyTimesOf, withReplyTime, type ReplyTime } from "./replyTimes";
 
-const chat = (profile: string, ...ids: string[]) => ({ profile, segments: ids.map((id) => ({ id })) });
+const chat = (profile: string, ...ids: string[]) => ({ profile, ids });
 
 describe("Reply times", () => {
   it("read back only the entries that are reply times", () => {
@@ -24,7 +24,7 @@ describe("Reply times", () => {
     expect(times.at(-1)!.at).toBe(REPLY_TIMES_KEPT + 4);
   });
 
-  it("sum up the shown chats' replies, by profile and across a compressed chat's segments", () => {
+  it("sum up the shown chats' replies, by profile and across a compressed chat's session ids", () => {
     const kept: Record<string, ReplyTime[]> = {
       default: [
         { chat: "a", at: 1, ms: 1000 },

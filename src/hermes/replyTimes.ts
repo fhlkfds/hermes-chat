@@ -29,9 +29,10 @@ export type ReplyTimeStats = { replies: number; chats: number; median: number; m
 
 /**
  * How long the replies in `chats` took, from the times kept for each chat's profile. A compressed chat's replies may be
- * kept under any of its segments' ids, so every segment counts. Undefined when none of them has a timed reply.
+ * kept under any of its session ids, so every one counts, even a segment whose usage couldn't be read. Undefined when
+ * none of them has a timed reply.
  */
-export function replyTimeStats(chats: readonly Pick<UsageChat, "profile" | "segments">[], timesOf: (profile: string) => readonly ReplyTime[]): ReplyTimeStats | undefined {
+export function replyTimeStats(chats: readonly Pick<UsageChat, "profile" | "ids">[], timesOf: (profile: string) => readonly ReplyTime[]): ReplyTimeStats | undefined {
   const byProfile = new Map<string, Map<string, number[]>>();
   const kept = (profile: string) => {
     let of = byProfile.get(profile);
@@ -46,7 +47,7 @@ export function replyTimeStats(chats: readonly Pick<UsageChat, "profile" | "segm
   let timedChats = 0;
   for (const c of chats) {
     const of = kept(c.profile);
-    const mine = c.segments.flatMap((s) => of.get(s.id) ?? []);
+    const mine = c.ids.flatMap((id) => of.get(id) ?? []);
     if (mine.length) timedChats++;
     all.push(...mine);
   }
