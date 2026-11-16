@@ -322,7 +322,7 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
 
 describe("Work dispatch (issue #604)", () => {
   const work = (orchestration: () => Promise<{ autoDecompose: boolean; autoPromoteChildren: boolean }>, review: () => Promise<boolean>) => ({
-    orchestration,
+    orchestration: async () => ({ ...(await orchestration()), defaultAssignee: "" }),
     reviewDispatch: vi.fn(review),
   });
   const value = (name: RegExp) => screen.getByText(name).closest<HTMLElement>(".diag-fact")!;

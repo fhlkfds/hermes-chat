@@ -7,7 +7,10 @@
 import { CapabilityUnsupportedError, RouteMissingError } from "./capabilities";
 import { TASK_MEANS, isStale, parseTask, sameTask, type DispatchedTask } from "./dispatched";
 import { RefusedError, statusOf, type RestMethod } from "./pipe";
-import { isObj, textOrEmpty } from "./values";
+import { projectStored } from "./storedTranscript";
+import { perform, type Outcome, type RunIO, type RunOrder, type RunWrite } from "./taskRuns";
+import { chatUsageOf, type ChatUsage } from "./usage";
+import { errorText, isObj, nonEmptyText, textOrEmpty } from "./values";
 
 export type RestFn = (method: RestMethod, pathAndQuery: string, body?: unknown) => Promise<unknown>;
 
@@ -44,16 +47,53 @@ export type LinkCounts = { parents: number; children: number };
 export type TaskLinks = { parents: string[]; children: string[] };
 /** A linked task as `GET tasks/{id}` names it, so a link to a task not on the board still has a title. */
 export type LinkedTask = { id: string; title: string; status: string };
-/** A task's sheet: the task, its comments oldest first, its links and the linked tasks Hermes still has. */
-export type TaskDetail = { task: BoardTask; comments: TaskComment[]; links: TaskLinks; linked: LinkedTask[] };
+/** A run's id as Hermes numbers them: an integer, sent in the path (`runs/{id}`). A string id answers 422. */
+export type RunId = number & { readonly __run: unique symbol };
+/**
+ * One time the dispatcher gave a task to a bot: a run with a `claimed` event. The rows Hermes writes when someone
+ * blocks or completes a card are not task runs, and are left out when the task is read. `profile`: the profile the bot
+ * runs in, and the one its chat is read under. Times are Unix ms.
+ */
+export type TaskRun = {
+  id: RunId;
+  profile: string;
+  startedAt?: number;
+  /** The later of the run's `last_heartbeat_at` and its newest `heartbeat` event; none before the first. */
+  heartbeatAt?: number;
+  /**
+   * None while Hermes keeps the run's row open. `outcome`: Hermes's word (`reclaimed`, `completed`, `blocked`, …). A
+   * run that ended `blocked` says nothing of its bot: blocking a card ends the row and leaves the bot working.
+   */
+  ended?: { at: number; outcome: string };
+  /** The bot's chat session, from the run's `owner_admitted` event; none until Hermes writes it, a moment after the claim. */
+  chat?: string;
+};
+/** A task's sheet: the task, its comments oldest first, its links, the linked tasks Hermes still has, and its task runs, oldest first. */
+export type TaskDetail = { task: BoardTask; comments: TaskComment[]; links: TaskLinks; linked: LinkedTask[]; runs: TaskRun[] };
+/** One row of a run's chat on one line: what was said, or a tool call's name and main argument. */
+export type RunLine = { role: "user" | "assistant" | "tool"; text: string };
+/** A run's chat as last read, under the run's profile. */
+export type RunChat = {
+  /** The session's token counts so far; none when Hermes gives no counts. */
+  usage?: ChatUsage;
+  /** The session's `message_count`. The rows are read again only when it moves. */
+  messages: number;
+  /** The last rows a person would read, oldest first, three at most. */
+  latest: RunLine[];
+  readAt: number;
+};
 /** A model picked for a task: a model of a provider from the catalog, or a model typed in, with no provider. */
 export type ModelPick = { model: string; provider?: string };
 /** A provider and the models Hermes offers of it for a task (`GET model-options`). */
 export type ModelProvider = { slug: string; label: string; models: string[] };
 /** A profile a task can be given to, with the model it runs on when Hermes says. */
 export type BotProfile = { name: string; model?: string };
-/** How the server's dispatcher treats new cards (`GET orchestration`, `kanban.*` in its config). */
-export type Orchestration = { autoDecompose: boolean; autoPromoteChildren: boolean };
+/**
+ * How the server's dispatcher treats cards (`GET orchestration`, `kanban.*` in its config). `defaultAssignee`: the
+ * profile it gives an unassigned ready card to, as configured (`default_assignee`), empty for none. Hermes's
+ * `resolved_default_assignee` names a profile even then, and the dispatcher doesn't use it.
+ */
+export type Orchestration = { autoDecompose: boolean; autoPromoteChildren: boolean; defaultAssignee: string };
 /**
  * Hermes's guess of what a task will take (`POST estimate`): a token count and a size, from a model. Never a cost:
  * Hermes calls it a rough guess. `ok: false` carries Hermes's reason, such as no title.
@@ -146,6 +186,64 @@ const parseComment = (c: unknown): TaskComment[] =>
     ? [{ id: c.id, author: textOrEmpty(c.author), body: c.body, at: typeof c.created_at === "number" ? c.created_at * 1000 : 0 }]
     : [];
 
+const seconds = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v * 1000 : undefined);
+
+/**
+ * The task runs in a `GET tasks/{id}` answer's `runs` and `events`, oldest first. A run is a task run when it has a
+ * `claimed` event or a worker pid, never by its `profile`, which a block's own row can carry too.
+ */
+export function parseRuns(runs: unknown, events: unknown): TaskRun[] {
+  const claimed = new Set<number>();
+  const chats = new Map<number, string>();
+  const beats = new Map<number, number>();
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!isObj(e) || typeof e.run_id !== "number") continue;
+    if (e.kind === "claimed") claimed.add(e.run_id);
+    const chat = e.kind === "owner_admitted" && isObj(e.payload) ? nonEmptyText(e.payload.session_id) : undefined;
+    if (chat) chats.set(e.run_id, chat);
+    const at = e.kind === "heartbeat" ? seconds(e.created_at) : undefined;
+    if (at) beats.set(e.run_id, Math.max(at, beats.get(e.run_id) ?? 0));
+  }
+  return (Array.isArray(runs) ? runs : [])
+    .flatMap((r): TaskRun[] => {
+      if (!isObj(r) || typeof r.id !== "number" || !Number.isSafeInteger(r.id)) return [];
+      if (!claimed.has(r.id) && typeof r.worker_pid !== "number") return [];
+      const startedAt = seconds(r.started_at);
+      const heartbeatAt = Math.max(seconds(r.last_heartbeat_at) ?? 0, beats.get(r.id) ?? 0);
+      const endedAt = seconds(r.ended_at);
+      const chat = chats.get(r.id);
+      return [
+        {
+          id: r.id as RunId,
+          profile: textOrEmpty(r.profile),
+          ...(startedAt && { startedAt }),
+          ...(heartbeatAt > 0 && { heartbeatAt }),
+          ...(endedAt && { ended: { at: endedAt, outcome: nonEmptyText(r.outcome) ?? textOrEmpty(r.status) } }),
+          ...(chat && { chat }),
+        },
+      ];
+    })
+    .sort((a, b) => a.id - b.id);
+}
+
+const LINE_MAX = 200;
+/** How many rows are read for a run's last lines: a tool row is named by the call in an assistant row before it. */
+const CHAT_TAIL = 6;
+const CHAT_LINES = 3;
+
+const oneLine = (text: string) => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}…` : line;
+};
+
+/** The stored rows a person would read, one line each. */
+const runLines = (rows: readonly unknown[]): RunLine[] =>
+  projectStored(rows).flatMap((m): RunLine[] => {
+    if (m.role === "tool") return [{ role: "tool", text: oneLine(m.context ? `${m.name}: ${m.context}` : (m.name ?? "tool")) }];
+    const text = oneLine(m.text ?? "");
+    return (m.role === "user" || m.role === "assistant") && text ? [{ role: m.role, text }] : [];
+  });
+
 const taskPath = (id: string) => `${BASE}/tasks/${encodeURIComponent(id)}`;
 
 /** Whether `wf` lets a person move a task from `from` to `to`. Running is the dispatcher's to set, so it's never offered. */
@@ -206,7 +304,59 @@ export class KanbanApi {
     const comments = (Array.isArray(res.comments) ? res.comments : []).flatMap(parseComment).sort((a, b) => a.at - b.at || a.id - b.id);
     const links = parseLinks(res.links);
     const linked = (Array.isArray(res.link_tasks) ? res.link_tasks : []).flatMap(parseLinked);
-    return { task: { ...read, links: { parents: links.parents.length, children: links.children.length } }, comments, links, linked };
+    return { task: { ...read, links: { parents: links.parents.length, children: links.children.length } }, comments, links, linked, runs: parseRuns(res.runs, res.events) };
+  }
+
+  /**
+   * The bot's chat for `run`, read under the run's profile: the session's counts, and its last rows when
+   * `message_count` moved since `was`.
+   */
+  async runChat(run: TaskRun & { chat: string }, was?: RunChat): Promise<RunChat> {
+    const session = `api/sessions/${encodeURIComponent(run.chat)}`;
+    const profile: Record<string, string> = run.profile ? { profile: run.profile } : {};
+    const row = await this.rest("GET", `${session}?${new URLSearchParams(profile)}`);
+    if (!isObj(row)) throw new Error("Hermes answered the bot's chat with something this app doesn't read.");
+    const readAt = Date.now();
+    const usage = chatUsageOf(row, readAt);
+    const messages = typeof row.message_count === "number" ? row.message_count : 0;
+    if (was && was.messages === messages) return { ...(usage && { usage }), messages, latest: was.latest, readAt };
+    const res = await this.rest("GET", `${session}/messages?${new URLSearchParams({ ...profile, order: "latest", limit: String(CHAT_TAIL), inline_images: "false" })}`);
+    if (isObj(res) && typeof res.profile === "string" && run.profile && res.profile !== run.profile) throw new Error(`Hermes answered for the ${res.profile} profile, not ${run.profile}.`);
+    const rows = isObj(res) && Array.isArray(res.messages) ? res.messages : [];
+    return { ...(usage && { usage }), messages, latest: runLines(rows).slice(-CHAT_LINES), readAt };
+  }
+
+  /**
+   * Carries out what the owner asked of a running card: Stop, Reclaim or Reassign (taskRuns.ts). It reads the card
+   * before each write, so nothing is sent when the card changed, and a second call with the order it answers carries
+   * on from what Hermes shows without sending a write twice. Each read goes to `onRead`.
+   */
+  changeRun(order: RunOrder, onRead: (d: TaskDetail) => void): Promise<{ outcome: Outcome; order: RunOrder }> {
+    const io: RunIO = {
+      read: () => this.loadTask(order.task),
+      send: async (w) => {
+        try {
+          return { kind: "ok", warning: await this.sendRunWrite(order.task, w) };
+        } catch (e) {
+          return { kind: refused(e) ? "refused" : "lost", why: errorText(e) };
+        }
+      },
+    };
+    return perform(io, order, onRead);
+  }
+
+  /** Not public: sent outside `perform`, a reassign repeated after a lost answer would stop the next bot's run too. */
+  private async sendRunWrite(task: string, w: RunWrite): Promise<string | undefined> {
+    switch (w.kind) {
+      case "terminate":
+        return void (await this.rest("POST", `${BASE}/runs/${w.run}/terminate`, { reason: w.reason }));
+      case "reassign":
+        return void (await this.rest("POST", `${taskPath(task)}/reassign`, { profile: w.to, reclaim_first: true, reason: w.reason }));
+      case "block":
+        return this.moveTask(task, "blocked", w.reason);
+      case "assign":
+        return void (await this.editTask(task, { assignee: w.to }));
+    }
   }
 
   /**
@@ -276,7 +426,7 @@ export class KanbanApi {
   async orchestration(): Promise<Orchestration> {
     const res = await this.rest("GET", `${BASE}/orchestration`);
     if (!isObj(res) || typeof res.auto_decompose !== "boolean") throw new Error("Hermes answered the dispatch settings with something this app doesn't read.");
-    return { autoDecompose: res.auto_decompose, autoPromoteChildren: res.auto_promote_children !== false };
+    return { autoDecompose: res.auto_decompose, autoPromoteChildren: res.auto_promote_children !== false, defaultAssignee: textOrEmpty(res.default_assignee).trim() };
   }
 
   /**

@@ -3853,9 +3853,10 @@ export type KanbanRow = {
   session_id: string | null;
   created_at: number;
   started_at: number | null;
-  current_run_id: string | null;
+  current_run_id: number | null;
   subscribed: boolean;
-  runs: { id: string; status: string }[];
+  runs: KanbanRun[];
+  events?: KanbanEvent[];
   body?: string | null;
   priority?: number;
   tenant?: string | null;
@@ -3867,8 +3868,26 @@ export type KanbanRow = {
   provider_override?: string | null;
 };
 
+/**
+ * A run row as `GET tasks/{id}` lists it at `bf0203a`. One the dispatcher claimed has a pid until it ends. Blocking
+ * or completing a card that no bot is working on writes a row too, with no pid, no profile and one time for both ends.
+ */
+export type KanbanRun = {
+  id: number;
+  task_id: string;
+  profile: string | null;
+  status: string;
+  worker_pid: number | null;
+  started_at: number;
+  ended_at: number | null;
+  outcome: string | null;
+  last_heartbeat_at: number | null;
+};
+/** A task event. `run_id`: the run it is about, when it is about one. */
+export type KanbanEvent = { id: number; task_id: string; kind: string; payload: Record<string, unknown> | null; created_at: number; run_id: number | null };
+
 /** The kanban plugin's routes past the board's own, each of which a test may leave out (`FakeKanban.without`). */
-export type KanbanExtraRoute = "links" | "assignees" | "profiles" | "model-options" | "orchestration" | "estimate";
+export type KanbanExtraRoute = "links" | "assignees" | "profiles" | "model-options" | "orchestration" | "estimate" | "terminate" | "reassign";
 
 const KANBAN_COLUMNS = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"];
 /** The plugin's `GET workflow`, as a fixture: the dispatcher's columns (scheduled, running, review) take no drop. */
@@ -3941,14 +3960,106 @@ export class FakeKanban {
   estimateAnswer?: Record<string, unknown>;
   /** Every estimate asked for, as `title|body`. Estimates write nothing, so they aren't in `writes`. */
   estimates: string[] = [];
+  /** `kanban.default_assignee` as configured: the profile `tick` gives a ready card with no bot to. */
+  defaultAssignee = "";
+  /** Runs as a write arrives, before it is applied: what a dispatcher tick that beat it would do. */
+  before?: (write: string) => void;
+  /** Runs once a write is applied, before its answer: what a dispatcher tick in the gap before the next write would do. */
+  between?: (write: string) => void;
+  private eventSeq = 0;
+  /** The chat of each bot still at work, by run. Blocking a card ends its run's row and leaves its bot here. */
+  private bots = new Map<number, string>();
+  /** The status each run was claimed from, which stopping it puts the card back in. */
+  private claimedFrom = new Map<number, string>();
 
   constructor(private server: FakeHermes) {}
 
-  /** A task on `board`, made the way `kanban_create` makes one. */
+  /** A task on `board`, made the way `kanban_create` makes one. One added as running is claimed, so it has its run. */
   add(board: string, fields: Partial<KanbanRow> & { title: string }): KanbanRow {
     const row: KanbanRow = { id: `t_${(++this.seq).toString(16).padStart(8, "0")}`, board, status: "ready", assignee: null, session_id: null, created_at: Math.floor(now()), started_at: null, current_run_id: null, subscribed: true, runs: [], ...fields };
     (this.boards[board] ??= { name: board, tasks: [] }).tasks.push(row);
+    if (row.status === "running" && !row.runs.length) this.claim(row.id);
     return row;
+  }
+
+  private emit(t: KanbanRow, kind: string, run_id: number | null, payload: Record<string, unknown> | null = null) {
+    (t.events ??= []).push({ id: ++this.eventSeq, task_id: t.id, kind, payload, created_at: Math.floor(now()), run_id });
+  }
+
+  private openRun(t: KanbanRow) {
+    return t.runs.find((r) => r.ended_at === null);
+  }
+
+  private endRun(run: KanbanRun, outcome: string) {
+    run.status = run.outcome = outcome;
+    run.ended_at = Math.floor(now());
+    run.worker_pid = null;
+  }
+
+  private chatRow(session: string) {
+    return [this.server.sessions, ...Object.values(this.server.otherProfiles)].flat().find((s) => s.id === session);
+  }
+
+  /**
+   * The dispatcher claims the task for its bot: a run, its events, and the bot's chat in the bot's profile, as a
+   * session with source `kanban`. A card claimed from review goes back there when its run is stopped.
+   */
+  claim(id: string): KanbanRun | undefined {
+    const t = this.find(id);
+    if (!t) return undefined;
+    const at = Math.floor(now());
+    const profile = t.assignee ?? "default";
+    const run: KanbanRun = { id: ++this.runSeq, task_id: id, profile, status: "running", worker_pid: 40_000 + this.runSeq, started_at: at, ended_at: null, outcome: null, last_heartbeat_at: null };
+    this.claimedFrom.set(run.id, t.status === "review" ? "review" : "ready");
+    t.runs.push(run);
+    t.current_run_id = run.id;
+    t.status = "running";
+    t.started_at ??= at;
+    const session = `local-kanban-${run.id}`;
+    const store = this.server.store(profile) ?? (this.server.otherProfiles[profile] = []);
+    store.push(row(session, 0, { source: "kanban", title: null, message_count: 1, input_tokens: 0, output_tokens: 0, api_call_count: 0 }));
+    this.server.storeMessage(session, { role: "user", text: `# Kanban task ${id}: ${t.title}\n\nwork kanban task ${id}` });
+    this.bots.set(run.id, session);
+    this.emit(t, "claimed", run.id, { lock: "hermes:1", run_id: run.id });
+    this.emit(t, "spawned", run.id, { pid: run.worker_pid });
+    this.emit(t, "owner_admitted", run.id, { session_id: session, request_id: `kanban:${JSON.stringify([profile, id, run.id])}` });
+    return run;
+  }
+
+  /** Each bot still at work on the task makes one model call: its chat's counts and rows grow, and an open run beats. */
+  work(id: string, said = "Working on it.") {
+    const t = this.find(id);
+    for (const run of t?.runs ?? []) {
+      const session = this.bots.get(run.id);
+      const chat = session && this.chatRow(session);
+      if (!t || !session || !chat) continue;
+      chat.input_tokens = (chat.input_tokens ?? 0) + 1000;
+      chat.output_tokens = (chat.output_tokens ?? 0) + 50;
+      chat.api_call_count = (chat.api_call_count ?? 0) + 1;
+      chat.message_count++;
+      this.server.storeMessage(session, { role: "assistant", text: said });
+      if (run.ended_at !== null) continue;
+      run.last_heartbeat_at = Math.floor(now());
+      this.emit(t, "heartbeat", run.id);
+    }
+  }
+
+  /** One dispatcher tick: a ready card with no bot goes to `defaultAssignee` when one is set, and every ready card with a bot is claimed. */
+  tick() {
+    for (const t of Object.values(this.boards).flatMap((b) => b.tasks)) {
+      if (t.status !== "ready") continue;
+      t.assignee ??= this.defaultAssignee || null;
+      if (t.assignee) this.claim(t.id);
+    }
+  }
+
+  /** `reclaim_task`: the run ends `reclaimed`, its bot stops, and the card goes back to where it was claimed from. */
+  private reclaim(t: KanbanRow, run: KanbanRun, reason: string) {
+    this.endRun(run, "reclaimed");
+    this.bots.delete(run.id);
+    t.status = this.claimedFrom.get(run.id) ?? "ready";
+    t.current_run_id = null;
+    this.emit(t, "reclaimed", run.id, { manual: true, reason, retry_status: t.status });
   }
 
   find(id: string): KanbanRow | undefined {
@@ -3960,17 +4071,32 @@ export class FakeKanban {
     for (const b of Object.values(this.boards)) b.tasks = b.tasks.filter((t) => t.id !== id);
   }
 
-  /** Moves the task to `status`, with a run when a worker picks it up, and wakes its chat as Hermes's poller does. */
+  /**
+   * Moves the task to `status`, with a run when a worker picks it up, and wakes its chat as Hermes's poller does.
+   * Leaving running ends the run's row. A block leaves that run's bot at work, as Hermes does. Blocking or completing
+   * a card no bot is working on writes a row of its own, which is not a task run.
+   */
   move(id: string, status: string): boolean {
     const t = this.find(id);
     if (!t) return false;
-    t.status = status;
-    if (status === "running" && !t.started_at) {
-      t.started_at = Math.floor(now());
-      t.current_run_id = `run_${++this.runSeq}`;
-      t.runs.push({ id: t.current_run_id, status: "running" });
+    const open = this.openRun(t);
+    if (status === "running") {
+      if (!open) this.claim(id);
+    } else {
+      const outcome = status === "done" ? "completed" : status;
+      let about = open?.id ?? null;
+      if (open) {
+        this.endRun(open, outcome);
+        if (status !== "blocked") this.bots.delete(open.id);
+      } else if (status === "blocked" || status === "done") {
+        const at = Math.floor(now());
+        about = ++this.runSeq;
+        t.runs.push({ id: about, task_id: id, profile: null, status: outcome, worker_pid: null, started_at: at, ended_at: at, outcome, last_heartbeat_at: null });
+      }
+      if (status === "blocked") this.emit(t, "blocked", about, { source_status: t.status });
+      t.status = status;
+      t.current_run_id = null;
     }
-    if (status === "done" || status === "blocked" || status === "review" || status === "archived") t.current_run_id = null;
     const notice = KANBAN_NOTICES[status]?.(t);
     const runtime = t.session_id ? this.server.runtimeIdOf(t.session_id) : undefined;
     if (!notice || !runtime) return true;
@@ -4014,10 +4140,13 @@ export class FakeKanban {
     if (this.missing) return undefined;
     const extra = /^\/api\/plugins\/kanban\/(links|assignees|profiles|model-options|orchestration|estimate)$/.exec(req.path)?.[1] as KanbanExtraRoute | undefined;
     if (extra) return this.without.has(extra) ? undefined : this.extraRoute(extra, req);
-    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments|\/estimate)?)?$/.exec(req.path);
+    const run = /^\/api\/plugins\/kanban\/runs\/([^/]+)\/terminate$/.exec(req.path)?.[1];
+    if (run !== undefined) return req.method === "POST" && !this.without.has("terminate") ? () => this.terminate(run, req.body ?? {}) : undefined;
+    const m = /^\/api\/plugins\/kanban\/(boards|board|workflow|tasks)(?:\/([^/]+)(\/comments|\/estimate|\/reassign)?)?$/.exec(req.path);
     if (!m) return undefined;
     const [, what, rawId, sub] = m;
     if (sub === "/estimate") return req.method === "POST" && !this.without.has("estimate") ? () => this.estimateTask(decodeURIComponent(rawId)) : undefined;
+    if (sub === "/reassign") return req.method === "POST" && !this.without.has("reassign") ? () => this.reassign(decodeURIComponent(rawId), req.body ?? {}) : undefined;
     const comments = !!sub;
     if (req.method !== "GET") return what === "tasks" ? () => this.write(req.method, rawId && decodeURIComponent(rawId), comments, req.body ?? {}) : undefined;
     if (comments) return undefined;
@@ -4050,8 +4179,53 @@ export class FakeKanban {
         const t = this.find(id);
         return t ? [{ id: t.id, title: t.title, status: t.status }] : [];
       });
-      return { task: listed(task), events: [], runs: task.runs, comments: task.comments ?? [], links, link_tasks };
+      return { task: listed(task), events: task.events ?? [], runs: task.runs, comments: task.comments ?? [], links, link_tasks };
     };
+  }
+
+  /**
+   * One write as Hermes takes it: logged in `writes`, refused or lost when `failNext` says, with `before` and
+   * `between` run around its change.
+   */
+  private written<T>(write: string, apply: () => T): T {
+    this.writes.push(write);
+    this.before?.(write);
+    const fail = this.failNext;
+    this.failNext = undefined;
+    if (typeof fail === "number") this.refuse(fail, "refused");
+    const answer = apply();
+    this.between?.(write);
+    if (fail === "lost") throw new Error("error sending request: connection reset");
+    return answer;
+  }
+
+  /** `POST runs/{id}/terminate`: stops one run, by Hermes's integer for it. */
+  private terminate(rawId: string, body: Record<string, unknown>) {
+    if (!/^\d+$/.test(rawId)) this.refuse(422, [{ type: "int_parsing", loc: ["path", "run_id"], msg: "Input should be a valid integer" }]);
+    const id = Number(rawId);
+    return this.written(`POST runs/${id}/terminate ${JSON.stringify(body)}`, () => {
+      const t = Object.values(this.boards).flatMap((b) => b.tasks).find((task) => task.runs.some((r) => r.id === id));
+      const run = t?.runs.find((r) => r.id === id);
+      if (!t || !run) this.refuse(404, `run ${id} not found`);
+      if (run.ended_at !== null) this.refuse(409, `run ${id} already ended`);
+      this.reclaim(t, run, String(body.reason ?? ""));
+      return { ok: true, run_id: id, task_id: t.id };
+    });
+  }
+
+  /** `POST tasks/{id}/reassign`: with `reclaim_first` a running card's run is stopped first, in a step of its own. */
+  private reassign(id: string, body: Record<string, unknown>) {
+    return this.written(`POST ${id}/reassign ${JSON.stringify(body)}`, () => {
+      const t = this.find(id);
+      if (!t) this.refuse(409, `cannot reassign ${id}: no such task`);
+      const open = this.openRun(t);
+      if (open && body.reclaim_first !== true) this.refuse(409, `cannot reassign ${id}: still running (pass reclaim_first=true to reclaim it first)`);
+      if (open) this.reclaim(t, open, String(body.reason ?? ""));
+      const from = t.assignee;
+      t.assignee = (typeof body.profile === "string" && body.profile) || null;
+      this.emit(t, "assigned", null, { assignee: t.assignee, from });
+      return { ok: true, task_id: id, assignee: t.assignee };
+    });
   }
 
   /** `_links_for`: the task's parents and children, each sorted by id. */
@@ -4114,7 +4288,7 @@ export class FakeKanban {
       case "GET orchestration":
         return () => ({
           orchestrator_profile: "",
-          default_assignee: "",
+          default_assignee: this.defaultAssignee,
           ...this.orchestration,
           resolved_orchestrator_profile: "default",
           resolved_default_assignee: "default",
@@ -4131,13 +4305,9 @@ export class FakeKanban {
   private linkWrite(method: string, ends: Record<string, unknown>) {
     const parent = String(ends.parent_id ?? "");
     const child = String(ends.child_id ?? "");
-    this.writes.push(method === "POST" ? `POST links ${JSON.stringify(ends)}` : `DELETE links ${parent} ${child}`);
-    const fail = this.failNext;
-    this.failNext = undefined;
-    if (typeof fail === "number") this.refuse(fail, "refused");
-    const answer = method === "POST" ? { ok: true, gated: this.link(parent, child) } : { ok: this.unlink(parent, child) };
-    if (fail === "lost") throw new Error("error sending request: connection reset");
-    return answer;
+    return this.written(method === "POST" ? `POST links ${JSON.stringify(ends)}` : `DELETE links ${parent} ${child}`, () =>
+      method === "POST" ? { ok: true, gated: this.link(parent, child) } : { ok: this.unlink(parent, child) },
+    );
   }
 
   /** `_run_estimate`: no title is refused before any model is asked; otherwise a guess from the text's length. */
@@ -4157,11 +4327,7 @@ export class FakeKanban {
 
   /** `POST tasks`, `PATCH tasks/{id}` and `POST tasks/{id}/comments`, as the plugin answers them. */
   private write(method: string, id: string | undefined, comments: boolean, body: Record<string, unknown>) {
-    this.writes.push([method, id && (comments ? `${id}/comments` : id), JSON.stringify(body)].filter(Boolean).join(" "));
-    const fail = this.failNext;
-    this.failNext = undefined;
-    if (typeof fail === "number") this.refuse(fail, "refused");
-    const answer = (() => {
+    return this.written([method, id && (comments ? `${id}/comments` : id), JSON.stringify(body)].filter(Boolean).join(" "), () => {
       if (method === "POST" && !id) {
         const key = typeof body.idempotency_key === "string" ? body.idempotency_key : undefined;
         const again = key && this.keys.get(key);
@@ -4202,9 +4368,7 @@ export class FakeKanban {
       if (typeof body.summary === "string") task.latest_summary = body.summary;
       if (typeof body.status === "string") this.move(task.id, body.status);
       return { task: listed(task) };
-    })();
-    if (fail === "lost") throw new Error("error sending request: connection reset");
-    return answer;
+    });
   }
 
   private refuse(status: number, detail: unknown): never {
@@ -4213,6 +4377,6 @@ export class FakeKanban {
 }
 
 /** A task as the routes list it: the stored row less what the plugin keeps to itself. */
-function listed({ subscribed: _, comments, ...t }: KanbanRow) {
+function listed({ subscribed: _, events: _events, comments, ...t }: KanbanRow) {
   return { body: null, priority: 0, tenant: null, latest_summary: null, result: null, model_override: null, provider_override: null, reasoning_effort: null, ...t, comment_count: comments?.length ?? 0 };
 }

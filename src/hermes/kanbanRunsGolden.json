@@ -1,0 +1,565 @@
+{
+ "from": "Hermes bf0203a, a throwaway server with a stub model, 2026-11-16. session.system_prompt and session.tool_names are cut.",
+ "taskRunning": {
+  "task": {
+   "id": "t_461bfbf0",
+   "title": "Fixture: running",
+   "body": null,
+   "assignee": "default",
+   "status": "running",
+   "priority": 0,
+   "created_by": "dashboard",
+   "created_at": 1794864859,
+   "started_at": 1794864860,
+   "completed_at": null,
+   "workspace_kind": "scratch",
+   "workspace_path": "/tmp/hermes604-gate/home/kanban/workspaces/t_461bfbf0",
+   "claim_lock": "hermes:1430541",
+   "claim_expires": 1794865763,
+   "tenant": null,
+   "branch_name": null,
+   "project_id": null,
+   "result": null,
+   "idempotency_key": null,
+   "consecutive_failures": 0,
+   "worker_pid": 1438656,
+   "last_failure_error": null,
+   "max_runtime_seconds": null,
+   "last_heartbeat_at": 1794864863,
+   "current_run_id": 3,
+   "workflow_template_id": null,
+   "current_step_key": null,
+   "skills": null,
+   "model_override": null,
+   "provider_override": null,
+   "reasoning_effort": null,
+   "max_retries": null,
+   "goal_mode": false,
+   "goal_max_turns": null,
+   "session_id": null,
+   "block_kind": null,
+   "block_recurrences": 0,
+   "completion_contract": "local-only",
+   "age": {
+    "created_age_seconds": 10,
+    "started_age_seconds": 9,
+    "time_to_complete_seconds": null
+   },
+   "latest_summary": null,
+   "current_run_started_at": 1794864860
+  },
+  "comments": [],
+  "events": [
+   {
+    "id": 12,
+    "task_id": "t_461bfbf0",
+    "kind": "created",
+    "payload": {
+     "assignee": "default",
+     "status": "ready",
+     "parents": [],
+     "creator_task_id": null,
+     "tenant": null,
+     "workspace_kind": "scratch",
+     "workspace_path": null,
+     "branch_name": null,
+     "project_id": null,
+     "skills": null,
+     "goal_mode": null,
+     "model_override": null,
+     "provider_override": null
+    },
+    "created_at": 1794864859,
+    "run_id": null
+   },
+   {
+    "id": 13,
+    "task_id": "t_461bfbf0",
+    "kind": "claimed",
+    "payload": {
+     "lock": "hermes:1430541",
+     "expires": 1794865760,
+     "run_id": 3
+    },
+    "created_at": 1794864860,
+    "run_id": 3
+   },
+   {
+    "id": 14,
+    "task_id": "t_461bfbf0",
+    "kind": "spawned",
+    "payload": {
+     "pid": 1438656,
+     "started_at": "f35617b5-3958-4526-956d-fef7f3b9bafe:682662678|745063385"
+    },
+    "created_at": 1794864860,
+    "run_id": 3
+   },
+   {
+    "id": 15,
+    "task_id": "t_461bfbf0",
+    "kind": "owner_admitted",
+    "payload": {
+     "db": "/tmp/hermes604-gate/home/state.db",
+     "session_id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+     "request_id": "kanban:[\"default\",\"t_461bfbf0\",3]",
+     "pid": 1430541,
+     "birth": 1794864705.19
+    },
+    "created_at": 1794864861,
+    "run_id": 3
+   },
+   {
+    "id": 16,
+    "task_id": "t_461bfbf0",
+    "kind": "worker_bound",
+    "payload": {
+     "pid": 1438669,
+     "claim_lock": "hermes:1430541",
+     "started_at": "f35617b5-3958-4526-956d-fef7f3b9bafe:682662678|745063410"
+    },
+    "created_at": 1794864862,
+    "run_id": 3
+   },
+   {
+    "id": 17,
+    "task_id": "t_461bfbf0",
+    "kind": "heartbeat",
+    "payload": null,
+    "created_at": 1794864863,
+    "run_id": 3
+   }
+  ],
+  "attachments": [],
+  "links": {
+   "parents": [],
+   "children": []
+  },
+  "link_tasks": [],
+  "child_results": [],
+  "runs": [
+   {
+    "id": 3,
+    "task_id": "t_461bfbf0",
+    "profile": "default",
+    "step_key": null,
+    "status": "running",
+    "claim_lock": "hermes:1430541",
+    "claim_expires": 1794865763,
+    "worker_pid": 1438656,
+    "max_runtime_seconds": null,
+    "last_heartbeat_at": 1794864863,
+    "started_at": 1794864860,
+    "ended_at": null,
+    "outcome": null,
+    "summary": null,
+    "metadata": null,
+    "error": null
+   }
+  ]
+ },
+ "taskStopped": {
+  "task": {
+   "id": "t_8cc654b9",
+   "title": "Worker probe: park, block, give back",
+   "body": null,
+   "assignee": "default",
+   "status": "blocked",
+   "priority": 0,
+   "created_by": "dashboard",
+   "created_at": 1794864711,
+   "started_at": 1794864715,
+   "completed_at": null,
+   "workspace_kind": "scratch",
+   "workspace_path": "/tmp/hermes604-gate/home/kanban/workspaces/t_8cc654b9",
+   "claim_lock": null,
+   "claim_expires": null,
+   "tenant": null,
+   "branch_name": null,
+   "project_id": null,
+   "result": null,
+   "idempotency_key": null,
+   "consecutive_failures": 0,
+   "worker_pid": null,
+   "last_failure_error": null,
+   "max_runtime_seconds": null,
+   "last_heartbeat_at": 1794864719,
+   "current_run_id": null,
+   "workflow_template_id": null,
+   "current_step_key": null,
+   "skills": null,
+   "model_override": null,
+   "provider_override": null,
+   "reasoning_effort": null,
+   "max_retries": null,
+   "goal_mode": false,
+   "goal_max_turns": null,
+   "session_id": null,
+   "block_kind": null,
+   "block_recurrences": 1,
+   "completion_contract": "local-only",
+   "age": {
+    "created_age_seconds": 158,
+    "started_age_seconds": 154,
+    "time_to_complete_seconds": null
+   },
+   "latest_summary": "Stopped by the owner",
+   "current_run_started_at": null
+  },
+  "comments": [],
+  "events": [
+   {
+    "id": 1,
+    "task_id": "t_8cc654b9",
+    "kind": "created",
+    "payload": {
+     "assignee": "default",
+     "status": "ready",
+     "parents": [],
+     "creator_task_id": null,
+     "tenant": null,
+     "workspace_kind": "scratch",
+     "workspace_path": null,
+     "branch_name": null,
+     "project_id": null,
+     "skills": null,
+     "goal_mode": null,
+     "model_override": null,
+     "provider_override": null
+    },
+    "created_at": 1794864711,
+    "run_id": null
+   },
+   {
+    "id": 2,
+    "task_id": "t_8cc654b9",
+    "kind": "claimed",
+    "payload": {
+     "lock": "hermes:1430541",
+     "expires": 1794865615,
+     "run_id": 1
+    },
+    "created_at": 1794864715,
+    "run_id": 1
+   },
+   {
+    "id": 3,
+    "task_id": "t_8cc654b9",
+    "kind": "tip_scratch_workspace",
+    "payload": {
+     "message": "scratch workspaces are ephemeral \u2014 they're deleted when the task completes. Use --workspace worktree: (git worktree) or --workspace dir:/abs/path (existing dir) to preserve worker output."
+    },
+    "created_at": 1794864715,
+    "run_id": null
+   },
+   {
+    "id": 4,
+    "task_id": "t_8cc654b9",
+    "kind": "spawned",
+    "payload": {
+     "pid": 1431202,
+     "started_at": "f35617b5-3958-4526-956d-fef7f3b9bafe:682662678|745048849"
+    },
+    "created_at": 1794864715,
+    "run_id": 1
+   },
+   {
+    "id": 5,
+    "task_id": "t_8cc654b9",
+    "kind": "owner_admitted",
+    "payload": {
+     "db": "/tmp/hermes604-gate/home/state.db",
+     "session_id": "local-e7d5c4ab58c30aee308922f72f4de2708f9bb5e26535693fdc48b01dc0b0f71a",
+     "request_id": "kanban:[\"default\",\"t_8cc654b9\",1]",
+     "pid": 1430541,
+     "birth": 1794864705.19
+    },
+    "created_at": 1794864716,
+    "run_id": 1
+   },
+   {
+    "id": 6,
+    "task_id": "t_8cc654b9",
+    "kind": "worker_bound",
+    "payload": {
+     "pid": 1431293,
+     "claim_lock": "hermes:1430541",
+     "started_at": "f35617b5-3958-4526-956d-fef7f3b9bafe:682662678|745048948"
+    },
+    "created_at": 1794864718,
+    "run_id": 1
+   },
+   {
+    "id": 7,
+    "task_id": "t_8cc654b9",
+    "kind": "heartbeat",
+    "payload": null,
+    "created_at": 1794864719,
+    "run_id": 1
+   },
+   {
+    "id": 8,
+    "task_id": "t_8cc654b9",
+    "kind": "reclaimed",
+    "payload": {
+     "manual": true,
+     "reason": "Stopped by the owner",
+     "prev_lock": "hermes:1430541",
+     "retry_status": "ready",
+     "prev_pid": 1431202,
+     "host_local": true,
+     "termination_attempted": true,
+     "terminated": true,
+     "sigkill": false
+    },
+    "created_at": 1794864723,
+    "run_id": 1
+   },
+   {
+    "id": 9,
+    "task_id": "t_8cc654b9",
+    "kind": "assigned",
+    "payload": {
+     "assignee": null,
+     "from": "default"
+    },
+    "created_at": 1794864723,
+    "run_id": null
+   },
+   {
+    "id": 10,
+    "task_id": "t_8cc654b9",
+    "kind": "blocked",
+    "payload": {
+     "reason": "Stopped by the owner",
+     "kind": null,
+     "recurrences": 1,
+     "source_status": "ready"
+    },
+    "created_at": 1794864723,
+    "run_id": 2
+   },
+   {
+    "id": 11,
+    "task_id": "t_8cc654b9",
+    "kind": "assigned",
+    "payload": {
+     "assignee": "default",
+     "from": null
+    },
+    "created_at": 1794864723,
+    "run_id": null
+   }
+  ],
+  "attachments": [],
+  "links": {
+   "parents": [],
+   "children": []
+  },
+  "link_tasks": [],
+  "child_results": [],
+  "runs": [
+   {
+    "id": 1,
+    "task_id": "t_8cc654b9",
+    "profile": "default",
+    "step_key": null,
+    "status": "reclaimed",
+    "claim_lock": "hermes:1430541",
+    "claim_expires": null,
+    "worker_pid": null,
+    "max_runtime_seconds": null,
+    "last_heartbeat_at": 1794864719,
+    "started_at": 1794864715,
+    "ended_at": 1794864723,
+    "outcome": "reclaimed",
+    "summary": null,
+    "metadata": {
+     "prev_pid": 1431202,
+     "host_local": true,
+     "termination_attempted": true,
+     "terminated": true,
+     "sigkill": false
+    },
+    "error": "manual_reclaim: Stopped by the owner"
+   },
+   {
+    "id": 2,
+    "task_id": "t_8cc654b9",
+    "profile": null,
+    "step_key": null,
+    "status": "blocked",
+    "claim_lock": null,
+    "claim_expires": null,
+    "worker_pid": null,
+    "max_runtime_seconds": null,
+    "last_heartbeat_at": null,
+    "started_at": 1794864723,
+    "ended_at": 1794864723,
+    "outcome": "blocked",
+    "summary": "Stopped by the owner",
+    "metadata": null,
+    "error": null
+   }
+  ]
+ },
+ "session": {
+  "id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+  "runtime_revision": 9,
+  "runtime_generation": 1,
+  "source": "kanban",
+  "created_source": "kanban",
+  "user_id": "uid:1000",
+  "session_key": "agent:main:local:dm:local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+  "chat_id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+  "chat_type": "dm",
+  "thread_id": null,
+  "display_name": null,
+  "origin_json": "{\"chat_id\":\"local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b\",\"chat_name\":null,\"chat_topic\":null,\"chat_type\":\"dm\",\"platform\":\"local\",\"thread_id\":null,\"user_id\":\"uid:1000\",\"user_name\":null}",
+  "expiry_finalized": 0,
+  "model": "stub-model",
+  "model_config": "{\"_usage_anchor\": {\"base_count\": 1, \"base_last_fp\": \"b9fac5f33e0eb3be7c83531361c9de4ccaed9b6f73f1a4254467b66d525a421a\", \"base_last_role\": \"user\", \"base_prefix_fp\": \"21a6d5f99ad09b73c04d9ef904ec60e4d2e40f13c9da6679a529444cd1bc7698\", \"completion_tokens\": 50, \"prompt_tokens\": 1000}}",
+  "system_prompt": "(cut)",
+  "system_prompt_hash": "dbe5d8afed75c2e72371ab29f8121e8b7d1d4d161ee7b142b749461ad6796071",
+  "parent_session_id": null,
+  "started_at": 1794864861.067615,
+  "ended_at": null,
+  "end_reason": null,
+  "message_count": 2,
+  "tool_call_count": 1,
+  "input_tokens": 1000,
+  "output_tokens": 50,
+  "cache_read_tokens": 0,
+  "cache_write_tokens": 0,
+  "reasoning_tokens": 0,
+  "cwd": "/tmp/hermes604-gate/home/kanban/workspaces/t_461bfbf0",
+  "git_branch": null,
+  "git_repo_root": null,
+  "git_metadata_generation": 0,
+  "billing_provider": "custom",
+  "billing_base_url": "http://127.0.0.2:27640/v1",
+  "billing_mode": null,
+  "estimated_cost_usd": 0.0,
+  "actual_cost_usd": null,
+  "cost_status": "unknown",
+  "cost_source": "none",
+  "pricing_version": null,
+  "title": "Fixture: running",
+  "title_source": "llm",
+  "last_activity_at": 1794864863.9388762,
+  "last_activity_description": "starting new turn",
+  "last_activity_provenance": "unknown",
+  "api_call_count": 1,
+  "handoff_state": null,
+  "handoff_platform": null,
+  "handoff_error": null,
+  "compression_failure_cooldown_until": null,
+  "compression_failure_error": null,
+  "compression_fallback_streak": 0,
+  "compression_ineffective_count": 0,
+  "compression_recovery_deadline": null,
+  "compression_overload_streak": 0,
+  "profile_name": "default",
+  "transport_profile": null,
+  "rewind_count": 0,
+  "archived": 0,
+  "auto_archived": 0,
+  "pinned": 0,
+  "hidden": 0,
+  "last_read_at": null,
+  "tool_names": "(cut)",
+  "transcript_revision": 0,
+  "profile": "default",
+  "is_default_profile": true
+ },
+ "sessionMessages": {
+  "session_id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+  "profile": "default",
+  "messages": [
+   {
+    "id": 4,
+    "session_id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+    "role": "user",
+    "content": "# Kanban task t_461bfbf0: Fixture: running\n\nAssignee: default\nStatus:   running\nWorkspace: scratch @ /tmp/hermes604-gate/home/kanban/workspaces/t_461bfbf0\n\n\nwork kanban task t_461bfbf0",
+    "tool_call_id": null,
+    "tool_calls": null,
+    "tool_name": null,
+    "effect_disposition": null,
+    "timestamp": 1794864863.9612648,
+    "token_count": null,
+    "finish_reason": null,
+    "reasoning": null,
+    "reasoning_content": null,
+    "reasoning_details": null,
+    "codex_reasoning_items": null,
+    "codex_message_items": null,
+    "platform_message_id": null,
+    "observed": 0,
+    "active": 1,
+    "compacted": 0,
+    "api_content": null,
+    "display_kind": null,
+    "display_metadata": null,
+    "message_uid": "0ec86d6b4d5a42009a10cbe0a83af924",
+    "absorbed_message_uids": null,
+    "tool_call_uids": null,
+    "tool_call_uid": null
+   },
+   {
+    "id": 5,
+    "session_id": "local-a182a60c90b9ee95fad76affb0c5ce2ab37e0dea778d9b39dab8bc4c9dbadf6b",
+    "role": "assistant",
+    "content": "",
+    "tool_call_id": null,
+    "tool_calls": [
+     {
+      "call_id": "call_1794864864310",
+      "function": {
+       "arguments": "{\"command\": \"sleep 15; echo step 1\"}",
+       "name": "terminal"
+      },
+      "id": "call_1794864864310",
+      "response_item_id": "fc_1794864864310",
+      "type": "function"
+     }
+    ],
+    "tool_name": null,
+    "effect_disposition": null,
+    "timestamp": 1794864864.343079,
+    "token_count": null,
+    "finish_reason": "tool_calls",
+    "reasoning": null,
+    "reasoning_content": null,
+    "reasoning_details": null,
+    "codex_reasoning_items": null,
+    "codex_message_items": null,
+    "platform_message_id": null,
+    "observed": 0,
+    "active": 1,
+    "compacted": 0,
+    "api_content": null,
+    "display_kind": null,
+    "display_metadata": null,
+    "message_uid": "008d95200e2f4f1e9ad46dad46d6cf4c",
+    "absorbed_message_uids": null,
+    "tool_call_uids": "{\"call_1794864864310\": \"5938cfe2b1e34652a198990a819bd144\"}",
+    "tool_call_uid": null
+   }
+  ],
+  "pagination": {
+   "limit": 500,
+   "offset": 0,
+   "order": "latest",
+   "returned": 2
+  }
+ },
+ "orchestration": {
+  "orchestrator_profile": "",
+  "default_assignee": "",
+  "auto_decompose": false,
+  "auto_promote_children": true,
+  "resolved_orchestrator_profile": "default",
+  "resolved_default_assignee": "default",
+  "active_profile": "default"
+ }
+}

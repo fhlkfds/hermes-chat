@@ -457,7 +457,7 @@ describe("the Work page on its own", () => {
   const stub = (over: Partial<WorkApi>): WorkApi => ({
     loadBoard: async () => board,
     loadWorkflow: async () => workflow,
-    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [] }),
+    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [], runs: [] }),
     createTask: async () => ({}),
     editTask: async () => undefined,
     addComment: async () => {},
@@ -468,7 +468,7 @@ describe("the Work page on its own", () => {
     assignees: async () => [],
     profiles: async () => [],
     modelOptions: async () => [],
-    orchestration: async () => ({ autoDecompose: true, autoPromoteChildren: true }),
+    orchestration: async () => ({ autoDecompose: true, autoPromoteChildren: true, defaultAssignee: "" }),
     estimate: async () => ({ ok: false, reason: "no" }),
     estimateTask: async () => ({ ok: false, reason: "no" }),
     ...over,
