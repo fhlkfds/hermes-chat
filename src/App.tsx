@@ -61,6 +61,7 @@ import { policyOf } from "./hermes/chatKind";
 import { jobRunTitle } from "./hermes/cronJobs";
 import { botActivity, isBotChat, isBotChatTitle, newInBotChatNote, type Bot } from "./hermes/bots";
 import { blocksRestore, inboxAcks, inboxEntries, inboxScope, needsOwner, type InboxAcks, type InboxEntry } from "./hermes/inbox";
+import { searchEverywhere, type EverywhereFilter, type EverywhereOutcome, type EverywhereRow } from "./hermes/everywhere";
 import { LiveConnections, attention as attentionOf, withoutServer, type ChatRef, type LiveSummary } from "./hermes/liveConnections";
 import { handoffs as handoffsOf, nextHandoffChange, outstandingIds, type Handoff, type StopWaiting } from "./hermes/dispatched";
 import { ChatPane, type Comparing, type FollowUpHost, type JumpTarget } from "./ui/ChatPane";
@@ -898,6 +899,10 @@ function Screens({ links }: { links: LinkInbox }) {
           onDisconnect={disconnect}
           onOpenElsewhere={openElsewhere}
           onDismissElsewhere={dismissElsewhere}
+          everywhere={{
+            run: (f, signal, onUpdate) => searchEverywhere(f, { live: registry, signal, onUpdate }),
+            open: (row) => openAt(row.ref, { hit: row.hit }),
+          }}
           connectionGuard={connectionGuard}
           editGuard={editGuard}
           onSetUp={() => void editConnection(connection)}
@@ -1140,6 +1145,7 @@ export function Main({
   onDisconnect,
   onOpenElsewhere,
   onDismissElsewhere,
+  everywhere,
 }: {
   /**
    * Every live connection's summary, this one first (ADR 0125): the overview, the rail's counts, and the background
@@ -1157,6 +1163,14 @@ export function Main({
   onOpenElsewhere?: (e: InboxEntry) => void;
   /** Dismisses background connections' entries. */
   onDismissElsewhere?: (es: InboxEntry[]) => void;
+  /**
+   * Search's Everywhere scope (everywhere.ts): `run` searches every profile of every live connection, and `open` opens
+   * a row's chat on its connection and profile, at the words it matched. None: Search has this profile only.
+   */
+  everywhere?: {
+    run: (f: EverywhereFilter, signal: AbortSignal, onUpdate: (o: EverywhereOutcome) => void) => Promise<EverywhereOutcome>;
+    open: (row: EverywhereRow) => void;
+  };
   hermes: Hermes;
   /** The saved connection in use (connections.ts); a bare sign-in (in tests) is keyed by its address, as before. */
   connection: SavedConnection | SavedSignIn;
@@ -3869,6 +3883,18 @@ export function Main({
           onBulk={(p) => tagsStore.applyBulk(p)}
           onManageTags={() => openTags()}
           passKey={(e) => pickApp(e) === "search" || (!!screenshotShortcut && shortcutOf(e.nativeEvent) === screenshotShortcut)}
+          everywhere={
+            everywhere && {
+              run: everywhere.run,
+              onPick: (row) => {
+                setSearchOpen(false);
+                // A row on this connection goes straight to the link job, which asks before it leaves anything. One on
+                // another connection asks first, as an inbox entry from there does: switching drops this screen.
+                if (row.ref.connection === connection.id) everywhere.open(row);
+                else guard(() => everywhere.open(row));
+              },
+            }
+          }
         />
       )}
       {tagsOpen && <TagManager key={scope} store={tagsStore} profile={profile} returnTo={tagsReturn} onClose={() => setTagsOpen(false)} />}
