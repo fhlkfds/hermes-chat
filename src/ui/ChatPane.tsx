@@ -498,7 +498,6 @@ export function ChatPane({
   onCopyLink?: () => void;
   /** Deletes the chat, once the owner has said yes in the header menu's question. */
   onDelete?: () => void;
-  /** Opens the Scheduled jobs screen on the job a Job run's chat is a run of. */
   onOpenJob?: (jobId: string) => void;
   modelControls?: ReactNode;
   active?: boolean;
@@ -1128,7 +1127,6 @@ export function ChatPane({
           everything the original chat had, so it can't carry on from it. Start a new chat to continue.
         </div>
       ) : policy.readOnly === "jobRun" ? (
-        // Hermes refuses a message sent to a run's session, and stores the refusal in the run.
         <div className="composer-wrap read-only-note" role="note">
           <CalendarClock size={14} aria-hidden />
           <span>

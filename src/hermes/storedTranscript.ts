@@ -51,7 +51,6 @@ function toolContext(name: string, args: Record<string, unknown> | undefined): s
   return line.length > CONTEXT_MAX ? `${line.slice(0, CONTEXT_MAX - 3)}...` : line || undefined;
 }
 
-/** A row's `content` as text: the string itself, or a parts list's text with each image named, not sent. */
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -93,8 +92,6 @@ export function projectStored(rows: readonly unknown[]): TranscriptMessage[] {
           role,
           name,
           ...(context && { context }),
-          // `session.resume` keeps only the edit tools' results, to stay small; these rows are read whole anyway, and a
-          // run's results are the record of what it did.
           ...(row.content != null && { content: row.content }),
           ...(tool_call_id && { tool_call_id }),
           ...(call?.args && { args: call.args }),

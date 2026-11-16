@@ -1714,7 +1714,6 @@ export function Main({
   const shownProject = listable.find((p) => p.id === proj.selectedId);
   const projectScreenOpen = projectOpen && !!shownProject;
   const inShown = shownProject && new Set(proj.chats[shownProject.id] ?? []);
-  // A chat can be in `chats`, for its pane, and never in the list: a Bot Chat opened from the Bots view (ADR 0066).
   const inList = chats.filter((c) => policyOf(c).listed);
   const listed = inShown ? inList.filter((c) => inShown.has(c.id)) : inList;
   const unreadChats = inList.filter((c) => c.unread && !c.archived);
@@ -3512,7 +3511,6 @@ export function Main({
                     start: (job, text) => startTroubleshoot(hermes, troubleshoots, scope, profile, job, text, (id) => openChat(id)),
                     openChat: (id) => openChat(id),
                   }}
-                  // Hermes names a run only once it has ended; the chat takes its title from Hermes when it opens.
                   onOpenRun={(run, job) =>
                     run.sessionId && pick({ chatId: run.sessionId, source: "cron", title: jobRunTitle(run.startedAt, job.name), settled: true, updatedAt: run.endedAt ?? run.startedAt, snippet: [] })
                   }
@@ -4127,7 +4125,6 @@ function ChatView({
   onDelete: () => Promise<boolean>;
   /** Opens another chat in this pane: a branch just made. */
   onOpenChat: (id: string) => void;
-  /** Opens the Scheduled jobs screen on a job, from a run of it. */
   onOpenJob: (jobId: string) => void;
   /** Opens the chat a branch came from, at the message it was branched after. */
   onShowAt: (link: BranchLink) => void;
@@ -4149,8 +4146,7 @@ function ChatView({
   const composerText = useSyncExternalStore(savedDrafts.subscribe, () => savedDrafts.get(shownDraft));
   const stillIn = () => hermes.profile === profile;
   const policy = policyOf(chat);
-  // Sending, queueing and everything else that needs the chat's session on this connection.
-  const live = started && policy.session === "live";
+  const sessionHere = started && policy.session === "live";
 
   // A new chat takes each value from what the owner chose for it here, then the shown project's defaults, then the
   // profile (projectDefaults.ts). A pick here also stays the composer's Model pick, as before.
@@ -4300,7 +4296,7 @@ function ChatView({
   }, [autoSend]);
   // The chat's queue, shared by every pane showing it (ADR 0018). A chat not started yet has none.
   const queue = useSyncExternalStore(hermes.subscribe, () => hermes.getSnapshot().queues[chat.id]);
-  const queueApi: QueueApi | undefined = live
+  const queueApi: QueueApi | undefined = sessionHere
     ? {
         add: (text, attachments) => {
           const why = hermes.enqueue(chat.id, text, attachments);
@@ -4359,7 +4355,6 @@ function ChatView({
   const serverCommands = useServerCommands(hermes, status === "connected", profile);
   const skillCommands = useSkillCommands(hermes, status === "connected", profile);
   const caps = useCapabilities(hermes.capabilities);
-  // Another of the list's chats can be referenced: a Bot Chat is its bot's, and an archived one is out of sight.
   const referable = useMemo(
     () => listedChats.filter((c) => c.id !== chat.id && !c.archived && policyOf(c).listed && c.title.trim()).map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt })),
     [listedChats, chat.id],
@@ -4601,13 +4596,13 @@ function ChatView({
       voice={voice}
       // A Voice conversation's turn goes straight to the chat, as a slash command's message does: what the owner has
       // typed stays in the composer, and a failure is a Failed message (ADR 0111).
-      voiceSend={live ? (text) => hermes.sendTracked(chat.id, text) : undefined}
+      voiceSend={sessionHere ? (text) => hermes.sendTracked(chat.id, text) : undefined}
       commands={commands}
       references={{ desk: referenceDesk, onTextModelSettings: onTextGenerationSettings }}
       onDismissSideQuestion={(id) => hermes.dismissSideQuestion(chat.id, id)}
       followUp={followUp}
       compare={compare}
-      onCheckpoints={live && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
+      onCheckpoints={sessionHere && caps.caps.checkpoints.state !== "unsupported" ? () => hermes.checkCheckpoints(chat.id) : undefined}
       headActions={
         <>
           {started && inWorktree && (
@@ -4620,7 +4615,7 @@ function ChatView({
               <GitBranch size={13} aria-hidden /> <span className="mono">{inWorktree.branch}</span>
             </button>
           )}
-          {live && shownProject?.has && shownProject.defaults && (
+          {sessionHere && shownProject?.has && shownProject.defaults && (
             <button className={`icon-btn ${applying ? "on" : ""}`} title={`Apply ${shownProject.name}'s defaults to this chat…`} aria-pressed={applying} onClick={() => setApplying((a) => !a)}>
               <FolderCog size={16} />
             </button>
@@ -4631,7 +4626,7 @@ function ChatView({
       queue={queue}
       queueApi={queueApi}
       subagents={
-        live
+        sessionHere
           ? {
               refresh: () => hermes.refreshSubagents(chat.id),
               output: (id) => hermes.subagentOutput(chat.id, id),

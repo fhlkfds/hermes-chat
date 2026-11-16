@@ -167,7 +167,6 @@ export function inboxEntries({ profile, chats, connected, others, live, seen, ha
       if (here && (!connected || here.runtimeId || here.items.some(isWaiting))) continue;
       const listed = s.profile === profile ? here : others.byName[s.profile]?.chats?.find((c) => c.id === s.chatId);
       const owner = { profile: s.profile, title: listed?.title ?? s.title ?? "Untitled chat", source: listed?.source ?? s.source };
-      // A job's run under way is the scheduler's work, which the Scheduled jobs screen shows.
       if (!policyOf({ title: owner.title, source: owner.source ?? "other" }).inbox) continue;
       const base = { profile: owner.profile, chatId: s.chatId, title: owner.title, source: owner.source, at: s.at, stale };
       if (s.status === "working") add({ ...base, key: `running ${owner.profile} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });

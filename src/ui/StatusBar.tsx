@@ -157,7 +157,6 @@ export function StatusBar({
 }: {
   chat: Chat;
   status: ConnectionStatus;
-  /** Left out for a chat with no session to measure or compact. */
   context?: ContextApi;
 }) {
   const items = useShown();

@@ -1,5 +1,3 @@
-// A chat's stored rows as its transcript shows them (storedTranscript.ts), against rows shaped as Hermes v0.23.1
-// answers `GET /api/sessions/{id}/messages`.
 import { describe, expect, it } from "vitest";
 import { projectStored } from "./storedTranscript";
 
@@ -64,7 +62,6 @@ describe("projectStored", () => {
     const first = [row(1, "user", "go"), row(2, "assistant", "", { tool_calls: [call("c9", "terminal", { command: "uptime" })] })];
     const second = [row(3, "tool", "up 3 days", { tool_call_id: "c9" })];
     expect(projectStored([...first, ...second]).at(-1)).toMatchObject({ name: "terminal", context: "uptime" });
-    // Read a page at a time, the result would have lost its call.
     expect(projectStored(second)[0].name).toBe("tool");
   });
 

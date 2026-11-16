@@ -198,7 +198,6 @@ export function ScheduledJobs({
   connected: boolean;
   onClose: () => void;
   troubleshoot?: TroubleshootWiring;
-  /** Opens an agent run's chat, its whole transcript, in place of this screen. */
   onOpenRun?: (run: JobRun, job: CronJob) => void;
   /** The job to show first, instead of the list. */
   openJob?: string;
@@ -501,7 +500,6 @@ function RunRow({
   zone: JobsZone;
   result?: RunResult | string | "loading";
   onResult?: () => void;
-  /** Opens the run's whole chat; only an agent run has one. */
   onOpenChat?: () => void;
   /** Hands the job to Hermes with this run picked out; offered on a failed run. */
   onTroubleshoot?: () => void;

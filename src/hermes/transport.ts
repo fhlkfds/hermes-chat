@@ -114,8 +114,7 @@ const BOT_CHAT_RENAME = "A Bot Chat's name is how Hermes finds it, so it can't b
 /** Hermes runs only the job in a Job run's session, and stores a refusal in the run's history if it is sent a message. */
 const JOB_RUN_NO_SESSION = "A scheduled job's run can't be continued here.";
 const JOB_RUN_READ_ONLY = "This chat is a run of a scheduled job, so it's read-only here.";
-/** A Job run's chat is read this many stored rows at a time, and no further than this many pages. */
-const STORED_PAGE = 500;
+const HERMES_MESSAGES_PAGE_MAX = 500;
 const STORED_PAGES = 10;
 /** What this app stamped before, still shown as this app's. Hermes won't edit these chats. */
 const OLD_APP_SOURCE = "hermes-chat";
@@ -742,7 +741,6 @@ export class Hermes {
   private readSinceListRead = new Set<string>();
   /** Resumes in flight, so opening a chat and replying in it share one. */
   private resuming = new Map<string, Promise<string>>();
-  /** Reads of a stored chat's rows in flight, so two panes opening it share one (`readStored`). */
   private readingStored = new Map<string, Promise<void>>();
   /** The runtime sessions whose checkpoints check (`checkCheckpoints`) has gone out. */
   private checkpointsChecked = new Set<string>();
@@ -1725,10 +1723,9 @@ export class Hermes {
       // Nothing checked for the old profile's connection lands now; the new one checks again.
       this.capabilities.disconnected();
     }
-    // What the profile left shows in the switcher and the Inbox, so only the chats that can be there.
-    const counted = this.snapshot.chats.filter((c) => policyOf(c).inbox);
-    const unread = counted.filter((c) => c.unread).length;
-    const chats = counted.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
+    const canNotify = this.snapshot.chats.filter((c) => policyOf(c).inbox);
+    const unread = canNotify.filter((c) => c.unread).length;
+    const chats = canNotify.filter((c) => !c.archived).map((c): ListedChat => ({ id: c.id, title: c.title, at: c.updatedAt, unread: !!c.unread, source: c.source }));
     // A chat started here may not be in the saved list yet, so its Failed messages keep the title it had.
     for (const c of this.snapshot.chats) this.titlesSeen.set(`${from} ${c.id}`, c.title);
     const failures = this.snapshot.chats.flatMap((c) =>
@@ -2349,18 +2346,11 @@ export class Hermes {
     }
   }
 
-  /** Whether Hermes takes no session for the chat, so it is only ever read here: a Job run's (chatKind.ts). */
   private isStored(chatId: string): boolean {
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     return !!chat && policyOf(chat).session === "stored";
   }
 
-  /**
-   * Shows a chat Hermes takes no session for from its stored rows (`GET /api/sessions/{id}/messages`), read again each
-   * time it opens. Nothing is resumed, marked read or kept on this computer, and Hermes changes nothing for the read.
-   * Its session row says what Hermes calls it now and which job ran it. If the read fails the chat shows why, and the
-   * next open tries again. An answer for a profile or connection the owner has left is dropped.
-   */
   private readStored(chatId: string): Promise<void> {
     const under = this.readingStored.get(chatId);
     if (under) return under;
@@ -2368,7 +2358,6 @@ export class Hermes {
     const gen = this.generation;
     const left = () => this.profile !== profile || this.generation !== gen;
     this.patchChat(chatId, (c) => ({ ...c, loading: true }));
-    // A session Hermes no longer has answers 404 for its row; any other failure to read the row costs only its facts.
     const detail = () =>
       this.rest("GET", `${sessionPath(chatId)}?${new URLSearchParams({ profile })}`).then(
         (row) => (isObj(row) ? row : undefined),
@@ -2377,12 +2366,12 @@ export class Hermes {
     const pages = async () => {
       const rows: unknown[] = [];
       for (let page = 0; page < STORED_PAGES; page++) {
-        const query = new URLSearchParams({ profile, order: "oldest", limit: String(STORED_PAGE), offset: String(page * STORED_PAGE), inline_images: "false" });
+        const query = new URLSearchParams({ profile, order: "oldest", limit: String(HERMES_MESSAGES_PAGE_MAX), offset: String(page * HERMES_MESSAGES_PAGE_MAX), inline_images: "false" });
         const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { profile?: unknown; messages?: unknown };
         if (typeof res?.profile === "string" && res.profile !== profile) throw new Error(`Hermes answered for the ${res.profile} profile, not ${profile}.`);
         const got = Array.isArray(res?.messages) ? res.messages : [];
         rows.push(...got);
-        if (got.length < STORED_PAGE) return { rows, more: false };
+        if (got.length < HERMES_MESSAGES_PAGE_MAX) return { rows, more: false };
       }
       return { rows, more: true };
     };
@@ -2392,7 +2381,6 @@ export class Hermes {
         if (left()) return;
         const title = nonBlankText(row?.title);
         const jobId = nonEmptyText(row?.cron_job_id);
-        // A tool call and its result can be on different pages, so the rows are made into the transcript together.
         const items = historyItems(projectStored(rows));
         if (more) items.push({ kind: "error", id: LOAD_ERROR_ID, text: `This run has more than ${rows.length.toLocaleString("en-US")} stored rows. The rest aren't shown here.` });
         this.patchChat(chatId, (c) => ({
@@ -5209,7 +5197,6 @@ export class Hermes {
   private saveList(profile: string, chats: Chat[]) {
     this.cache.save(
       profile,
-      // A chat that isn't part of the list, such as a Bot Chat (ADR 0066), isn't kept as part of it.
       chats.filter((c) => policyOf(c).listed).map(({ id, title, source, settled, settledHere, archived, updatedAt, unread, folder }) => ({
         id,
         title,

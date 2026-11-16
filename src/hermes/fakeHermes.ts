@@ -2896,7 +2896,7 @@ export class FakeHermes {
         content: m.role === "tool" ? (m.result ?? m.content ?? null) : (m.text ?? m.content ?? null),
         tool_name: m.role === "tool" ? (m.name ?? null) : null,
         tool_call_id: m.tool_call_id ?? null,
-        // Parsed back into its list, as v0.23.1 answers (`_parse_tool_calls`); the column holds its JSON text.
+        // Parsed back into its list, as v0.23.1 answers (`_row_to_message_dict`); the column holds its JSON text.
         tool_calls: m.tool_calls ?? null,
         timestamp: m.timestamp ?? null,
         display_kind: m.display_kind ?? null,
@@ -2924,7 +2924,7 @@ export class FakeHermes {
   private sessionDetail(id: string, profile: string | null) {
     const s = this.storeOrFail(profile).find((r) => r.id === id);
     if (!s) throw new RestError(404, `{"detail":"Session not found"}`);
-    // Only the detail row names a cron session's job (`cron_run_of`); a list row never does.
+    // Only the detail row names a cron session's job (`cron_run_identity`); a list row never does.
     const job = Object.entries(this.cron.runs).find(([, runs]) => runs.some((r) => r.id === id))?.[0];
     return {
       ...s,

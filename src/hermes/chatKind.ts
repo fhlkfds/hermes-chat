@@ -1,5 +1,3 @@
-// What each kind of chat can do here. Every rule that differs by kind is a column of `CHAT_POLICY`, so a new kind
-// answers all of them at once and no screen asks about a chat's source or bot flag itself.
 import { isBotChat } from "./bots";
 import type { Chat } from "./model";
 
@@ -24,7 +22,7 @@ export type ChatPolicy = {
   /** Edit and Regenerate. */
   replay: boolean;
   branch: boolean;
-  /** Pin, Settle, Archive, Delete and Rename. */
+  /** Pin, Settle, Archive and Delete. */
   manage: boolean;
   /** A chat link opens it by its id. A Bot Chat is found by its title each time, so it has none. */
   link: boolean;

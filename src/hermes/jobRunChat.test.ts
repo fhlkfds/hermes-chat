@@ -1,5 +1,3 @@
-// A Job run's chat against a fake Hermes: it is read from its stored rows and nothing about it is written, however it
-// is reached (chatKind.ts, storedTranscript.ts).
 import { describe, expect, it } from "vitest";
 import { FakeHermes, row, type TranscriptMessage } from "./fakeHermes";
 import { inboxEntries } from "./inbox";
@@ -13,7 +11,6 @@ const RUN = "local-run-1";
 const PREAMBLE = "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your final response will be automatically delivered to the user.]";
 const STARTED = Math.floor(Date.now() / 1000) - 3600;
 
-/** A run of the Disk check job as v0.23.1 stores one: the assembled prompt, a tool step and the reply. */
 const runRows = (): TranscriptMessage[] => [
   { role: "user", text: `${PREAMBLE}\n\nCheck the disk usage on the server.`, row_id: 101 },
   { role: "assistant", text: "Checking the root filesystem first.", row_id: 102, tool_calls: [{ id: "call_1", type: "function", function: { name: "terminal", arguments: '{"command": "df -h /"}' } }] },
@@ -25,7 +22,6 @@ async function signedIn(over: Parameters<typeof row>[2] = {}) {
   const server = new FakeHermes();
   server.sessions = [
     row("backup", 1, { pinned: true, title: "Nightly backup" }),
-    // Marked unread on the server, as only another client could have left it.
     row(RUN, 0, { source: "cron", title: "Disk check · Nov 16 14:40", preview: PREAMBLE, started_at: STARTED, last_active: STARTED + 60, last_read_at: 0, ...over }),
   ];
   server.transcripts[RUN] = runRows();
@@ -73,7 +69,6 @@ describe("A job run's chat", () => {
     expect(chat(s)!.items.at(-1)).toMatchObject({ kind: "assistant", text: "One more line, added by the run." });
     expect(chat(s)!.savedAt).toBeUndefined();
     expect(s.cache.loadTranscript("default", RUN)).toBeUndefined();
-    // The list kept for the next start is the chat list, which a run isn't in.
     expect(s.cache.load("default").map((c) => c.id)).toEqual(["backup"]);
   });
 
@@ -154,7 +149,6 @@ describe("A job run's chat", () => {
     const run = { id: RUN, title: "Disk check", source: "cron" as const, settled: true, updatedAt: 1, unread: true, running: true, items: [{ kind: "error" as const, id: "e1", text: "The run failed." }] };
     const sources = { profile: "default", connected: true, others: { byName: {} }, live: { sessions: [{ chatId: "local-run-2", status: "working" as const, at: 2, profile: "default", title: "Disk check", source: "cron" as const }] } };
     expect(inboxEntries({ ...sources, chats: [run] }).entries).toEqual([]);
-    // The same chat from another platform is listed for each.
     expect(inboxEntries({ ...sources, chats: [{ ...run, source: "other" }], live: { sessions: [{ ...sources.live.sessions[0], source: "other" }] } }).entries.map((e) => e.kind)).toEqual(["failed", "completed", "running", "running"]);
   });
 });

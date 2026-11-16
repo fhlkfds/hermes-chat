@@ -1,7 +1,4 @@
 // @vitest-environment jsdom
-// A Job run's chat in the app, against a fake Hermes holding one run as v0.23.1 stores it: the scheduler's prompt, a
-// tool step and the reply. However the run is reached it opens read-only, and the fake is sent nothing that would
-// start a session in it or change it. The job and its run are fixtures; nothing is scheduled anywhere.
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -47,7 +44,6 @@ const runRows = (started: number): TranscriptMessage[] => [
   { role: "assistant", text: REPLY, row_id: 104, timestamp: started + 5 },
 ];
 
-/** A read chat, a chat from another platform, and one run of the Disk check job that the server marks unread. */
 function server() {
   const s = new FakeHermes();
   const started = Math.floor(Date.now() / 1000) - 3600;
@@ -91,8 +87,7 @@ const sidebar = () => document.querySelector<HTMLElement>(".sidebar")!;
 const palette = () => screen.getByRole("dialog", { name: "Search chats" });
 const hits = () => [...palette().querySelectorAll(".hit-name")].map((e) => e.textContent);
 const resumed = (s: FakeHermes) => s.requests.filter((r) => r.method === "session.resume").map((r) => r.params.session_id);
-/** Everything the fake was sent that isn't a read, and anything at all over the socket about the run. */
-const written = (s: FakeHermes) => [
+const touchedRun = (s: FakeHermes) => [
   ...s.restRequests.filter((r) => r.method !== "GET" && r.path.includes(RUN)).map((r) => `${r.method} ${r.path}`),
   ...s.requests.filter((r) => JSON.stringify(r.params).includes(RUN)).map((r) => r.method),
 ];
@@ -118,7 +113,6 @@ describe("A job run's chat", () => {
     expect(document.querySelector(".jobs-screen")).toBeNull();
     expect(pane().querySelector(".chat-title")!.textContent).toContain(RUN_TITLE);
     expect(within(pane()).getByText(/Check the disk usage on the server\./)).toBeTruthy();
-    // The scheduler's own instructions are part of what the agent was given, so they show.
     expect(pane().textContent).toContain("You are running as a scheduled cron job");
     expect(pane().textContent).toMatch(/terminal/);
     expect(pane().textContent).toContain("df -h /");
@@ -130,7 +124,7 @@ describe("A job run's chat", () => {
     expectReadOnly();
 
     expect(resumed(app.s)).toEqual([]);
-    expect(written(app.s)).toEqual([]);
+    expect(touchedRun(app.s)).toEqual([]);
     expect(app.s.sessions.find((r) => r.id === RUN)!.last_read_at).toBe(0);
   });
 
@@ -154,7 +148,7 @@ describe("A job run's chat", () => {
     await within(run).findByText(/terminal/);
     expect(run.textContent).not.toContain("No steps to show.");
     expect(resumed(app.s)).toEqual([]);
-    expect(written(app.s)).toEqual([]);
+    expect(touchedRun(app.s)).toEqual([]);
   });
 
   it("opens its job from the note", async () => {
@@ -202,7 +196,7 @@ describe("Job runs and the chat list", () => {
     absent();
     act(() => app.tray.pick("inbox"));
     expect(inboxRows()).toEqual([]);
-    expect(written(app.s)).toEqual([]);
+    expect(touchedRun(app.s)).toEqual([]);
     expect(app.s.sessions.find((r) => r.id === RUN)!.last_read_at).toBe(0);
   });
 });
@@ -229,7 +223,7 @@ describe("Finding job runs", () => {
     expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull();
     expectReadOnly();
     expect(resumed(app.s)).toEqual([]);
-    expect(written(app.s)).toEqual([]);
+    expect(touchedRun(app.s)).toEqual([]);
   });
 
   it("keeps a Saved filter on Scheduled jobs through a restart", async () => {
@@ -261,6 +255,6 @@ describe("Finding job runs", () => {
     expectReadOnly();
     expect(within(pane()).getByRole("button", { name: "Open the job" })).toBeTruthy();
     expect(resumed(app.s)).toEqual([]);
-    expect(written(app.s)).toEqual([]);
+    expect(touchedRun(app.s)).toEqual([]);
   });
 });
