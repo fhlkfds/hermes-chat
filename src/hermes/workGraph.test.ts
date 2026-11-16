@@ -97,4 +97,44 @@ describe("the Work graph", () => {
     expect(height).toBe(2 * NODE.height + NODE.gapY);
     expect(arrow(at.get("a")!, at.get("b")!)).toMatch(new RegExp(`^M ${NODE.width} ${NODE.height / 2} C .* ${NODE.width + NODE.gapX} ${NODE.height / 2}$`));
   });
+
+  it("runs an arrow that skips a layer between that layer's cards, over no card but its own two", () => {
+    const edges = [
+      { parent: "a", child: "b" },
+      { parent: "a", child: "c" },
+      { parent: "b", child: "d" },
+      { parent: "a", child: "d" },
+    ];
+    const layers = layout(["a", "b", "c", "d"], edges);
+    expect(layers).toEqual([["a"], ["b", "c"], ["d"]]);
+    const { at } = place(layers);
+    const card = (id: string) => ({ ...at.get(id)!, w: NODE.width, h: NODE.height });
+    for (const e of edges) {
+      const others = [...at.keys()].filter((id) => id !== e.parent && id !== e.child).map(card);
+      const crossed = points(arrow(at.get(e.parent)!, at.get(e.child)!)).filter((p) => others.some((o) => p.x > o.x && p.x < o.x + o.w && p.y > o.y && p.y < o.y + o.h));
+      expect(crossed, `${e.parent} → ${e.child}`).toEqual([]);
+    }
+  });
 });
+
+/** Points along an SVG path made of `M`, `L` and `C` commands, every few pixels. */
+function points(d: string): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  let at = { x: 0, y: 0 };
+  for (const [, cmd, args] of d.matchAll(/([MLC])([^MLC]*)/g)) {
+    const n = args.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    const ps = Array.from({ length: n.length / 2 }, (_, i) => ({ x: n[2 * i], y: n[2 * i + 1] }));
+    const end = ps.at(-1)!;
+    for (let i = 0; i <= 100; i++) {
+      const t = i / 100;
+      if (cmd === "L") out.push({ x: at.x + (end.x - at.x) * t, y: at.y + (end.y - at.y) * t });
+      if (cmd === "C") {
+        const [p1, p2] = ps;
+        const mix = (a: number, b: number, c: number, e: number) => (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t ** 2 * c + t ** 3 * e;
+        out.push({ x: mix(at.x, p1.x, p2.x, end.x), y: mix(at.y, p1.y, p2.y, end.y) });
+      }
+    }
+    at = end;
+  }
+  return out;
+}

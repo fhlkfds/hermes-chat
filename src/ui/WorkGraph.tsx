@@ -92,7 +92,9 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
     g.nodes.map((n) => n.id),
     g.edges,
   );
-  const { at, width, height } = place(layers);
+  const { at, width, height: drawn } = place(layers);
+  // Room under the last row for an arrow that skips a layer in a graph one row tall.
+  const height = drawn + NODE.gapY;
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
   const titleOf = (id: string) => byId.get(id)?.title ?? id;
 
@@ -125,8 +127,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
               const style = { left: scaled(pos.x), top: scaled(pos.y), width: scaled(NODE.width), height: scaled(NODE.height) };
               return n.task ? (
                 <div key={id} className="work-card work-node" role="button" tabIndex={0} style={style} title={n.task.body || n.task.title} onClick={() => onOpen(id)} onKeyDown={opensOnKey(() => onOpen(id))}>
-                  <CardFace t={n.task} />
-                  <span className="work-status work-node-status">{n.status}</span>
+                  <CardFace t={n.task} status={n.status} />
                   {said && <span className="sr-only">{said}</span>}
                 </div>
               ) : (

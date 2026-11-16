@@ -98,8 +98,8 @@ export function layout(ids: readonly string[], edges: readonly Edge[]): string[]
 
 /**
  * A card's size and the gaps between cards in the drawn graph, in CSS pixels at the default 14 px interface size. The
- * view multiplies them by `--ui-scale`, as the card's text grows with it. The height holds the card's four rows with
- * the title on two lines (styles.css, `.work-node`).
+ * view multiplies them by `--ui-scale`, as the card's text grows with it. The height holds the card's four rows at the
+ * line heights styles.css (`.work-node`) gives them, with the title on two lines.
  */
 export const NODE = { width: 184, height: 118, gapX: 44, gapY: 16 };
 
@@ -115,12 +115,23 @@ export function place(layers: readonly string[][]): { at: Map<string, { x: numbe
   };
 }
 
-/** The SVG path of an arrow from the right of `from` to the left of `to`. */
+/**
+ * The SVG path of an arrow from the right of `from` to the left of `to`. An arrow that skips a layer runs along the gap
+ * between two rows, nearest midway between its ends, past the cards of the layers between. Below a drawing's only row,
+ * that gap is under the drawing.
+ */
 export function arrow(from: { x: number; y: number }, to: { x: number; y: number }): string {
   const x1 = from.x + NODE.width;
   const y1 = from.y + NODE.height / 2;
   const x2 = to.x;
   const y2 = to.y + NODE.height / 2;
-  const bend = Math.max(24, Math.abs(x2 - x1) / 2);
-  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+  const curve = (xa: number, ya: number, xb: number, yb: number) => {
+    const bend = Math.max(24, Math.abs(xb - xa) / 2);
+    return `C ${xa + bend} ${ya}, ${xb - bend} ${yb}, ${xb} ${yb}`;
+  };
+  if (x2 - x1 <= NODE.gapX) return `M ${x1} ${y1} ${curve(x1, y1, x2, y2)}`;
+  const pitch = NODE.height + NODE.gapY;
+  const row = Math.max(1, Math.ceil(((y1 + y2) / 2 + NODE.gapY / 2) / pitch - 0.5));
+  const lane = row * pitch - NODE.gapY / 2;
+  return `M ${x1} ${y1} ${curve(x1, y1, x1 + NODE.gapX, lane)} L ${x2 - NODE.gapX} ${lane} ${curve(x2 - NODE.gapX, lane, x2, y2)}`;
 }
