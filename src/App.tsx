@@ -845,13 +845,15 @@ function Screens({ links }: { links: LinkInbox }) {
   // own notifications are Main's.
   const openElsewhereRef = useRef(openElsewhere);
   openElsewhereRef.current = openElsewhere;
-  // A budget notification from a background connection makes it the target; its Budgets open once it shows.
+  // A budget notification from a background connection makes it the target; its Budgets open once it shows. An unsaved
+  // edit asks first, as a chat link to another connection does; Keep editing drops the opening.
   const switchToRef = useRef(switchTo);
   switchToRef.current = switchTo;
   useEffect(() => {
     budgetOpener.switchTo = (id) => {
       const m = registry.get(id);
-      if (m) void switchToRef.current(m.connection);
+      if (!m) return budgetOpener.cancel(id);
+      void (editGuard.current?.() ?? Promise.resolve(true)).then((go) => (go ? void switchToRef.current(m.connection) : budgetOpener.cancel(id)));
     };
     return () => void (budgetOpener.switchTo = undefined);
   }, [registry]);

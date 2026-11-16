@@ -109,11 +109,14 @@ describe("BudgetWatch", () => {
 
   it("announces a threshold once while the app runs even when storage refuses its mark, and says a refused save", async () => {
     const storage = memoryStorage();
-    const { io } = hermes({ usd: 6 });
+    const spent = { usd: 2 };
+    const { io } = hermes(spent);
     const d = deps(io, storage);
     const w = new BudgetWatch(d);
     await w.save(draft("10"));
-    // The storage is full from here on.
+    expect(d.notify).not.toHaveBeenCalled();
+    // The storage is full from here on, and spending then passes 50%.
+    spent.usd = 6;
     storage.setItem = () => {
       throw new DOMException("full", "QuotaExceededError");
     };
@@ -192,5 +195,9 @@ describe("BudgetOpener", () => {
     o.open("c1");
     expect(shown).toHaveBeenCalledTimes(1);
     expect(o.switchTo).toHaveBeenCalledWith("c1");
+    // The owner kept an unsaved edit, so the switch didn't happen: c1 showing later doesn't open its Budgets.
+    o.cancel("c1");
+    o.showing("c1", shown);
+    expect(shown).toHaveBeenCalledTimes(1);
   });
 });

@@ -436,4 +436,9 @@ export class BudgetOpener {
     this.awaiting = id;
     this.switchTo?.(id);
   }
+
+  /** The switch to `id` didn't happen (the owner kept an unsaved edit, or the connection went): Budgets won't open later. */
+  cancel(id: string): void {
+    if (this.awaiting === id) this.awaiting = undefined;
+  }
 }
