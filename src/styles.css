@@ -2539,6 +2539,7 @@ label.memory-pick { cursor: pointer; }
 }
 .composer-wrap.read-only-note { display: flex; gap: 8px; align-items: flex-start; color: var(--text-2); line-height: 1.5; font-size: calc(13rem / 14); }
 .read-only-note svg { flex: none; margin-top: 3px; }
+.read-only-note .btn { flex: none; margin-left: auto; }
 
 /* ---------- server files (FileBrowser.tsx) ---------- */
 .files { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -3072,6 +3073,7 @@ label.memory-pick { cursor: pointer; }
 .job-history-error { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
 .job-result-toggle { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 2px 0; color: var(--muted); font-size: calc(12.5rem / 14); }
 .job-result-toggle:hover { color: var(--text); }
+.job-run-actions { display: flex; flex-wrap: wrap; gap: 2px 16px; }
 .job-result-toggle:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; border-radius: 4px; }
 .job-result { margin-top: 6px; }
 .job-result .job-prompt { margin: 0; max-height: 240px; }

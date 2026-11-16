@@ -3,6 +3,7 @@
 // resends anything. Each entry has a key that stays the same however often a reconnect or a check reports it again,
 // so it shows once. Dismissing an entry is kept on this computer, per connection, and touches nothing else: not
 // Unread, Active or Settled, nor Archived.
+import { policyOf } from "./chatKind";
 import { type ScopeSource, connectionScope } from "./connections";
 import type { Handoff } from "./dispatched";
 import type { Chat, Item, LiveSessions, OtherProfiles, Source } from "./model";
@@ -98,6 +99,7 @@ export function inboxEntries({ profile, chats, connected, others, live, seen, ha
 
   // The shown profile, as this connection sees it.
   for (const c of chats) {
+    if (!policyOf(c).inbox) continue;
     const base = { profile, chatId: c.id, title: c.title, stale: !connected };
     const handoff = handoffs?.get(c.id);
     // A reply held up by an Approval is listed as waiting, as a live session in another profile is.
@@ -165,6 +167,7 @@ export function inboxEntries({ profile, chats, connected, others, live, seen, ha
       if (here && (!connected || here.runtimeId || here.items.some(isWaiting))) continue;
       const listed = s.profile === profile ? here : others.byName[s.profile]?.chats?.find((c) => c.id === s.chatId);
       const owner = { profile: s.profile, title: listed?.title ?? s.title ?? "Untitled chat", source: listed?.source ?? s.source };
+      if (!policyOf({ title: owner.title, source: owner.source ?? "other" }).inbox) continue;
       const base = { profile: owner.profile, chatId: s.chatId, title: owner.title, source: owner.source, at: s.at, stale };
       if (s.status === "working") add({ ...base, key: `running ${owner.profile} ${s.chatId}`, kind: "running", summary: "Hermes is working on a reply." });
       else add({ ...base, key: `waiting ${owner.profile} ${s.chatId}`, kind: "approval", summary: "Hermes is waiting for your answer. Open the chat to see what it asks." });

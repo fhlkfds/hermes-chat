@@ -100,7 +100,7 @@ A chat with something new in it since the owner last opened it, in this app or a
 _Avoid_: new, unseen
 
 **Source**:
-The platform a chat was started on: this app, Telegram, Discord, the command line, the official Hermes desktop app, or a transcript file (an Imported transcript). A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
+The platform a chat was started on: this app, Telegram, Discord, the command line, the official Hermes desktop app, a transcript file (an Imported transcript), or a Scheduled job (a Job-run chat). A chat's source never changes, even after the owner replies from this app. Chats whose source is this app show no source icon.
 _Avoid_: origin, platform (as an attribute of a chat)
 
 **Imported chat**:
@@ -188,7 +188,7 @@ A label the owner puts on chats, in one profile. A chat can have several tags, o
 _Avoid_: label (in the app), category, folder, project
 
 **Chat filter**:
-What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Applying a filter changes no chat (ADR 0106).
+What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Job-run chats are found only when the Source asked for is Scheduled jobs. Applying a filter changes no chat (ADR 0106, ADR 0184).
 _Avoid_: query, view
 
 **Saved filter**:
@@ -579,7 +579,11 @@ _Avoid_: trigger, test run
 
 **Job run**:
 One run of a Scheduled job, as Hermes recorded it: an agent session, or the output a script job printed. Its state is running, succeeded, failed, or unknown, when Hermes recorded no outcome (the run's process stopped, or Hermes went on in a session it doesn't list). Its result is the agent's last reply, read from the session, or the script's output.
-_Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run is a Hermes session, but not one of the chats)
+_Avoid_: execution (Hermes's ledger word, fine in server-side talk), attempt, chat (an agent run's session opens as a Job-run chat, but it isn't one of the chats in the list)
+
+**Job-run chat**:
+The chat an agent Job run left: the Hermes session the run's agent worked in, with the prompt it got, its tool calls and its reply. It opens from **Open the chat** on the run in the job's history, from a search or Saved filter with the Scheduled jobs source, from Usage, or from a chat link. It is read-only. Hermes runs only the job in it and refuses a reply, so it has no composer, Edit, Regenerate or Branch. The app reads its stored messages and never resumes it, so opening it starts nothing on the server and doesn't mark it read. It stays out of the chat list, unread counts and the Inbox (ADR 0184).
+_Avoid_: cron chat, cron session (Hermes's words, fine in server-side talk), run log, transcript (the transcript is what it shows)
 
 **Troubleshoot** (a Scheduled job):
 The owner's action, on a job or on one of its failed Job runs, that hands the job to Hermes in a new Chat in the job's profile. The first message carries the job, its newest runs with their errors and results, and the problems the Scheduled jobs screen flags, with long text cut and recognisable secrets hidden; the owner sees and can edit it before it is sent. Hermes finds the cause and changes the job with its own cron tools, saying what it changed. When its reply ends, the Scheduled jobs screen reads the job again, shows what changed since the chat started, and offers Run now (ADR 0053).
@@ -665,10 +669,10 @@ _Avoid_: capability (a feature Hermes supports, ADR 0044), approval (Hermes aski
 - **Stop speaking** vs **Stop reply** (in a Voice conversation): Stop speaking stops the reply's audio and leaves the reply as it is; Stop reply is the composer's Stop, which has Hermes stop the reply itself.
 - **Automation** vs **Scheduled job**: both start Hermes tasks on the server, an automation when an event arrives, a scheduled job at set times. A route can also start a scheduled job on each event (`cron_job`); Highwing shows such a route but doesn't set it up. An automation's tasks are `webhook` sessions, listed among the chats as from another Hermes platform.
 - **Retry** (of a Delivery) vs **Retry** (of a Failed message): retrying a delivery has Hermes run the stored event again as a new task on the server, through the automation's rules as they are now; it never undoes what the failed attempt did.
-- **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's reply without opening it as a chat.
+- **Scheduled job** vs its **Job runs**: each run of an agent job is a Hermes session with source `cron`. The chat list leaves those out; the job's runs show on the Scheduled jobs screen, where Show the result reads a run's last reply and Open the chat opens its whole session as a read-only Job-run chat.
 - **Branch** vs Hermes's other children of a session: Hermes also gives `parent_session_id` to a chat it compressed onto a new session, and to subagent and tool sessions. Only one made with Branch from here is shown as a Branch, with where it came from. Hermes stores a branch made here with source `tui`, because of how the legacy resume records the live session; the app shows it as this app's chat (ADR 0027).
 - **Edit** (of a message) vs **Edit** of a Failed message vs **Edit** of a Server file: Edit under a message Hermes has makes a Version in a new branch and never changes the chat. Edit on a Failed message takes its words back into the composer. Edit of a Server file changes that file. **Regenerate** (a reply) makes a Version too; **Regenerate title** only renames the chat.
-- **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` chats aren't listed, and any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
+- **Source** vs the `source` field on a Hermes session: the app derives a chat's Source from that field, but the field has more values than the app shows. `gui` (what this app stamps on chats it starts) and `hermes-chat` (what it stamped before; Hermes won't edit those) count as this app, and `cli` and `tui` as the command line. `cron` sessions are Job-run chats: never listed, and found with the Scheduled jobs source. Any other value (for example `api_server`, `webhook`) shows as "another Hermes platform".
 - **Context window** vs **Usage**: the window is what the model reads on one call, now. Usage, cache reads included, adds up over every call in the chat, so a chat's cache reads can far exceed its window. The context inspector shows the cache as billing, apart from the window's size.
 - **Memory** vs a **Saved copy** and the local cache: memory is the agent's, on the server, and changes what Hermes knows. Saved copies and drafts are this computer's copies of chats and change nothing in Hermes. Memory vs a memory *provider*: a profile may also use an external provider (such as Honcho) whose memories live with that provider; Settings → Memory names it but doesn't show or edit what it stores.
 - The project the list shows vs Hermes's *active* project: Hermes keeps one active project per profile for its own CLI and the official desktop app (`projects.set_active`). Picking a project in this app's list never changes it; the pick is kept on this computer.
