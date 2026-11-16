@@ -48,15 +48,15 @@ const legibleGraph = `(() => {
     if (a !== b && idOf(a) < idOf(b) && p.left < q.right && q.left < p.right && p.top < q.bottom && q.top < p.bottom) bad.push(idOf(a) + " overlaps " + idOf(b));
   }
   const byId = new Map(nodes.map((n) => [idOf(n), rect(n)]));
-  const svg = document.querySelector(".work-edges").getBoundingClientRect();
   for (const path of document.querySelectorAll(".work-edges path[data-edge]")) {
     const [from, to] = path.dataset.edge.split(" ");
-    const near = (pt, x, y) => Math.abs(svg.left + pt.x - x) < 1 && Math.abs(svg.top + pt.y - y) < 1;
+    const m = path.getScreenCTM(), on = (at) => path.getPointAtLength(at).matrixTransform(m);
+    const near = (pt, x, y) => Math.abs(pt.x - x) < 1 && Math.abs(pt.y - y) < 1;
     const f = byId.get(from), t = byId.get(to), length = path.getTotalLength();
-    if (!near(path.getPointAtLength(0), f.right, (f.top + f.bottom) / 2)) bad.push(path.dataset.edge + ": starts off its card's right middle");
-    if (!near(path.getPointAtLength(length), t.left, (t.top + t.bottom) / 2)) bad.push(path.dataset.edge + ": ends off its card's left middle");
+    if (!near(on(0), f.right, (f.top + f.bottom) / 2)) bad.push(path.dataset.edge + ": starts off its card's right middle");
+    if (!near(on(length), t.left, (t.top + t.bottom) / 2)) bad.push(path.dataset.edge + ": ends off its card's left middle");
     for (let at = 0; at <= length; at += 2) {
-      const pt = path.getPointAtLength(at), x = svg.left + pt.x, y = svg.top + pt.y;
+      const { x, y } = on(at);
       const over = [...byId].find(([id, r]) => id !== from && id !== to && x > r.left + 1 && x < r.right - 1 && y > r.top + 1 && y < r.bottom - 1);
       if (over) { bad.push(path.dataset.edge + ": crosses " + over[0]); break; }
     }
@@ -77,6 +77,12 @@ const menuOn = (chat) =>
   `(() => { const el = document.querySelector('.row-open[data-chat="${chat}"]'); const r = el.getBoundingClientRect();
      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 80, clientY: r.top + 20 })); })()`;
 const hd = { width: 1920, height: 1080 };
+// The Work page's Graph view, once every link is drawn.
+const workGraph = [
+  click("button[aria-label='Work']"),
+  click("button", "Graph"),
+  `new Promise((done, fail) => { const t0 = Date.now(); (function poll() { if (document.querySelectorAll("[data-edge]").length >= 12) done(); else if (Date.now() - t0 > 5000) fail(new Error("the graph never drew its links")); else setTimeout(poll, 50); })(); })`,
+];
 const openSettings = key(",", { ctrlKey: true });
 // Types into Settings' search box the way a person does, so React sees the change.
 const typeSearch = (text) =>
@@ -224,10 +230,10 @@ const scenes = {
   work: { query: "", ...hd, steps: [click("button[aria-label='Work']")] },
   "work-task": { query: "", steps: [click("button[aria-label='Work']"), click(".work-card", "Compare three NAS backup tools")] },
   "work-new": { query: "", steps: [click("button[aria-label='Work']"), click(".btn", "New task")] },
-  // The Graph view of a busy board (`?graph=1`), and the same at the largest interface size, each measured by `legibleGraph`.
-  "work-graph": { query: "?graph=1", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph")] },
-  "work-graph-check": { query: "?graph=1", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph"), legibleGraph] },
-  "work-graph-large": { query: "?graph=1&size=20", ...hd, steps: [click("button[aria-label='Work']"), click("[aria-label='View'] button", "Graph"), legibleGraph] },
+  // Every card in the Graph view of a busy board (`?graph=1`) reads in full, measured by `legibleGraph`.
+  "work-graph": { query: "?graph=1", ...hd, steps: [...workGraph, legibleGraph] },
+  // At the largest interface size the cards and the gaps between them grow with the text (appearance.ts sets both).
+  "work-graph-20px": { query: "?graph=1&size=20", ...hd, steps: [...workGraph, legibleGraph] },
   "automation-editor": { query: "", height: 1700, steps: [click("button[aria-label='Automations']"), click("button", "New automation")] },
   "automation-preview": { query: "", height: 1100, steps: [click("button[aria-label='Automations']"), click("button", "New automation"), scrollTo(".automation-preview")] },
   "automation-history": { query: "", height: 1400, steps: [click("button[aria-label='Automations']"), click("button", "triage-issues"), scrollTo(".delivery-list")] },

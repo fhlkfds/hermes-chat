@@ -3,12 +3,15 @@
 // task not on the board ends at a dashed ghost.
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { BoardTask, KanbanApi } from "../hermes/kanban";
-import { NODE, arrow, graphOf, layout, nodeSize, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
+import { NODE, arrow, graphOf, layout, place, readKey, toRead, type LinkRead } from "../hermes/workGraph";
 import { errorText, plural } from "../hermes/values";
 import { CardFace } from "./WorkPlan";
 
 /** How many tasks are read at once. */
 const AT_ONCE = 4;
+
+/** A length in the graph's own pixels, grown with the interface size as the cards' text is. */
+const scaled = (n: number) => `calc(${n}px * var(--ui-scale, 1))`;
 
 /** Enter and Space open a card that is a `div` with the button role. */
 export const opensOnKey = (open: () => void) => (e: KeyboardEvent) => {
@@ -89,8 +92,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
     g.nodes.map((n) => n.id),
     g.edges,
   );
-  const size = nodeSize(parseFloat(getComputedStyle(document.documentElement).fontSize) || 14);
-  const { at, width, height: drawn } = place(layers, size);
+  const { at, width, height: drawn } = place(layers);
   // Room under the last row for an arrow that skips a layer in a graph one row tall.
   const height = drawn + NODE.gapY;
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
@@ -105,15 +107,15 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
       )}
       {g.nodes.length ? (
         <div className="work-graph-scroll">
-          <div className="work-graph" style={{ width, height }}>
-            <svg className="work-edges" width={width} height={height} aria-hidden="true">
+          <div className="work-graph" style={{ width: scaled(width), height: scaled(height) }}>
+            <svg className="work-edges" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
               <defs>
                 <marker id={marker} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" />
                 </marker>
               </defs>
               {g.edges.map((e) => (
-                <path key={`${e.parent} ${e.child}`} data-edge={`${e.parent} ${e.child}`} d={arrow(at.get(e.parent)!, at.get(e.child)!, size)} markerEnd={`url(#${marker})`} />
+                <path key={`${e.parent} ${e.child}`} data-edge={`${e.parent} ${e.child}`} d={arrow(at.get(e.parent)!, at.get(e.child)!)} markerEnd={`url(#${marker})`} />
               ))}
             </svg>
             {layers.flat().map((id) => {
@@ -122,7 +124,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
               const waits = g.edges.filter((e) => e.child === id).map((e) => titleOf(e.parent));
               const then = g.edges.filter((e) => e.parent === id).map((e) => titleOf(e.child));
               const said = [waits.length && `Waits on ${waits.join(", ")}.`, then.length && `Then ${then.join(", ")}.`].filter(Boolean).join(" ");
-              const style = { left: pos.x, top: pos.y, ...size };
+              const style = { left: scaled(pos.x), top: scaled(pos.y), width: scaled(NODE.width), height: scaled(NODE.height) };
               return n.task ? (
                 <div key={id} className="work-card work-node" role="button" tabIndex={0} style={style} title={n.task.body || n.task.title} onClick={() => onOpen(id)} onKeyDown={opensOnKey(() => onOpen(id))}>
                   <CardFace t={n.task} status={n.status} />

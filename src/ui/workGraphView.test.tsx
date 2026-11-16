@@ -10,10 +10,7 @@ import type { BoardTask, TaskDetail } from "../hermes/kanban";
 import { UI_SIZES } from "./appearance";
 import { WorkGraph } from "./WorkGraph";
 
-afterEach(() => {
-  cleanup();
-  document.documentElement.style.fontSize = "";
-});
+afterEach(cleanup);
 
 const card = (id: string, children: number, status = "todo"): BoardTask => ({
   id,
@@ -111,13 +108,20 @@ function length(v: string | undefined, px: number): number {
   throw new Error(`not a length this test reads: ${v}`);
 }
 
+/** A length the graph sets on a card, `calc(Npx * var(--ui-scale, 1))`, in px at the interface size `px`. */
+function atSize(v: string, px: number): number {
+  const n = v.match(/^calc\((\d+(?:\.\d+)?)px \* var\(--ui-scale, 1\)\)$/);
+  if (!n) throw new Error(`not a length that grows with the interface size: ${v}`);
+  return (Number(n[1]) * px) / 14;
+}
+
 const NODE_RULE = ".settings .work-card.work-node";
 /** The rows of a graph card, top to bottom. A row takes the lines its `line-clamp` allows, or one line it doesn't wrap. */
 const rows = [
   { name: "meta", selector: `${NODE_RULE} .work-meta` },
   { name: "title", selector: `${NODE_RULE} .work-title` },
   { name: "body or blocked summary", selector: `${NODE_RULE} p` },
-  { name: "assignee", selector: `${NODE_RULE} > small`, icon: 13 },
+  { name: "assignee", selector: `${NODE_RULE} .work-assignee`, icon: 13 },
 ];
 
 /** The least height a card's box needs at the interface size `px`. */
@@ -129,7 +133,7 @@ function needed(px: number) {
     expect(value(d, "line-height"), `the ${row.name} row sets its line height, so the card's height doesn't hang on the font`).toBeDefined();
     const clamp = value(d, "line-clamp");
     if (!clamp) expect([value(d, "white-space"), value(d, "flex-wrap")], `the ${row.name} row keeps to one line`).toContain("nowrap");
-    expect(value(d, "flex"), `the ${row.name} row doesn't shrink`).toBe("none");
+    expect(value(d, "flex") ?? value(rule(`${NODE_RULE} > *`), "flex"), `the ${row.name} row doesn't shrink`).toBe("none");
     if (row.icon) expect(length(value(d, "line-height"), px), `the ${row.name} row is as tall as its icon`).toBeGreaterThanOrEqual((row.icon * px) / 14);
     return sum + Number(clamp ?? 1) * length(value(d, "line-height"), px);
   }, frame);
@@ -154,12 +158,11 @@ describe("the Graph view's cards", () => {
   });
 
   it.each(UI_SIZES)("hold every row of text whole, one above another, at the %ipx interface size", async (px) => {
-    document.documentElement.style.fontSize = `${px}px`;
     render(<WorkGraph tasks={tasks} api={{ loadTask }} refreshed={0} onOpen={() => {}} />);
     await act(async () => {});
     const box = (id: string) => {
       const el = [...document.querySelectorAll<HTMLElement>(".work-node")].find((n) => n.querySelector("code")?.textContent === id)!;
-      return { top: parseFloat(el.style.top), height: parseFloat(el.style.height) };
+      return { top: atSize(el.style.top, px), height: atSize(el.style.height, px) };
     };
     const [b, c] = [box("b"), box("c")];
     expect(b.height).toBeGreaterThanOrEqual(needed(px));
