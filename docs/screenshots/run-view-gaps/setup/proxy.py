@@ -5,19 +5,19 @@
 SIGUSR1 closes every connection it carries; it keeps listening, so the app reconnects through it. While a file named
 `<listen port>.hold` exists beside this script's working directory, new connections are refused, so the drop lasts.
 """
-import asyncio, os, signal, sys
+import asyncio, contextlib, os, signal, sys
 
 LHOST, LPORT, THOST, TPORT = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
 HOLD = f"{LPORT}.hold"
 live: set[asyncio.StreamWriter] = set()
 
 async def pipe(r: asyncio.StreamReader, w: asyncio.StreamWriter):
+    # SIGUSR1 aborts the sockets mid-copy, so a reset or broken pipe is the expected end of a pipe.
     try:
-        while data := await r.read(65536):
-            w.write(data)
-            await w.drain()
-    except Exception:
-        pass
+        with contextlib.suppress(OSError):
+            while data := await r.read(65536):
+                w.write(data)
+                await w.drain()
     finally:
         w.close()
 
