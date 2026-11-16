@@ -30,7 +30,7 @@ import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { ProfilesApi, profileFailure, toProfileRows, type ProfileFailure } from "./profiles";
-import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
+import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, sendNowRoute, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { CheckTimesStore, noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -3481,21 +3481,67 @@ export class Hermes {
   }
 
   /**
-   * Send now (ADR 0182): the queued message goes next, ahead of the rest, as soon as the chat can take it. A running
-   * reply is stopped first, and the stop doesn't pause the queue. Neither a pause nor a Failed message above holds it.
-   * The rest of the queue keeps its place and its pause. Pausing the queue, or a dropped connection, cancels it.
+   * Send now (ADR 0188), by `sendNowRoute`. A running reply is steered: the message stays in its place until Hermes
+   * takes it, then leaves the queue, and the reply and the rest of the queue carry on. Otherwise, or when Hermes had no
+   * reply to steer, it goes next, ahead of the rest, as soon as the chat can take it: a reply it can't be steered into
+   * is stopped for it, and that stop doesn't pause the queue. Neither a pause nor a Failed message above holds it. The
+   * rest keeps its place and its pause. Pausing the queue, removing the message, or a dropped connection cancels it,
+   * except that a pause can't cancel a steer Hermes hasn't answered, which holds the queue until the answer comes, and
+   * Send now in that chat does nothing meanwhile. While a queued message is being
+   * edited, a message that would be steered goes next instead, once the reply ends and the edit closes.
+   * `cantSteer`: why /steer can't run in the chat now, if it can't. Resolves with why Hermes refused the steer, which
+   * leaves the message where it was, unmarked; never rejects.
    */
-  sendQueuedNow(chatId: string, id: string) {
+  async sendQueuedNow(chatId: string, id: string, cantSteer: string | undefined): Promise<string | undefined> {
     const q = this.snapshot.queues[chatId];
     const item = q?.items.find((i) => i.id === id);
-    if (!q || !item) return;
-    this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
-    // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+    if (!q || !item || q.rush?.steering) return undefined;
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const profile = this.profile;
-    void this.resume(chatId).then(
-      () => (this.snapshot.queues[chatId]?.rush === id ? this.stop(chatId) : undefined),
-      (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
-    );
+    const route = sendNowRoute(item, chat ?? {}, cantSteer).by;
+    if (route === "steer" && this.queueHolds.has(chatId)) {
+      this.rushNext(chatId, id);
+      return undefined;
+    }
+    if (!chat?.runtimeId || route !== "steer") {
+      this.rushNext(chatId, id);
+      // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+      void this.resume(chatId).then(
+        () => (this.snapshot.queues[chatId]?.rush?.id === id ? this.stop(chatId) : undefined),
+        (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
+      );
+      return undefined;
+    }
+    this.setQueue(chatId, { ...q, rush: { id, steering: true } });
+    const sameProfile = () => this.profile === profile;
+    const stillMarked = () => sameProfile() && this.snapshot.queues[chatId]?.rush?.id === id;
+    const unmark = () => {
+      const { rush: _, ...rest } = this.snapshot.queues[chatId]!;
+      this.setQueue(chatId, rest);
+    };
+    let res: "steered" | "not running";
+    try {
+      res = await this.steer(chatId, item.text);
+    } catch (e) {
+      if (!stillMarked()) return undefined;
+      // The answer was lost, not refused: Hermes may have the words, so nothing in the queue goes until the owner looks.
+      if (e instanceof ConnectionLostError) this.pauseQueueFor(chatId, PAUSED.steerUnanswered);
+      unmark();
+      return e instanceof ConnectionLostError ? undefined : errorText(e);
+    }
+    if (res === "steered") {
+      if (sameProfile()) this.removeQueued(chatId, id);
+    } else if (stillMarked()) {
+      if (this.snapshot.queues[chatId]!.paused === undefined) this.rushNext(chatId, id);
+      else unmark();
+    }
+    return undefined;
+  }
+
+  private rushNext(chatId: string, id: string) {
+    const q = this.snapshot.queues[chatId];
+    const item = q?.items.find((i) => i.id === id);
+    if (q && item) this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: { id, steering: false } });
   }
 
   /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
@@ -3529,7 +3575,9 @@ export class Hermes {
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
     const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: why });
+    // A steer Hermes hasn't answered can't be called back, so its mark holds the queue until the answer comes.
+    const unanswered = rush?.steering ? { rush } : {};
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || (rush && !rush.steering))) this.setQueue(chatId, { ...q, ...unanswered, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
@@ -3537,7 +3585,7 @@ export class Hermes {
     const kept = this.cache.saveQueue(this.profile, chatId, next);
     const queues = { ...this.snapshot.queues };
     // An empty queue is kept only while paused (`pauseQueueFor`), and only here: a restart forgets it.
-    const rush = next.items.some((i) => i.id === next.rush) && next.rush;
+    const rush = next.items.some((i) => i.id === next.rush?.id) && next.rush;
     if (next.items.length || next.paused !== undefined)
       queues[chatId] = { items: next.items, ...(next.paused !== undefined && { paused: next.paused }), ...(!kept && { unsaved: true }), ...(rush && { rush }) };
     else delete queues[chatId];
@@ -3564,7 +3612,8 @@ export class Hermes {
   private pump() {
     if (this.closing || this.snapshot.status !== "connected" || restartHold.on || this.role === "background") return;
     for (const [chatId, q] of Object.entries(this.snapshot.queues)) {
-      const rush = q.items.find((i) => i.id === q.rush);
+      if (q.rush?.steering) continue;
+      const rush = q.items.find((i) => i.id === q.rush?.id);
       if (!q.items.length || (q.paused !== undefined && !rush) || this.queueHolds.has(chatId)) continue;
       const chat = this.snapshot.chats.find((c) => c.id === chatId);
       if (!chat || chat.running || chat.loading || this.resuming.has(chatId) || this.submitting.has(this.profile, chatId)) continue;
@@ -4591,7 +4640,9 @@ export class Hermes {
     if ((type === "message.complete" || type === "error") && chat.running) this.alert(NOTICES.finished);
     if (type === "message.complete") this.saveTranscript(chat.id);
     // A reply stopped for Send now ended as the owner asked: the message they chose goes, and the queue doesn't pause.
-    if ((type === "message.complete" || type === "error") && !this.snapshot.queues[chat.id]?.rush) {
+    const rush = this.snapshot.queues[chat.id]?.rush;
+    const stoppedForSendNow = rush !== undefined && !rush.steering;
+    if ((type === "message.complete" || type === "error") && !stoppedForSendNow) {
       const why = pauseAfter(type, payload, this.snapshot.chats.find((c) => c.id === chat.id)?.items ?? []);
       if (why) this.pauseQueueFor(chat.id, why);
     }
@@ -6184,6 +6235,7 @@ const PAUSED = {
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
+  steerUnanswered: "Hermes didn't answer a steer, so it may have gone into the reply. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 

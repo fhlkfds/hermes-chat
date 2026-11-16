@@ -198,11 +198,32 @@ export type Queued = { id: string; text: string; attachments?: Attachment[] };
 /**
  * A chat's queue, kept on this computer per connection, profile and chat. `paused`: why it waits for the owner's
  * Resume (the owner paused it, or the last reply ended in a way the owner should look at first). `unsaved`: the last
- * write to this computer's storage failed, so it lasts only until the app closes. `rush`: the id of the message the
- * owner chose Send now on, which goes as soon as the reply it stopped has ended, paused or not (ADR 0182). Kept only
- * while the app runs, and only while that message is still queued.
+ * write to this computer's storage failed, so it lasts only until the app closes. `rush`: the message the owner chose
+ * Send now on (`Rush`). Kept only while the app runs, and only while that message is still queued.
  */
-export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean; rush?: string };
+export type ChatQueue = { items: Queued[]; paused?: string; unsaved?: boolean; rush?: Rush };
+
+/**
+ * Send now's mark on one queued message (ADR 0188). `steering`: a /steer carrying it into the running reply waits for
+ * Hermes's answer, and until then none of the chat's queue goes, since the answer decides what goes first. Otherwise
+ * it goes next, ahead of the rest and paused or not, and the reply that ends before it doesn't pause the queue.
+ */
+export type Rush = { id: string; steering: boolean };
+
+/** What Send now does with a queued message (ADR 0188). `stop`: stops the running reply for it, saying `why`. */
+export type SendNowRoute = { by: "send" } | { by: "steer" } | { by: "stop"; why: string };
+
+/**
+ * What Send now does with `item` in `chat` (ADR 0188). With no reply running, or one the owner is already stopping,
+ * it just goes next. A running reply is steered unless a steer can't carry it, and then it's stopped for it.
+ * `cantSteer`: why /steer can't run in the chat now, if it can't.
+ */
+export function sendNowRoute(item: Queued, chat: Pick<Chat, "running" | "stopping">, cantSteer: string | undefined): SendNowRoute {
+  if (!chat.running || chat.stopping) return { by: "send" };
+  if (item.attachments?.length) return { by: "stop", why: "It has files, and a steer carries only words." };
+  if (cantSteer) return { by: "stop", why: `/steer can't run here: ${cantSteer}` };
+  return { by: "steer" };
+}
 
 /** The most messages one chat's queue holds. */
 export const QUEUE_LIMIT = 20;

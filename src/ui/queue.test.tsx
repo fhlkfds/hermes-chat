@@ -78,9 +78,12 @@ function drag(source: Element, target: Element, clientY: number, { drop = true }
   return allowed;
 }
 
+const noSteer = (server: FakeHermes) => (server.commandCatalog = ["context"]);
+
 /** Signed in, with "Nightly backup" open and a reply streaming in it. */
-async function replying() {
+async function replying(setup?: (server: FakeHermes) => void) {
   const server = new FakeHermes();
+  setup?.(server);
   server.sessions = [row("backup", 1, { pinned: true, title: "Nightly backup" })];
   server.transcripts = { backup: [{ role: "user", text: "Why did the backup fail?" }, { role: "assistant", text: "The restic repo was locked." }] };
   const hermes = await connect(server.openPipe);
@@ -295,11 +298,11 @@ describe("While Hermes replies", () => {
     }
     expect(stops).toEqual([
       "Queued message 1 of 2",
-      "Send queued message 1 now, stopping the reply",
+      "Send queued message 1 now, steering it into the reply",
       "Edit queued message 1",
       "Remove queued message 1",
       "Queued message 2 of 2",
-      "Send queued message 2 now, stopping the reply",
+      "Send queued message 2 now, steering it into the reply",
     ]);
     expect(within(queue).queryByRole("button", { name: /Move queued message/ })).toBeNull();
   });
@@ -329,15 +332,57 @@ describe("While Hermes replies", () => {
     expect(prompts(s.server)).toEqual(["Unlock it", "later"]);
   });
 
-  it("Send now stops the reply and sends that message next, without pausing the rest", async () => {
+  it("Send now steers the message into the running reply, which runs on, and the rest wait for it", async () => {
     const s = await replying();
     for (const t of ["first", "urgent"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = () => queueIn(document.body)!;
-    await s.user.click(within(queue()).getByRole("button", { name: "Send queued message 2 now, stopping the reply" }));
+    const real = s.server.handlers["command.dispatch"];
+    let answer!: () => void;
+    s.server.handlers["command.dispatch"] = (r) => void (answer = () => real(r));
+    const sendNow = within(queue()).getByRole("button", { name: "Send queued message 2 now, steering it into the reply" });
+    expect(sendNow.title).toBe("Send now: steers it into the reply at its next step (Ctrl+Enter)");
+    await s.user.click(sendNow);
+    expect(queuedTexts(queue())).toEqual(["first", "urgent"]);
+    expect(within(rowOf(queue(), "urgent")).getByText("Now")).toBeTruthy();
+    expect(within(queue()).getByText(/^Steering yours into the reply\. It joins at the reply's next step/)).toBeTruthy();
+    expect(within(queue()).getByRole("button", { name: "Edit queued message 2" }).hasAttribute("disabled")).toBe(true);
+
+    await act(async () => answer());
+    await settle(s.hermes);
+    expect(queuedTexts(queue())).toEqual(["first"]);
+    expect(screen.getByText("Steered into the reply")).toBeTruthy();
+    expect(s.server.requests.filter((r) => r.method === "session.interrupt")).toHaveLength(0);
+    expect(within(queue()).getByText(/goes when this reply finishes/)).toBeTruthy();
+    expect(prompts(s.server)).toEqual(["Unlock it"]);
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "first"]);
+  });
+
+  it("says why when Hermes won't take Send now's steer, and leaves the message queued in its place", async () => {
+    const s = await replying();
+    for (const t of ["first", "urgent"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    s.server.handlers["command.dispatch"] = (r) => s.server.fail(r.id, 4009, "agent is compressing");
+    await s.user.click(within(queue()).getByRole("button", { name: "Send queued message 2 now, steering it into the reply" }));
+    expect((await within(rowOf(queue(), "urgent")).findByRole("alert")).textContent).toMatch(/^Hermes didn't take it as a steer: .*agent is compressing/);
+    expect(queuedTexts(queue())).toEqual(["first", "urgent"]);
+    expect(within(queue()).queryByText("Now")).toBeNull();
+    expect(s.server.requests.filter((r) => r.method === "session.interrupt")).toHaveLength(0);
+    await s.finish();
+    expect(prompts(s.server)).toEqual(["Unlock it", "first"]);
+  });
+
+  it("Send now stops the reply when /steer can't run, and sends that message next, without pausing the rest", async () => {
+    const s = await replying(noSteer);
+    for (const t of ["first", "urgent"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    const sendNow = within(queue()).getByRole("button", { name: "Send queued message 2 now, stopping the reply" });
+    expect(sendNow.title).toMatch(/^Send now: stops the reply\. \/steer can't run here: This Hermes doesn't list it/);
+    await s.user.click(sendNow);
     expect(queuedTexts(queue())).toEqual(["urgent", "first"]);
     expect(within(rowOf(queue(), "urgent")).getByText("Now")).toBeTruthy();
     expect(within(queue()).getByText("Stopping the reply to send yours now…")).toBeTruthy();
-    expect(within(queue()).getByRole("button", { name: "Send queued message 1 now, stopping the reply" }).hasAttribute("disabled")).toBe(true);
+    expect(within(queue()).getByRole("button", { name: "Send queued message 1 now" }).hasAttribute("disabled")).toBe(true);
     expect(s.server.requests.filter((r) => r.method === "session.interrupt")).toHaveLength(1);
     expect(prompts(s.server)).toEqual(["Unlock it"]);
 
@@ -365,7 +410,7 @@ describe("While Hermes replies", () => {
   });
 
   it("offers Pause to cancel Send now on a paused queue", async () => {
-    const s = await replying();
+    const s = await replying(noSteer);
     for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
     const queue = () => queueIn(document.body)!;
     await s.user.click(within(queue()).getByRole("button", { name: "Pause" }));

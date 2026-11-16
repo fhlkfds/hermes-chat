@@ -249,17 +249,227 @@ describe("The queue pauses when the owner should look first", () => {
   });
 });
 
-describe("Send now (ADR 0182)", () => {
+describe("Send now (ADR 0188)", () => {
   const interrupts = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "session.interrupt").length;
+  const steers = (q: Awaited<ReturnType<typeof replying>>) => q.server.requests.filter((r) => r.method === "command.dispatch").length;
+  const NO_STEER = "This Hermes doesn't list it, so it may not have it.";
+  const holdSteer = (server: FakeHermes) => {
+    const real = server.handlers["command.dispatch"];
+    let answer!: () => void;
+    server.handlers["command.dispatch"] = (r) => void (answer = () => real(r));
+    return () => answer();
+  };
 
-  it("stops the reply, then sends the chosen message ahead of the rest, and the queue goes on after its reply", async () => {
+  it("steers the chosen message into the running reply: the reply runs on, and the rest wait for it", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[2].id, undefined)).toBeUndefined();
+    expect(q.server.last("command.dispatch")?.params).toEqual({ name: "steer", arg: "three", session_id: q.chat().runtimeId });
+    expect(interrupts(q)).toBe(0);
+    expect(q.chat()).toMatchObject({ running: true });
+    expect(q.chat().items.at(-1)).toMatchObject({ kind: "user", text: "three", steer: true });
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })] });
+    await flush();
+    expect(q.sent()).toEqual([]);
+
+    await q.finish();
+    expect(q.sent()).toEqual([expect.objectContaining({ text: "one", queued: true })]);
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["one", "two"]);
+  });
+
+  it("leaves a message Hermes won't steer where it was, unmarked, and says why; nothing stops or pauses", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    q.server.handlers["command.dispatch"] = (r) => q.server.fail(r.id, 4009, "agent is compressing");
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined)).toMatch(/agent is compressing/);
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })] });
+    expect(interrupts(q)).toBe(0);
+    expect(q.chat()).toMatchObject({ running: true });
+    expect(q.chat().items.some((i) => i.kind === "user" && i.steer)).toBe(false);
+
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["one"]);
+  });
+
+  it("holds the queue when the reply ends before Hermes answers, then sends the chosen one first if Hermes had no reply to steer", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[2].id, undefined);
+    await flush();
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+    expect(q.queue()).not.toHaveProperty("paused");
+
+    q.server.steerable = false;
+    answer();
+    expect(await out).toBeUndefined();
+    await flush();
+    expect(q.sent()).toEqual([expect.objectContaining({ text: "three", queued: true })]);
+    expect(q.texts()).toEqual(["one", "two"]);
+    await q.finish();
+    expect(q.sent().map((p) => p.text)).toEqual(["three", "one"]);
+    expect(interrupts(q)).toBe(0);
+  });
+
+  it("holds the queue when the reply ends before Hermes answers, then sends only the rest once Hermes took the steer", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[2].id, undefined);
+    await flush();
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+
+    answer();
+    expect(await out).toBeUndefined();
+    await flush();
+    expect(q.chat().items).toContainEqual(expect.objectContaining({ kind: "user", text: "three", steer: true }));
+    expect(q.sent()).toEqual([expect.objectContaining({ text: "one", queued: true })]);
+    expect(q.texts()).toEqual(["two"]);
+  });
+
+  it("ignores Send now on another message while a steer waits for Hermes, so the chosen one keeps its place", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[2].id, undefined);
+    await flush();
+    await q.finish();
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined)).toBeUndefined();
+    await flush();
+    expect(q.sent()).toEqual([]);
+
+    q.server.steerable = false;
+    answer();
+    await out;
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["three"]);
+    expect(q.texts()).toEqual(["one", "two"]);
+  });
+
+  it("holds the queue through Pause and Resume until Hermes answers the steer, so the message never goes twice", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id, undefined);
+    await flush();
+    q.hermes().pauseQueue("c1");
+    await q.finish();
+    q.hermes().resumeQueue("c1");
+    await flush();
+    expect(q.sent()).toEqual([]);
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined)).toBeUndefined();
+    expect(steers(q)).toBe(1);
+
+    answer();
+    await out;
+    await flush();
+    expect(q.chat().items).toContainEqual(expect.objectContaining({ kind: "user", text: "one", steer: true }));
+    expect(q.sent().map((p) => p.text)).toEqual(["two"]);
+  });
+
+  it("pauses the queue, keeping the message, when Hermes never answers the steer, since it may have gone", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(await out).toBeUndefined();
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })], paused: expect.stringMatching(/didn't answer a steer/) });
+
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("doesn't steer while a queued message is being edited: the chosen one goes next, with its saved words, once the reply ends and the edit closes", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const release = q.hermes().holdQueue("c1");
+    const two = q.queue()!.items[1];
+    expect(await q.hermes().sendQueuedNow("c1", two.id, undefined)).toBeUndefined();
+    expect(steers(q)).toBe(0);
+    expect(interrupts(q)).toBe(0);
+    expect(q.hermes().editQueued("c1", two.id, "two, edited")).toBe(true);
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+
+    release();
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["two, edited"]);
+    expect(q.texts()).toEqual(["one"]);
+  });
+
+  it("pauses the queue when the reply ends stopped before Hermes answers, which cancels Send now", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await flush();
+    await q.finish({ status: "interrupted", text: "Checking" });
+    q.server.steerable = false;
+    answer();
+    expect(await out).toBeUndefined();
+    await flush();
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })], paused: expect.stringMatching(/stopped/) });
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("takes a steered message out of a queue paused while Hermes was answering, which stays paused", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await flush();
+    q.hermes().pauseQueue("c1");
+    answer();
+    expect(await out).toBeUndefined();
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" })], paused: "You paused it." });
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("keeps a message whose steer a profile switch cut off where it was, for the owner to check before Resume", async () => {
+    const q = await replying();
+    q.server.otherProfiles = { work: [row("w1", 0, { title: "Work chat" })] };
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await flush();
+    await q.hermes().switchProfile("work");
+    await q.hermes().idle();
+    answer();
+    expect(await out).toBeUndefined();
+
+    await q.hermes().switchProfile("default");
+    await q.hermes().idle();
+    expect(q.hermes().getSnapshot().queues.c1).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })], paused: expect.any(String) });
+    expect(q.sent()).toEqual([]);
+  });
+
+  it("stops the reply instead for a message with files, which a steer can't carry", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "first");
+    q.hermes().enqueue("c1", "Run this", [SCRIPT]);
+    await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await flush();
+    expect(steers(q)).toBe(0);
+    expect(interrupts(q)).toBe(1);
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent()).toEqual([expect.objectContaining({ text: expect.stringContaining("Run this"), queued: true })]);
+    expect(q.texts()).toEqual(["first"]);
+  });
+
+  it("stops the reply when /steer can't run, then sends the chosen message ahead of the rest, and the queue goes on after its reply", async () => {
     const q = await replying();
     for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
     const three = q.queue()!.items[2];
-    q.hermes().sendQueuedNow("c1", three.id);
+    void q.hermes().sendQueuedNow("c1", three.id, NO_STEER);
     expect(q.texts()).toEqual(["three", "one", "two"]);
-    expect(q.queue()).toMatchObject({ rush: three.id });
+    expect(q.queue()).toMatchObject({ rush: { id: three.id, steering: false } });
     await flush();
+    expect(steers(q)).toBe(0);
     expect(interrupts(q)).toBe(1);
     expect(q.chat()).toMatchObject({ running: true, stopping: true });
     expect(q.sent()).toEqual([]);
@@ -279,7 +489,7 @@ describe("Send now (ADR 0182)", () => {
     q.hermes().pauseQueue("c1");
     await q.finish();
     expect(q.sent()).toEqual([]);
-    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    void q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
     await flush();
     expect(interrupts(q)).toBe(0);
     expect(q.sent().map((p) => p.text)).toEqual(["two"]);
@@ -297,7 +507,7 @@ describe("Send now (ADR 0182)", () => {
     await flush();
     q.server.rejectPrompt = undefined;
     expect(q.queue()!.paused).toMatch(/didn't go/);
-    q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id);
+    void q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id, undefined);
     await flush();
     expect(q.sent().map((p) => p.text)).toEqual(["first", "second"]);
     expect(q.chat().items.filter(isOutgoing)).toMatchObject([{ text: "first", outgoing: { state: "failed" } }]);
@@ -308,22 +518,23 @@ describe("Send now (ADR 0182)", () => {
     q.hermes().enqueue("c1", "one");
     q.hermes().enqueue("c1", "two");
     q.hermes().pauseQueue("c1");
-    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    void q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, NO_STEER);
     q.hermes().resumeQueue("c1");
     await q.finish({ status: "interrupted", text: "Checking" });
     expect(q.sent().map((p) => p.text)).toEqual(["two"]);
     expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" })] });
   });
 
-  it("loads a chat not loaded yet and stops the reply loading finds", async () => {
+  it("loads a chat not loaded yet and stops the reply loading finds, which it can't steer into unloaded", async () => {
     const q = await replying();
     q.hermes().enqueue("c1", "now");
     q.server.reattachTurns = true;
     const again = await q.relaunch();
     expect(again.getSnapshot().queues.c1?.paused).toBeDefined();
-    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    void again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id, undefined);
     await flush();
     expect(q.chat()).toMatchObject({ running: true, stopping: true });
+    expect(steers(q)).toBe(0);
     expect(interrupts(q)).toBe(1);
     await q.finish({ status: "interrupted", text: "Checking" });
     expect(q.sent().map((p) => p.text)).toEqual(["now"]);
@@ -337,7 +548,7 @@ describe("Send now (ADR 0182)", () => {
     const sessions = q.server.sessions;
     let failOnce = true;
     Object.defineProperty(q.server, "sessions", { configurable: true, get: () => (failOnce ? ((failOnce = false), []) : sessions), set: () => {} });
-    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    void again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id, undefined);
     await flush();
     expect(again.getSnapshot().queues.c1).toEqual({ items: [expect.objectContaining({ text: "now" })], paused: expect.stringMatching(/^Couldn't load the chat: .*session not found/) });
     expect(q.sent()).toEqual([]);
@@ -346,7 +557,7 @@ describe("Send now (ADR 0182)", () => {
   it("is cancelled by Pause: the stopped reply then pauses the queue as Stop does", async () => {
     const q = await replying();
     q.hermes().enqueue("c1", "next");
-    q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id);
+    void q.hermes().sendQueuedNow("c1", q.queue()!.items[0].id, NO_STEER);
     q.hermes().pauseQueue("c1");
     expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "next" })], paused: "You paused it." });
     await q.finish({ status: "interrupted", text: "Checking" });
@@ -358,7 +569,7 @@ describe("Send now (ADR 0182)", () => {
     q.hermes().enqueue("c1", "keep");
     q.hermes().enqueue("c1", "drop");
     const drop = q.queue()!.items[1];
-    q.hermes().sendQueuedNow("c1", drop.id);
+    void q.hermes().sendQueuedNow("c1", drop.id, NO_STEER);
     q.hermes().removeQueued("c1", drop.id);
     expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "keep" })] });
     await q.finish({ status: "interrupted", text: "Checking" });
@@ -370,7 +581,7 @@ describe("Send now (ADR 0182)", () => {
     const q = await replying();
     q.hermes().enqueue("c1", "one");
     q.hermes().enqueue("c1", "two");
-    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    void q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, NO_STEER);
     const again = await q.relaunch();
     await again.open("c1");
     await flush();
