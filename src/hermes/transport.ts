@@ -2296,9 +2296,13 @@ export class Hermes {
     } else if (pictureWritten) asks?.delete(profile);
     const now: Partial<BotLook> | undefined = back && { ...back.look, ...(back.picture !== undefined && { picture: back.picture }) };
     const fields = settleEdits(out, edits, now, BOT_LOOK_SAME);
-    // A picture whose block keys didn't save isn't done: Hermes's desktop would still draw the old kind of face. It
-    // stays an edit, so the next Save writes the keys. A lost answer that the read-back shows landed is done.
-    if (pictureKeysFailure && picture && fields.picture?.kind === "saved" && !(back && !lacksPictureKeys(back.block, picture))) fields.picture = failed(pictureKeysFailure);
+    // A picture whose block keys aren't on Hermes isn't done: Hermes's desktop would still draw the old kind of face.
+    // It stays an edit, so the next Save writes the keys. That covers a block write that failed, and a picture whose
+    // own answer was lost, which the read-back shows stored but which no block write followed.
+    const wanted = pictureEdit && { cleared: pictureEdit.to === null };
+    const keysMissing = wanted && (back ? lacksPictureKeys(back.block, wanted) : !!pictureKeysFailure);
+    if (wanted && keysMissing && fields.picture?.kind === "saved")
+      fields.picture = failed(pictureKeysFailure ?? { kind: "lost", message: "Hermes stored the picture but didn't confirm it, so the bot doesn't say it has one yet. Save again." });
     return { fields, ...(now && { now }) };
   }
 

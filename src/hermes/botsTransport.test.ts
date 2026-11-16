@@ -571,6 +571,31 @@ describe("Editing a bot (ADR 0188)", () => {
     expect(stored(server)).toMatchObject({ custom: true, imageKind: "photo", title: "Scribe", sectionId: "s1" });
   });
 
+  it("a picture whose answer was lost isn't done until its block says it has one", async () => {
+    const { server, hermes } = await editing();
+    const setAsset = server.handlers["profiles.set_asset"];
+    // Hermes stores the picture, and its answer never arrives.
+    server.handlers["profiles.set_asset"] = (r) => {
+      const respond = server.respond;
+      server.respond = () => {};
+      setAsset(r);
+      server.respond = respond;
+    };
+    vi.useFakeTimers();
+    const saving = hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    await vi.advanceTimersByTimeAsync(121_000);
+    const first = await saving;
+    vi.useRealTimers();
+    expect(server.botAvatars.scribe).toBe(MINE);
+    expect(stored(server).imageKind).toBeUndefined();
+    expect(first.fields.picture?.kind).toBe("failed");
+
+    server.handlers["profiles.set_asset"] = setAsset;
+    const second = await hermes.editBot("scribe", { picture: { from: SHOWN, to: MINE } });
+    expect(second.fields).toEqual({ picture: { kind: "saved" } });
+    expect(stored(server)).toMatchObject({ custom: true, imageKind: "photo", title: "Scribe", sectionId: "s1" });
+  });
+
   it("a Hermes without profiles.configure loses only Pin, Hide and the look fields", async () => {
     const { server, hermes } = await editing();
     server.handlers["profiles.configure"] = (r) => server.fail(r.id, -32601, "unknown method: profiles.configure");
