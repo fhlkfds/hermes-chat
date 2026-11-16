@@ -329,6 +329,20 @@ describe("Send now (ADR 0182)", () => {
     expect(q.sent().map((p) => p.text)).toEqual(["now"]);
   });
 
+  it("pauses the queue, saying why, when the chat it must load first can't be loaded, rather than wait on a later load's reply", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "now");
+    q.server.reattachTurns = true;
+    const again = await q.relaunch();
+    const sessions = q.server.sessions;
+    let failOnce = true;
+    Object.defineProperty(q.server, "sessions", { configurable: true, get: () => (failOnce ? ((failOnce = false), []) : sessions), set: () => {} });
+    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    await flush();
+    expect(again.getSnapshot().queues.c1).toEqual({ items: [expect.objectContaining({ text: "now" })], paused: expect.stringMatching(/^Couldn't load the chat: .*session not found/) });
+    expect(q.sent()).toEqual([]);
+  });
+
   it("is cancelled by Pause: the stopped reply then pauses the queue as Stop does", async () => {
     const q = await replying();
     q.hermes().enqueue("c1", "next");

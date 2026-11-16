@@ -3168,9 +3168,10 @@ export class Hermes {
     if (!q || !item) return;
     this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
     // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+    const profile = this.profile;
     void this.resume(chatId).then(
       () => (this.snapshot.queues[chatId]?.rush === id ? this.stop(chatId) : undefined),
-      () => {},
+      (e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)),
     );
   }
 
@@ -3201,11 +3202,11 @@ export class Hermes {
 
   /**
    * Pauses a queue that has messages, unless it is paused already, saying `why`. `evenEmpty`: an empty one too, so the
-   * messages queued next wait for the owner's Resume.
+   * messages queued next wait for the owner's Resume. A pause cancels Send now, and then `why` says what stopped it.
    */
   private pauseQueueFor(chatId: string, why: string, evenEmpty = false) {
     const { rush, ...q } = this.snapshot.queues[chatId] ?? { items: [] };
-    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: q.paused ?? why });
+    if ((q.items.length || evenEmpty) && (q.paused === undefined || rush !== undefined)) this.setQueue(chatId, { ...q, paused: why });
   }
 
   /** The one way a queue of the shown profile changes: in the snapshot, and kept on this computer. */
@@ -3248,7 +3249,7 @@ export class Hermes {
       const profile = this.profile;
       if (!chat.runtimeId) {
         // Loaded first: that reads whether a reply is running, and settles any message Hermes may have.
-        this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, `Couldn't load the chat: ${withoutStop((e as Error).message)}.`));
+        this.resume(chatId).catch((e) => this.profile === profile && this.pauseQueueFor(chatId, notLoaded(e)));
         continue;
       }
       const next = rush ?? q.items[0];
@@ -5812,6 +5813,9 @@ const PAUSED = {
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
+
+/** Why a queue waits when its chat couldn't be loaded. */
+const notLoaded = (e: unknown) => `Couldn't load the chat: ${withoutStop((e as Error).message)}.`;
 
 /** The profile's queues as kept. One with messages comes back paused: what its chat did meanwhile went unseen. */
 function loadQueues(cache: ChatCache, profile: string): Record<string, ChatQueue> {
