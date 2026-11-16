@@ -80,7 +80,15 @@ describe("Server commands", () => {
     });
     // Discovery that failed can't rule a replacement out. A failed skill discovery overwrites a quick command warning.
     for (const failed of [{ plugin_discovery_error: "boom" }, { warning: "quick_commands discovery unavailable: bad yaml" }, { warning: "skill discovery unavailable: boom" }])
-      expect(await list(failed)).toEqual({ listed: ["context"], replaced: [], unsure: ["steer"] });
+      expect(await list(failed)).toEqual({ listed: ["context"], replaced: [], unsure: ["steer", "goal"] });
+  });
+
+  it("leave out a /goal a quick command would replace, which takes session.control's goal actions too", async () => {
+    const canon = { "/goal": "/goal" };
+    const list = (res: Record<string, unknown>) => listServerCommands(async () => ({ canon, ...res }), "default");
+    expect([...(await list({})).listed]).toEqual(["goal"]);
+    const quick = await list({ categories: [{ name: "User commands", pairs: [["/goal", "exec: ./ship.sh"]] }] });
+    expect([[...quick.listed], [...quick.replaced]]).toEqual([[], ["goal"]]);
   });
 
   it("say Hermes needs updating when it has no catalog", async () => {

@@ -156,6 +156,7 @@ describe("parseManifest", () => {
         "approvalAnswers",
         "projects",
         "commands",
+        "standingMissions",
         "liveSessions",
         "memory",
         "toolsets",
