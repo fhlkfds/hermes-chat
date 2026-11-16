@@ -31,12 +31,24 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
   const apiRef = useRef(api);
   apiRef.current = api;
 
-  useEffect(() => {
+  // One queue for the whole view, at most `AT_ONCE` reads out and one per card. A card whose counts or status change
+  // while its read is out is read again once that read ends, under its new values.
+  const queue = useRef<{ id: string; key: string }[]>([]);
+  /** Each card with a read out in this generation, and the values it was asked under. */
+  const out = useRef(new Map<string, string>());
+  /** Drops every read, and every read still out: their answers are ignored, and their cards are asked again. */
+  const restart = () => {
     gen.current++;
+    queue.current = [];
+    out.current = new Map();
+  };
+
+  useEffect(() => {
+    restart();
     setReads(new Map());
     setFailed(new Map());
   }, [refreshed]);
-  useEffect(() => () => void gen.current++, []);
+  useEffect(() => restart, []);
 
   // A card whose read failed waits for its counts or status to change, or for Refresh.
   const failing = tasks.filter((t) => failed.get(t.id)?.key === readKey(t));
@@ -45,11 +57,6 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
     .map((id) => ({ id, key: readKey(tasks.find((t) => t.id === id)!) }));
   const dueKey = due.map((d) => `${d.id}@${d.key}`).join(" ");
 
-  // One queue for the whole view, at most `AT_ONCE` reads out and one per card. A card whose counts or status change
-  // while its read is out is read again once that read ends, under its new values.
-  const queue = useRef<{ id: string; key: string }[]>([]);
-  /** Each card with a read out, and the values it was asked under. */
-  const out = useRef(new Map<string, string>());
   const pump = () => {
     while (out.current.size < AT_ONCE) {
       const next = queue.current.findIndex((q) => !out.current.has(q.id));
@@ -64,6 +71,7 @@ export function WorkGraph({ tasks, api, refreshed, onOpen }: { tasks: BoardTask[
           (e) => mine === gen.current && setFailed((f) => new Map(f).set(id, { key, why: errorText(e) })),
         )
         .finally(() => {
+          if (mine !== gen.current) return;
           out.current.delete(id);
           queue.current = queue.current.filter((q) => q.id !== id || q.key !== key);
           pump();
