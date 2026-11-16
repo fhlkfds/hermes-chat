@@ -703,6 +703,7 @@ mark.hit.current { background: var(--warn); color: #1a1205; box-shadow: 0 0 0 2p
 .queue-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--faint); font-size: calc(12rem / 14); }
 .queue-badge { padding: 0 6px; border-radius: 6px; background: var(--raised-2); color: var(--muted); }
 .queue-badge.next { background: var(--accent-soft); color: var(--accent); }
+.queue-badge.now { background: var(--accent); color: var(--on-accent); }
 .queue-badge.paused { color: var(--warn); }
 .queue-files { display: inline-flex; align-items: center; gap: 3px; }
 .queue-gone { color: var(--warn); }

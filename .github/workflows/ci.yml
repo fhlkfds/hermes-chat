@@ -29,7 +29,7 @@ jobs:
       - run: npm test
       - run: npm audit --audit-level=high
       - run: npm run build
-      - run: scripts/release/windows-release.test.sh
+      - run: scripts/release/attach-release.test.sh
       - name: Every version file says the same version
         run: node scripts/release/version.mjs check
 

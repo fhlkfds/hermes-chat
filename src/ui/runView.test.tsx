@@ -106,4 +106,25 @@ describe("The Run view", () => {
     const note = await within(dialog).findByRole("note");
     expect(note.textContent).toContain("display.tool_progress is off, so Hermes doesn't send ordinary tool steps");
   });
+
+  it("offers Run under the error of a turn that failed with no reply, and draws the steps it took", async () => {
+    const { s, hermes, user } = await launch();
+    const replyRuns = screen.getAllByRole("button", { name: "Run" }).length;
+    await act(async () => void (await hermes.send("c1", "Check the other disk")));
+    const runtime = s.runtimeIdOf("c1")!;
+    await act(async () => {
+      s.event(runtime, "message.start");
+      s.event(runtime, "tool.start", { tool_id: "k2", name: "terminal", args: { command: "df -h /mnt/b" } });
+      s.event(runtime, "tool.complete", { tool_id: "k2", name: "terminal", duration_s: 0.4, result: '{"output":"","exit_code":1}' });
+      s.event(runtime, "error", { message: "Provider unavailable" });
+      await hermes.idle();
+    });
+    const error = (await screen.findByText("Provider unavailable")).closest(".msg.error") as HTMLElement;
+    expect(screen.getAllByRole("button", { name: "Run" })).toHaveLength(replyRuns + 1);
+    await user.click(within(error).getByRole("button", { name: "Run" }));
+    const dialog = await screen.findByRole("dialog", { name: "Run of this reply" });
+    await within(dialog).findByText(/What this app heard live/);
+    // Hermes measured the tool; the model step before it took no time here, so it is left out.
+    expect(rows(dialog).map(rowText)).toEqual(["terminal400 ms", "Error"]);
+  });
 });

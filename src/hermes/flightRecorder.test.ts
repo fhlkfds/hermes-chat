@@ -96,6 +96,31 @@ describe("A watched run", () => {
     expect(run.outcome).toBe("failed");
   });
 
+  it("draws a compaction's repeated progress lines as one span, ended by compacted when Hermes sends it", () => {
+    const run = watchedRun(
+      turn([
+        { kind: "start", at: T },
+        { kind: "status", at: T + 500, status: "compacting", text: "Compacting 40 messages" },
+        { kind: "usage", at: T + 900, counters: counters(5, 1500, 120) },
+        { kind: "status", at: T + 1500, status: "compacting", text: "Still compacting" },
+        { kind: "status", at: T + 2500, status: "compacted", text: "Context compression complete" },
+        { kind: "status", at: T + 2600, status: "compacting", text: "Compacting again" },
+        { kind: "text", at: T + 2700, last: T + 2700, chars: 13, reasoning: false },
+        { kind: "status", at: T + 2800, status: "compacting", text: "And again" },
+        { kind: "end", at: T + 3000, status: "complete" },
+      ]),
+      T + 4000,
+    );
+    const compactions = run.steps.filter((s) => s.kind === "status");
+    // Model text between two compactions keeps them apart.
+    expect(compactions.map((s) => [s.start - T, s.end - T, s.kind === "status" && !!s.done])).toEqual([
+      [500, 2500, true],
+      [2600, 2600, false],
+      [2800, 2800, false],
+    ]);
+    expect(compactions[0].kind === "status" && compactions[0].text).toBe("Compacting 40 messages\nStill compacting\nContext compression complete");
+  });
+
   it("draws an Approval from when it was asked to when it was answered, matched by either of its ids", () => {
     const run = watchedRun(
       turn([

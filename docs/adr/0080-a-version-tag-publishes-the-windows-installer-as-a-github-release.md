@@ -1,5 +1,7 @@
 # A version tag publishes the Windows installer as a GitHub release
 
+> **Partly superseded by [ADR 0182](0182-a-version-tag-also-publishes-a-deb-beside-the-windows-installer.md).** The tag also publishes a `.deb`. `windows.yml` is now `installers.yml` (workflow `installers`), and `scripts/release/attach-release.sh`, tested by `attach-release.test.sh`, attaches the installer and the `.deb` in one call in place of `windows-release.sh`. The rest of this ADR stands.
+
 ADR 0069 built the Windows installer only as a workflow artifact, which expires and needs a GitHub sign-in to download. The owner asked for it on the repo's Releases page. The first one, `v0.1.0`, was published by hand from the `windows-installer` run of the commit `main` had then.
 
 ## Decisions

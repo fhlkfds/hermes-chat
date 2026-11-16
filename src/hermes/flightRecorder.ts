@@ -142,14 +142,18 @@ type StepBase = { id: string; start: number; end: number; length: Length; failed
  * One step of a run. `model`: one or more model calls between tool calls, its edges and tokens inferred. `tool`: a tool
  * call; `placed` when its start was worked back from its measured length, `together` when it ran beside others so its
  * stored gap isn't its own length. `question`: an Approval or Question, from when it was asked to when it ended.
- * `status`: a status line Hermes sent, at one moment.
+ * `status`: a status line Hermes sent, at one moment, or a compaction from its first progress line to its last, `done`
+ * when Hermes said it was complete.
  */
 export type Step =
   | (StepBase & { kind: "model"; calls?: number; tokens?: { prompt: number; output: number; reasoning: number }; text?: string; reasoning?: string; chars?: number })
   | (StepBase & { kind: "tool"; name: string; callId: string; args?: Record<string, unknown>; result?: string; placed?: boolean; together?: boolean })
   | (StepBase & { kind: "question"; what: QuestionKind; summary: string; outcome: string })
-  | (StepBase & { kind: "status"; status: string; text: string })
+  | (StepBase & { kind: "status"; status: string; text: string; done?: boolean })
   | (StepBase & { kind: "error"; text: string });
+
+/** A status line of Hermes's that tells of a compaction. */
+export const isCompaction = (status: string) => status === "compacting" || status === "compressing" || status === "compacted";
 
 /** A run's cost: the change in the chat's cost across the turn, always inferred, or why there is none. */
 export type RunCost = { usd: number } | { why: string };
@@ -225,6 +229,8 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   type ModelStep = Extract<Step, { kind: "model" }>;
   let model: ModelStep | undefined;
   const models: ModelStep[] = [];
+  // The compaction whose progress lines may still come.
+  let compacting: Extract<Step, { kind: "status" }> | undefined;
   let seq = 0;
   const id = (p: string) => `${p}${seq++}`;
   const openModel = (at: number) => {
@@ -240,6 +246,8 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
   };
   openModel(start);
   for (const h of heard) {
+    // Only status lines and usage ticks come while a compaction runs, so anything else means the next is another.
+    if (h.kind !== "status" && h.kind !== "usage") compacting = undefined;
     if (h.kind === "text" && model) {
       model.chars = (model.chars ?? 0) + h.chars;
       if (h.reasoning) model.reasoning = "reasoning";
@@ -282,8 +290,20 @@ export function watchedRun(turn: WatchedTurn, now: number): Run {
         step.outcome = h.how;
         ask.ended = true;
       }
+    } else if (h.kind === "status" && isCompaction(h.status) && compacting) {
+      // Hermes repeats a compaction's progress line, and only a turn-isolated one sends `compacted` at its end
+      // (`tui_gateway/compute_host_bridge.py`): one compaction spans its lines in a row.
+      compacting.end = h.at;
+      compacting.length = { ms: h.at - compacting.start, measured: false };
+      compacting.text = `${compacting.text}\n${h.text}`.trim();
+      if (h.status === "compacted") {
+        compacting.done = true;
+        compacting = undefined;
+      }
     } else if (h.kind === "status") {
-      steps.push({ kind: "status", id: id("s"), status: h.status, text: h.text, start: h.at, end: h.at, length: { ms: 0, measured: false }, ...(h.status === "warn" && { failed: h.text }) });
+      const step: Extract<Step, { kind: "status" }> = { kind: "status", id: id("s"), status: h.status, text: h.text, start: h.at, end: h.at, length: { ms: 0, measured: false }, ...(h.status === "warn" && { failed: h.text }) };
+      steps.push(step);
+      if (isCompaction(h.status)) compacting = h.status === "compacted" ? undefined : step;
     } else if (h.kind === "error") {
       steps.push({ kind: "error", id: id("e"), text: h.message, start: h.at, end: h.at, length: { ms: 0, measured: false }, failed: h.message });
     }
