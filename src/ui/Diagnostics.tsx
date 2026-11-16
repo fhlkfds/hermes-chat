@@ -428,7 +428,7 @@ function WorkDispatchSection({ work, connected, profile }: { work: WorkDispatchA
       }
     >
       <Fact name="Splits triage cards into linked cards (kanban.auto_decompose)">{value((c) => c.orchestration, (o) => o.autoDecompose)}</Fact>
-      <Fact name="Makes a split's cards ready at once (kanban.auto_promote_children)">{value((c) => c.orchestration, (o) => o.autoPromoteChildren)}</Fact>
+      <Fact name="Makes a split's cards that wait on no open card ready at once (kanban.auto_promote_children)">{value((c) => c.orchestration, (o) => o.autoPromoteChildren)}</Fact>
       <Fact name={`A bot reviews assigned review cards first (kanban.review_dispatch, profile ${profile})`}>{value((c) => c.review, (on) => on)}</Fact>
     </SettingsSection>
   );

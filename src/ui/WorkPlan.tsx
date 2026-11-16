@@ -1,6 +1,6 @@
 // Planning on the Work page (issue #604, ADR 0177): a card's face, the dispatch line, the token guess, and the task
 // sheet's links and bot and model pickers. Every write here is previewed, refused when the task changed since the sheet
-// showed it, sent once, and read back before the section unlocks (ADR 0110, ADR 0171).
+// showed it, sent once, and read back before the section unlocks (ADR 0014, ADR 0171).
 import { useEffect, useRef, useState } from "react";
 import { Cpu, TriangleAlert, User, X } from "lucide-react";
 import {
@@ -72,7 +72,7 @@ export function DispatchLine({ read }: { read: DispatchRead }) {
     read.kind === "read"
       ? [
           read.o.autoDecompose ? "Hermes splits triage cards into linked cards on its own." : "Triage cards wait until someone moves them.",
-          read.o.autoPromoteChildren ? "Cards a split makes are made ready at once." : "Cards a split makes wait in todo until the dispatcher's next tick.",
+          read.o.autoPromoteChildren ? "A split's cards that wait on no other open card are made ready at once; the rest wait until those cards are done." : "A split's cards wait in todo until the dispatcher's next tick, which makes ready those that wait on no open card.",
         ]
       : [read.kind === "reading" ? "Reading how this server dispatches…" : `Couldn't read how this server dispatches: ${read.why}`];
   return (
@@ -167,8 +167,18 @@ type SheetLink = {
 };
 export type SheetApi = Pick<KanbanApi, "loadTask" | "addLink" | "removeLink" | "editTask" | "setModel" | "assignees" | "profiles" | "modelOptions">;
 
-/** `child` waits on `parent`; the sheet's task is one of the two. `seen`: its links as the sheet showed them. */
-type LinkChange = { op: "add" | "remove"; parent: string; child: string; seen: TaskLinks };
+/**
+ * `child` waits on `parent`; the sheet's task is one of the two. `seen`: its links as the sheet showed them. `starts`:
+ * the confirm said that removing the link makes `child` ready, so the dispatcher may start it.
+ */
+type LinkChange = { op: "add" | "remove"; parent: string; child: string; seen: TaskLinks; starts?: boolean };
+
+/**
+ * Whether removing `parent` makes a todo card ready at once: Hermes's `recompute_ready` promotes it when every other
+ * card it waits on is done or archived. A card missing from `linked` is gone, and holds nothing up.
+ */
+const startsOnRemove = (childStatus: string, parents: string[], linked: LinkedTask[], parent: string) =>
+  childStatus === "todo" && !parents.some((p) => p !== parent && isOpen(linked.find((l) => l.id === p)?.status ?? "done"));
 
 /** Whether the task's read links show `c` done, from the side of the sheet's task `id`. */
 const shows = (c: LinkChange, id: string, links: TaskLinks) => {
@@ -180,8 +190,8 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * The sheet's links: the cards it waits on and the cards that wait on it, with Remove, and Add for a card to wait on.
- * Removing a todo card's last open parent makes Hermes set it ready at once, and the dispatcher then starts it if it
- * has a bot, so the confirm says so.
+ * Removing a todo card's last open parent makes Hermes set it ready at once, and the dispatcher may then start it, so
+ * the confirm says so.
  */
 export function LinksSection({
   task,
@@ -214,37 +224,44 @@ export function LinksSection({
   const title = (id: string) => named(id)?.title || id;
   const status = (id: string) => named(id)?.status ?? "";
 
-  /** What happens to `child` once it no longer waits on `parent`, given the statuses of the other cards it waits on. */
-  const lastParent = (child: string, childStatus: string, parent: string, others: string[]) =>
-    childStatus === "todo" && isOpen(status(parent)) && !others.some(isOpen)
-      ? [`${title(child)} waits on nothing else after this. Hermes makes it ready at once, and if it has a bot the dispatcher starts it on its next tick, about a minute.`]
-      : [];
+  const removePreview = (c: LinkChange) => [
+    `${title(c.child)} stops waiting on ${title(c.parent)}.`,
+    ...(c.starts
+      ? [
+          `${title(c.child)} waits on nothing else after this. Hermes makes it ready at once, and the dispatcher starts it on its next tick, about a minute, if it has a bot or this server sets kanban.default_assignee.`,
+        ]
+      : []),
+  ];
 
-  const confirm = async (op: LinkChange["op"], parent: string, child: string) => {
+  const confirm = async (op: "add" | "remove", parent: string, child: string) => {
     if (!links) return;
-    const change = { op, parent, child, seen: links };
     if (op === "add") {
       const gate = task.status === "ready" && isOpen(status(parent)) ? [`${title(child)} is ready, so it goes back to todo until ${title(parent)} is done.`] : [];
-      setW({ kind: "confirming", change, preview: [`${title(child)} will wait on ${title(parent)}.`, ...gate] });
+      setW({ kind: "confirming", change: { op, parent, child, seen: links }, preview: [`${title(child)} will wait on ${title(parent)}.`, ...gate] });
       return;
     }
-    const lead = `${title(child)} stops waiting on ${title(parent)}.`;
     if (child === task.id) {
-      setW({ kind: "confirming", change, preview: [lead, ...lastParent(child, task.status, parent, links.parents.filter((p) => p !== parent).map(status))] });
+      const change = { op, parent, child, seen: links, starts: startsOnRemove(task.status, links.parents, linked, parent) };
+      setW({ kind: "confirming", change, preview: removePreview(change) });
       return;
     }
-    // The other card's own links say whether this was the last card it waited on.
-    setW({ kind: "confirming", change });
+    // The other card's own read says whether this was the last card it waited on.
+    const pending = { op, parent, child, seen: links };
+    setW({ kind: "confirming", change: pending });
     try {
       const d = await api.loadTask(child);
-      const others = d.links.parents.filter((p) => p !== parent).map((p) => d.linked.find((l) => l.id === p)?.status ?? "done");
-      if (live.current) setW((was) => (was.kind === "confirming" && was.change === change ? { ...was, preview: [lead, ...lastParent(child, d.task.status, parent, others)] } : was));
+      const change = { ...pending, starts: startsOnRemove(d.task.status, d.links.parents, d.linked, parent) };
+      if (live.current) setW((was) => (was.kind === "confirming" && was.change === pending ? { kind: "confirming", change, preview: removePreview(change) } : was));
     } catch (e) {
-      if (live.current) setW((was) => (was.kind === "confirming" && was.change === change ? { kind: "failed", why: `Couldn't read ${title(child)}: ${errorText(e)}` } : was));
+      if (live.current) setW((was) => (was.kind === "confirming" && was.change === pending ? { kind: "failed", why: `Couldn't read ${title(child)}: ${errorText(e)}` } : was));
     }
   };
 
+  // Set at once, before React re-renders: a second click on Confirm or Try again must not send a second write.
+  const sending = useRef(false);
   const send = async (change: LinkChange) => {
+    if (sending.current) return;
+    sending.current = true;
     setW({ kind: "writing", change });
     onWriting(true);
     let sent = false;
@@ -254,6 +271,16 @@ export function LinksSection({
       onRead(before);
       if (shows(change, task.id, before.links)) return setW({ kind: "idle", note: "That change is already there." });
       if (!sameLinks(before.links, change.seen)) return setW({ kind: "failed", why: "This card's links changed since the sheet showed them, so nothing was sent. Here they are now." });
+      if (change.op === "remove") {
+        // A parent may have finished since the confirm: if the card would now start, the owner hasn't been told.
+        const child = change.child === task.id ? before : await api.loadTask(change.child);
+        if (!live.current) return;
+        const starts = startsOnRemove(child.task.status, child.links.parents, child.linked, change.parent);
+        if (starts !== !!change.starts) {
+          const now = { ...change, starts };
+          return setW({ kind: "confirming", change: now, preview: [...removePreview(now), "This changed since you confirmed, so nothing was sent yet."] });
+        }
+      }
       sent = true;
       let note: string | undefined;
       if (change.op === "add") {
@@ -276,6 +303,7 @@ export function LinksSection({
       if (!sent || refused(e)) setW({ kind: "failed", why: errorText(e) });
       else setW({ kind: "unconfirmed", change, why: `${errorText(e)}. It may have gone through: Refresh to check, or Try again, which can't make it twice.` });
     } finally {
+      sending.current = false;
       onWriting(false);
     }
   };
@@ -415,7 +443,10 @@ export function BotModelSection({ task, api, onRead, onSaved, onWriting, assigne
     if (w.kind === "unconfirmed" && has(w.change, task)) setW({ kind: "idle" });
   }, [w, task]);
 
+  const sending = useRef(false);
   const send = async (change: BotModelChange) => {
+    if (sending.current) return;
+    sending.current = true;
     setW({ kind: "writing", change });
     onWriting(true);
     let sent = false;
@@ -439,6 +470,7 @@ export function BotModelSection({ task, api, onRead, onSaved, onWriting, assigne
       if (!sent || refused(e)) setW({ kind: "failed", why: errorText(e) });
       else setW({ kind: "unconfirmed", change, why: `${errorText(e)}. It may have gone through: Refresh to check, or Try again, which sets the same thing.` });
     } finally {
+      sending.current = false;
       onWriting(false);
     }
   };

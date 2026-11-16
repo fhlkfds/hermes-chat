@@ -238,7 +238,7 @@ describe("planning on the Work page (issue #604)", () => {
     const confirm = within(links).getByRole("group", { name: "Confirm the change" });
     expect(confirm.textContent).toContain("Build it stops waiting on Fetch the data.");
     expect(confirm.textContent).toContain(
-      "Build it waits on nothing else after this. Hermes makes it ready at once, and if it has a bot the dispatcher starts it on its next tick, about a minute.",
+      "Build it waits on nothing else after this. Hermes makes it ready at once, and the dispatcher starts it on its next tick, about a minute, if it has a bot or this server sets kanban.default_assignee.",
     );
     expect(s.kanban.writes).toEqual([]);
     await user.click(within(confirm).getByRole("button", { name: "Remove link" }));
@@ -256,6 +256,23 @@ describe("planning on the Work page (issue #604)", () => {
     const links = within(sheet).getByRole("region", { name: "Links" });
     await user.click(await within(links).findByRole("button", { name: "Remove Fetch the data" }));
     expect(within(links).getByRole("group", { name: "Confirm the change" }).textContent).not.toMatch(/waits on nothing else/);
+  });
+
+  it("sends nothing when another parent finished after the confirm, and shows the warning the owner didn't see", async () => {
+    const { user, s, build } = await openPlanned();
+    const other = s.kanban.add("default", { title: "Review the API", status: "todo" });
+    s.kanban.links.push({ parent: other.id, child: build.id });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const sheet = await sheetOf(user, "Build it");
+    const links = within(sheet).getByRole("region", { name: "Links" });
+    await user.click(await within(links).findByRole("button", { name: "Remove Fetch the data" }));
+    expect(within(links).getByRole("group", { name: "Confirm the change" }).textContent).not.toMatch(/waits on nothing else/);
+    s.kanban.find(other.id)!.status = "done";
+    await user.click(within(links).getByRole("button", { name: "Remove link" }));
+    const again = await within(links).findByRole("group", { name: "Confirm the change" });
+    await waitFor(() => expect(again.textContent).toMatch(/waits on nothing else after this/));
+    expect(again.textContent).toContain("This changed since you confirmed, so nothing was sent yet.");
+    expect(s.kanban.writes).toEqual([]);
   });
 
   it("says a ready card goes back to todo when it's made to wait, and adds the link from the sheet", async () => {
@@ -376,8 +393,8 @@ describe("planning on the Work page (issue #604)", () => {
 
   it("says how this server dispatches, for each setting, and never that cards wait for the owner", async () => {
     for (const [settings, says] of [
-      [{ auto_decompose: true, auto_promote_children: true }, ["Hermes splits triage cards into linked cards on its own.", "Cards a split makes are made ready at once."]],
-      [{ auto_decompose: false, auto_promote_children: false }, ["Triage cards wait until someone moves them.", "Cards a split makes wait in todo until the dispatcher's next tick."]],
+      [{ auto_decompose: true, auto_promote_children: true }, ["Hermes splits triage cards into linked cards on its own.", "A split's cards that wait on no other open card are made ready at once; the rest wait until those cards are done."]],
+      [{ auto_decompose: false, auto_promote_children: false }, ["Triage cards wait until someone moves them.", "A split's cards wait in todo until the dispatcher's next tick, which makes ready those that wait on no open card."]],
     ] as const) {
       const p = planned();
       p.s.kanban.orchestration = { ...settings };
