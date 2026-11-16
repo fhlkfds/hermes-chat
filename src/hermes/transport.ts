@@ -3261,6 +3261,8 @@ export class Hermes {
       res = await this.steer(chatId, item.text);
     } catch (e) {
       if (!stillMarked()) return undefined;
+      // The answer was lost, not refused: Hermes may have the words, so nothing in the queue goes until the owner looks.
+      if (e instanceof ConnectionLostError) this.pauseQueueFor(chatId, PAUSED.steerUnanswered);
       unmark();
       return e instanceof ConnectionLostError ? undefined : errorText(e);
     }
@@ -5946,6 +5948,7 @@ const PAUSED = {
   dropped: "The connection dropped, so the last reply wasn't watched to its end. Check the chat, then resume.",
   notSent: "A queued message didn't go, or may not have. Deal with it above, then resume.",
   held: "Hermes held the last queued message until another reply in this chat ended, so this app can't tell when it went. Check the chat, then resume.",
+  steerUnanswered: "Hermes didn't answer a steer, so it may have gone into the reply. Check the chat, then resume.",
   unsaved: "This computer's storage is full, so the next message couldn't be kept safe while it went, and wasn't sent. Free some space (Settings → General → Clear local cache), then resume.",
 };
 

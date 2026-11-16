@@ -370,6 +370,19 @@ describe("Send now (ADR 0187)", () => {
     expect(q.sent().map((p) => p.text)).toEqual(["two"]);
   });
 
+  it("pauses the queue, keeping the message, when Hermes never answers the steer, since it may have gone", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(await out).toBeUndefined();
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" }), expect.objectContaining({ text: "two" })], paused: expect.stringMatching(/didn't answer a steer/) });
+
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+  });
+
   it("doesn't steer while a queued message is being edited: the chosen one goes next, with its saved words, once the reply ends and the edit closes", async () => {
     const q = await replying();
     for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
