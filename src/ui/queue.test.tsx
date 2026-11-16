@@ -364,6 +364,19 @@ describe("While Hermes replies", () => {
     expect(within(queueIn(document.body)!).getByText(/Paused\. You paused it\./)).toBeTruthy();
   });
 
+  it("offers Pause to cancel Send now on a paused queue", async () => {
+    const s = await replying();
+    for (const t of ["first", "second"]) await s.user.type(composerIn(document.body), `${t}{Enter}`);
+    const queue = () => queueIn(document.body)!;
+    await s.user.click(within(queue()).getByRole("button", { name: "Pause" }));
+    await s.user.click(within(queue()).getByRole("button", { name: "Send queued message 2 now, stopping the reply" }));
+    await s.user.click(within(queue()).getByRole("button", { name: "Pause" }));
+    expect(within(queue()).getByText(/Paused\. You paused it\./)).toBeTruthy();
+    await s.finish({ status: "interrupted", text: "Unlocking" });
+    expect(prompts(s.server)).toEqual(["Unlock it"]);
+    expect(queuedTexts(queue())).toEqual(["second", "first"]);
+  });
+
   it("Stop stops the reply and pauses the queue, saying so", async () => {
     const s = await replying();
     await s.user.type(composerIn(document.body), "next{Enter}");

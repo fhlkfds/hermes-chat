@@ -3167,7 +3167,11 @@ export class Hermes {
     const item = q?.items.find((i) => i.id === id);
     if (!q || !item) return;
     this.setQueue(chatId, { ...q, items: [item, ...q.items.filter((i) => i !== item)], rush: id });
-    void this.stop(chatId);
+    // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
+    void this.resume(chatId).then(
+      () => (this.snapshot.queues[chatId]?.rush === id ? this.stop(chatId) : undefined),
+      () => {},
+    );
   }
 
   /** Pauses the chat's queue: nothing in it goes until `resumeQueue`. */
@@ -3178,7 +3182,7 @@ export class Hermes {
   /** Lets the chat's queue go again, the next message once the chat is ready for it. */
   resumeQueue(chatId: string) {
     const q = this.snapshot.queues[chatId];
-    if (q?.paused !== undefined) this.setQueue(chatId, { items: q.items });
+    if (q?.paused !== undefined) this.setQueue(chatId, { items: q.items, rush: q.rush });
   }
 
   /** The owner is editing a queued message: none of the chat's queue goes until the returned function is called. */

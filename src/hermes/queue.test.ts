@@ -303,6 +303,32 @@ describe("Send now (ADR 0182)", () => {
     expect(q.chat().items.filter(isOutgoing)).toMatchObject([{ text: "first", outgoing: { state: "failed" } }]);
   });
 
+  it("outlasts a Resume of the queue paused before it", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "one");
+    q.hermes().enqueue("c1", "two");
+    q.hermes().pauseQueue("c1");
+    q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id);
+    q.hermes().resumeQueue("c1");
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent().map((p) => p.text)).toEqual(["two"]);
+    expect(q.queue()).toEqual({ items: [expect.objectContaining({ text: "one" })] });
+  });
+
+  it("loads a chat not loaded yet and stops the reply loading finds", async () => {
+    const q = await replying();
+    q.hermes().enqueue("c1", "now");
+    q.server.reattachTurns = true;
+    const again = await q.relaunch();
+    expect(again.getSnapshot().queues.c1?.paused).toBeDefined();
+    again.sendQueuedNow("c1", again.getSnapshot().queues.c1!.items[0].id);
+    await flush();
+    expect(q.chat()).toMatchObject({ running: true, stopping: true });
+    expect(interrupts(q)).toBe(1);
+    await q.finish({ status: "interrupted", text: "Checking" });
+    expect(q.sent().map((p) => p.text)).toEqual(["now"]);
+  });
+
   it("is cancelled by Pause: the stopped reply then pauses the queue as Stop does", async () => {
     const q = await replying();
     q.hermes().enqueue("c1", "next");

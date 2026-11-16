@@ -115,7 +115,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
           <span className="queue-state" aria-live="polite">
             {paused && !rush ? `Paused. ${queue!.paused}` : waitingFor(chat, status, !!rush)}
           </span>
-          {paused ? (
+          {paused && !rush ? (
             <button className="btn queue-toggle" onClick={api.resume}>
               <Play size={12} /> Resume
             </button>
