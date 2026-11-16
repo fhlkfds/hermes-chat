@@ -3224,16 +3224,23 @@ export class Hermes {
    * reply to steer, it goes next, ahead of the rest, as soon as the chat can take it: a reply it can't be steered into
    * is stopped for it, and that stop doesn't pause the queue. Neither a pause nor a Failed message above holds it. The
    * rest keeps its place and its pause. Pausing the queue, removing the message, or a dropped connection cancels it.
+   * While a steer waits for Hermes's answer, Send now in that chat does nothing. While a queued message is being
+   * edited, a message that would be steered goes next instead, once the reply ends and the edit closes.
    * `cantSteer`: why /steer can't run in the chat now, if it can't. Resolves with why Hermes refused the steer, which
    * leaves the message where it was, unmarked; never rejects.
    */
   async sendQueuedNow(chatId: string, id: string, cantSteer: string | undefined): Promise<string | undefined> {
     const q = this.snapshot.queues[chatId];
     const item = q?.items.find((i) => i.id === id);
-    if (!q || !item || (q.rush?.id === id && q.rush.steering)) return undefined;
+    if (!q || !item || q.rush?.steering) return undefined;
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const profile = this.profile;
-    if (!chat?.runtimeId || sendNowRoute(item, chat, cantSteer).by !== "steer") {
+    const route = sendNowRoute(item, chat ?? {}, cantSteer).by;
+    if (route === "steer" && this.queueHolds.has(chatId)) {
+      this.rushNext(chatId, id);
+      return undefined;
+    }
+    if (!chat?.runtimeId || route !== "steer") {
       this.rushNext(chatId, id);
       // A chat not loaded yet is loaded first, since only loading finds out whether a reply runs there to stop.
       void this.resume(chatId).then(

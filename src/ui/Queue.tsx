@@ -148,6 +148,7 @@ export function QueuePanel({ chat, queue, status, api }: { chat: Chat; queue?: C
               state={item.id === rush?.id ? "Now" : paused ? "Paused" : i === 0 ? "Next" : "Queued"}
               route={sendNowRoute(item, chat, cantSteer)}
               steering={item.id === rush?.id && rush.steering}
+              awaitingSteer={!!rush?.steering}
               mark={over === i ? "insert-before" : over === items.length && i === items.length - 1 ? "insert-after" : ""}
               dragged={dragging === item.id}
               api={api}
@@ -178,6 +179,7 @@ function QueueRow({
   state,
   route,
   steering,
+  awaitingSteer,
   mark,
   dragged,
   api,
@@ -191,6 +193,7 @@ function QueueRow({
   state: string;
   route: SendNowRoute;
   steering: boolean;
+  awaitingSteer: boolean;
   mark: string;
   dragged: boolean;
   api: QueueApi;
@@ -315,7 +318,7 @@ function QueueRow({
                     : "Send now (Ctrl+Enter)"
               }
               aria-label={`Send queued message ${index + 1} now${route.by === "steer" ? ", steering it into the reply" : route.by === "stop" ? ", stopping the reply" : ""}`}
-              disabled={state === "Now"}
+              disabled={state === "Now" || awaitingSteer}
               onClick={sendNow}
             >
               <ArrowUp size={13} />

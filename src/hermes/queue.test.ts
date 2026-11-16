@@ -330,6 +330,43 @@ describe("Send now (ADR 0187)", () => {
     expect(q.texts()).toEqual(["two"]);
   });
 
+  it("ignores Send now on another message while a steer waits for Hermes, so the chosen one keeps its place", async () => {
+    const q = await replying();
+    for (const t of ["one", "two", "three"]) q.hermes().enqueue("c1", t);
+    const answer = holdSteer(q.server);
+    const out = q.hermes().sendQueuedNow("c1", q.queue()!.items[2].id, undefined);
+    await flush();
+    await q.finish();
+    expect(await q.hermes().sendQueuedNow("c1", q.queue()!.items[1].id, undefined)).toBeUndefined();
+    await flush();
+    expect(q.sent()).toEqual([]);
+
+    q.server.steerable = false;
+    answer();
+    await out;
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["three"]);
+    expect(q.texts()).toEqual(["one", "two"]);
+  });
+
+  it("doesn't steer while a queued message is being edited: the chosen one goes next, with its saved words, once the reply ends and the edit closes", async () => {
+    const q = await replying();
+    for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
+    const release = q.hermes().holdQueue("c1");
+    const two = q.queue()!.items[1];
+    expect(await q.hermes().sendQueuedNow("c1", two.id, undefined)).toBeUndefined();
+    expect(steers(q)).toBe(0);
+    expect(interrupts(q)).toBe(0);
+    expect(q.hermes().editQueued("c1", two.id, "two, edited")).toBe(true);
+    await q.finish();
+    expect(q.sent()).toEqual([]);
+
+    release();
+    await flush();
+    expect(q.sent().map((p) => p.text)).toEqual(["two, edited"]);
+    expect(q.texts()).toEqual(["one"]);
+  });
+
   it("pauses the queue when the reply ends stopped before Hermes answers, which cancels Send now", async () => {
     const q = await replying();
     for (const t of ["one", "two"]) q.hermes().enqueue("c1", t);
