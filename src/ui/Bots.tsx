@@ -150,7 +150,7 @@ export function Bots({
     return () => document.removeEventListener("pointerdown", away, true);
   }, [onClose]);
 
-  // The bot New bot made takes focus once the roster lists it.
+  // The bot New bot made, or Edit bot saved or renamed, takes focus once the roster lists it.
   const focus = made?.focus;
   useEffect(() => {
     if (!focus || !bots?.some((b) => b.profile === focus)) return;
@@ -181,7 +181,7 @@ export function Bots({
         setMade({ text: l.profiles.form.gone(bot.profile), warn: true });
         return void read();
       }
-      setDialog(kind === "edit" ? { kind, bot, row, rows, look: look! } : { kind, row });
+      setDialog(look ? { kind: "edit", bot, row, rows, look } : { kind: "delete", row });
     } catch (e) {
       setMade({ text: w.openFailed(bot.name, failureText(l, profileFailure(e, "botLook"), bot.profile)), warn: true });
     }

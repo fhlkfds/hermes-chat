@@ -489,6 +489,14 @@ describe("Editing a bot (ADR 0188)", () => {
     expect(stored(server).title).toBe("Scribe");
   });
 
+  it("says so when the block is over Hermes's 64 KB limit, which Hermes refuses without a reason", async () => {
+    const { server, hermes } = await editing({ title: "Scribe", image: "x".repeat(70_000) });
+    const saved = await hermes.editBot("scribe", { pinned: { from: false, to: true } });
+    expect(saved.fields).toEqual({ pinned: { kind: "failed", failure: { kind: "refused", status: 0, detail: "" } } });
+    expect(stored(server).pinned).toBeUndefined();
+    expect(rpc(server, "profiles.configure")).toHaveLength(1);
+  });
+
   it("is gone for a profile Hermes no longer has, such as one renamed elsewhere, and its block and picture follow the rename", async () => {
     const { server, hermes } = await editing();
     await hermes.manageProfiles.rename("scribe", "quill");
