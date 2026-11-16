@@ -451,7 +451,6 @@ describe("planning on the Work page (issue #604)", () => {
   });
 });
 
-/** A board where researcher is at work on one card, and a second card waits. */
 function atWork() {
   const s = new FakeHermes();
   const k = s.kanban;
@@ -463,7 +462,6 @@ function atWork() {
   return { s, k, task, run, park, stopped };
 }
 
-/** The Work page alone over a FakeHermes, reading the board and a watched card every 30 ms. */
 async function fastPage(s: FakeHermes) {
   const hermes = await connect(s.openPipe);
   running.push(hermes);
@@ -631,7 +629,7 @@ describe("a running card's bot (issue #604)", () => {
     dragTo(card("Research the API"), column("done"));
     expect(screen.queryByRole("dialog")).toBeNull();
     const { sheet } = await runOf(user, "Research the API");
-    expect(within(sheet).getByText("A bot is working on this card. Stop, Reclaim or Reassign it above. Moving the card wouldn't stop the bot.")).toBeTruthy();
+    expect(within(sheet).getByText("A bot is working on this card. Stop, Reclaim or Reassign it above.")).toBeTruthy();
     expect(within(sheet).queryByRole("combobox", { name: "Move to" })).toBeNull();
     expect(within(sheet).queryByRole("button", { name: "Block…" })).toBeNull();
     expect(within(sheet).queryByRole("button", { name: "Complete" })).toBeNull();
@@ -688,7 +686,7 @@ describe("a running card's bot (issue #604)", () => {
     expect(within(run).getByRole("alert")).toBeTruthy();
     expect(within(run).getByRole("button", { name: "Stop…" })).toBeTruthy();
     expect(within(run).getByRole("combobox", { name: "Reassign to" })).toBeTruthy();
-    expect(within(sheet).getByText("A bot is working on this card. Stop or Reassign it above. Moving the card wouldn't stop the bot.")).toBeTruthy();
+    expect(within(sheet).getByText("A bot is working on this card. Stop or Reassign it above.")).toBeTruthy();
 
     k.without.add("reassign");
     const confirm = await confirmStop(user, run);

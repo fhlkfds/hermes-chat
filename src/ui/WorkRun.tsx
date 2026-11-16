@@ -1,16 +1,9 @@
-// A card's bot on the Work page (issue #604, ADR 0188): the run Hermes shows working, its chat's tokens and last lines,
-// read again every few seconds while the sheet is open, and Stop, Reclaim and Reassign. This section previews each of
-// the three and shows what came of it. `KanbanApi.changeRun` decides what is sent.
 import { useEffect, useRef, useState } from "react";
 import { canMove, type BoardTask, type RunChat, type RunId, type RunLine, type TaskDetail, type TaskRun, type Workflow } from "../hermes/kanban";
 import { NOTHING_SENT, liveRun, previewOf, settles, type Outcome, type RunAction, type RunOrder } from "../hermes/taskRuns";
 import { errorText, plural } from "../hermes/values";
 import { WriteStatus, busy, type SheetLink, type WorkFeature, type Write } from "./WorkPlan";
 
-/**
- * The columns a person may move `task` to, from the sheet's footer or by dragging it. None for a running card while
- * Hermes has the reassign route: moving the card doesn't stop its bot, and Stop, Reclaim and Reassign replace the moves.
- */
 export const manualMoves = (wf: Workflow, task: Pick<BoardTask, "status">, lacks: ReadonlySet<WorkFeature>) =>
   task.status === "running" && !lacks.has("reassign") ? [] : wf.columns.filter((c) => canMove(wf, task.status, c.key));
 
@@ -36,14 +29,8 @@ const writeOf = (outcome: Outcome, order: RunOrder): Write<RunOrder> => {
 
 const verbOf = ({ action }: RunOrder) => (action.kind === "stop" ? "Stop" : action.kind === "reclaim" ? "Reclaim" : `Reassign to ${action.bot}`);
 
-/** A run's chat as this section last read it. `err`: why the latest read failed, with the read before it kept. */
 type ChatRead = { run: RunId; read?: RunChat; err?: string };
 
-/**
- * `runs`: the card's task runs, at least one. `can`: which actions this Hermes has routes for. `refresh`: reads the
- * card for the sheet without holding the board's poll, answering nothing when a newer read overtook it.
- * `defaultAssignee`: the server's `kanban.default_assignee` when the page read it.
- */
 export function RunSection({
   task,
   api,
@@ -76,10 +63,12 @@ export function RunSection({
 
   useEffect(() => {
     alive.current = true;
-    if (can.reassign) api.assignees().then((names) => alive.current && setBots(names), () => {});
     return () => void (alive.current = false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per sheet; `api` is the same Hermes throughout
   }, []);
+  const reassigns = can.reassign;
+  useEffect(() => {
+    if (reassigns) api.assignees().then((names) => alive.current && setBots(names), () => {});
+  }, [api, reassigns]);
 
   const chatNow = useRef(chat);
   chatNow.current = chat;
@@ -97,11 +86,11 @@ export function RunSection({
   const readChatRef = useRef(readChat);
   readChatRef.current = readChat;
 
-  // Once when the run shows, when Hermes names its chat, and when it ends, for its totals.
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
   const ended = !!shown?.ended;
   useEffect(() => {
-    if (shown) void readChatRef.current(shown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run, not on each read's new object
+    if (shownNow.current) void readChatRef.current(shownNow.current);
   }, [shown?.id, shown?.chat, ended]);
 
   const busyNow = useRef(false);
@@ -109,8 +98,6 @@ export function RunSection({
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const liveId = live?.id;
-  // Watches a live run. Each read is timed from the end of the last, so slow reads never stack. It never tells the
-  // sheet a write is on its way, so the board's own poll runs on.
   useEffect(() => {
     if (liveId === undefined) return;
     let on = true;

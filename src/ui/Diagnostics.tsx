@@ -32,7 +32,6 @@ export type OpenGuide = (url: string) => void;
 
 export const useCapabilities = (store: CapabilityStore): CapabilitySnapshot => useSyncExternalStore(store.subscribe, store.getSnapshot);
 
-/** What this page sends that is shaped like a change, named by the checks themselves, so the page can't fall behind them. */
 const WRITE_CHECKS = CAPABILITIES.flatMap((c) => (c.writeCheck ? [c.writeCheck.says] : []));
 const WRITE_CHECKS_LISTED = new Intl.ListFormat("en", { type: "conjunction" }).format(WRITE_CHECKS);
 

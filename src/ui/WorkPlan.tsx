@@ -25,7 +25,6 @@ import { Spinner } from "./bits";
 /** The parts of the page that each need a route an older kanban plugin may lack. */
 export type WorkFeature = "links" | "pickers" | "estimate" | "dispatch" | "reclaim" | "reassign";
 
-/** The capability each part needs. A part hides only once Hermes is found to lack it. */
 export const WORK_PARTS: Record<WorkFeature, CapabilityId> = {
   links: "workLinks",
   pickers: "workPickers",
@@ -155,8 +154,7 @@ export function EstimateBox({ ask, text, disabled }: { ask: () => Promise<Estima
 
 /**
  * One write from the sheet, from the owner's pick to Hermes's word on it. `unconfirmed`: it may have landed, so the
- * section stays locked until a read shows it did, or the owner sends it again, which can't do it twice. `alert`: it
- * landed, with something the owner must know that it couldn't undo.
+ * section stays locked until a read shows it did, or the owner sends it again, which can't do it twice.
  */
 export type Write<C> =
   | { kind: "idle"; note?: string; alert?: string }
@@ -386,10 +384,7 @@ export function LinksSection({
   );
 }
 
-/**
- * A write's preview with Save and Cancel, its progress, and what came of it. `field`: what the confirm asks for before
- * it can be sent, and `ready` whether it has it.
- */
+/** A write's preview with Save and Cancel, its progress, and what came of it. */
 export function WriteStatus<C>({
   w,
   verb,

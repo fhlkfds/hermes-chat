@@ -4400,7 +4400,6 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-model-typed { display: flex; flex: 1 1 240px; align-items: flex-end; gap: 6px; }
 .work-estimate { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; }
 .work-estimate > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; }
-/* A card's bot (issue #604, ADR 0188): its run, its chat's tokens and last lines, and Stop, Reclaim and Reassign. */
 .work-run:focus { outline: none; }
 .work-run-meta { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .work-run-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }

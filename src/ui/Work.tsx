@@ -1,8 +1,7 @@
 // The Work page (issue #595, ADR 0171): the dashboard's kanban board of bot work, laid out and featured as the official
 // Hermes desktop app's Kanban view. It reads the current board, and changes it only on an explicit move, edit, new
 // task or comment. The move rules come from the plugin's own workflow (kanban.ts `canMove`). Its Graph view, links, bot
-// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0179). A card's sheet
-// shows its bot's run, with Stop, Reclaim and Reassign (ADR 0188).
+// and model pickers, token guess and dispatch line plan bot work across cards (issue #604, ADR 0179).
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowLeft, CircleAlert, Cpu, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
 import {
@@ -66,10 +65,7 @@ const validFields = (f: TaskFields) => !!f.title.trim() && Number.isInteger(f.pr
 
 const NONE: ReadonlySet<WorkFeature> = new Set();
 
-/**
- * `lacks`: the parts of the page whose routes the connected Hermes doesn't have, which don't show. `watchMs`: how often
- * an open sheet reads a card whose bot is at work.
- */
+/** `lacks`: the parts of the page whose routes the connected Hermes doesn't have, which don't show. */
 export function Work({
   api,
   connected,
@@ -208,7 +204,6 @@ export function Work({
     if (!live.current) return;
     setSaving(false);
   };
-  /** `from`: the status the owner saw, which the sheet's own read can know before the board does. */
   const requestMove = (task: BoardTask, to: string, from = task.status) => {
     setMoveErr(undefined);
     const need = moveNeeds(from, to);
@@ -592,7 +587,6 @@ function TaskSheet({
   board: BoardTask[];
   lacks: ReadonlySet<WorkFeature>;
   watchMs: number;
-  /** The server's `kanban.default_assignee` when the page read its dispatch settings. */
   defaultAssignee?: string;
   onRefresh: () => void;
   onSaved: () => void;
@@ -650,8 +644,6 @@ function TaskSheet({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read again when the task, the board's values for it, its comment count or `rev` change; `api` is the same Hermes throughout
   }, [task.id, seen, task.comments, rev]);
-  // A read for the run section's watch. It takes no turn of its own: any read begun after it, by the sheet or by a
-  // section's write, is newer, and this one's answer is dropped.
   const refresh = async () => {
     const mine = gen.current;
     const d = await api.loadTask(task.id);
@@ -915,7 +907,7 @@ function TaskSheet({
               </>
             ) : steered ? (
               <p className="muted small">
-                A bot is working on this card. {lacks.has("reclaim") ? "Stop or Reassign" : "Stop, Reclaim or Reassign"} it above. Moving the card wouldn't stop the bot.
+                A bot is working on this card. {lacks.has("reclaim") ? "Stop or Reassign" : "Stop, Reclaim or Reassign"} it above.
               </p>
             ) : (
               <>

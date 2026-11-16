@@ -106,7 +106,6 @@ type Probe =
  * Hermes's answer, or its failure, says of the capability.
  */
 type WriteCheck = {
-  /** What it sends, as Diagnostics names it in a list: "a Work link from a card to itself". */
   says: string;
   send: (io: CapabilityIO, profile: string) => Promise<unknown>;
   /** A read sent alongside, for what the write's answer alone can't tell; undefined when it fails. */
@@ -167,10 +166,6 @@ const rosterWithoutBotChats = (r: unknown) =>
 export const PROBE_NAME = "__hermes_chat_probe__";
 
 const KANBAN = "^api\\/plugins\\/kanban\\/";
-/**
- * The writes of the Work page's parts past the board, each guarded by its own capability. The kanban capability's
- * guard is built from them, so a plugin without one of these routes still has the board.
- */
 const WORK_PART_WRITES = {
   workLinks: [/^api\/plugins\/kanban\/links$/],
   workEstimate: [/^api\/plugins\/kanban\/estimate$/, /^api\/plugins\/kanban\/tasks\/[^/]+\/estimate$/],

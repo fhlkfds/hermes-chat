@@ -1,6 +1,3 @@
-// A running card's task run (issue #604, ADR 0188): how its runs and its bot's chat are read, checked against real
-// answers from Hermes `bf0203a` (kanbanRunsGolden.json), and Stop, Reclaim and Reassign through `KanbanApi.changeRun`
-// against a FakeHermes whose dispatcher ticks when the test says.
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeHermes } from "./fakeHermes";
 import golden from "./kanbanRunsGolden.json";
@@ -71,7 +68,6 @@ describe("a task's runs, read from real answers", () => {
   });
 });
 
-/** A card researcher is working on, and an order for it as its sheet's confirm would make one. */
 async function atWork(server = new FakeHermes()) {
   const hermes = await connect(server.openPipe);
   open.push(hermes);

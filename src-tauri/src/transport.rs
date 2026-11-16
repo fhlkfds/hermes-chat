@@ -3741,7 +3741,6 @@ mod tests {
             ("api/plugins/kanban/runs/123456789012345678/terminate", "{}"),
             ("api/plugins/kanban/tasks/t_0000001a/reassign", r#"{"profile":"writer","reclaim_first":true,"reason":"Reassigned from Highwing"}"#),
             ("api/plugins/kanban/tasks/t_0000001a/reassign", r#"{"profile":"","reclaim_first":true,"reason":"wrong repo"}"#),
-            // Diagnostics' checks: a run that can't exist, and a card that doesn't.
             ("api/plugins/kanban/runs/0/terminate", "{}"),
             ("api/plugins/kanban/tasks/__hermes_chat_probe__/reassign", r#"{"profile":"","reclaim_first":false}"#),
         ] {
@@ -3778,7 +3777,6 @@ mod tests {
             ("api/plugins/kanban/tasks/../estimate", "{}"),
             ("api/plugins/kanban/dispatch", "{}"),
             ("api/plugins/kanban/orchestration", r#"{"auto_decompose":false}"#),
-            // A run is named by Hermes's integer, and stopped with a reason or nothing.
             ("api/plugins/kanban/runs/run_1/terminate", "{}"),
             ("api/plugins/kanban/runs/-1/terminate", "{}"),
             ("api/plugins/kanban/runs/1234567890123456789/terminate", "{}"),
@@ -3789,7 +3787,6 @@ mod tests {
             ("api/plugins/kanban/runs/1/terminate", "[]"),
             ("api/plugins/kanban/runs/1/inspect", "{}"),
             ("api/plugins/kanban/runs/1", "{}"),
-            // A reassign names its bot and says whether to stop the run first.
             ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer"}"#),
             ("api/plugins/kanban/tasks/t_1/reassign", r#"{"reclaim_first":true}"#),
             ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":"true"}"#),
@@ -3797,7 +3794,6 @@ mod tests {
             ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":true,"reason":1}"#),
             ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":true,"board":"other"}"#),
             ("api/plugins/kanban/tasks/../reassign", r#"{"profile":"writer","reclaim_first":true}"#),
-            // Terminate is pinned to a run, so the task-wide reclaim isn't sent.
             ("api/plugins/kanban/tasks/t_1/reclaim", r#"{"reason":"x"}"#),
         ] {
             assert!(!kanban_write(path, Some(body)), "{path} {body}");

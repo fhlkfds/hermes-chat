@@ -1337,8 +1337,6 @@ export function Main({
   const [showProfile, setShowProfile] = useState<{ name: string; tab: "profiles" | "persona" }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
-  // The Work page's parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a string so
-  // the set changes only when one of them does.
   const workLacking = (Object.keys(WORK_PARTS) as WorkFeature[]).filter((part) => caps.caps[WORK_PARTS[part]].state === "unsupported").join(" ");
   const workLacks = useMemo(() => new Set(workLacking.split(" ").filter(Boolean) as WorkFeature[]), [workLacking]);
   /** Set, each time anew, to open Settings on its Voice tab, from a voice conversation's "Change voice settings". */

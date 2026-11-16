@@ -270,8 +270,7 @@ describe("Diagnostics' write checks (ADR 0169)", () => {
     expect(hermes.capabilities.get("workReclaim")).toMatchObject({ state: "supported", source: "probed" });
     expect(hermes.capabilities.get("workReassign")).toMatchObject({ state: "supported", source: "probed" });
     // The one PUT names the toolset no toolset is, and FastAPI refused its body: no toolset changed. The link went from
-    // a task to itself and the estimate had no title, which Hermes refuses before writing or asking a model. The
-    // reclaim named run 0 and the reassign a card that doesn't exist.
+    // a task to itself and the estimate had no title, which Hermes refuses before writing or asking a model.
     expect(writesSent(server).slice(writesBefore).map((r) => [r.method, r.path])).toEqual([
       ["PUT", "/api/tools/toolsets/__hermes_chat_probe__"],
       ["POST", "/api/plugins/kanban/links"],

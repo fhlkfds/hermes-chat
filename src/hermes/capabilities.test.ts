@@ -750,7 +750,6 @@ describe("checking again", () => {
     const REASSIGN = "POST api/plugins/kanban/tasks/__hermes_chat_probe__/reassign";
     const cases: [Record<string, unknown>, string, string][] = [
       [{ [RECLAIM]: answered(404, "run 0 not found"), [REASSIGN]: answered(409, "cannot reassign __hermes_chat_probe__") }, "supported", "supported"],
-      // FastAPI's own 404 names no run: the plugin has no such route.
       [{ [RECLAIM]: noRoute(), [REASSIGN]: answered(405, "Method Not Allowed") }, "unsupported", "unsupported"],
       [{ [REASSIGN]: noRoute() }, "unsupported", "unsupported"],
       [{ [RECLAIM]: { ok: true, run_id: 0 }, [REASSIGN]: { ok: true, assignee: null } }, "unknown", "unknown"],

@@ -3868,10 +3868,6 @@ export type KanbanRow = {
   provider_override?: string | null;
 };
 
-/**
- * A run row as `GET tasks/{id}` lists it at `bf0203a`. One the dispatcher claimed has a pid until it ends. Blocking
- * or completing a card that no bot is working on writes a row too, with no pid, no profile and one time for both ends.
- */
 export type KanbanRun = {
   id: number;
   task_id: string;
@@ -3883,7 +3879,6 @@ export type KanbanRun = {
   outcome: string | null;
   last_heartbeat_at: number | null;
 };
-/** A task event. `run_id`: the run it is about, when it is about one. */
 export type KanbanEvent = { id: number; task_id: string; kind: string; payload: Record<string, unknown> | null; created_at: number; run_id: number | null };
 
 /** The kanban plugin's routes past the board's own, each of which a test may leave out (`FakeKanban.without`). */
@@ -3960,21 +3955,16 @@ export class FakeKanban {
   estimateAnswer?: Record<string, unknown>;
   /** Every estimate asked for, as `title|body`. Estimates write nothing, so they aren't in `writes`. */
   estimates: string[] = [];
-  /** `kanban.default_assignee` as configured: the profile `tick` gives a ready card with no bot to. */
   defaultAssignee = "";
-  /** Runs as a write arrives, before it is applied: what a dispatcher tick that beat it would do. */
   before?: (write: string) => void;
-  /** Runs once a write is applied, before its answer: what a dispatcher tick in the gap before the next write would do. */
   between?: (write: string) => void;
   private eventSeq = 0;
-  /** The chat of each bot still at work, by run. Blocking a card ends its run's row and leaves its bot here. */
   private bots = new Map<number, string>();
-  /** The status each run was claimed from, which stopping it puts the card back in. */
   private claimedFrom = new Map<number, string>();
 
   constructor(private server: FakeHermes) {}
 
-  /** A task on `board`, made the way `kanban_create` makes one. One added as running is claimed, so it has its run. */
+  /** A task on `board`, made the way `kanban_create` makes one. */
   add(board: string, fields: Partial<KanbanRow> & { title: string }): KanbanRow {
     const row: KanbanRow = { id: `t_${(++this.seq).toString(16).padStart(8, "0")}`, board, status: "ready", assignee: null, session_id: null, created_at: Math.floor(now()), started_at: null, current_run_id: null, subscribed: true, runs: [], ...fields };
     (this.boards[board] ??= { name: board, tasks: [] }).tasks.push(row);
@@ -4000,10 +3990,6 @@ export class FakeKanban {
     return [this.server.sessions, ...Object.values(this.server.otherProfiles)].flat().find((s) => s.id === session);
   }
 
-  /**
-   * The dispatcher claims the task for its bot: a run, its events, and the bot's chat in the bot's profile, as a
-   * session with source `kanban`. A card claimed from review goes back there when its run is stopped.
-   */
   claim(id: string): KanbanRun | undefined {
     const t = this.find(id);
     if (!t) return undefined;
@@ -4026,7 +4012,6 @@ export class FakeKanban {
     return run;
   }
 
-  /** Each bot still at work on the task makes one model call: its chat's counts and rows grow, and an open run beats. */
   work(id: string, said = "Working on it.") {
     const t = this.find(id);
     for (const run of t?.runs ?? []) {
@@ -4044,7 +4029,6 @@ export class FakeKanban {
     }
   }
 
-  /** One dispatcher tick: a ready card with no bot goes to `defaultAssignee` when one is set, and every ready card with a bot is claimed. */
   tick() {
     for (const t of Object.values(this.boards).flatMap((b) => b.tasks)) {
       if (t.status !== "ready") continue;
@@ -4053,7 +4037,6 @@ export class FakeKanban {
     }
   }
 
-  /** `reclaim_task`: the run ends `reclaimed`, its bot stops, and the card goes back to where it was claimed from. */
   private reclaim(t: KanbanRow, run: KanbanRun, reason: string) {
     this.endRun(run, "reclaimed");
     this.bots.delete(run.id);
@@ -4073,8 +4056,7 @@ export class FakeKanban {
 
   /**
    * Moves the task to `status`, with a run when a worker picks it up, and wakes its chat as Hermes's poller does.
-   * Leaving running ends the run's row. A block leaves that run's bot at work, as Hermes does. Blocking or completing
-   * a card no bot is working on writes a row of its own, which is not a task run.
+   * A block leaves that run's bot at work, as Hermes does.
    */
   move(id: string, status: string): boolean {
     const t = this.find(id);
@@ -4091,7 +4073,7 @@ export class FakeKanban {
       } else if (status === "blocked" || status === "done") {
         const at = Math.floor(now());
         about = ++this.runSeq;
-        t.runs.push({ id: about, task_id: id, profile: null, status: outcome, worker_pid: null, started_at: at, ended_at: at, outcome, last_heartbeat_at: null });
+        t.runs.push({ id: about, task_id: id, profile: t.assignee ?? null, status: outcome, worker_pid: null, started_at: at, ended_at: at, outcome, last_heartbeat_at: null });
       }
       if (status === "blocked") this.emit(t, "blocked", about, { source_status: t.status });
       t.status = status;
@@ -4183,10 +4165,6 @@ export class FakeKanban {
     };
   }
 
-  /**
-   * One write as Hermes takes it: logged in `writes`, refused or lost when `failNext` says, with `before` and
-   * `between` run around its change.
-   */
   private written<T>(write: string, apply: () => T): T {
     this.writes.push(write);
     this.before?.(write);
@@ -4199,7 +4177,6 @@ export class FakeKanban {
     return answer;
   }
 
-  /** `POST runs/{id}/terminate`: stops one run, by Hermes's integer for it. */
   private terminate(rawId: string, body: Record<string, unknown>) {
     if (!/^\d+$/.test(rawId)) this.refuse(422, [{ type: "int_parsing", loc: ["path", "run_id"], msg: "Input should be a valid integer" }]);
     const id = Number(rawId);
@@ -4213,7 +4190,6 @@ export class FakeKanban {
     });
   }
 
-  /** `POST tasks/{id}/reassign`: with `reclaim_first` a running card's run is stopped first, in a step of its own. */
   private reassign(id: string, body: Record<string, unknown>) {
     return this.written(`POST ${id}/reassign ${JSON.stringify(body)}`, () => {
       const t = this.find(id);
