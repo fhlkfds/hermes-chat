@@ -188,6 +188,15 @@ Needs the `subagent.*` events on a chat's session (`spawn_requested`, `start`, `
 
 Needs `subagent.roster` on `/api/ws`, which counts the background subagents and background processes running for each chat of a profile, with no chat open. Hermes `f0d94882` has it, and 0.16.0 doesn't. Checked with `subagent.roster`. The app reads it with `session.active_list`, so a chat not opened since launch stays in Working while its background subagents run (ADR 0096). Without it, only a chat opened on the connection stays in Working while they run. Any other chat goes to the Inbox when its reply ends, as before.
 
+## Run view
+
+The Run view under a reply draws its turn as steps (ADR 0178). It needs nothing the app doesn't already read: the session events on `/api/ws` (`message.start`, `message.delta`, `reasoning.delta`, `tool.start`, `tool.complete`, `session.usage`, `status.update`, `request.cancel`, `approval.cancelled`, `message.complete`, `error`), the Approval and Question requests, `GET /api/sessions/{id}` for the chat's cost, `GET /api/sessions/{id}/messages` for a reply the app didn't watch, and `GET /api/config` for `display.tool_progress`. Hermes `bf0203a` and `f0d9488` have all of them, so it adds no capability of its own. Settings → Diagnostics shows two facts for it under Flight recorder.
+
+- **Tool steps.** With `display.tool_progress` set to `off`, Hermes sends tool events only for file edits, `delegate_task`, `clarify`, a few card tools and a failed call's completion. A run the app watched then misses the other tool steps, and the Run view says so. A run read from stored history still has them. A `HERMES_TUI_TOOL_PROGRESS` setting on the server overrides the config, and the app can't see it.
+- **Turn ids.** `bf0203a` sends no `turn_id` on `message.start`; `f0d9488` does. The recorder pairs a turn's events by their order on the session, which works with both, and Diagnostics shows which this Hermes is once a reply starts.
+
+What it can't show, on any Hermes: no event carries a server time, so every start and end is when the app heard it. Only a tool's `duration_s` is measured by Hermes. A model call has no event, so its edges and tokens are inferred from the events around it and the `session.usage` counters, sent at most once a second. Cost is kept per chat, so a turn's cost is the change across it, and a step's isn't known. A tool call has no failure flag, so failure is judged from its result. A retry that recovered leaves no trace. A stored row has only the time its step ended. Each of these is marked or said in the view.
+
 ## Versions checked
 
 Checked live on 2026-11-04 with throwaway dashboards holding no real data (`src/hermes/capabilities.live.test.ts`):

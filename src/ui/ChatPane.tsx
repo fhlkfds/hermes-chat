@@ -51,6 +51,7 @@ import { type CommandHost, useSlashCommands } from "./SlashCommands";
 import { BranchButton } from "./Branch";
 import { useWindowHidden } from "./windowState";
 import { EditButton, RegenerateButton, VariantNav } from "./Replay";
+import { RunButton } from "./RunView";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { useSpellCheck } from "./SpellCheckSettings";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
@@ -448,6 +449,7 @@ export function ChatPane({
   followUp,
   compare,
   branch,
+  onRun,
   branchedFrom,
   replay,
   variants,
@@ -528,6 +530,8 @@ export function ChatPane({
   followUp?: FollowUpHost;
   compare?: Comparing;
   branch?: { blocked?: string; onBranch: (itemId: string) => void };
+  /** Opens a reply's Run view (ADR 0178). */
+  onRun?: (itemId: string) => void;
   branchedFrom?: ReactNode;
   replay?: { blocked?: string; onReplay: (itemId: string, kind: ReplayKind) => void };
   variants?: { byTurn: Map<number, Variant[]>; onPick: (chatId: string, turn: number) => void };
@@ -588,6 +592,9 @@ export function ChatPane({
   const branchRef = useRef(branch?.onBranch);
   branchRef.current = branch?.onBranch;
   const onBranch = useCallback((itemId: string) => branchRef.current?.(itemId), []);
+  const runRef = useRef(onRun);
+  runRef.current = onRun;
+  const openRun = useCallback((itemId: string) => runRef.current?.(itemId), []);
   // And Edit and Regenerate.
   const replayRef = useRef(replay?.onReplay);
   replayRef.current = replay?.onReplay;
@@ -1054,6 +1061,7 @@ export function ChatPane({
               onOutgoing={onOutgoing}
               onBranch={branch && onBranch}
               branchBlocked={branch?.blocked}
+              onRun={onRun && openRun}
               onReplay={replay && onReplay}
               replayBlocked={replay?.blocked}
               turns={turns}
@@ -1175,6 +1183,7 @@ const BlockView = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
     versions,
@@ -1196,6 +1205,7 @@ const BlockView = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
     versions?: Variant[];
@@ -1266,6 +1276,7 @@ const BlockView = memo(
                 <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
+                {onRun && <RunButton onOpen={() => onRun(block.id)} />}
               </div>
             </div>
           )}
@@ -1304,6 +1315,7 @@ const BlockView = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
     a.versions === b.versions &&
@@ -1334,6 +1346,7 @@ const TranscriptChunk = memo(
     onOutgoing,
     onBranch,
     branchBlocked,
+    onRun,
     onReplay,
     replayBlocked,
     turns,
@@ -1357,6 +1370,7 @@ const TranscriptChunk = memo(
     onOutgoing: (itemId: string, action: OutgoingAction) => void;
     onBranch?: (itemId: string) => void;
     branchBlocked?: string;
+    onRun?: (itemId: string) => void;
     onReplay?: (itemId: string, kind: ReplayKind) => void;
     replayBlocked?: string;
     turns: Turns;
@@ -1389,6 +1403,7 @@ const TranscriptChunk = memo(
                   onOutgoing={onOutgoing}
                   onBranch={message ? onBranch : undefined}
                   branchBlocked={onBranch && message ? branchBlocked : undefined}
+                  onRun={b.kind === "assistant" ? onRun : undefined}
                   onReplay={(b.kind === "user" && turns.ofUser.has(b.id)) || (b.kind === "assistant" && turns.regenerable.has(b.id)) ? onReplay : undefined}
                   replayBlocked={onReplay && message ? replayBlocked : undefined}
                   versions={turns.anchor.has(b.id) ? byTurn?.get(turns.anchor.get(b.id)!) : undefined}
@@ -1421,6 +1436,7 @@ const TranscriptChunk = memo(
     a.onOutgoing === b.onOutgoing &&
     a.onBranch === b.onBranch &&
     a.branchBlocked === b.branchBlocked &&
+    a.onRun === b.onRun &&
     a.onReplay === b.onReplay &&
     a.replayBlocked === b.replayBlocked &&
     a.turns === b.turns &&

@@ -1,0 +1,36 @@
+0.46s sessions.changed 
+0.97s projects.changed 
+2.44s session.info 
+2.45s message.start {"type":"message.start","session_id":"aab3bc9b","seq":2}
+2.64s session.title 
+2.73s thinking.delta 
+3.00s sessions.changed 
+3.77s thinking.delta 
+3.77s tool.generating 
+3.80s thinking.delta 
+3.80s tool.start {"tool_id":"call_1794782770837_0","name":"terminal","args":{"command":"sleep 1; df -h /tmp | tail -1"}}
+4.46s session.usage {"calls":1,"input":1800,"output":40}
+5.03s sessions.changed 
+5.24s tool.complete {"tool_id":"call_1794782770837_0","duration_s":1.4399776458740234,"result":"{\"output\":\"tmpfs            32G   11G   21G  34% /tmp\",\"exit_code\":0,\"error\":null}"}
+5.28s thinking.delta 
+6.07s thinking.delta 
+6.07s tool.generating 
+6.08s thinking.delta 
+6.08s tool.start {"tool_id":"call_1794782773137_0","name":"read_file","args":{"path":"/tmp/hermes602/work/backup-last-run.log"}}
+6.28s tool.complete {"tool_id":"call_1794782773137_0","duration_s":0.19623684883117676,"result":"{\"content\":\"\",\"total_lines\":0,\"file_size\":0,\"truncated\":false,\"is_binary\":false,\"is_image\":false,\"error\":\"File not found"}
+6.34s thinking.delta 
+6.46s session.usage {"calls":2,"input":4200,"output":80}
+7.04s sessions.changed 
+7.13s thinking.delta 
+7.35s thinking.delta 
+7.35s reasoning.available 
+7.38s message.complete {"status":"complete","usage":{"calls":3},"persisted_turn":{"row_ids":[1,2,3,4,5,6],"complete":true,"user_row_id":1,"user_row_ids":[1],"final_assistant_row_id":6}}
+7.41s session.info 
+session cost 0 unknown calls 3
+row 6 assistant 1794782774.429382  object  The disk check ran. I couldn't find the backup log, so I can
+row 5 tool 1794782773.3541036 call_1794782773137_0 object  {"content": "", "total_lines": 0, "file_size": 0, "truncated
+row 4 assistant 1794782773.1438437  object [object Object] 
+row 3 tool 1794782772.307595 call_1794782770837_0 object  {"output": "tmpfs            32G   11G   21G  34% /tmp", "ex
+row 2 assistant 1794782770.856705  object [object Object] 
+row 1 user 1794782767.1580513  object  check disk please
+display.tool_progress "all"

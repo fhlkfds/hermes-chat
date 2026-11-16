@@ -123,6 +123,20 @@ export type TranscriptMessage = {
   message_uid?: string;
 };
 
+/**
+ * A turn `FakeHermes.toolTurn` runs: batches of tool calls, one model call each, then the reply in one more. Each model
+ * call takes `modelSeconds` and adds `tokens` and `costUsd`; each tool takes its `seconds`. `turnId`: what
+ * `message.start` carries, as `f0d9488` sends; none, as `bf0203a` sends.
+ */
+export type ToolTurnPlan = {
+  turnId?: string;
+  calls: { name: string; args: Record<string, unknown>; result: unknown; seconds: number }[][];
+  reply: string;
+  modelSeconds: number;
+  tokens: { prompt: number; output: number };
+  costUsd: number;
+};
+
 /** A file on the owner's disk: its bytes as a string, a size alone for a file too big to make, or a folder. */
 export type FakeFile = string | { size: number } | { dir: true };
 
@@ -558,6 +572,8 @@ export class FakeHermes {
    * `session.active_list` lists the session as working, and only a response frame, relayed to the child, settles one.
    */
   turnIsolation = false;
+  /** Each profile's `display.tool_progress`, as its config holds it; `all` for one not set. */
+  toolProgress: Record<string, unknown> = {};
   /** The Approvals this client answered, by either way: `approval.respond`, or a response frame to the request. */
   readonly approvalAnswers: { id: string; choice: unknown; via: "approval.respond" | "response" }[] = [];
   /**
@@ -1566,6 +1582,8 @@ export class FakeHermes {
       delegation: { ...this.modelConfig.delegation },
       terminal: { backend: this.terminalBackend[query.get("profile") || "default"] ?? "local" },
       dashboard: { turn_isolation: this.turnIsolation },
+      // Merged over Hermes's defaults, where `tool_progress` is `all`. YAML reads a bare `off` as false.
+      display: { tool_progress: this.toolProgress[query.get("profile") || "default"] ?? "all" },
       checkpoints: { enabled: this.checkpoints.on, max_snapshots: this.checkpoints.max },
       ...(this.kanban.reviewDispatch !== undefined && { kanban: { review_dispatch: this.kanban.reviewDispatch } }),
       ...(this.cron.zoneSetting(query.get("profile") || "default") && { timezone: this.cron.zoneSetting(query.get("profile") || "default") }),
@@ -2708,6 +2726,63 @@ export class FakeHermes {
     this.event(runtime, "message.complete", { text: reply, status: "complete", persisted_turn: { user_row_id } });
   }
 
+  /**
+   * Runs a turn with tool calls in a runtime session whose prompt is already stored, as Hermes sends and stores one at
+   * `bf0203a` and `f0d9488` (docs/research/fleet-features-server-support.md, "Flight recorder"). Each model call adds
+   * `tokens` and one call to the session's counters, sent as a `session.usage` tick, and `costUsd` to its row's
+   * `estimated_cost_usd`. Each batch of `calls` is one model call's tool calls: `tool.start`, then `tool.complete` with
+   * Hermes's own `duration_s` and the result parsed as JSON when it is JSON. The rows are stored with `timestamp` at
+   * the end of each step and `tool_calls` on the assistant row. `wait` paces it: none in tests, real time on the stand-in.
+   */
+  async toolTurn(runtimeId: string, plan: ToolTurnPlan, wait: (seconds: number) => Promise<void> = async () => {}) {
+    const stored = this.runtime.get(runtimeId);
+    if (!stored) throw new Error(`No stored session for ${runtimeId}`);
+    const session = [this.sessions, ...Object.values(this.otherProfiles)].flat().find((s) => s.id === stored);
+    const prompt = [...(this.transcripts[stored] ?? [])].reverse().find((m) => m.role === "user");
+    const user_row_id = prompt?.row_id;
+    let clock = prompt?.timestamp ?? now();
+    const counters = () => ({
+      input: session?.input_tokens ?? 0,
+      output: session?.output_tokens ?? 0,
+      reasoning: 0,
+      prompt: session?.input_tokens ?? 0,
+      completion: session?.output_tokens ?? 0,
+      total: (session?.input_tokens ?? 0) + (session?.output_tokens ?? 0),
+      calls: session?.api_call_count ?? 0,
+    });
+    const modelCall = async (text: string, toolCalls?: unknown[]) => {
+      await wait(plan.modelSeconds);
+      clock += plan.modelSeconds;
+      if (session) {
+        session.input_tokens = (session.input_tokens ?? 0) + plan.tokens.prompt;
+        session.output_tokens = (session.output_tokens ?? 0) + plan.tokens.output;
+        session.api_call_count = (session.api_call_count ?? 0) + 1;
+        session.estimated_cost_usd = (session.estimated_cost_usd ?? 0) + plan.costUsd;
+        session.cost_status = "estimated";
+      }
+      this.storeMessage(stored, { role: "assistant", text, timestamp: clock, ...(toolCalls && { tool_calls: toolCalls }) });
+      this.event(runtimeId, "session.usage", { usage: counters() });
+    };
+    this.event(runtimeId, "message.start", plan.turnId ? { turn_id: plan.turnId } : {});
+    let seq = 0;
+    for (const batch of plan.calls) {
+      const ids = batch.map(() => `call_${runtimeId}_${++seq}`);
+      await modelCall("", batch.map((c, i) => ({ id: ids[i], type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } })));
+      for (const [i, c] of batch.entries()) this.event(runtimeId, "tool.start", { tool_id: ids[i], name: c.name, context: JSON.stringify(c.args).slice(0, 80), args: c.args });
+      for (const [i, c] of batch.entries()) {
+        await wait(c.seconds);
+        clock += c.seconds;
+        const text = typeof c.result === "string" ? c.result : JSON.stringify(c.result);
+        this.storeMessage(stored, { role: "tool", tool_call_id: ids[i], name: c.name, args: c.args, result: text, timestamp: clock });
+        this.event(runtimeId, "tool.complete", { tool_id: ids[i], name: c.name, args: c.args, duration_s: c.seconds, result: c.result });
+      }
+    }
+    this.event(runtimeId, "message.delta", { text: plan.reply });
+    await modelCall(plan.reply);
+    const final_assistant_row_id = this.transcripts[stored].at(-1)!.row_id;
+    this.event(runtimeId, "message.complete", { text: plan.reply, status: "complete", usage: counters(), persisted_turn: { user_row_id, final_assistant_row_id } });
+  }
+
   /** The runtime session id the server handed out for a stored session. */
   runtimeIdOf(stored: string) {
     return [...this.runtime].reverse().find(([, s]) => s === stored)?.[0];
@@ -2807,7 +2882,7 @@ export class FakeHermes {
 
   /**
    * `GET /api/sessions/{id}/messages` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`): stored rows,
-   * `SELECT *` from `messages`, oldest first or `order=latest` newest first, a page of `limit` from `offset`. Only rows
+   * `SELECT *` from `messages`, oldest first, a page of `limit` from `offset`, counted from the newest for `order=latest`. Only rows
    * with a stored id are there: a live session's unstored tail isn't.
    */
   private storedMessages(id: string, query: URLSearchParams) {
@@ -2831,10 +2906,11 @@ export class FakeHermes {
         _compressed_summary: m.summary ? 1 : null,
         message_uid: m.message_uid ?? `uid-${m.row_id}`,
       }));
-    if (query.get("order") === "latest") rows.reverse();
     const offset = Number(query.get("offset") ?? 0);
     const limit = Number(query.get("limit") ?? 100);
-    return { session_id: id, profile: query.get("profile") ?? "default", messages: rows.slice(offset, offset + limit), pagination: {} };
+    // `latest` pages back from the newest row and still answers oldest first (`get_messages`, `hermes_state_messages.py`).
+    const page = query.get("order") === "latest" ? rows.slice(Math.max(0, rows.length - offset - limit), rows.length - offset) : rows.slice(offset, offset + limit);
+    return { session_id: id, profile: query.get("profile") ?? "default", messages: page, pagination: {} };
   }
 
   /** `GET /api/sessions/{id}/mutation-snapshot` (`hermes_cli/web_routers/sessions.py` at the deployed `bf0203a`). */

@@ -75,6 +75,7 @@ import type { UsageIo } from "./usageAnalytics";
 import { compactResultOf, compactionsOf, readingOf, type CompactResult, type CompactionHistory, type CompactionRow, type ContextReading } from "./contextInspect";
 import { chatUsageOf, countersOf, newerChatUsage, newerListedUsage, replyUsage, ZERO_COUNTERS, type ReplyUsage, type UsageCounters } from "./usage";
 import { toolResultText } from "./toolResult";
+import { FlightRecorder, storedRun, toolProgressOf, turnRows, watchedRun, type Heard, type Run, type RunRow, type ToolProgress, type WatchedTurn } from "./flightRecorder";
 import { num } from "./chatCache";
 import { onLost, onRoster, onSubagentEvent, onUnchecked, parseOutput, type SubagentId, type SubagentOutput } from "./subagents";
 import {
@@ -395,6 +396,8 @@ const questionSpec = <Q extends QuestionItem>(i: Q) => QUESTIONS[i.kind] as unkn
 
 /** JSON-RPC "method not found": what Hermes expects from a client that can't handle a request. */
 const NO_SUCH_METHOD = -32601;
+/** The most pages of 100 stored rows the Run view reads back to find where a reply's turn began. */
+const RUN_PAGES = 5;
 /** "No window here shows this chat" (`NOT_SHOWN_CODE`, `tui_gateway/server_requests.py`): one client declining. */
 const NOT_SHOWN = 4404;
 /** Requests only the window showing the chat answers (the official app's `WINDOW_OWNED_REQUESTS` at `bf0203a`). */
@@ -812,6 +815,8 @@ export class Hermes {
   private usageFrom = new Map<string, UsageCounters | "unknown">();
   /** Last item before a running turn, by stable id; null for an empty transcript. Older Failed messages can go away. */
   private turnStart = new Map<string, string | null>();
+  /** What the app heard of each chat's turns, in memory, for the Run view (ADR 0178). */
+  private recorder = new FlightRecorder();
   /** Chats whose running turn no message sent from here began: Hermes started it, or another Hermes client did. */
   private unprompted = new Set<string>();
   /** Side questions asked on this connection, so each card has its own id (ADR 0070). */
@@ -3419,6 +3424,7 @@ export class Hermes {
     if (!chat || chat.running) return false;
     const profile = this.profile;
     this.deleted.set(profile, chatId, true);
+    this.recorder.forget(chatId);
     this.pinWanted.delete(profile, chatId);
     this.archiveWanted.delete(profile, chatId);
 
@@ -3660,6 +3666,11 @@ export class Hermes {
     try {
       if (!this.pipe || this.snapshot.status !== "connected" || !chat?.runtimeId) throw new Error("Not connected to Hermes.");
       if (!(await send(chat.runtimeId))) this.patchCard(chatId, card, (i) => ({ ...change.undo(i), ended: change.stale }));
+      else {
+        const now = this.snapshot.chats.find((c) => c.id === chatId)?.items.find((i) => i.id === card.id);
+        // A Clarify answered a question at a time is still waiting until its last question is locked.
+        if (now && isQuestion(now) && now.answer) this.recorder.answered(chatId, { kind: "settled", at: Date.now(), ids: [card.id], how: answeredHow(now), answered: true });
+      }
     } catch (e) {
       this.patchCard(chatId, card, change.undo);
       this.patchChat(chatId, (c) => ({ ...c, items: [...c.items, errorItem(c, `Couldn't answer Hermes: ${(e as Error).message}`)] }));
@@ -4116,6 +4127,9 @@ export class Hermes {
     }
     if (type === "status.update") {
       if (payload.kind === "process" && typeof payload.text === "string") this.kanbanWatch.nudge(payload.text);
+      const shown = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
+      if (shown && typeof payload.kind === "string" && typeof payload.text === "string")
+        this.recorder.hear(shown.id, { kind: "status", at: Date.now(), status: payload.kind, text: payload.text });
       return;
     }
     const chat = session_id ? this.snapshot.chats.find((c) => c.runtimeId === session_id) : undefined;
@@ -4142,6 +4156,11 @@ export class Hermes {
       return;
     }
     if (type === "message.start") {
+      const from = this.usageFrom.get(session_id!);
+      // A chat with nothing but the owner's messages has had no reply, so it has cost nothing before this turn.
+      const unanswered = !chat.usage && chat.items.every((i) => i.kind === "user");
+      this.recorder.begin(chat.id, Date.now(), from === "unknown" ? undefined : from, unanswered ? { kind: "estimated", usd: 0 } : chat.usage?.cost);
+      this.capabilities.noteTurnIds(typeof payload.turn_id === "string" && payload.turn_id !== "");
       this.turnStart.set(chat.id, chat.items.at(-1)?.id ?? null);
       if (this.turns.has(this.profile, chat.id)) this.unprompted.delete(chat.id);
       else this.unprompted.add(chat.id);
@@ -4152,6 +4171,7 @@ export class Hermes {
       const task = call?.kind === "tool" && call.name === "kanban_create" ? parseKanbanCreate(call.args, payload.result, Date.now(), this.kanbanWatch.currentBoard()) : undefined;
       if (task) this.kanbanWatch.add(task, chat.id);
     }
+    this.record(chat.id, type, payload);
     const usage = type === "message.complete" ? this.turnUsage(session_id!, payload.usage) : undefined;
     const from = this.turnStart.get(chat.id);
     const unprompted = this.unprompted.has(chat.id);
@@ -4174,6 +4194,7 @@ export class Hermes {
       },
       delta,
     );
+    const ended = type === "message.complete" || type === "error" ? this.endRecording(chat.id, type, payload, from) : undefined;
     // A tool call that went on, or a turn that ended, may have been waiting on a question another client answered.
     if (type === "tool.complete" || type === "message.complete" || type === "error") this.track(this.settleQuestions(chat.id));
     if (type === "message.complete") {
@@ -4183,7 +4204,9 @@ export class Hermes {
       if (unprompted) this.track(this.showUnsentPrompt(chat.id, receipt, from));
       else this.stampTurn(chat.id, receipt);
     }
-    if (type === "message.complete") this.track(this.refreshUsage(chat.id));
+    if (type === "message.complete") this.track(this.refreshUsage(chat.id).then(() => ended && this.costAfter(chat.id, ended)));
+    // A failed turn may have cost something too, and the next turn is measured from the read after it.
+    if (type === "error" && ended) this.track(this.refreshUsage(chat.id).then(() => this.costAfter(chat.id, ended)));
     // By the end of a turn Hermes has stored the session, so a pin that failed earlier can succeed.
     if (type === "message.complete" && this.pinWanted.has(this.profile, chat.id)) this.track(this.writePin(chat.id));
     // The finished reply is newer than the read watermark, though the owner watched it come in.
@@ -4206,6 +4229,107 @@ export class Hermes {
     const start = this.usageFrom.get(runtimeId);
     this.usageFrom.set(runtimeId, end ?? "unknown");
     return end && start && start !== "unknown" ? replyUsage(start, end) : undefined;
+  }
+
+  /** Keeps a session event in the chat's running turn, with when it arrived, for the Run view (ADR 0178). */
+  private record(chatId: string, type: string, p: Record<string, unknown>) {
+    const at = Date.now();
+    const h = ((): Heard | undefined => {
+      switch (type) {
+        case "message.delta":
+        case "reasoning.delta":
+          return typeof p.text === "string" && p.text ? { kind: "text", at, last: at, chars: p.text.length, reasoning: type === "reasoning.delta" } : undefined;
+        case "tool.start":
+        case "tool.complete": {
+          const id = textOf(p.tool_id);
+          if (id === undefined) return undefined;
+          const name = optionalText(p.name) ?? "tool";
+          const args = obj(p.args);
+          return type === "tool.start"
+            ? { kind: "tool.start", at, id, name, ...(args && { args }) }
+            : { kind: "tool.complete", at, id, name, ...(args && { args }), ...(num(p.duration_s) !== undefined && { durationS: num(p.duration_s) }), result: toolResultText(p.result) };
+        }
+        case "session.usage": {
+          const counters = countersOf(p.usage);
+          return counters && { kind: "usage", at, counters };
+        }
+        case "request.cancel":
+          return { kind: "settled", at, ids: [String(p.id)], how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+        case "approval.cancelled":
+          return { kind: "settled", at, ...(Array.isArray(p.request_ids) && { ids: p.request_ids.map(String) }), how: `Hermes stopped waiting: ${textOf(p.reason) || "withdrawn"}` };
+        default:
+          return undefined;
+      }
+    })();
+    if (h) this.recorder.hear(chatId, h);
+  }
+
+  /** Ends the chat's recorded turn with its replies, as the transcript now shows them, and returns it. */
+  private endRecording(chatId: string, type: string, p: Record<string, unknown>, from: string | null | undefined): WatchedTurn | undefined {
+    const at = Date.now();
+    const items = this.snapshot.chats.find((c) => c.id === chatId)?.items ?? [];
+    const begin = turnFrom(items, from);
+    const replies = items.slice(begin < 0 ? turnStart(items) : begin).flatMap((i) => (i.kind === "assistant" ? [i.id] : []));
+    const receipt = (p.persisted_turn ?? {}) as PersistedTurn;
+    const replyRow = typeof receipt.final_assistant_row_id === "number" ? receipt.final_assistant_row_id : undefined;
+    const failure = textOf(p.error ?? (p.status === "error" ? (p.failure_reason ?? "The turn failed.") : undefined));
+    const h: Heard =
+      type === "error"
+        ? { kind: "error", at, message: textOf(p.message) ?? "Hermes reported an error." }
+        : { kind: "end", at, status: textOf(p.status) ?? "complete", ...(failure && { failure }), ...(countersOf(p.usage) && { counters: countersOf(p.usage) }) };
+    return this.recorder.end(chatId, h, replies, replyRow);
+  }
+
+  /** The chat's cost as read after a recorded turn: only a read that succeeded after it ended counts. */
+  private costAfter(chatId: string, turn: WatchedTurn) {
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const ended = turn.heard.at(-1)?.at ?? 0;
+    turn.costRead = true;
+    if (chat?.usage && !chat.usageError && chat.usage.readAt >= ended && !turn.costOverlap) turn.costAfter = chat.usage.cost;
+  }
+
+  /**
+   * One reply's run, for the Run view (ADR 0178): from what the app heard, if it watched the reply's turn, otherwise from
+   * Hermes's stored rows. With it, the profile's `display.tool_progress`, or undefined when it couldn't be read.
+   */
+  async run(chatId: string, itemId: string): Promise<{ run: Run; toolProgress?: ToolProgress }> {
+    const profile = this.profile;
+    const chat = this.snapshot.chats.find((c) => c.id === chatId);
+    const reply = chat?.items.find((i) => i.id === itemId);
+    if (!chat || reply?.kind !== "assistant") throw new Error("This reply isn't in the chat any more.");
+    const config = this.toolProgress().catch(() => undefined);
+    const watched = this.recorder.find(chatId, reply);
+    // A recording cut short is missing steps the stored rows still have, when they can be read back that far.
+    if (watched?.truncated && reply.rowId !== undefined) {
+      const rows = await this.turnRowsOf(profile, chatId, reply.rowId).catch(() => undefined);
+      return { run: rows ? storedRun(rows) : watchedRun(watched, Date.now()), toolProgress: await config };
+    }
+    if (watched) return { run: watchedRun(watched, Date.now()), toolProgress: await config };
+    if (reply.rowId === undefined) throw new Error("Hermes hasn't stored this reply yet, so its steps can't be read. Try again once the chat has reloaded.");
+    const rows = await this.turnRowsOf(profile, chatId, reply.rowId);
+    return { run: storedRun(rows), toolProgress: await config };
+  }
+
+  /** The profile's `display.tool_progress`, from `GET /api/config`: whether Hermes sends ordinary tool steps (ADR 0178). */
+  async toolProgress(): Promise<ToolProgress> {
+    return toolProgressOf(await this.rest("GET", `api/config?${new URLSearchParams({ profile: this.profile })}`));
+  }
+
+  /** The stored rows of the turn holding row `replyRow`, oldest first, read a page at a time back from the newest. */
+  private async turnRowsOf(profile: string, chatId: string, replyRow: number): Promise<RunRow[]> {
+    const PAGE = 100;
+    const rows: RunRow[] = [];
+    for (let page = 0; page < RUN_PAGES; page++) {
+      const query = new URLSearchParams({ profile, order: "latest", limit: String(PAGE), offset: String(page * PAGE), inline_images: "false" });
+      const res = (await this.rest("GET", `${sessionPath(chatId)}/messages?${query}`)) as { messages?: RunRow[] };
+      const got = (res.messages ?? []).filter((m) => typeof m?.id === "number" && typeof m.role === "string");
+      // A `latest` page counts back from the newest row and is itself oldest first.
+      rows.unshift(...got);
+      const turn = turnRows(rows, replyRow);
+      if (turn) return turn;
+      if (got.length < PAGE) break;
+    }
+    throw new Error(rows.some((r) => r.id === replyRow) ? "This reply's turn began too far back to read." : "Hermes has no stored row for this reply.");
   }
 
   /**
@@ -4320,6 +4444,8 @@ export class Hermes {
     }
     const sid = textOf(req.params.session_id) ?? "";
     const chat = this.snapshot.chats.find((c) => c.runtimeId === sid);
+    const card = questionCard(req);
+    if (chat && card) this.recorder.hear(chat.id, { kind: "ask", at: Date.now(), id: req.id, ...(card.kind === "approval" && { requestId: card.requestId }), what: card.kind, summary: questionSummary(card) });
     if (chat) this.showQuestions(chat.id, [req]);
     else this.earlyRequests.set(sid, [...(this.earlyRequests.get(sid) ?? []), req]);
   }
@@ -4684,6 +4810,7 @@ export class Hermes {
     if (this.profile !== profile) return;
     if (now === undefined) {
       this.deleted.set(profile, chatId, true);
+      this.recorder.forget(chatId);
       this.update({
         chats: this.snapshot.chats.filter((c) => c.id !== chatId),
         syncError: `"${title}" is no longer in Hermes: another Hermes client deleted it.`,
@@ -5743,6 +5870,23 @@ const inlineDiffOf = (v: unknown): { inlineDiff?: string } => (typeof v === "str
 
 /** A stored Hermes time (Unix seconds) in ms, or nothing for a missing, zero or out-of-range one. */
 const storedAt = (s: unknown) => (typeof s === "number" && s > 0 && s * 1000 <= 8.64e15 ? s * 1000 : undefined);
+
+const APPROVAL_ANSWERED: Record<ApprovalChoice, string> = { once: "Allowed once", session: "Allowed for this chat", always: "Always allowed", deny: "Denied" };
+
+/** How the owner answered a Question from here, for its step in the Run view. A password or secret is never kept. */
+function answeredHow(q: QuestionItem): string {
+  if (q.kind === "approval") return `${q.answer ? APPROVAL_ANSWERED[q.answer] : "Answered"} from this app`;
+  if (q.answer === "skipped") return "Skipped from this app";
+  if (q.kind !== "clarify") return "Answered from this app";
+  return `Answered from this app: ${q.questions.map((x) => `${x.question} → ${q.locked[x.qid] ?? "skipped"}`).join("; ")}`;
+}
+
+/** One line for what a Question asks, for its step in the Run view. */
+function questionSummary(q: QuestionItem): string {
+  if (q.kind === "approval" || q.kind === "sudo") return q.command;
+  if (q.kind === "clarify") return q.questions.map((x) => x.question).join(" · ");
+  return q.envVar;
+}
 
 /** A card for an `approval` request. Choices this app doesn't know are dropped; it never makes one up. */
 function approvalItem(r: ServerRequest): ApprovalItem {

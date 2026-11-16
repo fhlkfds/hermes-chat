@@ -31,6 +31,10 @@ _Avoid_: background job, pending task, handoff (fine in conversation)
 The work a chat handed off, come back: the card at the start of the turn Hermes runs when a background Subagent or a background process started with `notify_on_complete` finishes. It shows Hermes's title for it, such as "Subagent Task Completed: audit backups", and the result only, without the notice Hermes wrote for its model; a batch keeps each task's goal above its result. It sits on Hermes's side of the transcript, open, and its header closes it. A Subagent's answer reads like a reply, a process's output like a log. A kanban task's wake notice is a one-line message, not a Returned result; the task's whole result is in its sheet on the Work page (ADR 0175).
 _Avoid_: notification, wake message, delegation result (fine in conversation)
 
+**Run view**:
+One reply's turn drawn as a waterfall of steps: the model's calls, tool calls, Approvals and Questions, and Hermes's status lines, each with how long it took and whether it failed; a click shows a step's arguments and result. **Run**, under a reply, opens it. A reply this app watched is drawn from the events it heard, kept in memory only, each with when it arrived; any other from the chat's stored rows. A tool's length is Hermes's own measurement; every other time, token count and the turn's cost are the app's inference, marked with ≈ (ADR 0178).
+_Avoid_: trace, timeline, flight recorder (the feature's name in the issue tracker; fine in conversation)
+
 **Snoozed**:
 An Active chat the owner has put out of the way until a time they chose. It sits in the Snoozed section after the Inbox, collapsed until the owner opens it, soonest to wake first, and shows when it wakes. When that time comes it goes back to the Inbox, as new as when it woke. Snoozes are kept on this computer only, for each connection and profile; Hermes and other Hermes clients don't see them (ADR 0036).
 _Avoid_: hidden, deferred, reminder

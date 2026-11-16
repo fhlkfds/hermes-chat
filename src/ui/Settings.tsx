@@ -18,6 +18,7 @@
 // Profiles are switched in the list's header, not here (ADR 0001), and the list is hidden while Settings is open;
 // Profiles' Open goes through the same question. The search box (Ctrl+F) shows the sections of every tab whose text holds
 // what was typed (settingsSearch.ts).
+import type { ToolProgress } from "../hermes/flightRecorder";
 import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, AudioLines, Blocks, Brain, ChevronDown, Cpu, Download, KeyRound, Keyboard, Lock, LogOut, Palette, PlugZap, Puzzle, RadioTower, Search, Server, Settings2, Share2, ShieldCheck, Sparkles, Stethoscope, Trash2, Users, Wrench, X } from "lucide-react";
 import type { MemorySource } from "../hermes/memory";
@@ -274,6 +275,7 @@ export function SettingsScreen({
   openGuide = () => {},
   showDiagnostics,
   screen,
+  toolProgress,
   work,
   logs,
   connectionManager,
@@ -390,6 +392,8 @@ export function SettingsScreen({
   showDiagnostics?: { id?: CapabilityId };
   /** The profile's Bot Desktop, for Diagnostics' browser check. */
   screen?: Pick<ScreenApi, "status">;
+  /** Reads the profile's `display.tool_progress`, for Diagnostics' flight recorder rows (ADR 0178). */
+  toolProgress?: () => Promise<ToolProgress>;
   /** The kanban plugin, for Diagnostics' Work dispatch settings. */
   work?: WorkDispatchApi;
   /** Diagnostics → Logs (ADR 0033, 0087); without it Diagnostics has no Logs. */
@@ -1057,6 +1061,7 @@ export function SettingsScreen({
               openGuide={openGuide}
               focus={diagFocus}
               screen={screen}
+              toolProgress={toolProgress}
               work={work}
             />
           )
