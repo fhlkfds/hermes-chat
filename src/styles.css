@@ -2766,7 +2766,8 @@ label.memory-pick { cursor: pointer; }
 .bots-activity { display: inline-flex; align-items: center; gap: 4px; font-size: calc(12rem / 14); font-weight: 500; color: var(--accent); white-space: nowrap; }
 .bots-activity.is-needs-you { color: var(--warn); }
 .bots-row.is-hidden .bots-open { opacity: 0.6; }
-.bots-new { flex: none; margin-right: 4px; }
+.bots-new { flex: none; }
+.bots-more { flex: none; margin-right: 4px; }
 .bots-hidden { padding: 4px 8px; }
 .bots-hidden-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font-size: calc(12rem / 14); }
 .bots-hidden-toggle:hover { color: var(--text); }
@@ -4086,6 +4087,15 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .profile-dialog .field-label { justify-content: space-between; }
 .profile-dialog .field-label .btn { padding: 2px 9px; }
 .profile-model { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Edit bot's look: the color box with what it holds, and the picture as the row will show it. */
+.profile-color { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.profile-color input[type="color"] { flex: none; width: 44px; height: 30px; padding: 2px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 8px; cursor: pointer; }
+.profile-color input[type="color"]:disabled { cursor: default; opacity: 0.6; }
+.profile-picture { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* A field Hermes changed since the dialog opened: its value there, and the button that takes it. */
+.profile-conflict { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; color: var(--warn); line-height: 1.5; }
+.profile-conflict .link-btn { flex: none; }
+.profile-conflict-picture { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; vertical-align: middle; }
 .profile-model select { flex: 0 1 200px; min-width: 0; background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 8px 10px; color: var(--text); }
 .profile-model input { flex: 1 1 220px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; padding: 9px 12px; outline: none; font-size: calc(13rem / 14); color: var(--text); }
 .profile-soul { min-height: 90px; }

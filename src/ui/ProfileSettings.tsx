@@ -3,18 +3,23 @@
 // question and guard. Every word comes from the catalogue (ADR 0100).
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { Brain, Copy, FolderOpen, Keyboard, MoreHorizontal, Pencil, Plus, Puzzle, RefreshCw, Sparkles, Trash2, TriangleAlert, Wand2 } from "lucide-react";
+import { BOT_LOOK_SAME, BOT_PICTURE_MAX_BYTES, type BotLook } from "../hermes/bots";
 import type { CapabilityStore } from "../hermes/capabilities";
+import { allSaved, editsOf, rebase, type EditResult, type Edits, type FieldOutcome } from "../hermes/fieldMerge";
 import type { CatalogProvider } from "../hermes/modelSettings";
 import type { ProfileCloneApi } from "../hermes/profileClone";
 import type { PendingRename } from "../hermes/profileLocalData";
 import {
   DISPLAY_NAME_MAX,
+  PROFILE_FIELDS_SAME,
   PROFILE_ROUTES,
   ProfileError,
   nameIssue,
   profileFailure,
+  profileFieldsOf,
   type ProfileAction,
   type ProfileFailure,
+  type ProfileFields,
   type ProfileRow,
   type ProfilesApi,
 } from "../hermes/profiles";
@@ -76,7 +81,7 @@ export type ProfilesWiring = {
 const STOPPING_AFTER_MS = 1500;
 
 /** A note the tab shows above the list after something happened. `open`: offer to open that profile. `command`: a command to copy. */
-type Notice = { tone: "muted" | "warn" | "bad"; text: string; open?: string; command?: string };
+export type Notice = { tone: "muted" | "warn" | "bad"; text: string; open?: string; command?: string };
 
 type Dialog =
   | { kind: "new" }
@@ -108,7 +113,7 @@ export function failureText(l: Locale, f: ProfileFailure, name: string): string 
 }
 
 /** Why `action` can't run now, or nothing: not connected, or the server lacks its route. */
-function blocked(l: Locale, connected: boolean, lacks: (a: ProfileAction) => boolean, action: ProfileAction): string | undefined {
+export function blocked(l: Locale, connected: boolean, lacks: (a: ProfileAction) => boolean, action: ProfileAction): string | undefined {
   if (!connected) return l.profiles.notConnected;
   if (lacks(action)) return l.profiles.noRoute(PROFILE_ROUTES[action]);
   return undefined;
@@ -117,7 +122,33 @@ function blocked(l: Locale, connected: boolean, lacks: (a: ProfileAction) => boo
 /** A profile's name as shown: `default`'s display name first, when it has one. */
 export const rowName = (l: Locale, p: Pick<ProfileRow, "name" | "displayName">) => (p.displayName && p.displayName !== p.name ? l.profiles.named(p.displayName, p.name) : p.name);
 
-export function ProfileSettings({ wiring }: { wiring: ProfilesWiring }) {
+/**
+ * Switching to a profile through the switcher's question, then its guard, for a screen that switches as part of
+ * something else (a delete of the profile in use). `question`: the question while it's asked, for the screen to draw
+ * on top of any dialog, which stays.
+ */
+export function useSwitchTo(wiring: Pick<ProfilesWiring, "leaving" | "switchTo">) {
+  const [ask, setAsk] = useState<{ to: string; answer: (go: boolean) => void }>();
+  /** Resolves whether the app switched. */
+  const switchTo = (name: string, keepSettings = false) =>
+    new Promise<boolean>((done) => {
+      const go = () => void wiring.switchTo(name, keepSettings).then(done, () => done(false));
+      if (!wiring.leaving) return go();
+      setAsk({
+        to: name,
+        answer: (yes) => {
+          setAsk(undefined);
+          if (yes) go();
+          else done(false);
+        },
+      });
+    });
+  const question = ask && <SwitchQuestion to={ask.to} note={wiring.leaving ?? ""} onStay={() => ask.answer(false)} onGo={() => ask.answer(true)} />;
+  return { switchTo, question };
+}
+
+/** `select`: the profile to show selected, when the tab was opened for one (the Bots view's Open in Settings → Profiles). */
+export function ProfileSettings({ wiring, select }: { wiring: ProfilesWiring; select?: { name: string } }) {
   const l = useLocale();
   const w = l.profiles;
   const { api, connected, inUse } = wiring;
@@ -127,15 +158,14 @@ export function ProfileSettings({ wiring }: { wiring: ProfilesWiring }) {
   const [rows, setRows] = useState<ProfileRow[]>();
   const [listError, setListError] = useState<string>();
   const [reading, setReading] = useState(false);
-  const [selected, setSelected] = useState(inUse);
+  const [selected, setSelected] = useState(select?.name ?? inUse);
   const selectedNow = useRef(selected);
   selectedNow.current = selected;
   const [dialog, setDialog] = useState<Dialog>();
   const [notice, setNotice] = useState<Notice>();
   const [offer, setOffer] = useState<PendingRename>();
   const [menu, setMenu] = useState<{ row: ProfileRow; x: number; y: number }>();
-  /** The switcher's question, while it's asked: on top of any dialog, which stays (a delete goes on after it). */
-  const [ask, setAsk] = useState<{ to: string; answer: (go: boolean) => void }>();
+  const { switchTo, question } = useSwitchTo(wiring);
   const listRef = useRef<HTMLDivElement>(null);
   /** The selected row, where each dialog puts focus back. */
   const selectedRow = useRef<HTMLDivElement>(null);
@@ -188,20 +218,13 @@ export function ProfileSettings({ wiring }: { wiring: ProfilesWiring }) {
 
   const focusRow = (name: string) => requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>(`[data-profile="${CSS.escape(name)}"]`)?.focus());
 
-  /** Switches to `name` through the switcher's question, then its guard. Resolves whether the app switched. */
-  const switchTo = (name: string, keepSettings = false) =>
-    new Promise<boolean>((done) => {
-      const go = () => void wiring.switchTo(name, keepSettings).then(done, () => done(false));
-      if (!wiring.leaving) return go();
-      setAsk({
-        to: name,
-        answer: (yes) => {
-          setAsk(undefined);
-          if (yes) go();
-          else done(false);
-        },
-      });
-    });
+  // Asked for from elsewhere while the tab is open: that profile is selected, and its row takes focus once listed.
+  const wanted = select && rows?.some((r) => r.name === select.name) ? select : undefined;
+  useEffect(() => {
+    if (!wanted) return;
+    setSelected(wanted.name);
+    focusRow(wanted.name);
+  }, [wanted]);
 
   const moveDone = async (p: PendingRename) => {
     setOffer(undefined);
@@ -477,12 +500,13 @@ export function ProfileSettings({ wiring }: { wiring: ProfilesWiring }) {
           }}
         />
       )}
-      {ask && <SwitchQuestion to={ask.to} note={wiring.leaving ?? ""} onStay={() => ask.answer(false)} onGo={() => ask.answer(true)} />}
+      {question}
     </>
   );
 }
 
-function MenuEntry({ icon, label, why, danger, onPick }: { icon: ReactNode; label: string; why?: string; danger?: boolean; onPick: () => void }) {
+/** One entry of a row menu. With `why` it can't be picked, and says why under its label. */
+export function MenuEntry({ icon, label, why, danger, onPick }: { icon: ReactNode; label: string; why?: string; danger?: boolean; onPick: () => void }) {
   const id = useId();
   return (
     <>
@@ -506,7 +530,7 @@ function MenuEntry({ icon, label, why, danger, onPick }: { icon: ReactNode; labe
   );
 }
 
-function CopyButton({ text, copy }: { text: string; copy: (text: string) => Promise<void> }) {
+export function CopyButton({ text, copy }: { text: string; copy: (text: string) => Promise<void> }) {
   const l = useLocale();
   const [copied, setCopied] = useState(false);
   return (
@@ -660,8 +684,25 @@ function SwitchQuestion({ to, note, onStay, onGo }: { to: string; note: string; 
   );
 }
 
-/** A field's state after Save: saved, or why not. */
-type FieldState = { kind: "saved" } | { kind: "failed"; text: string };
+/**
+ * A field's state after Save: saved, why not, or changed elsewhere since the owner last saw it, with Hermes's value
+ * (`theirs`), which nothing was written over.
+ */
+type FieldState<V = never> = { kind: "saved" } | { kind: "failed"; text: string } | { kind: "changedElsewhere"; theirs: V };
+
+type FormStates = { name?: FieldState; create?: FieldState } & { [K in keyof ProfileFields]?: FieldState<ProfileFields[K]> } & {
+  [K in "title" | "color" | "picture"]?: FieldState<BotLook[K]>;
+};
+
+/**
+ * What Edit bot adds to the Edit form (ADR 0187): the bot's name in Bot Mode, its colour and its picture. `look`: the
+ * look as read when the dialog opened, which is what its saves are checked against. `edit`: `Hermes.editBot`.
+ */
+export type BotSection = { look: BotLook; edit: (profile: string, edits: Edits<BotLook>) => Promise<EditResult<BotLook>> };
+
+const PICTURE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+/** What the colour box shows for a bot with Hermes's own colour, or one the box can't show. */
+const NO_COLOR = "#888888";
 
 /** The model pickers: a provider from Settings → Model's catalogue, then one of its models or any typed. */
 function ModelPicker({
@@ -720,9 +761,14 @@ export type FormResult = { notice?: Notice; select?: string; edit?: string };
  * own route, in order: description, model, then the name, so the earlier calls still use the old name. A failed field
  * keeps the dialog open, marked with Hermes's words; the fields that saved stay saved.
  *
+ * Edit never writes over a change made elsewhere since the dialog opened (ADR 0187): each field is saved only where
+ * Hermes still has what the form last showed. One that changed keeps the owner's text, shows Hermes's value with Use
+ * Hermes's, and a second Save then replaces it knowingly. The name is changed last, and only once every other field
+ * saved.
+ *
  * The Bots view's New bot is this form's New (ADR 0164): `heading` and `createLabel` name what it makes there, and
  * `noEdit` leaves out Set model after a create that didn't set it, since that screen has no Edit to go on to.
- * `onPersona`: shows Settings → Persona on a profile, linked from Edit.
+ * `onPersona`: shows Settings → Persona on a profile, linked from Edit. `bot`: Edit bot, which adds the bot's look.
  */
 export function ProfileForm({
   wiring,
@@ -733,6 +779,7 @@ export function ProfileForm({
   heading,
   createLabel,
   noEdit,
+  bot,
   onClone,
   onPersona,
   onDone,
@@ -746,6 +793,7 @@ export function ProfileForm({
   heading?: string;
   createLabel?: string;
   noEdit?: boolean;
+  bot?: BotSection;
   onClone?: () => void;
   onPersona?: (name: string) => void;
   onDone: (result: FormResult) => void;
@@ -763,22 +811,30 @@ export function ProfileForm({
   const descId = useId();
   const modelId = useId();
   const soulId = useId();
+  const titleFieldId = useId();
+  const colorId = useId();
+  const pictureId = useId();
   const isDefault = row?.name === "default";
-  // What the form started from; a field equal to it isn't sent.
-  const [base, setBase] = useState({
+  // What the owner was last shown of each field. A field equal to it isn't sent, and one Hermes has moved off isn't
+  // written over.
+  const [base, setBase] = useState<{ name: string; profile: ProfileFields; look?: BotLook }>({
     name: row ? (isDefault ? (row.displayName ?? "") : row.name) : "",
-    description: row?.description ?? "",
-    provider: row?.provider ?? "",
-    model: row?.model ?? "",
+    profile: row ? profileFieldsOf(row) : { description: "", model: null },
+    look: bot?.look,
   });
   const [name, setName] = useState(base.name);
-  const [description, setDescription] = useState(base.description);
-  const [provider, setProvider] = useState(base.provider);
-  const [model, setModel] = useState(base.model);
+  const [description, setDescription] = useState(base.profile.description);
+  const [provider, setProvider] = useState(base.profile.model?.provider ?? "");
+  const [model, setModel] = useState(base.profile.model?.model ?? "");
+  const [title, setTitle] = useState(base.look?.title ?? "");
+  const [color, setColor] = useState(base.look?.color ?? null);
+  const [picture, setPicture] = useState(base.look?.picture ?? null);
+  const [pictureNote, setPictureNote] = useState<string>();
+  const pictureInput = useRef<HTMLInputElement>(null);
   const [soul, setSoul] = useState("");
   const [catalog, setCatalog] = useState<CatalogProvider[]>();
   const [catalogError, setCatalogError] = useState<string>();
-  const [states, setStates] = useState<Partial<Record<"name" | "description" | "model" | "create", FieldState>>>({});
+  const [states, setStates] = useState<FormStates>({});
   const [saving, setSaving] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [writing, setWriting] = useState(false);
@@ -799,9 +855,17 @@ export function ProfileForm({
 
   const trimmed = name.trim();
   const nameChanged = trimmed !== base.name;
-  const descChanged = description.trim() !== base.description.trim();
-  const modelChanged = (provider !== base.provider || model.trim() !== base.model) && !!provider && !!model.trim();
-  const dirty = (row ? nameChanged : !!trimmed) || descChanged || (provider !== base.provider || model.trim() !== base.model) || !!soul.trim();
+  const formProfile: ProfileFields = { description, model: provider || model.trim() ? { provider, model: model.trim() } : null };
+  const profileEdits = editsOf(base.profile, formProfile, PROFILE_FIELDS_SAME);
+  const modelTouched = !!profileEdits.model;
+  // A model without its provider or its name isn't sent, as Hermes's route takes only the pair.
+  if (!provider || !model.trim()) delete profileEdits.model;
+  const descChanged = !!profileEdits.description;
+  const modelChanged = !!profileEdits.model;
+  const formLook = base.look && { ...base.look, title, color, picture };
+  const lookEdits = base.look && formLook ? editsOf(base.look, formLook, BOT_LOOK_SAME) : {};
+  const lookChanged = Object.keys(lookEdits).length > 0;
+  const dirty = (row ? nameChanged : !!trimmed) || descChanged || modelTouched || lookChanged || !!soul.trim();
 
   const issue = isDefault
     ? !trimmed
@@ -820,11 +884,14 @@ export function ProfileForm({
   const renameWhy = row && nameChanged ? why("rename") : undefined;
   const descWhy = descChanged ? (row ? why("describe") : undefined) : undefined;
   const modelWhy = row && modelChanged ? why("setModel") : undefined;
+  // A picture's save ends with a write of the Bot Mode block, so it needs both methods.
+  const lookWhy = why("botLook");
+  const pictureWhy = why("botPicture") ?? lookWhy;
   const createWhy = row ? undefined : why("create");
   // `rows` undefined: the profiles there are aren't read yet, so New waits rather than send a name it can't check.
   const unreadWhy = !row && !rows ? f.namesUnread : undefined;
   const saveWhy = createWhy ?? (!connected ? w.notConnected : undefined) ?? (issue && (row ? nameChanged : true) ? issue : undefined) ?? unreadWhy ?? busyText ?? renameWhy ?? descWhy ?? modelWhy;
-  const nothing = row && !nameChanged && !descChanged && !modelChanged;
+  const nothing = row && !nameChanged && !descChanged && !modelChanged && !lookChanged;
 
   /** Leaves the dialog, asking first when it holds changes; never while a save or Write for me runs. */
   const leave = (then?: () => void) => {
@@ -844,7 +911,7 @@ export function ProfileForm({
       if (out.ok) {
         setDescription(out.description);
         // Hermes saved it, as its own; the form starts from it now.
-        setBase((b) => ({ ...b, description: out.description }));
+        setBase((b) => ({ ...b, profile: { ...b.profile, description: out.description } }));
         setWriteNote({ tone: "muted", text: f.writeSaved });
       } else setWriteNote({ tone: "bad", text: f.writeFailed(out.reason) });
     } catch (e) {
@@ -879,35 +946,55 @@ export function ProfileForm({
     }
   };
 
+  const pickPicture = (file: File | undefined) => {
+    if (!file) return;
+    if (!PICTURE_TYPES.includes(file.type)) return setPictureNote(f.pictureFormat);
+    if (file.size > BOT_PICTURE_MAX_BYTES) return setPictureNote(f.pictureTooBig);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!live.current || typeof reader.result !== "string") return;
+      setPicture(reader.result);
+      setPictureNote(undefined);
+    };
+    reader.onerror = () => live.current && setPictureNote(f.pictureUnread);
+    reader.readAsDataURL(file);
+  };
+
   const save = async () => {
     if (!row) return;
     setSaving(true);
-    const next: typeof states = {};
+    const next: FormStates = {};
     const show = () => live.current && setStates({ ...next });
-    let failed = false;
-    const fail = (key: "name" | "description" | "model", e: unknown, action: ProfileAction) => {
-      next[key] = { kind: "failed", text: failureText(l, profileFailure(e, action), row.name) };
-      failed = true;
-      show();
-    };
-    if (descChanged)
-      try {
-        const kept = await api.describe(row.name, description);
-        next.description = { kind: "saved" };
-        setBase((b) => ({ ...b, description: kept }));
-        show();
-      } catch (e) {
-        fail("description", e, "describe");
+    const statesOf = <F extends object>(saved: EditResult<F>) =>
+      Object.fromEntries(
+        Object.entries<FieldOutcome<unknown> | undefined>(saved.fields).map(([k, o]) => [k, o?.kind === "failed" ? { kind: "failed", text: failureText(l, o.failure, row.name) } : o]),
+      ) as { [K in keyof F]?: FieldState<F[K]> };
+    // Each family is saved only when it holds an edit, so a rename alone reads and writes nothing else.
+    const savedProfile: EditResult<ProfileFields> = Object.keys(profileEdits).length ? await api.edit(row.name, profileEdits) : { fields: {} };
+    Object.assign(next, statesOf(savedProfile));
+    const profileNext = rebase(base.profile, formProfile, savedProfile);
+    if (live.current) {
+      setDescription(profileNext.form.description);
+      // A model half picked wasn't sent, and stays as the owner left it.
+      if (!modelTouched || modelChanged) {
+        setProvider(profileNext.form.model?.provider ?? "");
+        setModel(profileNext.form.model?.model ?? "");
       }
-    if (modelChanged)
-      try {
-        await api.setModel(row.name, provider, model.trim());
-        next.model = { kind: "saved" };
-        setBase((b) => ({ ...b, provider, model: model.trim() }));
-        show();
-      } catch (e) {
-        fail("model", e, "setModel");
-      }
+      setBase((b) => ({ ...b, profile: profileNext.base }));
+    }
+    show();
+    const savedLook: EditResult<BotLook> = bot && lookChanged ? await bot.edit(row.name, lookEdits) : { fields: {} };
+    Object.assign(next, statesOf(savedLook));
+    const lookNext = base.look && formLook && rebase(base.look, formLook, savedLook);
+    if (live.current && lookNext) {
+      setTitle(lookNext.form.title);
+      setColor(lookNext.form.color);
+      setPicture(lookNext.form.picture);
+      setBase((b) => ({ ...b, look: lookNext.base }));
+    }
+    show();
+    // The name changes last, and only under a dialog with nothing left unsaved: a field changed elsewhere isn't.
+    let failed = !allSaved(savedProfile) || !allSaved(savedLook);
     let renamedTo: string | undefined;
     let localFailed = false;
     if (nameChanged && !failed) {
@@ -933,7 +1020,9 @@ export function ProfileForm({
         const failure = profileFailure(e, "rename");
         // Refused or never sent: nothing moved. A lost answer stays noted, so the next list read can offer the move.
         if (!isDefault && failure.kind !== "lost") wiring.local.clear();
-        fail("name", e, "rename");
+        next.name = { kind: "failed", text: failureText(l, failure, row.name) };
+        failed = true;
+        show();
       } finally {
         clearTimeout(timer);
         if (live.current) setStopping(false);
@@ -950,12 +1039,67 @@ export function ProfileForm({
       });
   };
 
-  const stateNote = (s?: FieldState) =>
-    s && (
-      <div className={`small ${s.kind === "failed" ? "sign-in-error" : "muted"}`} role={s.kind === "failed" ? "alert" : undefined}>
-        {s.kind === "saved" ? f.fieldSaved : s.text}
+  /**
+   * A field's note after Save. For one changed elsewhere, `said` words Hermes's value and Use Hermes's puts it in the
+   * input (`use`), which leaves nothing to save for that field.
+   */
+  const stateNote = <V,>(key: keyof FormStates, said?: (theirs: V) => ReactNode, use?: (theirs: V) => void) => {
+    const s = states[key] as FieldState<V> | undefined;
+    if (!s) return null;
+    if (s.kind !== "changedElsewhere")
+      return (
+        <div className={`small ${s.kind === "failed" ? "sign-in-error" : "muted"}`} role={s.kind === "failed" ? "alert" : undefined}>
+          {s.kind === "saved" ? f.fieldSaved : s.text}
+        </div>
+      );
+    return (
+      <div className="small profile-conflict" role="alert">
+        <span>{said?.(s.theirs)}</span>
+        <button
+          className="link-btn"
+          disabled={saving}
+          onClick={() => {
+            use?.(s.theirs);
+            setStates(({ [key]: _, ...rest }) => rest);
+          }}
+        >
+          {f.useTheirs}
+        </button>
       </div>
     );
+  };
+  const saidText = (theirs: string) => (theirs.trim() ? f.changedElsewhere(theirs.trim()) : f.changedElsewhereEmpty);
+
+  const nameField = (
+    <div className="field">
+      <label className="field-label" htmlFor={nameId}>
+        {isDefault ? f.displayName : bot ? f.profileName : f.name}
+      </label>
+      <input
+        spellCheck={false}
+        id={nameId}
+        className={isDefault ? undefined : "mono"}
+        autoFocus={!bot}
+        value={name}
+        readOnly={saving}
+        maxLength={isDefault ? DISPLAY_NAME_MAX + 10 : 70}
+        aria-invalid={!!issue && (row ? nameChanged : !!name)}
+        aria-describedby={nameNote}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <div id={nameNote} className="set-hint">
+        {issue && (row ? nameChanged : !!name) ? <span className="sign-in-error">{issue}</span> : isDefault ? f.displayHint : f.nameHint}
+      </div>
+      {row?.gatewayRunning && !isDefault && nameChanged && (
+        <SettingNote tone="warn">
+          <TriangleAlert size={12} aria-hidden /> {f.gatewayWarn}
+        </SettingNote>
+      )}
+      {busyText && <SettingNote tone="warn">{busyText}</SettingNote>}
+      {renameWhy && !states.name && <SettingNote tone="warn">{renameWhy}</SettingNote>}
+      {stateNote("name")}
+    </div>
+  );
 
   return (
     <div className="leave-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
@@ -975,7 +1119,7 @@ export function ProfileForm({
         }}
       >
         <h2 id={titleId} className="leave-title">
-          {row ? f.editTitle(rowName(l, row)) : (heading ?? f.newTitle)}
+          {heading ?? (row ? f.editTitle(rowName(l, row)) : f.newTitle)}
         </h2>
         {madeNoModel ? (
           <>
@@ -1009,34 +1153,83 @@ export function ProfileForm({
           </>
         ) : (
           <>
-            <div className="field">
-              <label className="field-label" htmlFor={nameId}>
-                {isDefault ? f.displayName : f.name}
-              </label>
-              <input
-                spellCheck={false}
-                id={nameId}
-                className={isDefault ? undefined : "mono"}
-                autoFocus
-                value={name}
-                readOnly={saving}
-                maxLength={isDefault ? DISPLAY_NAME_MAX + 10 : 70}
-                aria-invalid={!!issue && (row ? nameChanged : !!name)}
-                aria-describedby={nameNote}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <div id={nameNote} className="set-hint">
-                {issue && (row ? nameChanged : !!name) ? <span className="sign-in-error">{issue}</span> : isDefault ? f.displayHint : f.nameHint}
-              </div>
-              {row?.gatewayRunning && !isDefault && nameChanged && (
-                <SettingNote tone="warn">
-                  <TriangleAlert size={12} aria-hidden /> {f.gatewayWarn}
-                </SettingNote>
-              )}
-              {busyText && <SettingNote tone="warn">{busyText}</SettingNote>}
-              {renameWhy && !states.name && <SettingNote tone="warn">{renameWhy}</SettingNote>}
-              {stateNote(states.name)}
-            </div>
+            {!bot && nameField}
+            {bot && (
+              <>
+                <div className="field">
+                  <label className="field-label" htmlFor={titleFieldId}>
+                    {f.botName}
+                  </label>
+                  <input id={titleFieldId} autoFocus value={title} readOnly={saving} disabled={!!lookWhy} onChange={(e) => setTitle(e.target.value)} />
+                  <div className="set-hint">{f.botNameHint}</div>
+                  {stateNote<string>("title", saidText, setTitle)}
+                </div>
+                <div className="field">
+                  <label className="field-label" htmlFor={colorId}>
+                    {f.color}
+                  </label>
+                  <div className="profile-color">
+                    <input id={colorId} type="color" value={/^#[0-9a-f]{6}$/.test(color ?? "") ? color! : NO_COLOR} disabled={saving || !!lookWhy} onChange={(e) => setColor(e.target.value.toLowerCase())} />
+                    <span className="small muted">{color === null ? f.colorOwn : <span translate="no">{color}</span>}</span>
+                    {color !== null && (
+                      <button className="link-btn" disabled={saving || !!lookWhy} onClick={() => setColor(null)}>
+                        {f.colorClear}
+                      </button>
+                    )}
+                  </div>
+                  {stateNote<string | null>("color", (theirs) => (theirs === null ? f.changedElsewhereEmpty : f.changedElsewhere(theirs)), setColor)}
+                </div>
+                <div className="field">
+                  <span className="field-label" id={pictureId}>
+                    {f.picture}
+                  </span>
+                  <div className="profile-picture" role="group" aria-labelledby={pictureId}>
+                    <span className={`bots-face${color ? " has-color" : ""}`} style={color ? { background: color } : undefined} aria-hidden translate="no">
+                      {picture ? <img src={picture} alt="" /> : ((title.trim() || row?.name || "?")[0] ?? "?").toUpperCase()}
+                    </span>
+                    <input
+                      ref={pictureInput}
+                      type="file"
+                      hidden
+                      accept={PICTURE_TYPES.join(",")}
+                      aria-label={f.pictureChoose}
+                      onChange={(e) => {
+                        pickPicture(e.target.files?.[0]);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button className="btn" disabled={saving || !!pictureWhy} title={pictureWhy} onClick={() => pictureInput.current?.click()}>
+                      {f.pictureChoose}
+                    </button>
+                    {picture !== null && (
+                      <button className="btn" disabled={saving || !!pictureWhy} title={pictureWhy} onClick={() => setPicture(null)}>
+                        {f.pictureRemove}
+                      </button>
+                    )}
+                  </div>
+                  <div className="set-hint">{f.pictureHint}</div>
+                  {pictureNote && (
+                    <div className="small sign-in-error" role="alert">
+                      {pictureNote}
+                    </div>
+                  )}
+                  {stateNote<string | null>(
+                    "picture",
+                    (theirs) =>
+                      theirs === null ? (
+                        f.changedPictureNone
+                      ) : (
+                        <>
+                          {f.changedPicture} <img className="profile-conflict-picture" src={theirs} alt="" />
+                        </>
+                      ),
+                    setPicture,
+                  )}
+                </div>
+                {lookWhy && <SettingNote tone="warn">{lookWhy}</SettingNote>}
+                {!lookWhy && pictureWhy && <SettingNote tone="warn">{pictureWhy}</SettingNote>}
+              </>
+            )}
             <div className="field">
               <div className="field-label">
                 <label htmlFor={descId}>{row ? f.description : f.descriptionOptional}</label>
@@ -1053,7 +1246,7 @@ export function ProfileForm({
                   {writeNote.text}
                 </div>
               )}
-              {stateNote(states.description)}
+              {stateNote<string>("description", saidText, setDescription)}
             </div>
             <div className="field">
               <span className="field-label" id={modelId}>
@@ -1064,7 +1257,7 @@ export function ProfileForm({
                 catalog={catalog}
                 provider={provider}
                 model={model}
-                optional={!row || !base.provider}
+                optional={!row || !base.profile.model?.provider}
                 labelId={modelId}
                 onChange={(p, m) => {
                   setProvider(p);
@@ -1072,7 +1265,14 @@ export function ProfileForm({
                 }}
               />
               {catalogError && <div className="small muted">{catalogError}</div>}
-              {stateNote(states.model)}
+              {stateNote<ProfileFields["model"]>(
+                "model",
+                (theirs) => (theirs ? f.changedElsewhere(w.model(theirs.model, theirs.provider)) : f.changedElsewhereEmpty),
+                (theirs) => {
+                  setProvider(theirs?.provider ?? "");
+                  setModel(theirs?.model ?? "");
+                },
+              )}
             </div>
             {row ? (
               onPersona && (
@@ -1101,8 +1301,9 @@ export function ProfileForm({
                 <div className="set-hint">{f.personaHint}</div>
               </div>
             )}
+            {bot && nameField}
             {!row && <SettingNote>{f.keysNote}</SettingNote>}
-            {stateNote(states.create)}
+            {stateNote("create")}
             {!row && onClone && (
               <button className="link-btn profile-clone-link" disabled={saving} onClick={() => leave(onClone)}>
                 {f.cloneInstead}
@@ -1138,7 +1339,7 @@ export function ProfileForm({
  * read, and the profile's name typed to confirm. Deleting the profile in use switches to `default` first, through the
  * switcher's own question and guard; staying deletes nothing.
  */
-function DeleteProfile({
+export function DeleteProfile({
   wiring,
   row,
   returnTo,
@@ -1146,7 +1347,7 @@ function DeleteProfile({
   onDone,
   onClose,
 }: {
-  wiring: ProfilesWiring;
+  wiring: Omit<ProfilesWiring, "showTab">;
   row: ProfileRow;
   returnTo: RefObject<HTMLElement | null>;
   switchAway: () => Promise<boolean>;

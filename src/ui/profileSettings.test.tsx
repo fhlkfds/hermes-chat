@@ -154,6 +154,49 @@ describe("Settings → Profiles", { timeout: 30_000 }, () => {
     expect(server.profileModel.research).toMatchObject({ provider: provider.options[1].value, model: "some-model" });
   });
 
+  it("Edit keeps a description changed elsewhere since it opened, shows Hermes's, and replaces it only on a second Save", async () => {
+    const { server, user, list } = await launch();
+    await user.click(within(option(list, "work")).getByRole("button", { name: "Edit work" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit profile: work" });
+    // Another client changes the description, and the profile is renamed here in the same Save.
+    server.profileMeta.work = { description: "Reviews pull requests" };
+    const description = within(dialog).getByLabelText("Description");
+    await user.clear(description);
+    await user.type(description, "Ships code");
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "coder");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    expect(await within(dialog).findByText("Changed elsewhere since you opened this. Hermes has “Reviews pull requests” now. Save again to replace it.")).toBeTruthy();
+    // Nothing was written over it, the owner's text stays, and the name isn't changed under an unsaved field.
+    expect(writes(server)).toEqual([]);
+    expect(server.profileMeta.work.description).toBe("Reviews pull requests");
+    expect(description).toHaveProperty("value", "Ships code");
+    expect(screen.getByRole("dialog", { name: "Edit profile: work" })).toBeTruthy();
+
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Edit profile/ })).toBeNull());
+    expect(writes(server)).toEqual(["PUT /api/profiles/work/description", "PATCH /api/profiles/work"]);
+    expect(server.profileMeta.coder.description).toBe("Ships code");
+  });
+
+  it("Edit takes Hermes's model with Use Hermes's, leaving nothing to save", async () => {
+    const { server, user, list } = await launch();
+    await user.click(within(option(list, "work")).getByRole("button", { name: "Edit work" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit profile: work" });
+    server.profileModel.work = { ...server.profileModel.work, model: "gpt-6.1-mini" };
+    const model = within(dialog).getByLabelText("Model name");
+    await user.clear(model);
+    await user.type(model, "gpt-7");
+    await user.click(within(dialog).getByRole("button", { name: /Save changes/ }));
+    expect(await within(dialog).findByText(/Hermes has “gpt-6\.1-mini · openai” now/)).toBeTruthy();
+    expect(server.profileModel.work.model).toBe("gpt-6.1-mini");
+    await user.click(within(dialog).getByRole("button", { name: "Use Hermes's" }));
+    expect(model).toHaveProperty("value", "gpt-6.1-mini");
+    expect(within(dialog).queryByText(/Changed elsewhere/)).toBeNull();
+    expect(within(dialog).getByRole("button", { name: /Save changes/ })).toHaveProperty("disabled", true);
+    expect(writes(server)).toEqual([]);
+  });
+
   it("deletes a profile once its name is typed, and forgets this computer's data for it only", async () => {
     const { server, user, list, connection } = await launch();
     const mine = `hermes-chat.draft.${connectionScope(connection, "research", "chat-1")}`;
