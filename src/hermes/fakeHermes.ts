@@ -449,6 +449,12 @@ export class FakeHermes {
     minted: Set<string>;
     profiles?: Record<string, Record<string, unknown>>;
   };
+  /**
+   * The server's machine as `shell.exec` and `cli.exec` reach it (tui_gateway/methods_tools.py at bf0203a). Undefined:
+   * a Hermes without them. `shell.exec` runs only the commands the Screen sends, `command -v` and `rm -f --`.
+   * `pmInstall`: how `hermes pm install chromium` ends; on 0 Hermes then finds `browser` for every profile.
+   */
+  machine?: { programs: Set<string>; files: Set<string>; pmInstall: { code: number; output: string }; browser: string };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help", "goal"];
   /** False: a Hermes with no `prompt.btw`, which answers "method not found". */
@@ -997,6 +1003,35 @@ export class FakeHermes {
     "display.start": (r) => {
       if (this.display) this.display.status.running = true;
       this.displayAnswer(r.id, r.params.profile);
+    },
+    "display.stop": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.stop");
+      if (d.lease.holder === "human" && !r.params.force) return this.fail(r.id, 5300, "a human holds this screen; pass force: true to stop it anyway");
+      d.status.running = false;
+      this.displayAnswer(r.id, r.params.profile);
+    },
+    "cli.exec": (r) => {
+      const m = this.machine;
+      if (!m) return this.fail(r.id, -32601, "unknown method: cli.exec");
+      const argv = r.params.argv as string[];
+      if (argv.join(" ") !== "pm install chromium") return this.respond(r.id, { blocked: false, code: 2, output: `hermes: no such command: ${argv.join(" ")}` });
+      if (m.pmInstall.code === 0 && this.display) this.display.status.browser = m.browser;
+      this.respond(r.id, { blocked: false, ...m.pmInstall });
+    },
+    "shell.exec": (r) => {
+      const m = this.machine;
+      if (!m) return this.fail(r.id, -32601, "unknown method: shell.exec");
+      const command = String(r.params.command);
+      const rm = /^rm -f -- '([^']*)'$/.exec(command);
+      if (rm) {
+        m.files.delete(rm[1]);
+        return this.respond(r.id, { stdout: "", stderr: "", code: 0 });
+      }
+      const asked = command.split("; ").map((c) => /^command -v (\S+)$/.exec(c)?.[1]);
+      if (asked.some((p) => !p)) return this.fail(r.id, 5003, `the fake runs no such command: ${command}`);
+      const found = asked.filter((p) => m.programs.has(p!));
+      this.respond(r.id, { stdout: found.map((p) => `/usr/bin/${p}\n`).join(""), stderr: "", code: found.length === asked.length ? 0 : 1 });
     },
     "display.observe": (r) => {
       const d = this.display;

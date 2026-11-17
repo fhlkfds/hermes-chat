@@ -3,7 +3,7 @@
 // (a sign-in, a 2FA code, a CAPTCHA) and hands back. Hermes keeps who may drive it (the lease): while the owner holds
 // it, Hermes's computer use waits, and only the holder's keys and pointer reach the screen. noVNC draws the stream.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
 import {
   BROWSER_FIX,
   CLOSE_CONTROL_TAKEN,
@@ -19,6 +19,19 @@ import {
   type DisplayStatus,
   type ScreenApi,
 } from "../hermes/screen";
+import {
+  canSetUp,
+  installSystem,
+  namesOf,
+  recheckBrowser,
+  setUpApps,
+  without,
+  type AppState,
+  type AppsSetup,
+  type InstallSystem,
+  type ScreenAppId,
+  type SetupDeps,
+} from "../hermes/screenApps";
 import { CopyCommand, Spinner } from "./bits";
 import { errorText } from "../hermes/values";
 
@@ -65,10 +78,13 @@ export function ScreenTab({
   connected,
   loadRfb = loadNoVnc,
   onHeld,
+  system,
 }: {
   api: ScreenApi;
   shown: boolean;
   connected: boolean;
+  /** Installs the terminal and the text editor through the connection's ssh; undefined without an SSH target. */
+  system?: InstallSystem;
   loadRfb?: () => Promise<RfbConstructor>;
   /** Whether the owner holds the screen, so the panel can say so while the tab isn't shown. */
   onHeld?: (held: boolean) => void;
@@ -83,6 +99,7 @@ export function ScreenTab({
   const [evicted, setEvicted] = useState(false);
   /** The browser a Check again found where there was none, said once until the next read. */
   const [found, setFound] = useState<string>();
+  const [setup, setSetup] = useState<AppsSetup>({ kind: "unchecked" });
   const host = useRef<HTMLDivElement>(null);
   const rfb = useRef<RfbClient | null>(null);
   // Bumped by every attach and detach, so a late answer from an earlier one does nothing.
@@ -203,6 +220,17 @@ export function ScreenTab({
 
   useEffect(() => api.onLease((key, l) => key === status?.profile_key && noteLease(l)), [api, status?.profile_key, noteLease]);
 
+  const setupDeps: SetupDeps = { api, system, update: setSetup, onStatus: noteStatus };
+  const depsRef = useRef(setupDeps);
+  depsRef.current = setupDeps;
+  // Once per profile and connection, the first time the tab is shown on a screen they can go on.
+  const setUpStarted = useRef(false);
+  useEffect(() => {
+    if (!shown || !connected || !status || setUpStarted.current || !canSetUp(status)) return;
+    setUpStarted.current = true;
+    void setUpApps(depsRef.current, status);
+  }, [shown, connected, status]);
+
   // A running screen is watched as soon as it can be.
   useEffect(() => {
     if (connected && status?.running && conn.kind === "idle") void attach();
@@ -235,9 +263,21 @@ export function ScreenTab({
     });
   const checkAgain = () =>
     act(async () => {
-      const s = await refresh();
+      setFound(undefined);
+      // Once the Screen has tried to add the browser, one found now is added, and the dock is written again.
+      const s = setup.kind === "checked" ? await recheckBrowser(setupDeps) : await refresh();
       const b = s && browserOf(s);
       setFound(b?.kind === "found" ? b.path : undefined);
+    });
+  /** Stops the screen (Hermes refuses while a person holds it), lets its dock be written again, and starts it. */
+  const restart = () =>
+    act(async () => {
+      await api.stop();
+      detach();
+      if (status) await api.resetDock(status.profile_key);
+      noteStatus(await api.start());
+      setConn({ kind: "idle" });
+      setSetup((s) => (s.kind === "checked" ? { ...s, dock: { kind: "current" } } : s));
     });
   const takeOver = () => act(async () => viewer && noteLease(await api.takeOver(viewer.id)));
   const handBack = () => act(async () => viewer && noteLease(await api.handBack(viewer.id)));
@@ -290,7 +330,11 @@ export function ScreenTab({
     );
 
   const live = phase?.kind === "live";
-  const noBrowser = !unavailable && status && browserOf(status).kind === "missing";
+  const apps = setup.kind === "checked" ? setup.apps : {};
+  // While the browser is being added, the note about none waits; it is what shows if adding it fails.
+  const addingBrowser =
+    (!!status && canSetUp(status) && setup.kind === "unchecked") || setup.kind === "checking" || apps.browser?.kind === "installing" || apps.browser?.kind === "added";
+  const noBrowser = !unavailable && status && browserOf(status).kind === "missing" && !addingBrowser;
   return (
     <div className="screen-tab" hidden={!shown}>
       <div className="screen-bar">
@@ -332,6 +376,7 @@ export function ScreenTab({
       )}
       {noBrowser && (
         <Note title="No Chrome or Chromium on the Hermes server" className="screen-browser">
+          {apps.browser?.kind === "failed" && <div className="screen-apps-why">Highwing couldn't install Chromium: {apps.browser.why}</div>}
           So the agent can't open a browser on its screen. Run this on the server, in the Terminal tab for one, then check again:
           <CopyCommand command={BROWSER_FIX} />
           <div className="small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
@@ -341,6 +386,17 @@ export function ScreenTab({
             </button>
           </div>
         </Note>
+      )}
+      {setup.kind === "checked" && (
+        <AppsNote
+          setup={setup}
+          busy={busy}
+          connected={connected}
+          onPassword={(password) => void installSystem(setupDeps, idsIn(setup, "needs-password"), password)}
+          onAgain={(ids) => void installSystem(setupDeps, ids)}
+          onSkip={(ids) => setSetup(without(ids))}
+          onRestart={() => void restart()}
+        />
       )}
       {evicted && conn.kind !== "live" && (
         <div className="attach-note" role="status">
@@ -374,6 +430,121 @@ export function ScreenTab({
         )}
       </div>
     </div>
+  );
+}
+
+const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["kind"]) =>
+  (Object.keys(setup.apps) as ScreenAppId[]).filter((id) => setup.apps[id]?.kind === kind);
+
+/**
+ * What the Screen is adding to the screen (screenApps.ts), the terminal and editor's password, and what to do when
+ * that can't be done. A browser that failed shows in the note about none instead.
+ */
+function AppsNote({
+  setup,
+  busy,
+  connected,
+  onPassword,
+  onAgain,
+  onSkip,
+  onRestart,
+}: {
+  setup: Extract<AppsSetup, { kind: "checked" }>;
+  busy: boolean;
+  connected: boolean;
+  onPassword: (password: string) => void;
+  onAgain: (ids: ScreenAppId[]) => void;
+  onSkip: (ids: ScreenAppId[]) => void;
+  onRestart: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const installing = idsIn(setup, "installing");
+  const asking = idsIn(setup, "needs-password");
+  const wrong = asking.some((id) => (setup.apps[id] as Extract<AppState, { kind: "needs-password" }>).wrong);
+  const noSsh = idsIn(setup, "no-ssh");
+  const failed = idsIn(setup, "failed").filter((id) => id !== "browser");
+  const added = idsIn(setup, "added");
+  const firstOf = <K extends AppState["kind"]>(ids: ScreenAppId[]) => setup.apps[ids[0]] as Extract<AppState, { kind: K }>;
+  const send = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password) return;
+    // Held no longer than the press: it goes to ssh's stdin and nowhere else.
+    setPassword("");
+    onPassword(password);
+  };
+  return (
+    <>
+      {installing.length > 0 && (
+        <div className="attach-note screen-apps" role="status">
+          <Spinner /> Adding {namesOf(installing)} to the screen…
+        </div>
+      )}
+      {asking.length > 0 && (
+        <Note title={`Adding ${namesOf(asking)} needs the server's sudo password`} className="screen-apps">
+          {wrong ? "That password didn't work. Try it again." : "They come from the server's package manager, which needs root. Type the sudo password of the account Highwing signs in to over SSH."}
+          <form className="screen-apps-password" onSubmit={send}>
+            <input
+              type="password"
+              aria-label="Sudo password on the server"
+              autoComplete="off"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={!connected}
+            />
+            <button className="btn primary" type="submit" disabled={!password || !connected}>
+              Install
+            </button>
+            <button className="btn" type="button" onClick={() => onSkip(asking)}>
+              Not now
+            </button>
+          </form>
+          <div className="small">It goes to sudo on the server and isn't kept.</div>
+        </Note>
+      )}
+      {noSsh.length > 0 && (
+        <Note title={`Highwing can't add ${namesOf(noSsh)} without SSH`} className="screen-apps">
+          This connection has no SSH route, and they need root on the server. Run this there, in a terminal of your own, then check again:
+          <CopyCommand command={firstOf<"no-ssh">(noSsh).command} />
+          <div className="preview-state-actions">
+            <button className="btn" disabled={!connected} onClick={() => onAgain(noSsh)}>
+              <RefreshCw size={14} /> Check again
+            </button>
+          </div>
+        </Note>
+      )}
+      {failed.length > 0 && (
+        <Note title={`Couldn't add ${namesOf(failed)} to the screen`} className="screen-apps">
+          <div className="screen-apps-why">{firstOf<"failed">(failed).why}</div>
+          <div className="preview-state-actions">
+            <button className="btn" disabled={!connected} onClick={() => onAgain(failed)}>
+              <RefreshCw size={14} /> Try again
+            </button>
+          </div>
+        </Note>
+      )}
+      {added.length > 0 && (
+        <div className="attach-note screen-apps screen-found" role="status">
+          <Check size={14} aria-hidden />
+          {setup.dock.kind === "current" && <> Added {namesOf(added)} to the screen's dock.</>}
+          {setup.dock.kind === "restart" && (
+            <>
+              {" "}
+              Added {namesOf(added)} to the screen. It is running on its old dock, so they show in the dock after a restart. Restarting stops whatever the agent is
+              doing there.
+              <button className="btn" disabled={busy || !connected} onClick={onRestart}>
+                {busy ? <Spinner /> : <RefreshCw size={14} />} Restart the screen
+              </button>
+            </>
+          )}
+          {setup.dock.kind === "failed" && (
+            <>
+              {" "}
+              Added {namesOf(added)} to the screen, but couldn't update its dock: {setup.dock.why}
+            </>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 

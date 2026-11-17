@@ -47,6 +47,9 @@ export function browserOf(s: DisplayStatus): ServerBrowser {
 /** Hermes's own fix for no browser (`chromium_missing_hint`, hermes_cli/browser_runtime.py); pm's store serves every profile. */
 export const BROWSER_FIX = "hermes pm install chromium";
 
+/** `cli.exec`'s answer (tui_gateway/methods_tools.py at bf0203a): `blocked` with a `hint` when Hermes won't run it. */
+export type CliResult = { blocked: boolean; hint?: string | null; code: number; output: string };
+
 /** `display.observe`: a single-use ticket for `/api/display/ws`, good for 30 s, and the viewer id minted for it. */
 export type DisplayObserve = DisplayStatus & { ticket: string; viewer_id: string };
 
@@ -61,6 +64,14 @@ export type OpenScreenSocket = (
 export interface ScreenApi {
   status(): Promise<DisplayStatus>;
   start(): Promise<DisplayStatus>;
+  /** Hermes refuses while a person holds the screen; this never forces it. */
+  stop(): Promise<DisplayStatus>;
+  /** `hermes pm install chromium` on the server, through `cli.exec` (screenApps.ts, ADR 0193). */
+  installBrowser(): Promise<CliResult>;
+  /** Which of `programs` are on the PATH Hermes's own commands get, through `shell.exec`. */
+  findPrograms(programs: readonly string[]): Promise<string[]>;
+  /** Deletes the profile's dock layout, so the screen's next start writes it again with what is installed now. */
+  resetDock(profileKey: string): Promise<void>;
   /** `viewerId`: one this connection minted before, so a reconnect keeps the lease it holds. */
   observe(viewerId?: string): Promise<DisplayObserve>;
   takeOver(viewerId: string): Promise<DisplayLease>;

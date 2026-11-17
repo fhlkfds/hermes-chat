@@ -2,10 +2,11 @@
 // The side panel's Screen (Screen.tsx, ADR 0039) against a fake of Hermes's `display.*` and a stand-in for noVNC, which
 // jsdom can't draw: what it says for each state of the screen, watching, taking over and handing back, another viewer
 // taking over, and letting go of the stream when it goes.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScreenTab, type RfbClient, type RfbConstructor } from "./Screen";
-import { viewerHash, type DisplayLease, type DisplayObserve, type DisplayStatus, type ScreenApi } from "../hermes/screen";
+import { BROWSER_FIX, viewerHash, type CliResult, type DisplayLease, type DisplayObserve, type DisplayStatus, type ScreenApi } from "../hermes/screen";
+import { pasteCommand, type InstallSystem, type SystemOutcome } from "../hermes/screenApps";
 
 afterEach(cleanup);
 
@@ -50,7 +51,26 @@ class FakeScreen implements ScreenApi {
     if (this.missing) throw Object.assign(new Error("unknown method: display.status"), { code: -32601 });
     return this.state;
   };
-  start = async () => (this.state = { ...this.state, running: true });
+  start = async () => {
+    this.calls.push("start");
+    return (this.state = { ...this.state, running: true });
+  };
+  /** What the Screen asked of Hermes's side of the apps (screenApps.ts), in order. */
+  calls: string[] = [];
+  programs = new Set(["xfce4-terminal", "mousepad"]);
+  pm: CliResult = { blocked: false, code: 0, output: "Installed chromium" };
+  stop = async () => {
+    this.calls.push("stop");
+    if (this.state.lease.holder === "human") throw new Error("a human holds this screen; pass force: true to stop it anyway");
+    return (this.state = { ...this.state, running: false });
+  };
+  installBrowser = async () => {
+    this.calls.push("installBrowser");
+    if (this.pm.code === 0) this.state = { ...this.state, browser: "/home/liam/.hermes/pm/chromium/chrome" };
+    return this.pm;
+  };
+  findPrograms = async (names: readonly string[]) => names.filter((n) => this.programs.has(n));
+  resetDock = async (key: string) => void this.calls.push(`resetDock ${key}`);
   observe = async (viewerId?: string): Promise<DisplayObserve> => {
     this.observed.push(viewerId);
     return { ...this.state, ticket: `t${this.observed.length}`, viewer_id: viewerId ?? "viewer-1" };
@@ -206,6 +226,145 @@ describe("The Screen tab", () => {
     await connected();
     unmount();
     expect(FakeRfb.made[0].disconnected).toBe(true);
+  });
+});
+
+describe("The apps the Screen adds", () => {
+  /** A stopped screen on a server with no browser, terminal or text editor. */
+  function bare() {
+    const api = new FakeScreen();
+    api.state = { ...api.state, browser: null, placement: "gateway" };
+    api.programs.clear();
+    return api;
+  }
+  /** The install over ssh: sudo with `password`, or none needed. Records what it was given. */
+  function sudo(password?: string) {
+    const given: (string | undefined)[] = [];
+    const install: InstallSystem = async (p) => {
+      given.push(p);
+      const o: SystemOutcome = !password || p === password ? { kind: "installed" } : p === undefined ? { kind: "needs-password" } : { kind: "wrong-password" };
+      return o;
+    };
+    return { given, install: vi.fn(install) };
+  }
+  function showWith(api: FakeScreen, system?: InstallSystem) {
+    FakeRfb.made = [];
+    return render(<ScreenTab api={api} shown connected loadRfb={async () => FakeRfb as unknown as RfbConstructor} system={system} />);
+  }
+
+  it("adds a web browser, a terminal and a text editor with no click, and the next start puts them in the dock", async () => {
+    const api = bare();
+    const ssh = sudo();
+    let installed!: () => void;
+    const slow: InstallSystem = (p) => new Promise((done) => (installed = () => done(ssh.install(p))));
+    showWith(api, slow);
+    expect(await screen.findByText(/Adding a terminal and a text editor to the screen/)).toBeTruthy();
+    act(() => installed());
+    expect(await screen.findByText("Added a web browser, a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(ssh.given).toEqual([undefined]);
+    // Each app added lets the dock be written again; deleting it twice is the same as once.
+    expect(new Set(api.calls)).toEqual(new Set(["installBrowser", "resetDock /home/liam/.hermes"]));
+    expect(screen.queryByText("No Chrome or Chromium on the Hermes server")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Restart the screen/ })).toBeNull();
+  });
+
+  it("asks for the sudo password, sends it only to the install, clears it, and tries again when it was wrong", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    const ssh = sudo("hunter2");
+    showWith(api, ssh.install);
+    expect(await screen.findByText("Adding a terminal and a text editor needs the server's sudo password")).toBeTruthy();
+    const field = () => screen.getByLabelText("Sudo password on the server") as HTMLInputElement;
+    expect(field().type).toBe("password");
+    fireEvent.change(field(), { target: { value: "hunter3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(await screen.findByText("That password didn't work. Try it again.")).toBeTruthy();
+    expect(field().value).toBe("");
+    fireEvent.change(field(), { target: { value: "hunter2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(await screen.findByText("Added a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(ssh.given).toEqual([undefined, "hunter3", "hunter2"]);
+    expect(screen.queryByLabelText("Sudo password on the server")).toBeNull();
+  });
+
+  it("lets the owner put the password off", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    showWith(api, sudo("hunter2").install);
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(screen.queryByText(/needs the server's sudo password/)).toBeNull();
+  });
+
+  it("gives the command to run on the server when the connection has no SSH target", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    showWith(api, undefined);
+    const note = (await screen.findByText("Highwing can't add a terminal and a text editor without SSH")).closest(".preview-state") as HTMLElement;
+    expect(within(note).getByText(pasteCommand())).toBeTruthy();
+    expect(pasteCommand()).toMatch(/^sudo sh -c '.*xfce4-terminal mousepad.*'$/);
+    // Installed by hand, then checked again: added, and the dock is written again.
+    api.programs.add("xfce4-terminal").add("mousepad");
+    fireEvent.click(within(note).getByRole("button", { name: /Check again/ }));
+    expect(await screen.findByText("Added a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(api.calls).toEqual(["resetDock /home/liam/.hermes"]);
+  });
+
+  it("falls back to Hermes's command, saying why, when it can't install the browser", async () => {
+    const api = bare();
+    api.programs.add("xfce4-terminal").add("mousepad");
+    api.pm = { blocked: false, code: 1, output: "error: no Chromium build for linux-riscv64" };
+    showWith(api, sudo().install);
+    const note = (await screen.findByText("No Chrome or Chromium on the Hermes server")).closest(".preview-state") as HTMLElement;
+    expect(within(note).getByText("Highwing couldn't install Chromium: error: no Chromium build for linux-riscv64")).toBeTruthy();
+    expect(within(note).getByText(BROWSER_FIX)).toBeTruthy();
+    expect(api.calls).toEqual(["installBrowser"]);
+  });
+
+  it("says why the terminal and the editor couldn't be added, and tries again", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    let outcome: SystemOutcome = { kind: "no-sudo" };
+    showWith(api, async () => outcome);
+    const note = (await screen.findByText("Couldn't add a terminal and a text editor to the screen")).closest(".preview-state") as HTMLElement;
+    expect(within(note).getByText("The server has no sudo. Sign in over SSH as root, or install sudo there.")).toBeTruthy();
+    outcome = { kind: "installed" };
+    fireEvent.click(within(note).getByRole("button", { name: /Try again/ }));
+    expect(await screen.findByText("Added a terminal and a text editor to the screen's dock.")).toBeTruthy();
+  });
+
+  it("leaves a running screen alone, and restarts it only when the owner asks", async () => {
+    const api = bare();
+    api.state.running = true;
+    showWith(api, sudo().install);
+    await connected();
+    expect(await screen.findByText(/It is running on its old dock, so they show in the dock after a restart/)).toBeTruthy();
+    expect(api.calls).toEqual(["installBrowser"]);
+    fireEvent.click(screen.getByRole("button", { name: /Restart the screen/ }));
+    expect(await screen.findByText("Added a web browser, a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(api.calls).toEqual(["installBrowser", "stop", "resetDock /home/liam/.hermes", "start"]);
+    await waitFor(() => expect(FakeRfb.made).toHaveLength(2));
+  });
+
+  it("doesn't restart a screen the owner holds", async () => {
+    const api = bare();
+    api.state.running = true;
+    showWith(api, sudo().install);
+    await connected();
+    fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
+    await screen.findByText(/You're in control/);
+    fireEvent.click(await screen.findByRole("button", { name: /Restart the screen/ }));
+    expect(await screen.findByText("a human holds this screen; pass force: true to stop it anyway")).toBeTruthy();
+    expect(api.calls).toEqual(["installBrowser", "stop"]);
+  });
+
+  it("adds nothing to a screen in the terminal's sandbox, which brings its own", async () => {
+    const api = bare();
+    api.state.placement = "terminal:docker";
+    const ssh = sudo();
+    showWith(api, ssh.install);
+    await screen.findByRole("button", { name: /Start the screen/ });
+    expect(api.calls).toEqual([]);
+    expect(ssh.given).toEqual([]);
   });
 });
 

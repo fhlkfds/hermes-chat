@@ -119,6 +119,7 @@ import { RepositoryScreen } from "./ui/Repository";
 import { startInWorktree, worktreeChats, type WorktreeChat, type WorktreeStart } from "./hermes/worktrees";
 import type { RepoApi } from "./hermes/repo";
 import { tauriRepo } from "./ui/tauriRepo";
+import { tauriScreenApps, type ScreenAppsInstaller } from "./ui/tauriScreenApps";
 import { ApplyDefaults, NewChatSettingsView } from "./ui/ProjectDefaultsNotes";
 import { appearanceStore } from "./ui/appearance";
 import { LocaleContext, useLocale } from "./i18n/locale";
@@ -1178,6 +1179,7 @@ export function Main({
   refs = savedConnectionRefs,
   tray = tauriTray,
   repoApi = tauriRepo,
+  screenApps = tauriScreenApps,
   localStt = tauriLocalStt,
   servers = [],
   liveLimit,
@@ -1259,6 +1261,8 @@ export function Main({
   screenshots?: Screenshots;
   /** The Repository screen's helper over ssh, and worktrees' (ADR 0110, 0043). */
   repoApi?: RepoApi;
+  /** The Screen's install of a terminal and a text editor over the connection's ssh (ADR 0193). */
+  screenApps?: ScreenAppsInstaller;
   /** Speech to text on this computer and where each recording goes, decided by Rust (ADR 0065, 0067). */
   localStt?: LocalSttApi;
   /** Tells the window `hermes-chat --show` or `--toggle` brought it forward; none outside the desktop app. */
@@ -3925,7 +3929,20 @@ export function Main({
                   </CapabilityGate>
                 ),
                 // A profile's screen is its own; switching profile starts the tab again.
-                screen: (shown) => <ScreenTab key={profile} api={hermes.screen} shown={shown} connected={status === "connected"} onHeld={setScreenHeld} />,
+                screen: (shown) => {
+                  // Through the same SSH target as the server's Terminal.
+                  const target = terminalTarget(sshAddressOf(connection), localStorage.getItem(terminalTargetKey(connection)));
+                  return (
+                    <ScreenTab
+                      key={profile}
+                      api={hermes.screen}
+                      shown={shown}
+                      connected={status === "connected"}
+                      onHeld={setScreenHeld}
+                      system={target ? (password) => screenApps(target, password) : undefined}
+                    />
+                  );
+                },
               }}
             />
           )}
