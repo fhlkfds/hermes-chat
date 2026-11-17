@@ -1,8 +1,8 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
-// had open, whether reasoning shows, how much shows under each message, the model last picked and the starred models, which items the status bar shows,
-// the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
-// reply runs, whether message boxes check spelling, Idle compaction, which of the chat list's sections show and which are
-// collapsed, how the agent office shows, and the keyboard shortcuts the owner changed. All preferences live in one
+// had open, whether reasoning shows, how much shows under each message, the model last picked and the starred models,
+// which items the status bar shows, the screenshot shortcut and preview pane width, which computer the Terminal opens
+// on, what sending does while a reply runs, whether message boxes check spelling, Idle compaction, which of the chat
+// list's sections show and which are collapsed, how the agent office shows, and the keyboard shortcuts the owner changed. All preferences live in one
 // versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
