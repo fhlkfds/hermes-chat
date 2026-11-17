@@ -1,5 +1,7 @@
 # The Screen and Diagnostics say when the Bot Desktop has no browser
 
+> **Partly superseded by [ADR 0193](0193-the-screen-adds-a-browser-a-terminal-and-a-text-editor-itself.md).** On the Screen tab, Hermes now installs its Chromium through `cli.exec` with no click, and the command to copy shows only when that fails. The considered option "An Install Chromium button" is built that way. Diagnostics and the rest of this ADR stand.
+
 The agent's browser and the Bot Desktop's dock both open a headed Chrome or Chromium on the Hermes server. Without one, the owner found out only when a browser or computer-use step failed. Hermes already reports it: `display.status` carries `browser`, the path it would run for the profile asked about, or `null` (`tools/bot_desktop/runtime.py`, read at f0d94882). The app now reads it and says so in two places: a note on the Screen tab and a row in Settings → Diagnostics.
 
 ## Decisions
