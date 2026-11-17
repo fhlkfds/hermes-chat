@@ -31,6 +31,7 @@ pub mod project_context;
 pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
+mod screen_apps;
 pub mod screenshot;
 #[cfg(target_os = "linux")]
 pub mod selection;
@@ -1871,6 +1872,13 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
     repo_git::run_over_ssh(&target, &request).await
 }
 
+/// Installs a terminal and a text editor for the Screen's Bot Desktop on the server, through `ssh` to `target`
+/// (screen_apps.rs, ADR 0193). `password`: the owner's sudo password, which goes only on ssh's stdin.
+#[tauri::command]
+async fn screen_apps_install(target: String, password: Option<String>) -> screen_apps::Outcome {
+    screen_apps::install_over_ssh(&target, password.as_deref()).await
+}
+
 /// `repo_git`, for a request that reports progress as it goes (creating a worktree and running its setup, removing
 /// one): each progress line goes to `on_progress` as the helper prints it (ADR 0043).
 #[tauri::command]
@@ -2091,6 +2099,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             terminal_open,
             repo_git,
             repo_git_stream,
+            screen_apps_install,
             terminal_write,
             terminal_resize,
             terminal_close,
