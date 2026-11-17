@@ -77,6 +77,9 @@ export async function readScreenClipboard(exec: (command: string) => Promise<She
   }
   const bytes = new Uint8Array(size);
   chunks.reduce((at, c) => (bytes.set(c, at), at + c.length), 0);
+  // The hash and the chunk come from two reads, so the clipboard can change between those of the last chunk.
+  const got = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+  if (got !== hash) throw new Error("The screen's clipboard changed while copying. Copy it again.");
   return new TextDecoder().decode(bytes);
 }
 

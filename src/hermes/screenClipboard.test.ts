@@ -13,6 +13,8 @@ const dir = mkdtempSync(join(tmpdir(), "screen-clipboard-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const HOME = join(dir, "o'neil's hermes");
 const CLIPBOARD = join(dir, "clipboard");
+/** What the screen's clipboard holds once xclip has read it once more: a copy made between two reads. */
+const NEXT = join(dir, "next");
 
 // xclip as the server has it: it prints the clipboard of the display and X authority it is given, or says it has none.
 writeFileSync(
@@ -22,6 +24,7 @@ writeFileSync(
 [ "$DISPLAY" = ":42" ] && [ "$XAUTHORITY" = "$EXPECTED_XAUTHORITY" ] || { echo "Error: Can't open display: $DISPLAY" >&2; exit 1; }
 [ -e "${CLIPBOARD}" ] || { echo "Error: target STRING not available" >&2; exit 1; }
 cat "${CLIPBOARD}"
+[ ! -e "${NEXT}" ] || mv "${NEXT}" "${CLIPBOARD}"
 `,
 );
 chmodSync(join(dir, "xclip"), 0o755);
@@ -71,6 +74,17 @@ describe("The screen's clipboard, read on the server", () => {
       return shellExec(c);
     };
     await expect(readScreenClipboard(exec, where)).rejects.toThrow("The screen's clipboard changed while copying. Copy it again.");
+  });
+
+  it("refuses text that changed on the screen between a chunk's hash and its bytes", async () => {
+    copied("a".repeat(CHUNK_BYTES + 10));
+    let commands = 0;
+    const exec = async (c: string) => {
+      if (commands++ === 1) writeFileSync(NEXT, "a".repeat(CHUNK_BYTES) + "b".repeat(10));
+      return shellExec(c);
+    };
+    await expect(readScreenClipboard(exec, where)).rejects.toThrow("The screen's clipboard changed while copying. Copy it again.");
+    expect(commands).toBe(2);
   });
 
   it("stops between chunks once the owner no longer holds the screen", async () => {
