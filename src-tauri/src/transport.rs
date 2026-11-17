@@ -2583,7 +2583,7 @@ pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
 /// sends: `api/plugins/kanban/tasks` creates a task with what New task sets, `api/plugins/kanban/tasks/{id}/comments`
 /// adds a comment with only its text, `api/plugins/kanban/links` links two tasks with exactly `parent_id` and `child_id`,
 /// and `api/plugins/kanban/estimate` (a `title` and an optional `body`) and `api/plugins/kanban/tasks/{id}/estimate`
-/// (no body, or `{}`) ask for a token guess, which writes nothing. For a running card's task run (ADR 0191),
+/// (no body, or `{}`) ask for a token guess, which writes nothing. For a running card's task run (ADR 0192),
 /// `api/plugins/kanban/runs/{id}/terminate` stops one run, with no fields or only a `reason`, and
 /// `api/plugins/kanban/tasks/{id}/reassign` gives the card to a `profile` (`""` for none) with `reclaim_first` and an
 /// optional `reason`. A task id is one segment of letters, digits, `-` and `_`, as the plugin makes them, which

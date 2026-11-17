@@ -224,6 +224,14 @@ export const en = {
       hint: "Context, model and connection under the chat.",
       more: "Right-click the bar to pick what it shows, or to hide it. Turning it on here shows every item again.",
     },
+    messageDetails: {
+      name: "Message details",
+      hint: "What shows under each message. Time is how long a reply took, and brings the Run button with it.",
+      off: "Off",
+      date: "Date",
+      tokens: "Date and tokens",
+      time: "Date, tokens and time",
+    },
   },
   bots: {
     title: "Bots",

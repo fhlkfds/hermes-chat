@@ -1,8 +1,8 @@
 // Display preferences for this computer: the theme, whether the last chat reopens at launch and which chat each profile
-// had open, whether reasoning shows, the model last picked and the starred models, which items the status bar shows,
-// the screenshot shortcut and preview pane width, which computer the Terminal opens on, what sending does while a
-// reply runs, whether message boxes check spelling, Idle compaction, which of the chat list's sections show and which are
-// collapsed, how the agent office shows, and the keyboard shortcuts the owner changed. All preferences live in one
+// had open, whether reasoning shows, how much shows under each message, the model last picked and the starred models,
+// which items the status bar shows, the screenshot shortcut and preview pane width, which computer the Terminal opens
+// on, what sending does while a reply runs, whether message boxes check spelling, Idle compaction, which of the chat
+// list's sections show and which are collapsed, how the agent office shows, and the keyboard shortcuts the owner changed. All preferences live in one
 // versioned localStorage document.
 // it (chatCache.ts) and later settings add fields here rather than new keys. Nothing here goes to Hermes. Every
 // settings feature reads and writes through this module.
@@ -69,6 +69,8 @@ export type UIPrefs = {
   officeQuality: OfficeQuality;
   /** How many days a finished entry stays in the inbox before it is dismissed on its own, as if by hand; null: never. */
   inboxAutoDismissDays: number | null;
+  /** How much shows under each message (MESSAGE_DETAILS): its date, then a reply's tokens, then its time and Run button. */
+  messageDetails: MessageDetails;
   /** Start a message with the text selected in another app when `hermes-chat --show` or `--toggle` brings the window forward (ADR 0172). */
   summonSelection: boolean;
   /**
@@ -86,6 +88,15 @@ export type OfficeQuality = "normal" | "low";
 export const OFFICE_QUALITIES: readonly OfficeQuality[] = ["normal", "low"];
 
 export type FollowUp = "queue" | "steer";
+
+/**
+ * What shows under each message, each level adding to the one before: nothing, the date it was stored, then a reply's
+ * token counts, then how long the reply took and its Run button (the Run view times each step, ADR 0178).
+ */
+export type MessageDetails = "off" | "date" | "tokens" | "time";
+export const MESSAGE_DETAILS: readonly MessageDetails[] = ["off", "date", "tokens", "time"];
+/** Whether `level` shows `part`: a level shows everything the levels before it do. */
+export const showsDetail = (level: MessageDetails, part: Exclude<MessageDetails, "off">) => MESSAGE_DETAILS.indexOf(level) >= MESSAGE_DETAILS.indexOf(part);
 
 /**
  * Idle compaction (idleCompact.ts, ADR 0119). `enabled`: off until the owner turns it on, since a compaction is a model
@@ -125,6 +136,7 @@ export const DEFAULT_UI_PREFS: Readonly<UIPrefs> = Object.freeze({
   agentOffice: "plan",
   officeQuality: "normal",
   inboxAutoDismissDays: null,
+  messageDetails: "time",
   summonSelection: true,
   keybindings: Object.freeze({}) as Record<string, string[]>,
 });
@@ -289,6 +301,7 @@ export function readUIPrefs(doc: UIPrefsDoc, d: Readonly<UIPrefs> = DEFAULT_UI_P
       doc.inboxAutoDismissDays === null || (typeof doc.inboxAutoDismissDays === "number" && Number.isFinite(doc.inboxAutoDismissDays) && doc.inboxAutoDismissDays > 0)
         ? doc.inboxAutoDismissDays
         : d.inboxAutoDismissDays,
+    messageDetails: MESSAGE_DETAILS.includes(doc.messageDetails as MessageDetails) ? (doc.messageDetails as MessageDetails) : d.messageDetails,
     summonSelection: typeof doc.summonSelection === "boolean" ? doc.summonSelection : d.summonSelection,
     keybindings: toKeybindings(doc.keybindings) ?? { ...d.keybindings },
   };
