@@ -5,6 +5,8 @@
 // `/api/display/ws` (src-tauri/src/display.rs). Wire shapes: `tui_gateway/methods_display.py` and
 // `hermes_cli/web_routers/display.py`, read at v2026.9.24.
 
+import type { ScreenDisplay } from "./screenClipboard";
+
 /** Who may drive the screen. The holder's viewer id never leaves Hermes; `viewer_hash` lets a holder know itself. */
 export type DisplayLease = { holder: "agent" | "human"; viewer_hash?: string | null; since: number; epoch: number; reason?: string };
 
@@ -21,6 +23,8 @@ export type DisplayStatus = {
   browser?: string | null;
   /** `gateway`, or `terminal:<backend>` for a screen in the terminal's sandbox. */
   placement?: string;
+  /** The X display the screen runs on (`:42`), while it runs. */
+  display?: string | null;
   lease: DisplayLease;
   profile_key: string;
 };
@@ -47,6 +51,9 @@ export function browserOf(s: DisplayStatus): ServerBrowser {
 /** Hermes's own fix for no browser (`chromium_missing_hint`, hermes_cli/browser_runtime.py); pm's store serves every profile. */
 export const BROWSER_FIX = "hermes pm install chromium";
 
+/** `cli.exec`'s answer (tui_gateway/methods_tools.py at bf0203a): `blocked` with a `hint` when Hermes won't run it. */
+export type CliResult = { blocked: boolean; hint?: string | null; code: number; output: string };
+
 /** `display.observe`: a single-use ticket for `/api/display/ws`, good for 30 s, and the viewer id minted for it. */
 export type DisplayObserve = DisplayStatus & { ticket: string; viewer_id: string };
 
@@ -61,6 +68,19 @@ export type OpenScreenSocket = (
 export interface ScreenApi {
   status(): Promise<DisplayStatus>;
   start(): Promise<DisplayStatus>;
+  /** Hermes refuses while a person holds the screen; this never forces it. */
+  stop(): Promise<DisplayStatus>;
+  /** `hermes pm install chromium` on the server, through `cli.exec` (screenApps.ts, ADR 0193). */
+  installBrowser(): Promise<CliResult>;
+  /** Which of `programs` are on the PATH Hermes's own commands get, through `shell.exec`. */
+  findPrograms(programs: readonly string[]): Promise<string[]>;
+  /** Deletes the profile's dock layout, so the screen's next start writes it again with what is installed now. */
+  resetDock(profileKey: string): Promise<void>;
+  /**
+   * The text on the screen's clipboard, through `xclip` over `shell.exec` (screenClipboard.ts), until `signal` aborts.
+   * "" when it has none.
+   */
+  readClipboard(where: ScreenDisplay, signal?: AbortSignal): Promise<string>;
   /** `viewerId`: one this connection minted before, so a reconnect keeps the lease it holds. */
   observe(viewerId?: string): Promise<DisplayObserve>;
   takeOver(viewerId: string): Promise<DisplayLease>;

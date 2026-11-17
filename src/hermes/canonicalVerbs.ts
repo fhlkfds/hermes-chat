@@ -36,6 +36,7 @@ export const APP_METHODS = [
   "approval.received",
   "approval.respond",
   "clarify.lock",
+  "cli.exec",
   "client.capabilities",
   "command.dispatch",
   "commands.catalog",
@@ -46,6 +47,7 @@ export const APP_METHODS = [
   "display.observe",
   "display.start",
   "display.status",
+  "display.stop",
   "file.attach",
   "gateway.capabilities",
   "gateway.ping",
@@ -91,6 +93,7 @@ export const APP_METHODS = [
   "session.status",
   "session.title",
   "session.undo",
+  "shell.exec",
   "slash.exec",
   "subagent.interrupt",
   "subagent.list",
@@ -350,4 +353,38 @@ export const APP_VERBS: AppVerb[] = [
   { method: "display.observe", params: (s) => ({ profile: s.profile }), route: "fallback", answer: "ok", unprobed: DESKTOP },
   { method: "display.lease.acquire", params: (s) => ({ profile: s.profile, viewer_id: "v" }), route: "fallback", answer: "ok", unprobed: DESKTOP },
   { method: "display.lease.release", params: (s) => ({ profile: s.profile, viewer_id: "v" }), route: "fallback", answer: "ok", unprobed: DESKTOP },
+  { method: "display.stop", params: (s) => ({ profile: s.profile }), route: "fallback", answer: "ok", unprobed: DESKTOP },
+  // The apps the Screen adds to the screen (ADR 0193). Routes from the source at bf0203a: `cli.exec` isn't a session
+  // verb, so the legacy handler runs it; the authority has its own `shell.exec`, for one local session's composer only
+  // (`gateway/session_shell.py`), which refuses a request with no `session_id`.
+  { method: "cli.exec", params: () => ({ argv: ["pm", "install", "chromium"], timeout: 600 }), route: "fallback", answer: "ok", unprobed: "it installs Chromium on the server" },
+  {
+    method: "shell.exec",
+    shape: "check",
+    params: () => ({ command: "command -v xfce4-terminal; command -v mousepad; command -v xclip" }),
+    route: "authority",
+    answer: { code: 4001, message: "invalid_params" },
+    canonical: "Nothing: the authority's shell.exec {session_id, command} runs only for a local session, in its launch cwd. An adapter would need another way to run a command on the server.",
+    unprobed: "added after the recording; its route and answer are from the source at bf0203a",
+  },
+  {
+    method: "shell.exec",
+    shape: "dock",
+    params: () => ({ command: "rm -f -- '/home/liam/.hermes/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml'" }),
+    route: "authority",
+    answer: { code: 4001, message: "invalid_params" },
+    canonical: "As for the check: the authority has no shell.exec without a session.",
+    unprobed: "it deletes the Bot Desktop's dock layout",
+  },
+  {
+    method: "shell.exec",
+    shape: "clipboard",
+    params: () => ({
+      command: "DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority' xclip -selection clipboard -o | tail -c +1 | head -c 1999 | od -An -v -tx1 | tr -d ' \\n'",
+    }),
+    route: "authority",
+    answer: { code: 4001, message: "invalid_params" },
+    canonical: "As for the check: the authority has no shell.exec without a session.",
+    unprobed: "added after the recording; its route and answer are from the source at bf0203a",
+  },
 ];

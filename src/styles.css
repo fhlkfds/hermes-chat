@@ -3618,15 +3618,22 @@ label.memory-pick { cursor: pointer; }
 /* Screen (Screen.tsx): Hermes's Bot Desktop */
 .screen-tab { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .screen-tab[hidden] { display: none; }
-.screen-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); min-height: 46px; }
+.screen-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); min-height: 46px; }
 .screen-bar .btn { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-.screen-who { font-size: calc(12.5rem / 14); color: var(--muted); min-width: 0; line-height: 1.4; }
+.screen-who { flex: 1 1 auto; font-size: calc(12.5rem / 14); color: var(--muted); min-width: 0; line-height: 1.4; }
 .screen-who.you { color: var(--accent); }
 .screen-who.other { color: var(--warn); }
 .screen-tab > .attach-note { flex: none; padding: 6px 14px; color: var(--warn); border-bottom: 1px solid var(--line); }
 .screen-tab > .attach-note.screen-found { color: var(--ok); overflow-wrap: anywhere; }
-.screen-browser { flex: none; margin: 14px 22px 0; }
-.screen-browser > svg { color: var(--warn); }
+.screen-browser, .screen-tab > .preview-state.screen-apps { flex: none; margin: 14px 22px 0; }
+.screen-browser > svg, .screen-tab > .preview-state.screen-apps > svg { color: var(--warn); }
+/* The apps the Screen adds (screenApps.ts, ADR 0193). */
+.screen-tab > .attach-note.screen-apps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); }
+.screen-tab > .attach-note.screen-apps.screen-found { color: var(--ok); }
+.screen-tab > .attach-note.screen-apps .btn { display: inline-flex; align-items: center; gap: 6px; }
+.screen-apps-why { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: calc(12rem / 14); margin: 4px 0 8px; }
+.screen-apps-password { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 4px; }
+.screen-apps-password input { flex: 1; min-width: 140px; }
 .screen-view { flex: 1; min-height: 0; position: relative; display: flex; background: var(--code-bg); border: 2px solid transparent; }
 .screen-view[hidden] { display: none; }
 .screen-view.held { border-color: var(--accent); }

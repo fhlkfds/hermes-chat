@@ -1,5 +1,7 @@
 # The side panel holds the Preview, both terminals, Server files and Hermes's own screen
 
+> **Partly superseded by [ADR 0193](0193-the-screen-adds-a-browser-a-terminal-and-a-text-editor-itself.md).** The Screen adds a web browser, a terminal and a text editor to the screen itself, and asks for a sudo password for its own ssh when it needs one. "Not installed means a command" still holds for the Bot Desktop's own packages. The rest of this ADR stands.
+
 The pane beside the chat was only the Preview. The Terminal (ADR 0022) and Server files (ADR 0012) were screens that covered the chat, so the owner couldn't watch a reply while using either. The pane is now a side panel with four tabs: Preview, Terminal, Files and Screen. The rail's Terminal and Server files buttons open the panel at that tab. The panel keeps its edge, its width and its narrow-window overlay. A tab is made the first time it is opened and kept from then on, so a shell or the screen keeps running while another tab shows or the panel is closed.
 
 ## Decisions

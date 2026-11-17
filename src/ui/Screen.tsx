@@ -3,7 +3,7 @@
 // (a sign-in, a 2FA code, a CAPTCHA) and hands back. Hermes keeps who may drive it (the lease): while the owner holds
 // it, Hermes's computer use waits, and only the holder's keys and pointer reach the screen. noVNC draws the stream.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, ClipboardCopy, ClipboardPaste, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
 import {
   BROWSER_FIX,
   CLOSE_CONTROL_TAKEN,
@@ -19,7 +19,24 @@ import {
   type DisplayStatus,
   type ScreenApi,
 } from "../hermes/screen";
+import {
+  SCREEN_APPS,
+  canSetUp,
+  installSystem,
+  namesOf,
+  recheckBrowser,
+  setUpApps,
+  skip,
+  unfinished,
+  type AppState,
+  type AppsSetup,
+  type InstallSystem,
+  type ScreenAppId,
+  type SetupDeps,
+} from "../hermes/screenApps";
+import { ClipboardBridge, copyOutFrom, MAX_TEXT_BYTES, type CopyOutcome, type LocalClipboard, type PasteOutcome } from "../hermes/screenClipboard";
 import { CopyCommand, Spinner } from "./bits";
+import { tauriClipboard } from "./tauriClipboard";
 import { errorText } from "../hermes/values";
 
 /** What the Screen needs of noVNC's RFB client. */
@@ -33,6 +50,8 @@ export type RfbClient = {
   addEventListener(type: "connect" | "disconnect", handler: (e: { detail?: { clean?: boolean } }) => void): void;
   disconnect(): void;
   focus(): void;
+  /** Sends `text` as the screen's clipboard; nothing while `viewOnly`. */
+  clipboardPasteFrom(text: string): void;
 };
 export type RfbConstructor = new (target: HTMLElement, channel: RelayedSocket, options: { shared: boolean }) => RfbClient;
 
@@ -65,13 +84,19 @@ export function ScreenTab({
   connected,
   loadRfb = loadNoVnc,
   onHeld,
+  system,
+  clipboard = tauriClipboard,
 }: {
   api: ScreenApi;
   shown: boolean;
   connected: boolean;
+  /** Installs the terminal and the text editor through the connection's ssh; undefined without an SSH target. */
+  system?: InstallSystem;
   loadRfb?: () => Promise<RfbConstructor>;
   /** Whether the owner holds the screen, so the panel can say so while the tab isn't shown. */
   onHeld?: (held: boolean) => void;
+  /** This computer's clipboard, for copy and paste with the screen while the owner holds it. */
+  clipboard?: LocalClipboard;
 }) {
   const [status, setStatus] = useState<DisplayStatus>();
   const [lease, setLease] = useState<DisplayLease>();
@@ -83,6 +108,9 @@ export function ScreenTab({
   const [evicted, setEvicted] = useState(false);
   /** The browser a Check again found where there was none, said once until the next read. */
   const [found, setFound] = useState<string>();
+  const [setup, setSetup] = useState<AppsSetup>({ kind: "unchecked" });
+  /** What Paste here or Copy out did, said until the next one. */
+  const [clipNote, setClipNote] = useState<{ text: string; bad?: boolean }>();
   const host = useRef<HTMLDivElement>(null);
   const rfb = useRef<RfbClient | null>(null);
   // Bumped by every attach and detach, so a late answer from an earlier one does nothing.
@@ -90,6 +118,11 @@ export function ScreenTab({
   const evictions = useRef({ count: 0, at: 0 });
   const viewerRef = useRef(viewer);
   viewerRef.current = viewer;
+  const [bridge] = useState(() => new ClipboardBridge(clipboard));
+  // Bumped when the connection drops and when the tab goes (switching profile remounts it). A setup run from before
+  // then stops: `api` would answer for the new connection or profile.
+  const setupRun = useRef(0);
+  useEffect(() => () => void setupRun.current++, []);
 
   const held = heldBy(lease, viewer?.hash);
   // Viewers this tab held the screen as on connections since gone. Hermes keeps such a hold when a connection drops,
@@ -139,6 +172,7 @@ export function ScreenTab({
 
   const attach = useCallback(async () => {
     detach();
+    bridge.forget();
     const gen = generation.current;
     setConn({ kind: "attaching" });
     try {
@@ -187,7 +221,7 @@ export function ScreenTab({
     } catch (e) {
       if (gen === generation.current) setConn({ kind: "lost", why: errorText(e) });
     }
-  }, [api, detach, loadRfb, noteStatus, refresh]);
+  }, [api, bridge, detach, loadRfb, noteStatus, refresh]);
 
   // What the screen is doing: asked on first show and after each reconnect to Hermes, which watches again a stream
   // the drop ended. The stream isn't let go here: a normal close would tell Hermes the owner left, and hand control
@@ -197,11 +231,32 @@ export function ScreenTab({
       setConn((c) => (c.kind === "lost" ? { kind: "idle" } : c));
       void refresh();
     }
-    // A viewer id is good only on the connection that minted it.
-    else setViewer(undefined);
+    else {
+      // A viewer id is good only on the connection that minted it.
+      setViewer(undefined);
+      setupRun.current++;
+    }
   }, [connected, refresh]);
 
   useEffect(() => api.onLease((key, l) => key === status?.profile_key && noteLease(l)), [api, status?.profile_key, noteLease]);
+
+  /** For a setup run that starts now. */
+  const setupDeps = (): SetupDeps => {
+    const run = setupRun.current;
+    return { api, system, update: setSetup, onStatus: noteStatus, alive: () => run === setupRun.current };
+  };
+  const depsRef = useRef(setupDeps);
+  depsRef.current = setupDeps;
+  // The first time the tab is shown on a screen they can go on, and once more on each later connection while the last
+  // run was cut off or couldn't tell what the server has.
+  const setUpOn = useRef<number | undefined>(undefined);
+  // Apart from the setup, which a later run replaces before it knows what is missing.
+  const skipped = useRef(new Set<ScreenAppId>());
+  useEffect(() => {
+    if (!shown || !connected || !status || !canSetUp(status) || setUpOn.current === setupRun.current) return;
+    setUpOn.current = setupRun.current;
+    if (unsettled(setup)) void setUpApps(depsRef.current(), status, [...skipped.current], unfinished(setup));
+  }, [shown, connected, status, setup]);
 
   // A running screen is watched as soon as it can be.
   useEffect(() => {
@@ -213,7 +268,34 @@ export function ScreenTab({
     if (!rfb.current) return;
     rfb.current.viewOnly = !held;
     if (held) rfb.current.focus();
+    else setClipNote(undefined);
   }, [held, conn.kind]);
+
+  // Aborted when the owner stops holding the screen, the connection drops or the tab goes, which stops a copy or paste
+  // under way.
+  const hold = useRef<AbortSignal | undefined>(undefined);
+  useEffect(() => {
+    if (!held || !connected) return;
+    const c = new AbortController();
+    hold.current = c.signal;
+    return () => c.abort();
+  }, [held, connected]);
+  const copyOut = copyOutFrom(status, setup);
+  const syncs = held && conn.kind === "live";
+  /** This computer's clipboard text into the screen's. `always`: even if it went in or came out last. */
+  const pasteIn = (always = false): Promise<PasteOutcome | undefined> => {
+    const client = rfb.current;
+    const signal = hold.current;
+    return client && signal ? bridge.paste((text) => client.clipboardPasteFrom(text), signal, always) : Promise.resolve(undefined);
+  };
+  /** The screen's clipboard text onto this computer's. */
+  const copyOutOf = (always = false): Promise<CopyOutcome | undefined> => {
+    const signal = hold.current;
+    return copyOut && signal ? bridge.copy(() => api.readClipboard(copyOut, signal), signal, always) : Promise.resolve(undefined);
+  };
+  // Each way only when it changed, and quietly: the buttons say what happened.
+  const syncIn = () => void (syncs && pasteIn().catch(() => {}));
+  const syncOut = () => void (syncs && copyOutOf().catch(() => {}));
 
   useEffect(() => () => detach(), [detach]);
 
@@ -235,9 +317,34 @@ export function ScreenTab({
     });
   const checkAgain = () =>
     act(async () => {
-      const s = await refresh();
+      setFound(undefined);
+      // Once the Screen has tried to add the browser, one found now is added, and the dock is written again.
+      const s = setup.kind === "checked" ? await recheckBrowser(setupDeps()) : await refresh();
       const b = s && browserOf(s);
       setFound(b?.kind === "found" ? b.path : undefined);
+    });
+  /** Stops the screen (Hermes refuses while a person holds it), lets its dock be written again, and starts it. */
+  const restart = () =>
+    act(async () => {
+      await api.stop();
+      detach();
+      if (status) await api.resetDock(status.profile_key);
+      noteStatus(await api.start());
+      setConn({ kind: "idle" });
+      setSetup((s) => (s.kind === "checked" ? { ...s, dock: { kind: "current" } } : s));
+    });
+  const pasteHere = () =>
+    act(async () => {
+      setClipNote(undefined);
+      const outcome = await pasteIn(true).catch((e: unknown) => void (isAbort(e) || setClipNote({ text: errorText(e), bad: true })));
+      if (outcome) setClipNote({ text: PASTED[outcome], bad: outcome !== "pasted" });
+      rfb.current?.focus();
+    });
+  const copyOutNow = () =>
+    act(async () => {
+      setClipNote(undefined);
+      const outcome = await copyOutOf(true).catch((e: unknown) => void (isAbort(e) || setClipNote({ text: errorText(e), bad: true })));
+      if (outcome) setClipNote({ text: COPIED[outcome], bad: outcome === "empty" });
     });
   const takeOver = () => act(async () => viewer && noteLease(await api.takeOver(viewer.id)));
   const handBack = () => act(async () => viewer && noteLease(await api.handBack(viewer.id)));
@@ -290,7 +397,11 @@ export function ScreenTab({
     );
 
   const live = phase?.kind === "live";
-  const noBrowser = !unavailable && status && browserOf(status).kind === "missing";
+  const apps = setup.kind === "checked" ? setup.apps : {};
+  // While the browser is being added, the note about none waits; it is what shows if adding it fails.
+  const addingBrowser =
+    (!!status && canSetUp(status) && setup.kind === "unchecked") || setup.kind === "checking" || apps.browser?.kind === "installing" || apps.browser?.kind === "added";
+  const noBrowser = !unavailable && status && browserOf(status).kind === "missing" && !addingBrowser;
   return (
     <div className="screen-tab" hidden={!shown}>
       <div className="screen-bar">
@@ -306,6 +417,18 @@ export function ScreenTab({
                   : "Watching: Hermes is in control."}
         </span>
         <span className="terminal-spacer" />
+        {live && held && (
+          <>
+            <button className="btn" disabled={busy || !connected || conn.kind !== "live"} onClick={() => void pasteHere()} title="Puts this computer's copied text on the screen's clipboard, for Ctrl+V there">
+              <ClipboardPaste size={14} /> Paste here
+            </button>
+            {copyOut && (
+              <button className="btn" disabled={busy || !connected} onClick={() => void copyOutNow()} title="Puts the text copied on the screen on this computer's clipboard">
+                <ClipboardCopy size={14} /> Copy out
+              </button>
+            )}
+          </>
+        )}
         {live &&
           (held ? (
             <button className="btn primary" disabled={busy || !connected} onClick={() => void handBack()} title="Gives the screen back to Hermes">
@@ -325,6 +448,11 @@ export function ScreenTab({
           {error}
         </div>
       )}
+      {clipNote && (
+        <div className={`attach-note ${clipNote.bad ? "" : "screen-found"}`} role="status">
+          {clipNote.text}
+        </div>
+      )}
       {found && (
         <div className="attach-note screen-found" role="status">
           Hermes found a browser on the server: <span className="mono">{found}</span>
@@ -332,6 +460,7 @@ export function ScreenTab({
       )}
       {noBrowser && (
         <Note title="No Chrome or Chromium on the Hermes server" className="screen-browser">
+          {apps.browser?.kind === "failed" && <div className="screen-apps-why">Highwing couldn't install Chromium: {apps.browser.why}</div>}
           So the agent can't open a browser on its screen. Run this on the server, in the Terminal tab for one, then check again:
           <CopyCommand command={BROWSER_FIX} />
           <div className="small">Or set browser.executable_path in this profile's config to a Chrome or Chromium on the server.</div>
@@ -342,13 +471,36 @@ export function ScreenTab({
           </div>
         </Note>
       )}
+      {setup.kind === "checked" && (
+        <AppsNote
+          setup={setup}
+          busy={busy}
+          connected={connected}
+          onPassword={(password) => void installSystem(setupDeps(), idsIn(setup, "needs-password"), password)}
+          onAgain={(ids) => void installSystem(setupDeps(), ids)}
+          onSkip={(ids) => {
+            for (const id of ids) skipped.current.add(id);
+            setSetup(skip(ids));
+          }}
+          onRestart={() => void restart()}
+        />
+      )}
       {evicted && conn.kind !== "live" && (
         <div className="attach-note" role="status">
           Someone else took over, so you're watching again.
         </div>
       )}
       {body}
-      <div className={`screen-view ${held ? "held" : ""}`} hidden={!live} role="region" aria-label="Hermes's screen">
+      <div
+        className={`screen-view ${held ? "held" : ""}`}
+        hidden={!live}
+        role="region"
+        aria-label="Hermes's screen"
+        onFocus={syncIn}
+        onPointerEnter={syncIn}
+        onBlur={syncOut}
+        onPointerLeave={syncOut}
+      >
         <div className="screen-canvas" ref={host} />
         {live && conn.kind !== "live" && (
           <div className="preview-state preview-loading" role={conn.kind === "lost" ? "alert" : "status"}>
@@ -374,6 +526,142 @@ export function ScreenTab({
         )}
       </div>
     </div>
+  );
+}
+
+const PASTED: Record<PasteOutcome, string> = {
+  pasted: "Pasted on the screen's clipboard. Press Ctrl+V on the screen to paste it there.",
+  same: "Pasted on the screen's clipboard. Press Ctrl+V on the screen to paste it there.",
+  empty: "This computer's clipboard has no text to paste.",
+  "too-long": `This computer's clipboard holds more than ${MAX_TEXT_BYTES / 1024} KiB of text, more than the screen takes.`,
+};
+const COPIED: Record<CopyOutcome, string> = {
+  copied: "Copied the screen's clipboard to this computer.",
+  same: "Copied the screen's clipboard to this computer.",
+  empty: "The screen's clipboard has no text to copy.",
+};
+
+const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["kind"]) =>
+  (Object.keys(setup.apps) as ScreenAppId[]).filter((id) => setup.apps[id]?.kind === kind);
+
+/** Not run, cut off, or not able to tell what the server has. */
+const unsettled = (setup: AppsSetup) => setup.kind !== "checked" || idsIn(setup, "unknown").length > 0 || unfinished(setup).length > 0;
+
+const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
+
+/**
+ * What the Screen is adding to the screen (screenApps.ts), the terminal and editor's password, and what to do when
+ * that can't be done. A browser that failed shows in the note about none instead.
+ */
+function AppsNote({
+  setup,
+  busy,
+  connected,
+  onPassword,
+  onAgain,
+  onSkip,
+  onRestart,
+}: {
+  setup: Extract<AppsSetup, { kind: "checked" }>;
+  busy: boolean;
+  connected: boolean;
+  onPassword: (password: string) => void;
+  onAgain: (ids: ScreenAppId[]) => void;
+  onSkip: (ids: ScreenAppId[]) => void;
+  onRestart: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const installing = idsIn(setup, "installing");
+  const asking = idsIn(setup, "needs-password");
+  const wrong = asking.some((id) => (setup.apps[id] as Extract<AppState, { kind: "needs-password" }>).wrong);
+  const noSsh = idsIn(setup, "no-ssh");
+  const failed = idsIn(setup, "failed").filter((id) => id !== "browser");
+  const added = idsIn(setup, "added");
+  const dockApps = added.filter((id) => SCREEN_APPS.find((a) => a.id === id)?.inDock);
+  const others = added.filter((id) => !dockApps.includes(id));
+  const firstOf = <K extends AppState["kind"]>(ids: ScreenAppId[]) => setup.apps[ids[0]] as Extract<AppState, { kind: K }>;
+  const send = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password) return;
+    // Held no longer than the press: it goes to ssh's stdin and nowhere else.
+    setPassword("");
+    onPassword(password);
+  };
+  return (
+    <>
+      {installing.length > 0 && (
+        <div className="attach-note screen-apps" role="status">
+          <Spinner /> Adding {namesOf(installing)} to the screen…
+        </div>
+      )}
+      {asking.length > 0 && (
+        <Note title={`Adding ${namesOf(asking)} needs the server's sudo password`} className="screen-apps">
+          {wrong ? "That password didn't work. Try it again." : "They come from the server's package manager, which needs root. Type the sudo password of the account Highwing signs in to over SSH."}
+          <form className="screen-apps-password" onSubmit={send}>
+            <input
+              type="password"
+              aria-label="Sudo password on the server"
+              autoComplete="off"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={!connected}
+            />
+            <button className="btn primary" type="submit" disabled={!password || !connected}>
+              Install
+            </button>
+            <button className="btn" type="button" onClick={() => onSkip(asking)}>
+              Not now
+            </button>
+          </form>
+          <div className="small">It goes to sudo on the server and isn't kept.</div>
+        </Note>
+      )}
+      {noSsh.length > 0 && (
+        <Note title={`Highwing can't add ${namesOf(noSsh)} without SSH`} className="screen-apps">
+          This connection has no SSH route, and they need root on the server. Run this there, in a terminal of your own, then check again:
+          <CopyCommand command={firstOf<"no-ssh">(noSsh).command} />
+          <div className="preview-state-actions">
+            <button className="btn" disabled={!connected} onClick={() => onAgain(noSsh)}>
+              <RefreshCw size={14} /> Check again
+            </button>
+          </div>
+        </Note>
+      )}
+      {failed.length > 0 && (
+        <Note title={`Couldn't add ${namesOf(failed)} to the screen`} className="screen-apps">
+          <div className="screen-apps-why">{firstOf<"failed">(failed).why}</div>
+          <div className="preview-state-actions">
+            <button className="btn" disabled={!connected} onClick={() => onAgain(failed)}>
+              <RefreshCw size={14} /> Try again
+            </button>
+          </div>
+        </Note>
+      )}
+      {added.length > 0 && (
+        <div className="attach-note screen-apps screen-found" role="status">
+          <Check size={14} aria-hidden />
+          {others.length > 0 && <> Added {namesOf(others)}.</>}
+          {dockApps.length > 0 && setup.dock.kind === "pending" && <> Added {namesOf(dockApps)} to the screen.</>}
+          {dockApps.length > 0 && setup.dock.kind === "current" && <> Added {namesOf(dockApps)} to the screen's dock.</>}
+          {dockApps.length > 0 && setup.dock.kind === "restart" && (
+            <>
+              {" "}
+              Added {namesOf(dockApps)} to the screen. It is running on its old dock, so they show in the dock after a restart. Restarting stops whatever the agent
+              is doing there, and a sign-in made on the screen in the last half minute may be lost.
+              <button className="btn" disabled={busy || !connected} onClick={onRestart}>
+                {busy ? <Spinner /> : <RefreshCw size={14} />} Restart the screen
+              </button>
+            </>
+          )}
+          {dockApps.length > 0 && setup.dock.kind === "failed" && (
+            <>
+              {" "}
+              Added {namesOf(dockApps)} to the screen, but couldn't update its dock: {setup.dock.why}
+            </>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 

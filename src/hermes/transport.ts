@@ -93,7 +93,9 @@ import { providerKeys, readyProviders, SignInFailure, type ProviderSetup, type S
 import { restartHold } from "./unsaved";
 import { hostFileView, readServerFile, type FileView } from "./preview";
 import type { PathKind, ServerPath } from "./paths";
-import type { DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
+import type { CliResult, DisplayLease, DisplayObserve, DisplayStatus, ScreenApi } from "./screen";
+import { checkCommand, dockFile, foundPrograms, shellQuote } from "./screenApps";
+import { readScreenClipboard } from "./screenClipboard";
 import { agentFsEditIo } from "./artifacts";
 import { splitPath } from "./serverPaths";
 import type { BudgetIo } from "./budgetWatch";
@@ -173,6 +175,9 @@ const RPC_ANSWER_MS = 120_000;
 /** Methods Hermes answers only once a model has run (`session.compress`, `llm.oneshot`) or a file has arrived. */
 const SLOW_RPC_ANSWER_MS = 600_000;
 const SLOW_RPC = new Set(["session.compress", "llm.oneshot", "image.attach_bytes", "file.attach"]);
+/** `cli.exec` runs for up to the 600 s it is given (Hermes's cap), and then answers. */
+const CLI_EXEC_TIMEOUT_S = 600;
+const CLI_EXEC_ANSWER_MS = (CLI_EXEC_TIMEOUT_S + 60) * 1000;
 /** Checking another profile for Unread chats reads one page of its most recent ones. */
 const OTHER_PAGE_SIZE = 50;
 /**
@@ -937,6 +942,18 @@ export class Hermes {
   readonly screen: ScreenApi = {
     status: () => this.request("display.status", { profile: this.profile }) as Promise<DisplayStatus>,
     start: () => this.request("display.start", { profile: this.profile }) as Promise<DisplayStatus>,
+    stop: () => this.request("display.stop", { profile: this.profile }) as Promise<DisplayStatus>,
+    installBrowser: () => this.request("cli.exec", { argv: ["pm", "install", "chromium"], timeout: CLI_EXEC_TIMEOUT_S }) as Promise<CliResult>,
+    findPrograms: async (programs) => {
+      const { stdout } = (await this.request("shell.exec", { command: checkCommand(programs) })) as { stdout: string };
+      return foundPrograms(stdout, programs);
+    },
+    resetDock: async (profileKey) => {
+      const r = (await this.request("shell.exec", { command: `rm -f -- ${shellQuote(dockFile(profileKey))}` })) as { stderr: string; code: number };
+      if (r.code !== 0) throw new Error(r.stderr.trim() || `Deleting the dock's layout ended with exit status ${r.code}.`);
+    },
+    readClipboard: (where, signal) =>
+      readScreenClipboard((command) => this.request("shell.exec", { command }) as Promise<{ stdout: string; stderr: string; code: number }>, where, signal),
     observe: (viewerId) => this.request("display.observe", { profile: this.profile, ...(viewerId && { viewer_id: viewerId }) }) as Promise<DisplayObserve>,
     takeOver: async (viewerId) => ((await this.request("display.lease.acquire", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
     handBack: async (viewerId) => ((await this.request("display.lease.release", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
@@ -5879,7 +5896,7 @@ export class Hermes {
     if (lacking) return Promise.reject(new RouteMissingError(lacking));
     const id = this.nextId++;
     const done = new Promise((resolve, reject) => {
-      const ms = SLOW_RPC.has(method) ? SLOW_RPC_ANSWER_MS : RPC_ANSWER_MS;
+      const ms = method === "cli.exec" ? CLI_EXEC_ANSWER_MS : SLOW_RPC.has(method) ? SLOW_RPC_ANSWER_MS : RPC_ANSWER_MS;
       const late = setTimeout(() => {
         if (this.pending.delete(id)) reject(new AnswerTimedOutError(`Hermes didn't answer ${method} within ${ms / 1000} s.`));
       }, ms);

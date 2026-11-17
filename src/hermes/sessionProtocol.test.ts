@@ -84,6 +84,7 @@ describe("the map of what the canonical protocol does with the app's JSON-RPC me
       "session.status",
       "session.title",
       "session.undo",
+      "shell.exec",
     ]);
   });
 });

@@ -449,6 +449,14 @@ export class FakeHermes {
     minted: Set<string>;
     profiles?: Record<string, Record<string, unknown>>;
   };
+  /**
+   * The server's machine as `shell.exec` and `cli.exec` reach it (tui_gateway/methods_tools.py at bf0203a). Undefined:
+   * a Hermes without them. `shell.exec` runs only the commands the Screen sends: `command -v`, `rm -f --`, and xclip
+   * reading the running screen's clipboard, `clipboard` (undefined: nothing owns it). It keeps the last 4000
+   * characters a command prints, as Hermes does. `pmInstall`: how `hermes pm install chromium` ends; on 0 Hermes then
+   * finds `browser` for every profile.
+   */
+  machine?: { programs: Set<string>; files: Set<string>; pmInstall: { code: number; output: string }; browser: string; clipboard?: string };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help", "goal"];
   /** False: a Hermes with no `prompt.btw`, which answers "method not found". */
@@ -997,6 +1005,57 @@ export class FakeHermes {
     "display.start": (r) => {
       if (this.display) this.display.status.running = true;
       this.displayAnswer(r.id, r.params.profile);
+    },
+    "display.stop": (r) => {
+      const d = this.display;
+      if (!d) return this.fail(r.id, -32601, "unknown method: display.stop");
+      if (d.lease.holder === "human" && !r.params.force) return this.fail(r.id, 5300, "a human holds this screen; pass force: true to stop it anyway");
+      d.status.running = false;
+      this.displayAnswer(r.id, r.params.profile);
+    },
+    "cli.exec": (r) => {
+      const m = this.machine;
+      if (!m) return this.fail(r.id, -32601, "unknown method: cli.exec");
+      const argv = r.params.argv as string[];
+      if (argv.join(" ") !== "pm install chromium") return this.respond(r.id, { blocked: false, code: 2, output: `hermes: no such command: ${argv.join(" ")}` });
+      if (m.pmInstall.code === 0 && this.display) this.display.status.browser = m.browser;
+      this.respond(r.id, { blocked: false, ...m.pmInstall });
+    },
+    "shell.exec": (r) => {
+      const m = this.machine;
+      if (!m) return this.fail(r.id, -32601, "unknown method: shell.exec");
+      const command = String(r.params.command);
+      const xclip =
+        /^export DISPLAY=(\S+) XAUTHORITY=(\S+); xclip -selection clipboard -o 2>\/dev\/null \| sha256sum \| cut -c1-64; xclip -selection clipboard -o \| tail -c \+(\d+) \| head -c (\d+) \| od -An -v -tx1 \| tr -d ' \\n'$/.exec(
+          command,
+        );
+      if (xclip) {
+        const [display, xauthority] = [xclip[1], xclip[2]].map((w) => w.replace(/'([^']*)'|\\(.)/g, (_, quoted: string | undefined, escaped: string) => quoted ?? escaped));
+        const status = this.display?.status;
+        const stderr = !m.programs.has("xclip")
+          ? "sh: 1: xclip: not found\n"
+          : !status?.running || display !== status.display || xauthority !== "/home/liam/.hermes/bot-desktop/Xauthority"
+            ? `Error: Can't open display: ${display}\n`
+            : m.clipboard === undefined
+              ? "Error: target STRING not available\n"
+              : "";
+        const whole = stderr ? new Uint8Array() : new TextEncoder().encode(m.clipboard);
+        const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        void crypto.subtle.digest("SHA-256", whole).then((hash) => {
+          const stdout = `${hex(new Uint8Array(hash))}\n${hex(whole.subarray(Number(xclip[3]) - 1).subarray(0, Number(xclip[4])))}`;
+          this.respond(r.id, { stdout: stdout.slice(-4000), stderr, code: 0 });
+        });
+        return;
+      }
+      const rm = /^rm -f -- '([^']*)'$/.exec(command);
+      if (rm) {
+        m.files.delete(rm[1]);
+        return this.respond(r.id, { stdout: "", stderr: "", code: 0 });
+      }
+      const asked = command.split("; ").map((c) => /^command -v (\S+)$/.exec(c)?.[1]);
+      if (asked.some((p) => !p)) return this.fail(r.id, 5003, `the fake runs no such command: ${command}`);
+      const found = asked.filter((p) => m.programs.has(p!));
+      this.respond(r.id, { stdout: found.map((p) => `/usr/bin/${p}\n`).join(""), stderr: "", code: found.length === asked.length ? 0 : 1 });
     },
     "display.observe": (r) => {
       const d = this.display;

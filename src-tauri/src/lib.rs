@@ -3,6 +3,8 @@ mod backlog;
 pub mod backup;
 #[cfg(target_os = "linux")]
 pub mod browser;
+#[cfg(target_os = "linux")]
+mod clipboard_text;
 pub mod connect_steps;
 pub mod connection_attempts;
 #[cfg(target_os = "linux")]
@@ -31,6 +33,7 @@ pub mod project_context;
 pub mod remote;
 pub mod repo_git;
 pub mod saved_password;
+mod screen_apps;
 pub mod screenshot;
 #[cfg(target_os = "linux")]
 pub mod selection;
@@ -651,6 +654,36 @@ async fn read_selection(app: tauri::AppHandle) -> Result<selection::Selections, 
 async fn read_selection() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({}))
 }
+
+/// This computer's clipboard text, for pasting into the Screen's Bot Desktop (clipboard_text.rs, ADR 0193).
+#[tauri::command]
+#[cfg(target_os = "linux")]
+async fn clipboard_text(app: tauri::AppHandle) -> Result<String, String> {
+    clipboard_text::read(&app).await
+}
+
+/// Puts text copied out of the Screen's Bot Desktop on this computer's clipboard (clipboard_text.rs, ADR 0193).
+#[tauri::command]
+#[cfg(target_os = "linux")]
+async fn set_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    clipboard_text::write(&app, text).await
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+async fn clipboard_text() -> Result<String, String> {
+    Err(NO_CLIPBOARD.into())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+async fn set_clipboard_text(text: String) -> Result<(), String> {
+    let _ = text;
+    Err(NO_CLIPBOARD.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+const NO_CLIPBOARD: &str = "Copy and paste with the screen works only on Linux for now.";
 
 /// Attaches the files the owner copied in a file manager and pasted into the composer, by path, as a drop does (ADR
 /// 0143). `[]`: the clipboard holds no local files. Elsewhere than Linux the webview's paste event carries the files.
@@ -1871,6 +1904,13 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
     repo_git::run_over_ssh(&target, &request).await
 }
 
+/// Installs a terminal, a text editor and xclip for the Screen's Bot Desktop on the server, through `ssh` to `target`
+/// (screen_apps.rs, ADR 0193). `password`: the owner's sudo password, which goes only on ssh's stdin.
+#[tauri::command]
+async fn screen_apps_install(target: String, password: Option<String>) -> screen_apps::Outcome {
+    screen_apps::install_over_ssh(&target, password.as_deref()).await
+}
+
 /// `repo_git`, for a request that reports progress as it goes (creating a worktree and running its setup, removing
 /// one): each progress line goes to `on_progress` as the helper prints it (ADR 0043).
 #[tauri::command]
@@ -1991,6 +2031,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
             attach_picked_files,
             attach_copied_files,
             read_selection,
+            clipboard_text,
+            set_clipboard_text,
             stage_clipboard_file,
             hermes_request,
             hermes_transcribe,
@@ -2091,6 +2133,7 @@ pub fn run(screenshot: bool, link: Option<String>) {
             terminal_open,
             repo_git,
             repo_git_stream,
+            screen_apps_install,
             terminal_write,
             terminal_resize,
             terminal_close,
