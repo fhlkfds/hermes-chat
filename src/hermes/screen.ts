@@ -76,8 +76,11 @@ export interface ScreenApi {
   findPrograms(programs: readonly string[]): Promise<string[]>;
   /** Deletes the profile's dock layout, so the screen's next start writes it again with what is installed now. */
   resetDock(profileKey: string): Promise<void>;
-  /** The text on the screen's clipboard, through `xclip` over `shell.exec` (screenClipboard.ts). "" when it has none. */
-  readClipboard(where: ScreenDisplay): Promise<string>;
+  /**
+   * The text on the screen's clipboard, through `xclip` over `shell.exec` (screenClipboard.ts), until `signal` aborts.
+   * "" when it has none.
+   */
+  readClipboard(where: ScreenDisplay, signal?: AbortSignal): Promise<string>;
   /** `viewerId`: one this connection minted before, so a reconnect keeps the lease it holds. */
   observe(viewerId?: string): Promise<DisplayObserve>;
   takeOver(viewerId: string): Promise<DisplayLease>;

@@ -268,16 +268,28 @@ export function ScreenTab({
     else setClipNote(undefined);
   }, [held, conn.kind]);
 
+  // Aborted when the owner stops holding the screen, the connection drops or the tab goes, which stops a copy or paste
+  // under way.
+  const hold = useRef<AbortSignal | undefined>(undefined);
+  useEffect(() => {
+    if (!held || !connected) return;
+    const c = new AbortController();
+    hold.current = c.signal;
+    return () => c.abort();
+  }, [held, connected]);
   const copyOut = copyOutFrom(status, setup);
   const syncs = held && conn.kind === "live";
   /** This computer's clipboard text into the screen's. `always`: even if it went in or came out last. */
   const pasteIn = (always = false): Promise<PasteOutcome | undefined> => {
     const client = rfb.current;
-    return client ? bridge.paste((text) => client.clipboardPasteFrom(text), always) : Promise.resolve(undefined);
+    const signal = hold.current;
+    return client && signal ? bridge.paste((text) => client.clipboardPasteFrom(text), signal, always) : Promise.resolve(undefined);
   };
   /** The screen's clipboard text onto this computer's. */
-  const copyOutOf = (always = false): Promise<CopyOutcome | undefined> =>
-    copyOut ? bridge.copy(() => api.readClipboard(copyOut), always) : Promise.resolve(undefined);
+  const copyOutOf = (always = false): Promise<CopyOutcome | undefined> => {
+    const signal = hold.current;
+    return copyOut && signal ? bridge.copy(() => api.readClipboard(copyOut, signal), signal, always) : Promise.resolve(undefined);
+  };
   // Each way only when it changed, and quietly: the buttons say what happened.
   const syncIn = () => void (syncs && pasteIn().catch(() => {}));
   const syncOut = () => void (syncs && copyOutOf().catch(() => {}));
@@ -321,14 +333,14 @@ export function ScreenTab({
   const pasteHere = () =>
     act(async () => {
       setClipNote(undefined);
-      const outcome = await pasteIn(true).catch((e: unknown) => setClipNote({ text: errorText(e), bad: true }));
+      const outcome = await pasteIn(true).catch((e: unknown) => void (isAbort(e) || setClipNote({ text: errorText(e), bad: true })));
       if (outcome) setClipNote({ text: PASTED[outcome], bad: outcome !== "pasted" });
       rfb.current?.focus();
     });
   const copyOutNow = () =>
     act(async () => {
       setClipNote(undefined);
-      const outcome = await copyOutOf(true).catch((e: unknown) => setClipNote({ text: errorText(e), bad: true }));
+      const outcome = await copyOutOf(true).catch((e: unknown) => void (isAbort(e) || setClipNote({ text: errorText(e), bad: true })));
       if (outcome) setClipNote({ text: COPIED[outcome], bad: outcome === "empty" });
     });
   const takeOver = () => act(async () => viewer && noteLease(await api.takeOver(viewer.id)));
@@ -528,6 +540,8 @@ const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["k
 
 /** Not run, cut off, or not able to tell what the server has. */
 const unsettled = (setup: AppsSetup) => setup.kind !== "checked" || idsIn(setup, "unknown").length + idsIn(setup, "installing").length > 0;
+
+const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
 
 /**
  * What the Screen is adding to the screen (screenApps.ts), the terminal and editor's password, and what to do when

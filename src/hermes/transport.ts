@@ -952,7 +952,8 @@ export class Hermes {
       const r = (await this.request("shell.exec", { command: `rm -f -- ${shellQuote(dockFile(profileKey))}` })) as { stderr: string; code: number };
       if (r.code !== 0) throw new Error(r.stderr.trim() || `Deleting the dock's layout ended with exit status ${r.code}.`);
     },
-    readClipboard: (where) => readScreenClipboard((command) => this.request("shell.exec", { command }) as Promise<{ stdout: string; stderr: string; code: number }>, where),
+    readClipboard: (where, signal) =>
+      readScreenClipboard((command) => this.request("shell.exec", { command }) as Promise<{ stdout: string; stderr: string; code: number }>, where, signal),
     observe: (viewerId) => this.request("display.observe", { profile: this.profile, ...(viewerId && { viewer_id: viewerId }) }) as Promise<DisplayObserve>,
     takeOver: async (viewerId) => ((await this.request("display.lease.acquire", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,
     handBack: async (viewerId) => ((await this.request("display.lease.release", { profile: this.profile, viewer_id: viewerId })) as { lease: DisplayLease }).lease,

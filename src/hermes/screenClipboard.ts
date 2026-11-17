@@ -50,11 +50,15 @@ type ShellResult = { stdout: string; stderr: string; code: number };
 /** What xclip says when nothing on the screen owns the clipboard, or not as text. */
 const saysEmpty = (stderr: string) => /target \S+ not available/.test(stderr);
 
-/** Reads the screen's clipboard with `exec` (`shell.exec`), a chunk at a time. "" when it holds no text. */
-export async function readScreenClipboard(exec: (command: string) => Promise<ShellResult>, where: ScreenDisplay): Promise<string> {
+/**
+ * Reads the screen's clipboard with `exec` (`shell.exec`), a chunk at a time, until `signal` aborts. "" when it holds
+ * no text.
+ */
+export async function readScreenClipboard(exec: (command: string) => Promise<ShellResult>, where: ScreenDisplay, signal?: AbortSignal): Promise<string> {
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
+    signal?.throwIfAborted();
     const r = await exec(chunkCommand(where, size));
     const hex = r.stdout.trim();
     if (!/^(?:[0-9a-f]{2})*$/.test(hex)) throw new Error("The screen's clipboard came back garbled.");
@@ -90,20 +94,27 @@ export class ClipboardBridge {
     this.last = undefined;
   }
 
-  /** This computer's text into the screen through `paste`. `always`: even when it is what crossed last. */
-  paste(paste: (text: string) => void, always = false): Promise<PasteOutcome> {
-    if (always) return this.pasteNow(paste, true);
-    return (this.pasting ??= this.pasteNow(paste, false).finally(() => (this.pasting = undefined)));
+  /**
+   * This computer's text into the screen through `paste`, unless `signal` aborts first. `always`: even when it is what
+   * crossed last.
+   */
+  paste(paste: (text: string) => void, signal: AbortSignal, always = false): Promise<PasteOutcome> {
+    if (always) return this.pasteNow(paste, signal, true);
+    return (this.pasting ??= this.pasteNow(paste, signal, false).finally(() => (this.pasting = undefined)));
   }
 
-  /** The screen's text, as `read` gives it, onto this computer's clipboard. `always`: even when it crossed last. */
-  copy(read: () => Promise<string>, always = false): Promise<CopyOutcome> {
-    if (always) return this.copyNow(read, true);
-    return (this.copying ??= this.copyNow(read, false).finally(() => (this.copying = undefined)));
+  /**
+   * The screen's text, as `read` gives it, onto this computer's clipboard, unless `signal` aborts first. `always`: even
+   * when it crossed last.
+   */
+  copy(read: () => Promise<string>, signal: AbortSignal, always = false): Promise<CopyOutcome> {
+    if (always) return this.copyNow(read, signal, true);
+    return (this.copying ??= this.copyNow(read, signal, false).finally(() => (this.copying = undefined)));
   }
 
-  private async pasteNow(paste: (text: string) => void, always: boolean): Promise<PasteOutcome> {
+  private async pasteNow(paste: (text: string) => void, signal: AbortSignal, always: boolean): Promise<PasteOutcome> {
     const text = await this.local.read();
+    signal.throwIfAborted();
     if (!text) return "empty";
     if (new TextEncoder().encode(text).length > MAX_TEXT_BYTES) return "too-long";
     if (text === this.last && !always) return "same";
@@ -112,8 +123,9 @@ export class ClipboardBridge {
     return "pasted";
   }
 
-  private async copyNow(read: () => Promise<string>, always: boolean): Promise<CopyOutcome> {
+  private async copyNow(read: () => Promise<string>, signal: AbortSignal, always: boolean): Promise<CopyOutcome> {
     const text = await read();
+    signal.throwIfAborted();
     if (!text) return "empty";
     if (text === this.last && !always) return "same";
     await this.local.write(text);

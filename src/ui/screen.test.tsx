@@ -533,6 +533,20 @@ describe("Copy and paste with the screen", () => {
     expect(c.writes).toEqual(["copied on the screen"]);
   });
 
+  it("stops a copy out under way when the owner hands back, leaving this computer's clipboard alone", async () => {
+    const { api, c, view } = await live();
+    await takeOver();
+    let read!: (text: string) => void;
+    api.readClipboard = () => new Promise((done) => (read = done));
+    fireEvent.pointerLeave(view());
+    await waitFor(() => expect(read).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Hand back/ }));
+    await screen.findByText("Watching: Hermes is in control.");
+    await act(async () => read("typed on the screen after hand-back"));
+    await settle();
+    expect(c.writes).toEqual([]);
+  });
+
   it("doesn't paste more than Hermes takes", async () => {
     const { view } = await live("x".repeat(256 * 1024));
     await takeOver();

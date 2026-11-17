@@ -63,6 +63,15 @@ describe("The screen's clipboard, read on the server", () => {
     expect(commands.length).toBe(Math.ceil(new TextEncoder().encode(text).length / CHUNK_BYTES));
   });
 
+  it("stops between chunks once the owner no longer holds the screen", async () => {
+    copied("a".repeat(3 * CHUNK_BYTES));
+    const hold = new AbortController();
+    let commands = 0;
+    const exec = async (c: string) => (commands++, hold.abort(), shellExec(c));
+    await expect(readScreenClipboard(exec, where, hold.signal)).rejects.toThrow();
+    expect(commands).toBe(1);
+  });
+
   it("reads a clipboard nothing owns as empty", async () => {
     copied(undefined);
     expect(await readScreenClipboard(shellExec, where)).toBe("");
