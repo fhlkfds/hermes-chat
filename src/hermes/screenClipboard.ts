@@ -36,14 +36,18 @@ export function copyOutFrom(status: DisplayStatus | undefined, setup: AppsSetup)
 /**
  * Bytes of the screen's clipboard per `shell.exec`. Hermes keeps the last 4000 characters of what a command prints,
  * after masking anything that looks like a credential (`tui_gateway/methods_tools.py` at bf0203a). So the text comes
- * as lowercase hex, which no mask matches, two characters a byte.
+ * as lowercase hex, which no mask matches, two characters a byte, after a line with the 64 of its hash.
  */
-export const CHUNK_BYTES = 1999;
+export const CHUNK_BYTES = 1967;
 
-/** The `shell.exec` command that prints the screen's clipboard from byte `offset`, a chunk of it, in hex. */
+/**
+ * The `shell.exec` command that prints the SHA-256 of the screen's whole clipboard, then a chunk of it from byte
+ * `offset` in hex. Each chunk reads the clipboard again, so the hash tells when it changed in between.
+ */
 export const chunkCommand = ({ display, profileKey }: ScreenDisplay, offset: number) =>
-  `DISPLAY=${shellQuote(display)} XAUTHORITY=${shellQuote(`${profileKey}/bot-desktop/Xauthority`)} xclip -selection clipboard -o` +
-  ` | tail -c +${offset + 1} | head -c ${CHUNK_BYTES} | od -An -v -tx1 | tr -d ' \\n'`;
+  `export DISPLAY=${shellQuote(display)} XAUTHORITY=${shellQuote(`${profileKey}/bot-desktop/Xauthority`)}; ` +
+  `xclip -selection clipboard -o 2>/dev/null | sha256sum | cut -c1-64; ` +
+  `xclip -selection clipboard -o | tail -c +${offset + 1} | head -c ${CHUNK_BYTES} | od -An -v -tx1 | tr -d ' \\n'`;
 
 type ShellResult = { stdout: string; stderr: string; code: number };
 
@@ -57,11 +61,13 @@ const saysEmpty = (stderr: string) => /target \S+ not available/.test(stderr);
 export async function readScreenClipboard(exec: (command: string) => Promise<ShellResult>, where: ScreenDisplay, signal?: AbortSignal): Promise<string> {
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let hash: string | undefined;
   for (;;) {
     signal?.throwIfAborted();
     const r = await exec(chunkCommand(where, size));
-    const hex = r.stdout.trim();
-    if (!/^(?:[0-9a-f]{2})*$/.test(hex)) throw new Error("The screen's clipboard came back garbled.");
+    const [now, hex = ""] = r.stdout.trim().split("\n");
+    if (!/^[0-9a-f]{64}$/.test(now) || !/^(?:[0-9a-f]{2})*$/.test(hex)) throw new Error("The screen's clipboard came back garbled.");
+    if ((hash ??= now) !== now) throw new Error("The screen's clipboard changed while copying. Copy it again.");
     if (!hex && size === 0 && r.stderr.trim() && !saysEmpty(r.stderr)) throw new Error(r.stderr.trim());
     const chunk = Uint8Array.from(hex.match(/../g) ?? [], (b) => parseInt(b, 16));
     chunks.push(chunk);
@@ -108,11 +114,16 @@ export class ClipboardBridge {
    * when it crossed last.
    */
   copy(read: () => Promise<string>, signal: AbortSignal, always = false): Promise<CopyOutcome> {
-    if (always) return this.copyNow(read, signal, true);
-    return (this.copying ??= this.copyNow(read, signal, false).finally(() => (this.copying = undefined)));
+    if (this.copying && !always) return this.copying;
+    const copying: Promise<CopyOutcome> = this.copyNow(read, signal, always).finally(() => {
+      if (this.copying === copying) this.copying = undefined;
+    });
+    return (this.copying = copying);
   }
 
   private async pasteNow(paste: (text: string) => void, signal: AbortSignal, always: boolean): Promise<PasteOutcome> {
+    // Pasting changes the screen's clipboard, which a copy out may be reading a chunk at a time.
+    await this.copying?.catch(() => {});
     const text = await this.local.read();
     signal.throwIfAborted();
     if (!text) return "empty";

@@ -1025,7 +1025,10 @@ export class FakeHermes {
       const m = this.machine;
       if (!m) return this.fail(r.id, -32601, "unknown method: shell.exec");
       const command = String(r.params.command);
-      const xclip = /^DISPLAY=(\S+) XAUTHORITY=(\S+) xclip -selection clipboard -o \| tail -c \+(\d+) \| head -c (\d+) \| od -An -v -tx1 \| tr -d ' \\n'$/.exec(command);
+      const xclip =
+        /^export DISPLAY=(\S+) XAUTHORITY=(\S+); xclip -selection clipboard -o 2>\/dev\/null \| sha256sum \| cut -c1-64; xclip -selection clipboard -o \| tail -c \+(\d+) \| head -c (\d+) \| od -An -v -tx1 \| tr -d ' \\n'$/.exec(
+          command,
+        );
       if (xclip) {
         const [display, xauthority] = [xclip[1], xclip[2]].map((w) => w.replace(/'([^']*)'|\\(.)/g, (_, quoted: string | undefined, escaped: string) => quoted ?? escaped));
         const status = this.display?.status;
@@ -1036,9 +1039,13 @@ export class FakeHermes {
             : m.clipboard === undefined
               ? "Error: target STRING not available\n"
               : "";
-        const bytes = stderr ? new Uint8Array() : new TextEncoder().encode(m.clipboard).subarray(Number(xclip[3]) - 1).subarray(0, Number(xclip[4]));
-        const stdout = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-        return this.respond(r.id, { stdout: stdout.slice(-4000), stderr, code: 0 });
+        const whole = stderr ? new Uint8Array() : new TextEncoder().encode(m.clipboard);
+        const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        void crypto.subtle.digest("SHA-256", whole).then((hash) => {
+          const stdout = `${hex(new Uint8Array(hash))}\n${hex(whole.subarray(Number(xclip[3]) - 1).subarray(0, Number(xclip[4])))}`;
+          this.respond(r.id, { stdout: stdout.slice(-4000), stderr, code: 0 });
+        });
+        return;
       }
       const rm = /^rm -f -- '([^']*)'$/.exec(command);
       if (rm) {

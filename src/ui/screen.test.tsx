@@ -547,6 +547,23 @@ describe("Copy and paste with the screen", () => {
     expect(c.writes).toEqual([]);
   });
 
+  it("waits for a copy out to finish before pasting in, so the screen's clipboard doesn't change mid-read", async () => {
+    const { api, c, view } = await live("from here");
+    await takeOver();
+    let read!: (text: string) => void;
+    api.readClipboard = () => new Promise((done) => (read = done));
+    fireEvent.pointerLeave(view());
+    await waitFor(() => expect(read).toBeDefined());
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual([]);
+    await act(async () => read("from the screen"));
+    await settle();
+    expect(c.writes).toEqual(["from the screen"]);
+    // What just came out isn't pasted back.
+    expect(FakeRfb.made[0].pasted).toEqual([]);
+  });
+
   it("doesn't paste more than Hermes takes", async () => {
     const { view } = await live("x".repeat(256 * 1024));
     await takeOver();

@@ -41,7 +41,7 @@ const copied = (text: string | undefined) => (text === undefined ? rmSync(CLIPBO
 describe("The screen's clipboard, read on the server", () => {
   it("quotes the display and the profile's X authority for the shell", () => {
     expect(chunkCommand({ display: ":42", profileKey: "/home/liam/.hermes" }, 0)).toBe(
-      `DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority' xclip -selection clipboard -o | tail -c +1 | head -c ${CHUNK_BYTES} | od -An -v -tx1 | tr -d ' \\n'`,
+      `export DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority'; xclip -selection clipboard -o 2>/dev/null | sha256sum | cut -c1-64; xclip -selection clipboard -o | tail -c +1 | head -c ${CHUNK_BYTES} | od -An -v -tx1 | tr -d ' \\n'`,
     );
     execFileSync("sh", ["-n", "-c", chunkCommand(where, 0)]);
   });
@@ -61,6 +61,16 @@ describe("The screen's clipboard, read on the server", () => {
     expect(await readScreenClipboard((c) => (commands.push(c), shellExec(c)), where)).toBe(text);
     expect(new TextEncoder().encode(text).length).toBeGreaterThan(4 * CHUNK_BYTES);
     expect(commands.length).toBe(Math.ceil(new TextEncoder().encode(text).length / CHUNK_BYTES));
+  });
+
+  it("refuses text that changed on the screen between chunks, rather than splicing two copies", async () => {
+    copied("a".repeat(3 * CHUNK_BYTES));
+    let commands = 0;
+    const exec = async (c: string) => {
+      if (commands++ === 1) copied("b".repeat(3 * CHUNK_BYTES));
+      return shellExec(c);
+    };
+    await expect(readScreenClipboard(exec, where)).rejects.toThrow("The screen's clipboard changed while copying. Copy it again.");
   });
 
   it("stops between chunks once the owner no longer holds the screen", async () => {
@@ -104,7 +114,7 @@ describe("Through Hermes", () => {
     const status = await hermes.screen.status();
     expect(await hermes.screen.readClipboard({ display: status.display!, profileKey: status.profile_key })).toBe("copied on the screen ✓");
     expect(s.requests.filter((r) => r.method === "shell.exec").map((r) => r.params)).toEqual([
-      { command: `DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority' xclip -selection clipboard -o | tail -c +1 | head -c 1999 | od -An -v -tx1 | tr -d ' \\n'` },
+      { command: `export DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority'; xclip -selection clipboard -o 2>/dev/null | sha256sum | cut -c1-64; xclip -selection clipboard -o | tail -c +1 | head -c ${CHUNK_BYTES} | od -An -v -tx1 | tr -d ' \\n'` },
     ]);
   });
 
