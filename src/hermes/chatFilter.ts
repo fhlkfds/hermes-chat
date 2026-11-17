@@ -97,6 +97,23 @@ export const FILTER_SEARCH_LIMIT = 100;
 /** A search with words only asks for this many, as the search palette always did. */
 export const WORDS_SEARCH_LIMIT = 50;
 
+/**
+ * The checks made here, on chats Hermes already picked: the model, and the last activity between `from` and `to`. One
+ * definition for a filter in the profile on screen and for Everywhere (everywhere.ts). `noModel`: the chat would match,
+ * but Hermes recorded no model for it, so a model filter can't tell.
+ */
+export function checkedHere(f: Pick<ChatFilter, "model" | "from" | "to">): (c: Pick<Found, "updatedAt" | "model">) => "match" | "noModel" | "miss" {
+  const from = f.from ? startOf(f.from) : -Infinity;
+  const to = f.to ? startOf(f.to, 1) : Infinity;
+  const model = f.model?.toLocaleLowerCase();
+  return (c) => {
+    if (c.updatedAt < from || c.updatedAt >= to) return "miss";
+    if (!model) return "match";
+    if (!c.model) return "noModel";
+    return c.model.toLocaleLowerCase().includes(model) ? "match" : "miss";
+  };
+}
+
 /** Runs `filter` in the profile on screen. Reads only: no chat's state changes, and nothing is put in the list. */
 export async function runFilter(filter: ChatFilter, io: FilterIo, tags: TagLookup): Promise<FilterOutcome> {
   const f = tidyFilter(filter);
@@ -107,21 +124,23 @@ export async function runFilter(filter: ChatFilter, io: FilterIo, tags: TagLooku
   const page = f.text
     ? await io.searchPage(f.text, { archived: archivedWanted, sources: f.sources, limit: onlyWords ? WORDS_SEARCH_LIMIT : FILTER_SEARCH_LIMIT })
     : await io.browse({ archived: f.state === "archived" ? "only" : f.state === "all" ? "include" : "exclude", sources: f.sources });
-  const from = f.from ? startOf(f.from) : -Infinity;
-  const to = f.to ? startOf(f.to, 1) : Infinity;
-  const model = f.model?.toLocaleLowerCase();
+  const here = checkedHere(f);
   let noModel = 0;
   let noSource = 0;
   const found = page.found.filter((c) => {
+    const checked = here(c);
+    if (checked === "miss") return false;
     const inState =
       f.state === "all" ? true : f.state === "archived" ? !!c.archived : !c.archived && (f.state === undefined || (f.state === "settled") === c.settled);
     const of = f.tags?.length ? tags.of(c.chatId) : [];
-    const others = inState && (f.tags ?? []).every((t) => of.includes(t)) && c.updatedAt >= from && c.updatedAt < to;
-    const modelOk = !model || !!c.model?.toLocaleLowerCase().includes(model);
-    if (others && f.sources && c.sourceUnknown && modelOk) noSource++;
+    const others = inState && (f.tags ?? []).every((t) => of.includes(t));
     const sourceOk = !f.sources || (!c.sourceUnknown && f.sources.includes(c.source));
-    if (others && sourceOk && model && !c.model) noModel++;
-    return others && sourceOk && modelOk;
+    if (checked === "noModel") {
+      if (others && sourceOk) noModel++;
+      return false;
+    }
+    if (others && f.sources && c.sourceUnknown) noSource++;
+    return others && sourceOk;
   });
   return { found, ...(page.capped && { capped: f.text ? "search" : "list" }), noModel, noSource, missingTags };
 }

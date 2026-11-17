@@ -53,6 +53,8 @@
 //   starts when handed-off work comes back (`FakeHermes.returnWork`): the notice is stored as a user row with that
 //   display kind and metadata, and `reply` streams as the turn's reply, in that chat's live session (a test's control).
 // HV_INBOX=1 gives the `work` profile two Unread chats for the Rail inbox: one last active 3 days ago, one an hour ago.
+// HV_EVERYWHERE=1 gives `work` a chat about the backup and adds a third profile, `ops`, with another, so an Everywhere
+//   search for "backup" finds a chat in three profiles. A second stand-in without it finds one in `default`.
 // HV_BAD_HISTORY=1 adds `badtool`, "Broken tool row", to `default`: its stored history has a tool row whose `context`
 // is a number and one whose `name` is an object, each between two messages, as a misbehaving server might send.
 // HV_LIST=<n> adds n Active, read chats to `default`, one an hour apart, so its Inbox is longer than the list panel.
@@ -166,6 +168,14 @@ if (process.env.HV_INBOX === "1")
     row("brief", 3, { title: "Morning brief, Monday", last_read_at: 0 }),
     row("convert", 1 / 24, { title: "Convert 12 GB to MB", last_read_at: 0 }),
   ];
+if (process.env.HV_EVERYWHERE === "1") {
+  server.otherProfiles.work = [...server.otherProfiles.work, row("offsite", 1, { title: "Offsite copy", message_count: 2, model: "claude-sonnet-5-5" })];
+  server.otherProfiles.ops = [row("snapshots", 4, { title: "Snapshot schedule", message_count: 2, model: "gpt-6.1" })];
+  server.storeMessage("offsite", { role: "user", text: "Where does the offsite copy go?" });
+  server.storeMessage("offsite", { role: "assistant", text: "Each night the backup is synced to the offsite bucket after the prune." });
+  server.storeMessage("snapshots", { role: "user", text: "How often do we snapshot the volumes?" });
+  server.storeMessage("snapshots", { role: "assistant", text: "Hourly snapshots, kept for two days, then the nightly backup takes over." });
+}
 server.mcp.servers.default = {
   filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/notes"] },
   github: { url: "https://mcp.example.com/github", headers: { Authorization: "Bearer ${MCP_GITHUB_API_KEY}" } },

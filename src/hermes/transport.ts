@@ -30,7 +30,8 @@ import { GatewaysApi } from "./gateways";
 import { PersonaApi } from "./persona";
 import { ProfileCloneApi } from "./profileClone";
 import { ProfilesApi, profileFailure, toProfileRows, type ProfileFailure } from "./profiles";
-import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, sendNowRoute, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
+import { FILTER_SEARCH_LIMIT } from "./chatFilter";
+import { APPROVAL_CHOICES, endedNote, isBroadGrant, isOutgoing, isQuestion, isStoredPrompt, isWaiting, offeredChoices, sameFields, sendNowRoute, turnStart, type ApprovalChoice, type ApprovalItem, type AttachCheck, type ClarifyQuestion, type QuestionAnswer, type QuestionItem, type QuestionKind, type Attachment, type Chat, type ChatQueue, type ConnectionStatus, type ContextUse, type Found, type Hit, type Item, type ListedChat, type LiveSession, type LiveSessions, type OtherProfiles, type Outgoing, type OutgoingItem, type Queued, type SavedSend, type SeenFailure, type SentReference, type SessionLive, type SideQuestion, type Source, QUEUE_LIMIT } from "./model";
 import { catalogFromServer, fallbackCatalog, isEffort, modelKey, pickFromInfo, type ModelCatalog, type ModelPick } from "./models";
 import { approvalsOf, isApprovalMode, writesFor, type ApprovalPick } from "./approvals";
 import { CheckTimesStore, noOthers, OtherProfilesCheck } from "./otherProfiles";
@@ -2089,20 +2090,43 @@ export class Hermes {
     const q = text.trim();
     if (!q) return { found: [], capped: false };
     const profile = this.profile;
-    const query = new URLSearchParams({ q, profile, limit: String(limit), ...sourceQuery(sources) });
-    const [res] = (await Promise.all([this.rest("GET", `api/sessions/search?${query}`), this.knownBotChats()])) as [{ results: SearchRow[] }, void];
+    const [rows] = await Promise.all([this.searchRows(profile, q, limit, sources), this.knownBotChats()]);
     if (this.profile !== profile) throw new Error(`Switched to the ${this.profile} profile before the results came.`);
     const listed = new Map(this.snapshot.chats.map((c) => [c.id, c]));
     // Search rows don't say whether a chat is pinned, and the list leaves out pinned chats older than its month.
-    const pinned = res.results.some((r) => !listed.has(r.id)) ? await this.pinnedIds(profile) : new Set<string>();
-    const found = res.results
-      .filter((r) => (archived || !this.isArchived(profile, r)) && !this.deleted.has(profile, r.id) && !this.isBotChatRow(profile, r))
-      .map((r): Found => {
-        const snippet = snippetParts(r.snippet ?? "");
-        const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
-        return { ...this.toFound(r, listed.get(r.id), !pinned.has(r.id)), snippet, ...(role && { role, find: findTerm(q, snippet) }) };
-      });
-    return { found, capped: res.results.length >= limit };
+    const pinned = rows.some((r) => !listed.has(r.id)) ? await this.pinnedIds(profile) : new Set<string>();
+    const found = rows
+      .filter((r) => !this.leftOut(profile, r, archived))
+      .map((r): Found => ({ ...this.toFound(profile, r, listed.get(r.id), !pinned.has(r.id)), ...matchedWords(q, r) }));
+    return { found, capped: rows.length >= limit };
+  }
+
+  /**
+   * One profile's search, for Everywhere (everywhere.ts): any profile, shown or not, and any role, so a background
+   * connection answers it too (ADR 0191, amending ADR 0125). It is one dashboard GET: nothing goes in the list, no shown
+   * profile changes, and whether a chat is Settled isn't read, so a `Hit` says nothing of it. Archived chats, chats
+   * deleted here and Bot Chats are left out as `search` leaves them out; the Bot Chats' ids are known once
+   * `knownBotChats` has answered. Always asks for the most Hermes gives. `capped`: Hermes gave that many, so more
+   * chats may match.
+   */
+  async searchIn(profile: string, text: string): Promise<{ hits: Hit[]; capped: boolean }> {
+    const q = text.trim();
+    if (!q) return { hits: [], capped: false };
+    const rows = await this.searchRows(profile, q, FILTER_SEARCH_LIMIT);
+    const listed = profile === this.profile ? new Map(this.snapshot.chats.map((c) => [c.id, c])) : undefined;
+    const hits = rows.filter((r) => !this.leftOut(profile, r, false)).map((r): Hit => ({ ...this.toHit(profile, r, listed?.get(r.id)), ...matchedWords(q, r) }));
+    return { hits, capped: rows.length >= FILTER_SEARCH_LIMIT };
+  }
+
+  private async searchRows(profile: string, q: string, limit: number, sources?: Source[]): Promise<SearchRow[]> {
+    const query = new URLSearchParams({ q, profile, limit: String(limit), ...sourceQuery(sources) });
+    const res = (await this.rest("GET", `api/sessions/search?${query}`)) as { results?: SearchRow[] } | null;
+    if (!Array.isArray(res?.results)) throw new Error("Hermes's answer to the search wasn't a list of chats.");
+    return res.results;
+  }
+
+  private leftOut(profile: string, r: SearchRow, archived: boolean): boolean {
+    return (!archived && this.isArchived(profile, r)) || this.deleted.has(profile, r.id) || this.isBotChatRow(profile, r);
   }
 
   /**
@@ -2134,13 +2158,17 @@ export class Hermes {
       seen.add(r.id);
       const archivedNow = this.isArchived(profile, r);
       if (archived === "exclude" ? archivedNow : archived === "only" ? !archivedNow : false) return [];
-      return [{ ...this.toFound(r, listed.get(r.id), !r.pinned), snippet: [] }];
+      return [{ ...this.toFound(profile, r, listed.get(r.id), !r.pinned), snippet: [] }];
     });
     return { found, capped: more };
   }
 
   /** A row of a search or a list as a found chat; the list's own copy, when it has the chat, says what it is called and whether it is Settled. */
-  private toFound(r: SearchRow, c: Chat | undefined, settled: boolean): Omit<Found, "snippet"> {
+  private toFound(profile: string, r: SearchRow, c: Chat | undefined, settled: boolean): Omit<Found, "snippet"> {
+    return { ...this.toHit(profile, r, c), settled: c?.settled ?? settled };
+  }
+
+  private toHit(profile: string, r: SearchRow, c: Chat | undefined): Omit<Hit, "snippet"> {
     return {
       chatId: r.id,
       // The list's title, so a chat is called the same in both while the search index catches up with a rename.
@@ -2148,8 +2176,7 @@ export class Hermes {
       source: toSource(r.source, r.created_source),
       // A canonical local chat whose starting surface the row doesn't name can't be placed by source.
       ...(r.source === "local" && !localSurface(r.created_source) && { sourceUnknown: true }),
-      settled: c?.settled ?? settled,
-      ...(this.isArchived(this.profile, r) && { archived: true }),
+      ...(this.isArchived(profile, r) && { archived: true }),
       updatedAt: Math.max(c?.updatedAt ?? 0, lastActive(r)),
       ...(r.model && { model: r.model }),
     };
@@ -2170,7 +2197,7 @@ export class Hermes {
     }
     if (row?.id !== chatId) return null;
     const listed = profile === this.profile ? this.snapshot.chats.find((c) => c.id === chatId) : undefined;
-    return { ...this.toFound({ ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
+    return { ...this.toFound(profile, { ...row, archived: !!row.archived } as SearchRow, listed, !row.pinned), snippet: [] };
   }
 
   /**
@@ -2446,9 +2473,10 @@ export class Hermes {
   /**
    * Reads the roster once per connection, for the Bot Chats' ids, so search can leave them out before the Bots view
    * has ever opened, and so the view shows the bots and their pictures as soon as it opens. A Hermes without Bot Mode,
-   * or a read that fails, leaves only the title to go by.
+   * or a read that fails, leaves only the title to go by. A read in any role: Everywhere asks it of each connection
+   * before that connection's `searchIn`s.
    */
-  private knownBotChats(): Promise<void> {
+  knownBotChats(): Promise<void> {
     const gen = this.generation;
     if (this.capabilities.get("botMode").state === "unsupported") return Promise.resolve();
     if (this.botChatsRead?.gen !== gen) this.botChatsRead = { gen, done: this.bots().then(() => {}, () => {}) };
@@ -6126,6 +6154,12 @@ function snippetParts(snippet: string): Found["snippet"] {
     .replace(/\s+/g, " ")
     .split(/>>>(.*?)<<</)
     .flatMap((text, i) => (!text ? [] : i % 2 ? [{ text, hit: true }] : [{ text }]));
+}
+
+function matchedWords(q: string, r: SearchRow): Pick<Found, "snippet" | "role" | "find"> {
+  const snippet = snippetParts(r.snippet ?? "");
+  const role = r.role === "user" || r.role === "assistant" ? r.role : undefined;
+  return { snippet, ...(role && { role, find: findTerm(q, snippet) }) };
 }
 
 /**

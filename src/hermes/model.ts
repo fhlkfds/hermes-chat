@@ -422,3 +422,10 @@ export type Found = Pick<Chat, "title" | "source" | "settled" | "archived" | "up
   /** Hermes stored it as a local chat without saying which app started it, so it can't be matched by source. */
   sourceUnknown?: boolean;
 };
+
+/**
+ * A chat one profile's search found, as the search row alone tells it (`Hermes.searchIn`): no `settled`, which only a
+ * second read of the profile's pinned chats says. So it can't be put in a list or a pane as a `Found` can; opening one
+ * reads the chat itself, which does say.
+ */
+export type Hit = Omit<Found, "settled">;

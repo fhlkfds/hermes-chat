@@ -43,6 +43,7 @@ const NEW: Record<string, unknown> = {
   "GET api/profiles/default/soul": { content: "", exists: false },
   "GET api/profiles": { profiles: [{ name: "default", is_default: true }] },
   "GET api/skills": [],
+  "GET api/sessions/search": { results: [] },
   "GET api/files": { path: "/", entries: [] },
   "GET api/cron/jobs": [],
   "GET api/webhooks": { enabled: true, subscriptions: [] },
@@ -173,6 +174,7 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       subagents: "unknown",
       subagentRoster: "supported",
       modelUsage: "supported",
+      chatSearch: "supported",
       // Only answering an Approval can learn this.
       approvalAnswers: "unknown",
     });

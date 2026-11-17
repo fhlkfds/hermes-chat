@@ -96,6 +96,54 @@ describe("The live connections", () => {
     live.stop();
   });
 
+  it("hand a finished read's slot to the read that waited, so a read asked for as two others end never makes five", async () => {
+    const live = new LiveConnections();
+    let running = 0;
+    let most = 0;
+    const finish: (() => void)[] = [];
+    const read = () => {
+      running++;
+      most = Math.max(most, running);
+      return new Promise<void>((done) => finish.push(() => (running--, done())));
+    };
+    // Four run and two wait. The first to end has a caller that asks for one more as soon as it hears, as a
+    // connection's profile listing asks for its searches.
+    const asked = [live.readInTurn(read).then(() => live.readInTurn(read)), ...Array.from({ length: 5 }, () => live.readInTurn(read))];
+    await vi.advanceTimersByTimeAsync(0);
+    expect(running).toBe(BACKGROUND_READS_AT_ONCE);
+    finish.splice(0, 2).forEach((f) => f());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(most).toBe(BACKGROUND_READS_AT_ONCE);
+    for (let i = 0; i < 10; i++) {
+      finish.splice(0).forEach((f) => f());
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await Promise.all(asked);
+    expect(most).toBe(BACKGROUND_READS_AT_ONCE);
+    live.stop();
+  });
+
+  it("share the four slots between background reads and a read asked for in turn, which answers or fails as the read does", async () => {
+    const live = new LiveConnections();
+    live.add(fakeHermes().member(saved("t")), true);
+    const others = Array.from({ length: 2 }, () => fakeHermes());
+    others.forEach((o, i) => live.add(o.member(saved(`b${i}`)), false));
+    await expect(live.readInTurn(() => Promise.reject(new Error("Hermes said no")))).rejects.toThrow("Hermes said no");
+    const finish: (() => void)[] = [];
+    const held = Array.from({ length: 3 }, (_, i) => live.readInTurn(() => new Promise<number>((done) => finish.push(() => done(i)))));
+    const pollsRunning = () => others.reduce((n, o) => n + o.reads.running, 0);
+
+    await vi.advanceTimersByTimeAsync(BACKGROUND_UNREAD_MS);
+    expect(finish).toHaveLength(3);
+    expect(pollsRunning()).toBe(1);
+    finish[0]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await held[0]).toBe(0);
+    expect(pollsRunning()).toBe(2);
+
+    live.stop();
+  });
+
   it("count a background connection's work and give its entries keys that its server's id keeps apart", () => {
     const chat = (id: string, over = {}) => ({ id, title: "Deploy", source: "app", settled: false, updatedAt: 1, items: [], ...over });
     const approval = { kind: "approval", id: "q1", requestId: "apr-1", command: "rm", description: "", choices: ["once"], state: "waiting" };

@@ -53,7 +53,8 @@ export type CapabilityId =
   | "botMode"
   | "subagents"
   | "subagentRoster"
-  | "modelUsage";
+  | "modelUsage"
+  | "chatSearch";
 
 export type CapabilityState = "supported" | "unsupported" | "unknown" | "unreachable";
 
@@ -574,6 +575,17 @@ export const CAPABILITIES: readonly CapabilitySpec[] = [
     probe: { kind: "rest", path: (profile) => `api/analytics/models?${new URLSearchParams({ days: "1", profile })}`, maxBytes: 2 * 1024 * 1024, shape: (b) => isObj(b) && isList(b.models) },
     routes: [/^api\/analytics\/models$/],
   },
+  {
+    id: "chatSearch",
+    label: "Chat search",
+    usedBy: "Search (Ctrl+K), in the profile on screen and Everywhere",
+    needs: "GET /api/sessions/search.",
+    without: "Search in the profile on screen says it couldn't search, with Hermes's reason. Everywhere leaves this server's profiles out and says why.",
+    anchor: "chat-search",
+    // Hermes answers a blank `q` with no results before it reads its store, so the check searches nothing.
+    probe: { kind: "rest", path: (profile) => `api/sessions/search?${new URLSearchParams({ q: "", profile })}`, maxBytes: 64 * 1024, shape: (b) => isObj(b) && isList(b.results) },
+    routes: [/^api\/sessions\/search$/],
+  },
 ];
 
 const SPECS = new Map(CAPABILITIES.map((c) => [c.id, c]));
@@ -689,6 +701,7 @@ export function stateOfFailure(f: Failure): { state: CapabilityState; why: strin
   if (/over the \d+ MB limit/.test(f.reason)) return { state: "supported", why: "Hermes answered, with more than the check reads." };
   return { state: "unreachable", why: f.reason };
 }
+
 
 /**
  * Takes anything that looks like a secret out of text the owner may copy, by the rules every redacting surface shares

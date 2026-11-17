@@ -3378,6 +3378,8 @@ label.memory-pick { cursor: pointer; }
 .palette-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .palette-foot .btn { display: inline-flex; align-items: center; gap: 5px; font-size: calc(12.5rem / 14); }
 .hit-row.stale { opacity: 0.55; cursor: default; }
+.palette-scope { flex: none; }
+.hit-where { font-size: calc(12rem / 14); color: var(--faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hit-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .tag-label {
   display: inline-flex; align-items: center; gap: 4px; font-size: calc(12rem / 14); color: var(--text-2); background: var(--raised-3);
@@ -4464,7 +4466,7 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
   .run-row { grid-template-columns: 1fr 64px; }
   .run-track { grid-column: 1 / -1; grid-row: 2; }
 }
-/* Usage → Spending and Budgets (ADR 0026, ADR 0188) */
+/* Usage → Spending and Budgets (ADR 0026, ADR 0190) */
 .usage-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 4px 0 14px; }
 .usage-tab { padding: 6px 12px; border-radius: 7px 7px 0 0; color: var(--muted); border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; }
 .usage-tab:hover { color: var(--text); }

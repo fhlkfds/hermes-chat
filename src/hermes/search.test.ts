@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHermes, row } from "./fakeHermes";
-import { connect } from "./transport";
+import { BOT_CHAT_TITLE } from "./bots";
+import { BackgroundRefused, connect } from "./transport";
 import { RestError } from "./pipe";
 
 /** Signed in with one Active chat, one Settled chat and one chat settled two months ago, below the list. */
@@ -75,6 +76,50 @@ describe("Searching all chats", () => {
     const { server, hermes } = await signedIn();
     expect(await hermes.search("  ")).toEqual([]);
     expect(searches(server)).toEqual([]);
+  });
+});
+
+describe("Searching one profile for Everywhere", () => {
+  it("answers on a background connection for a profile not on screen, with one request and nothing put in its list", async () => {
+    const { server, hermes } = await signedIn();
+    server.otherProfiles = { work: [row("w1", 1, { title: "Deploy", model: "sonnet-5" })] };
+    server.transcripts.w1 = [{ role: "user", text: "Ship the backup script" }];
+    hermes.setRole("background");
+    const listed = hermes.getSnapshot().chats;
+    const sent = server.restRequests.length;
+
+    const { hits, capped } = await hermes.searchIn("work", " backup ");
+
+    expect(server.restRequests.slice(sent).map((r) => [r.path, Object.fromEntries(r.query)])).toEqual([
+      ["/api/sessions/search", { q: "backup", profile: "work", limit: "100", exclude_sources: "cron" }],
+    ]);
+    expect(hits).toEqual([
+      { chatId: "w1", title: "Deploy", source: "app", updatedAt: expect.any(Number), model: "sonnet-5", role: "user", find: "backup", snippet: [{ text: "Ship the " }, { text: "backup", hit: true }, { text: " script" }] },
+    ]);
+    expect(capped).toBe(false);
+    expect(hermes.getSnapshot().chats).toBe(listed);
+    expect(hermes.getSnapshot().profile).toBe("default");
+    await expect(hermes.search("backup")).rejects.toBeInstanceOf(BackgroundRefused);
+  });
+
+  it("leaves out archived chats and Bot Chats, and says when Hermes gave as many chats as it gives", async () => {
+    const { server, hermes } = await signedIn();
+    server.sessions.push(row("gone", 2, { archived: true, title: "Archived backup" }), row("bot", 2, { title: BOT_CHAT_TITLE }));
+    server.transcripts.gone = [{ role: "user", text: "backup the archive" }];
+    server.transcripts.bot = [{ role: "user", text: "backup, bot" }];
+    expect((await hermes.searchIn("default", "backup")).hits.map((h) => h.chatId)).toEqual(["backup", "nas"]);
+
+    server.otherProfiles = { work: Array.from({ length: 101 }, (_, i) => row(`w${i}`, 1, { title: `Backup run ${i}` })) };
+    const full = await hermes.searchIn("work", "backup");
+    expect([full.hits.length, full.capped]).toEqual([100, true]);
+  });
+
+  it("fails with Hermes's reason for a profile it doesn't have, and searches nothing for a blank query", async () => {
+    const { server, hermes } = await signedIn();
+    await expect(hermes.searchIn("nope", "backup")).rejects.toThrow(/nope/);
+    const sent = searches(server).length;
+    expect(await hermes.searchIn("default", "  ")).toEqual({ hits: [], capped: false });
+    expect(searches(server)).toHaveLength(sent);
   });
 });
 

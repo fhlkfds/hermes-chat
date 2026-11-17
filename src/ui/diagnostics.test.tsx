@@ -63,6 +63,7 @@ const NEW = {
   "GET api/profiles/default/soul": {},
   "GET api/profiles": { profiles: [] },
   "GET api/skills": [],
+  "GET api/sessions/search": { results: [] },
   "GET api/files": {},
   "GET api/cron/jobs": [],
   "GET api/webhooks": { subscriptions: [] },

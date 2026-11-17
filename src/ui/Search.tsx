@@ -1,11 +1,14 @@
 // Search across every chat in the profile from the Ctrl+K palette, with filters for Tag, Source, model, last activity
 // and state (chatFilter.ts, ADR 0106). Words go to Hermes's own search; filters without words list the profile's chats
 // from Hermes. A filter can be saved by name, and its results tagged in bulk once the owner has seen what would change.
+// Its Everywhere scope searches the words in every profile of every live connection instead (everywhere.ts, ADR
+// 0191), with the filters that mean something across profiles: the bot, the model and the dates.
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ListFilter, Search, Tag as TagIcon, X } from "lucide-react";
 import { STATE_LABEL, isEmptyFilter, tidyFilter, type ChatFilter, type ChatState, type FilterOutcome } from "../hermes/chatFilter";
 import { policyOf } from "../hermes/chatKind";
-import { SOURCE_LABEL, type Found, type Source } from "../hermes/model";
+import type { EverywhereFilter, EverywhereOutcome, EverywhereRow } from "../hermes/everywhere";
+import { SOURCE_LABEL, type Found, type Hit, type Source } from "../hermes/model";
 import { previewBulk, type BulkPreview, type ScopeTags } from "../hermes/tags";
 import { SourceIcon, Spinner, highlight, useReturnFocus } from "./bits";
 import { useLocale } from "../i18n/locale";
@@ -32,6 +35,40 @@ function filterParts(f: ChatFilter, tags: ScopeTags): { key: string; label: stri
   ];
 }
 
+const noModelNote = (n: number) =>
+  `Hermes didn't record a model for ${n} chat${n === 1 ? "" : "s"} that matched everything else, so the model filter left ${n === 1 ? "it" : "them"} out.`;
+
+const listed = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+
+type Scope = "profile" | "everywhere";
+
+type ShownRow = { key: string; hit: Hit; badge?: string; where?: string; open: () => void };
+
+/**
+ * Why an Everywhere search's rows may not be every chat that matches: a bot that gave as many chats as Hermes gives,
+ * checks made here after that, and each server or bot that wasn't searched, with why.
+ */
+function everywhereNotes(o: EverywhereOutcome, f: EverywhereFilter): string[] {
+  const asked = o.connections.flatMap((c) => (c.outcome.kind === "listed" ? c.outcome.profiles.map((p) => ({ ...p, server: c.server })) : []));
+  const capped = asked.filter((p) => p.outcome.kind === "searched" && p.outcome.capped).map((p) => `${p.profile} on ${p.server}`);
+  const anyListed = o.connections.some((c) => c.outcome.kind === "listed");
+  return [
+    capped.length > 0 &&
+      `Hermes's search gives its best matches only, at most 100 chats per bot. ${listed(capped)} hit that, so more chats may match there: add words to narrow the search.`,
+    !!(f.model || f.from || f.to) && "The model and the dates are checked here, after Hermes has picked its best 100 chats for each bot. Chats past those 100 aren't checked.",
+    o.noModel > 0 && noModelNote(o.noModel),
+    !!f.bot && anyListed && asked.length === 0 && `No bot's name holds "${f.bot}", so nothing was searched.`,
+    ...o.connections.map(({ server, outcome }) =>
+      outcome.kind === "refused"
+        ? `${server} wasn't searched, so none of its bots is here. ${outcome.why}`
+        : outcome.kind === "offline"
+          ? `${server} isn't connected, so it wasn't searched.`
+          : outcome.kind === "failed" && `Couldn't list ${server}'s bots: ${outcome.why}`,
+    ),
+    ...asked.map((p) => p.outcome.kind === "failed" && `Couldn't search ${p.profile} on ${p.server}: ${p.outcome.why}`),
+  ].filter((n): n is string => !!n);
+}
+
 /** Why the results may not be every chat that matches, or why none can. */
 function outcomeNotes(o: FilterOutcome): string[] {
   return [
@@ -39,8 +76,7 @@ function outcomeNotes(o: FilterOutcome): string[] {
     o.capped === "search" &&
       `Hermes's search gives its ${o.found.length ? "best matches" : "matches"} only, at most 100 chats, before these filters are checked here. More chats may match: add words to narrow the search.`,
     o.capped === "list" && "Only the 2,000 most recent chats were checked. Older ones may match too.",
-    o.noModel > 0 &&
-      `Hermes didn't record a model for ${o.noModel} chat${o.noModel === 1 ? "" : "s"} that matched everything else, so the model filter left ${o.noModel === 1 ? "it" : "them"} out.`,
+    o.noModel > 0 && noModelNote(o.noModel),
     o.noSource > 0 &&
       `Hermes stored ${o.noSource} chat${o.noSource === 1 ? "" : "s"} that matched everything else as local, without saying which app started ${o.noSource === 1 ? "it" : "them"}, so the source filter left ${o.noSource === 1 ? "it" : "them"} out.`,
   ].filter((n): n is string => !!n);
@@ -58,6 +94,7 @@ export function SearchPalette({
   onBulk,
   onManageTags,
   passKey = () => false,
+  everywhere,
 }: {
   profile: string;
   tags: ScopeTags;
@@ -74,6 +111,14 @@ export function SearchPalette({
   onManageTags: () => void;
   /** The app's shortcuts that still work over the palette, such as Ctrl+K, which closes it. */
   passKey?: (e: KeyboardEvent) => boolean;
+  /**
+   * The search across every profile of every live connection (everywhere.ts): `run` reports the outcome so far as each
+   * bot answers, and stops when `signal` aborts. None: the palette has no scope switch.
+   */
+  everywhere?: {
+    run: (f: EverywhereFilter, signal: AbortSignal, onUpdate: (o: EverywhereOutcome) => void) => Promise<EverywhereOutcome>;
+    onPick: (row: EverywhereRow) => void;
+  };
 }) {
   const l = useLocale();
   const [filter, setFilter] = useState<ChatFilter>(initial ?? {});
@@ -84,8 +129,14 @@ export function SearchPalette({
   // The results and the filter they answer, so a slow answer to an older one is never shown.
   // The results, and the filter and tags they answer, so an answer to an older search is never acted on.
   const [results, setResults] = useState<{ key: string; tags?: ScopeTags | null; text?: string; outcome?: FilterOutcome }>({ key: "{}" });
+  const [scope, setScope] = useState<Scope>("profile");
+  const [bot, setBot] = useState("");
+  const farFilter: EverywhereFilter = { text: tidy.text ?? "", ...(bot.trim() && { bot: bot.trim() }), ...(tidy.model && { model: tidy.model }), ...(tidy.from && { from: tidy.from }), ...(tidy.to && { to: tidy.to }) };
+  const farKey = JSON.stringify(farFilter);
+  const [far, setFar] = useState<{ key: string; filter?: EverywhereFilter; outcome?: EverywhereOutcome }>({ key: "" });
   const [error, setError] = useState<string>();
-  const [sel, setSel] = useState(0);
+  // The selected row by its key, not its place, so rows that land above it don't move it. None: the first row.
+  const [selKey, setSelKey] = useState<string>();
   const [panel, setPanel] = useState<"save" | "bulk">();
   const [note, setNote] = useState<string>();
   const filtersId = useId();
@@ -101,6 +152,7 @@ export function SearchPalette({
   const tagDep = tidy.tags ? tags : null;
 
   useEffect(() => {
+    if (scope !== "profile") return;
     setError(undefined);
     if (isEmptyFilter(tidy)) {
       setResults({ key });
@@ -109,7 +161,7 @@ export function SearchPalette({
     let current = true;
     const timer = setTimeout(() => {
       onRun(tidy).then(
-        (outcome) => current && (setResults({ key, tags: tagDep, text: tidy.text, outcome }), setSel(0)),
+        (outcome) => current && (setResults({ key, tags: tagDep, text: tidy.text, outcome }), setSelKey(undefined)),
         (e) => current && setError(`Couldn't search: ${errorText(e)}`),
       );
     }, PAUSE_MS);
@@ -117,24 +169,53 @@ export function SearchPalette({
       current = false;
       clearTimeout(timer);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- search again only when the filter (by its `key`) or the tags it names change; `tidy` and `onRun` are new every render, so listing them would restart the search on every render
-  }, [key, tagDep]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- search again only when the scope, the filter (by its `key`) or the tags it names change; `tidy` and `onRun` are new every render, so listing them would restart the search on every render
+  }, [scope, key, tagDep]);
+  useEffect(() => {
+    if (scope !== "everywhere" || !everywhere) return;
+    setError(undefined);
+    if (!farFilter.text) return;
+    const stop = new AbortController();
+    const show = (outcome: EverywhereOutcome) => void (stop.signal.aborted || setFar({ key: farKey, filter: farFilter, outcome }));
+    const timer = setTimeout(() => {
+      setSelKey(undefined);
+      everywhere.run(farFilter, stop.signal, show).then(show, (e) => stop.signal.aborted || setError(`Couldn't search: ${errorText(e)}`));
+    }, PAUSE_MS);
+    return () => {
+      clearTimeout(timer);
+      stop.abort();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- search again only when the scope or what Everywhere looks for (by its `farKey`) changes; `farFilter` and `everywhere` are new every render
+  }, [scope, farKey]);
   // A bulk edit is for the results it previewed: a new filter, or a change to the tags it filters by, ends it,
   // applying nothing. Either searches again, so a failed search has ended it too.
   useEffect(() => setPanel((p) => (p === "bulk" ? undefined : p)), [key, tagDep]);
 
-  const empty = isEmptyFilter(tidy);
+  const wide = scope === "everywhere";
+  const empty = wide ? !farFilter.text : isEmptyFilter(tidy);
   const outcome = results.key === key && results.tags === tagDep ? results.outcome : undefined;
-  const shownOutcome = error ? undefined : results.outcome;
+  const shownOutcome = error || wide ? undefined : results.outcome;
   const found = shownOutcome?.found ?? [];
+  const farOutcome = far.key === farKey ? far.outcome : undefined;
+  const shownFar = error || !wide || empty ? undefined : far.outcome;
   // Results for an earlier filter stay on screen until the new ones come, but can't be opened or tagged.
-  const stale = !outcome;
-  const searching = !empty && !outcome && !error;
-  const parts = filterParts(tidy, tags);
+  const stale = wide ? !farOutcome : !outcome;
+  const searching = !empty && !error && (wide ? !farOutcome?.done : !outcome);
+  const badgeOf = (f: Found) => (f.archived ? "Archived" : policyOf(f).readOnly === "jobRun" ? "Job run" : f.settled ? "Settled" : undefined);
+  const rows: ShownRow[] = shownFar
+    ? shownFar.rows.map((r) => ({ key: `${r.ref.connection}\n${r.ref.profile}\n${r.ref.chatId}`, hit: r.hit, where: `${r.server} · ${r.ref.profile}`, open: () => everywhere?.onPick(r) }))
+    : found.map((f) => ({ key: f.chatId, hit: f, badge: badgeOf(f), open: () => onPick(f) }));
+  const sel = Math.max(0, rows.findIndex((r) => r.key === selKey));
+  const matched = (wide ? far.filter?.text : results.text) ?? "";
+  const notes = shownFar && far.filter ? everywhereNotes(shownFar, far.filter) : shownOutcome ? outcomeNotes(shownOutcome) : [];
   const set = (patch: Partial<ChatFilter>) => {
     setNote(undefined);
     setFilter((f) => ({ ...f, ...patch }));
   };
+  const parts = [
+    ...(wide && farFilter.bot ? [{ key: "bot", label: `Bot: ${farFilter.bot}`, clear: () => setBot("") }] : []),
+    ...filterParts(wide ? { model: tidy.model, from: tidy.from, to: tidy.to } : tidy, tags).map((p) => ({ ...p, clear: () => set(p.clear) })),
+  ];
 
   return (
     <div className="palette-scrim" onMouseDown={onClose}>
@@ -163,7 +244,7 @@ export function SearchPalette({
           <input
             ref={input}
             autoFocus
-            placeholder="Search all chats, including Settled"
+            placeholder={wide ? "Search every bot on every connected server" : "Search all chats, including Settled"}
             aria-label="Words to search for"
             value={filter.text ?? ""}
             onChange={(e) => set({ text: e.target.value })}
@@ -171,16 +252,30 @@ export function SearchPalette({
               const command = pick(e, "palette");
               if (command === "paletteDown") {
                 e.preventDefault();
-                setSel((s) => Math.min(s + 1, found.length - 1));
+                setSelKey(rows[Math.min(sel + 1, rows.length - 1)]?.key);
               } else if (command === "paletteUp") {
                 e.preventDefault();
-                setSel((s) => Math.max(s - 1, 0));
-              } else if (command === "paletteOpen" && !stale && found[sel]) {
+                setSelKey(rows[Math.max(sel - 1, 0)]?.key);
+              } else if (command === "paletteOpen" && !stale && rows[sel]) {
                 e.preventDefault();
-                onPick(found[sel]);
+                rows[sel].open();
               }
             }}
           />
+          {everywhere && (
+            <div className="segmented palette-scope" role="group" aria-label="Where to search">
+              <button aria-pressed={!wide} title={`Search the ${profile} profile on this server`} onClick={() => (setScope("profile"), input.current?.focus())}>
+                This profile
+              </button>
+              <button
+                aria-pressed={wide}
+                title="Search every bot on every connected server"
+                onClick={() => (setPanel(undefined), setNote(undefined), setScope("everywhere"), input.current?.focus())}
+              >
+                Everywhere
+              </button>
+            </div>
+          )}
           <button
             className={`palette-filters-btn ${parts.length ? "on" : ""}`}
             aria-expanded={filtersOpen}
@@ -191,22 +286,31 @@ export function SearchPalette({
           </button>
           <kbd>{chordLabel(keys.paletteClose[0])}</kbd>
         </div>
-        {filtersOpen && <FilterBar id={filtersId} filter={filter} tags={tags} onChange={set} onManageTags={onManageTags} />}
+        {filtersOpen && <FilterBar id={filtersId} filter={filter} tags={tags} onChange={set} onManageTags={onManageTags} bot={wide ? { value: bot, onChange: setBot } : undefined} />}
         {parts.length > 0 && (
           <div className="filter-chips" role="group" aria-label="Active filters">
-            <span className="filter-scope" title="Filters apply to the profile on screen only">
-              In {profile}
-              {initialName && JSON.stringify(tidyFilter(initial ?? {})) === key ? `, saved as "${initialName}"` : ""}:
-            </span>
+            {wide ? (
+              <span className="filter-scope" title="These filters apply to every profile searched">
+                Everywhere:
+              </span>
+            ) : (
+              <span className="filter-scope" title="Filters apply to the profile on screen only">
+                In {profile}
+                {initialName && JSON.stringify(tidyFilter(initial ?? {})) === key ? `, saved as "${initialName}"` : ""}:
+              </span>
+            )}
             {parts.map((p) => (
               <span key={p.key} className="chip filter-chip">
                 <span className="chip-name">{p.label}</span>
-                <button aria-label={`Remove filter ${p.label}`} title="Remove this filter" onClick={() => set(p.clear)}>
+                <button aria-label={`Remove filter ${p.label}`} title="Remove this filter" onClick={p.clear}>
                   <X size={12} aria-hidden />
                 </button>
               </span>
             ))}
-            <button className="link-btn" onClick={() => set({ tags: undefined, sources: undefined, model: undefined, from: undefined, to: undefined, state: undefined })}>
+            <button
+              className="link-btn"
+              onClick={() => (wide ? (setBot(""), set({ model: undefined, from: undefined, to: undefined })) : set({ tags: undefined, sources: undefined, model: undefined, from: undefined, to: undefined, state: undefined }))}
+            >
               Clear filters
             </button>
           </div>
@@ -240,7 +344,7 @@ export function SearchPalette({
             {note}
           </div>
         )}
-        {shownOutcome && !error && outcomeNotes(shownOutcome).map((n) => (
+        {notes.map((n) => (
           <div key={n} className="palette-note" role="note">
             {n}
           </div>
@@ -251,29 +355,40 @@ export function SearchPalette({
               {error}
             </div>
           )}
-          {!error && empty && <div className="palette-empty">Search the words and titles of every chat, or pick filters</div>}
-          {!error && !empty && outcome && found.length === 0 && !outcome.missingTags.length && (
+          {!error && empty && (
+            <div className="palette-empty">
+              {wide ? "Type words to search every bot's chats on every connected server. Filters alone search nothing here." : "Search the words and titles of every chat, or pick filters"}
+            </div>
+          )}
+          {!error && !empty && !wide && outcome && found.length === 0 && !outcome.missingTags.length && (
             <div className="palette-empty">{parts.length ? "No chats match these filters" : "No matches"}</div>
           )}
-          {found.map((f, i) => (
+          {!error && !empty && wide && farOutcome?.done && rows.length === 0 && <div className="palette-empty">{parts.length ? "No chats match these filters" : "No matches"}</div>}
+          {rows.map(({ key: rowKey, hit, badge, where, open }, i) => (
             <button
-              key={f.chatId}
+              key={rowKey}
               className={`hit-row ${i === sel ? "sel" : ""} ${stale ? "stale" : ""}`}
               aria-disabled={stale || undefined}
               ref={(el) => void (i === sel && el?.scrollIntoView?.({ block: "nearest" }))}
-              onMouseEnter={() => setSel(i)}
-              onClick={() => !stale && onPick(f)}
+              onMouseEnter={() => setSelKey(rowKey)}
+              onClick={() => !stale && open()}
             >
               <div className="hit-title">
-                <SourceIcon source={f.source} />
-                <span className="hit-name">{highlight(f.title, results.text ?? "", "hl")}</span>
-                {f.archived ? <span className="badge">Archived</span> : policyOf(f).readOnly === "jobRun" ? <span className="badge">Job run</span> : f.settled && <span className="badge">Settled</span>}
-                <span className="hit-time">{l.fmt.age(f.updatedAt)}</span>
+                <SourceIcon source={hit.source} />
+                <span className="hit-name">{highlight(hit.title, matched, "hl")}</span>
+                {badge && <span className="badge">{badge}</span>}
+                <span className="hit-time">{l.fmt.age(hit.updatedAt)}</span>
               </div>
-              <HitTags tags={tags} chatId={f.chatId} model={tidy.model || tidy.text ? f.model : undefined} />
-              {f.snippet.length > 0 && (
+              {where && (
+                <div className="hit-where">
+                  <span className="sr-only">On </span>
+                  {where}
+                </div>
+              )}
+              <HitTags tags={wide ? NO_TAGS : tags} chatId={hit.chatId} model={tidy.model || tidy.text ? hit.model : undefined} />
+              {hit.snippet.length > 0 && (
                 <div className="hit-snippet">
-                  {f.snippet.map((p, j) =>
+                  {hit.snippet.map((p, j) =>
                     p.hit ? (
                       <mark key={j} className="hl">
                         {p.text}
@@ -287,7 +402,7 @@ export function SearchPalette({
             </button>
           ))}
         </div>
-        {!empty && !panel && (
+        {!empty && !panel && !wide && (
           <div className="palette-foot">
             <button className="btn" onClick={() => (setNote(undefined), setPanel("save"))}>
               Save filter…
@@ -301,6 +416,9 @@ export function SearchPalette({
     </div>
   );
 }
+
+/** Everywhere's rows show no Tags: they are kept per connection and profile (ADR 0106), and its rows come from many. */
+const NO_TAGS: ScopeTags = { tags: [], chats: {}, filters: [] };
 
 /** A chat's tags, by name, and its model when the filter is about models. */
 function HitTags({ tags, chatId, model }: { tags: ScopeTags; chatId: string; model?: string }) {
@@ -326,12 +444,15 @@ function FilterBar({
   tags,
   onChange,
   onManageTags,
+  bot,
 }: {
   id: string;
   filter: ChatFilter;
   tags: ScopeTags;
   onChange: (patch: Partial<ChatFilter>) => void;
   onManageTags: () => void;
+  /** Everywhere's bot filter. Given, the bar shows only what Everywhere applies: the bot, the model and the dates. */
+  bot?: { value: string; onChange: (bot: string) => void };
 }) {
   const unpicked = tags.tags.filter((t) => !filter.tags?.includes(t.id));
   const field = (label: string, control: ReactNode) => (
@@ -340,6 +461,18 @@ function FilterBar({
       {control}
     </label>
   );
+  const model = field("Model", <input spellCheck={false} type="text" placeholder="Any" value={filter.model ?? ""} onChange={(e) => onChange({ model: e.target.value })} />);
+  const from = field("Active from", <input type="date" value={filter.from ?? ""} max={filter.to} onChange={(e) => onChange({ from: e.target.value || undefined })} />);
+  const until = field("Until", <input type="date" value={filter.to ?? ""} min={filter.from} onChange={(e) => onChange({ to: e.target.value || undefined })} />);
+  if (bot)
+    return (
+      <div className="filter-bar" id={id} role="group" aria-label="Filters">
+        {field("Bot", <input spellCheck={false} type="text" placeholder="Any" title="Only profiles whose name holds this are searched" value={bot.value} onChange={(e) => bot.onChange(e.target.value)} />)}
+        {model}
+        {from}
+        {until}
+      </div>
+    );
   return (
     <div className="filter-bar" id={id} role="group" aria-label="Filters">
       {field(
@@ -367,9 +500,9 @@ function FilterBar({
           ))}
         </select>,
       )}
-      {field("Model", <input spellCheck={false} type="text" placeholder="Any" value={filter.model ?? ""} onChange={(e) => onChange({ model: e.target.value })} />)}
-      {field("Active from", <input type="date" value={filter.from ?? ""} max={filter.to} onChange={(e) => onChange({ from: e.target.value || undefined })} />)}
-      {field("Until", <input type="date" value={filter.to ?? ""} min={filter.from} onChange={(e) => onChange({ to: e.target.value || undefined })} />)}
+      {model}
+      {from}
+      {until}
       {field(
         "State",
         <select value={filter.state ?? ""} onChange={(e) => onChange({ state: (e.target.value || undefined) as ChatState | undefined })}>

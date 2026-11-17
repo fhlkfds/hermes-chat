@@ -168,7 +168,7 @@ The Live connection the owner works in: the composer, voice, Server files, Setti
 _Avoid_: current connection, active server
 
 **Background connection**:
-A Live connection that isn't the Composer target. It keeps its socket and the chats it held, shows their Approvals with its server's name in the Inbox and in notifications, and reads what runs and waits on its server every minute. It never sends, starts, branches, searches or drains a queue, and answers no server request it doesn't show (ADR 0125).
+A Live connection that isn't the Composer target. It keeps its socket and the chats it held, shows their Approvals with its server's name in the Inbox and in notifications, and reads what runs and waits on its server every minute. It never sends, starts, branches or drains a queue, runs no search of its own, and answers no server request it doesn't show (ADR 0125). It does answer Everywhere's read of one of its profiles (ADR 0191).
 _Avoid_: watched connection, idle connection (one that isn't live)
 
 **Chat reference** (`ChatRef`):
@@ -198,6 +198,10 @@ _Avoid_: label (in the app), category, folder, project
 **Chat filter**:
 What the search palette narrows the profile's chats by: words, Tags, Source, model, when the chat was last active, and whether it is Active, Settled or Archived. A chat must match every part. Hermes searches the words and lists the chats; the rest is checked on what Hermes answered, and the results say when more chats may match. Job-run chats are found only when the Source asked for is Scheduled jobs. Applying a filter changes no chat (ADR 0106, ADR 0184).
 _Avoid_: query, view
+
+**Everywhere**:
+The search palette's scope that looks for the words in every profile of every Live connection, the Background connections too, where **This profile** looks in the profile on screen. Each row names its server, its bot and the chat. Hermes searches one profile for each request and gives at most 100 chats, so each profile is asked once, a search has at most four of its requests in flight across the connections, and a profile that gave 100 says more may match. Its filters are Bot, which decides which profiles are asked, and the model and dates, checked on what Hermes answered. A server whose Hermes has no chat search is left out, with why. Opening a row makes its connection the Composer target, switches to its profile, asking first as a chat link does, and goes to the words it matched. Searching changes nothing: no list, no shown profile, no target (ADR 0191).
+_Avoid_: global search, all servers (it covers the live ones only), cross-profile search
 
 **Saved filter**:
 A Chat filter the owner named, listed in its own section of the chat list and opened again from there. It is a search, not a group: unlike a Project, it puts no chat anywhere. Kept on this computer only, for each connection and profile (ADR 0106).
@@ -454,7 +458,7 @@ The rail's Usage screen: the Usage and Cost Hermes stored for each chat started 
 _Avoid_: dashboard, stats, report, billing
 
 **Budget**:
-A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0188).
+A limit on what Hermes records for a server, a profile, a project or a model per day, week or month, in dollars or tokens, kept on this computer per connection. Usage → Budgets shows what each has spent, where it is heading at the pace so far, and the chats behind it, and the app says when it reaches 50, 80 and 100%, while it runs and is connected. A model budget counts the last 24 hours, 7 days or 30 days, as Hermes's per-model sums do. A budget warns; it stops nothing (ADR 0190).
 _Avoid_: quota, cap, spending limit (Hermes enforces none)
 
 **Context window**:

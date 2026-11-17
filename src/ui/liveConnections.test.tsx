@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 // Several live connections in the whole App (ADR 0125, issue #99). Three FakeHermes servers use the same profile name,
-// the same chat id and the same Approval request id, so nothing can be told apart by those alone. The Rust side routes
-// each command by the attempt that opened its connection, as `Slots` does, and refuses past the owner's limit.
+// the same chat id and the same Approval request id, so nothing can be told apart by those alone. The Rust side is the
+// stand-in every whole-App test of live connections shares (liveRust.ts).
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
-import type { Pipe, PipeEvent } from "../hermes/pipe";
+import type { PipeEvent } from "../hermes/pipe";
 import { connectionRefs, formatChatLink } from "../hermes/chatLinks";
 import { linkInbox } from "../hermes/tauriLinks";
+import { liveRust } from "./liveRust";
 
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 /** Rust's events by name, so the test can pick the tray's Open Inbox. */
@@ -22,83 +23,14 @@ const BRAVO = "https://bravo.example.com";
 const CHARLIE = "https://charlie.example.com";
 const servers: Record<string, FakeHermes> = { [ALPHA]: new FakeHermes(), [BRAVO]: new FakeHermes(), [CHARLIE]: new FakeHermes() };
 const passwords: Record<string, string> = { [ALPHA]: "alpha-pass", [BRAVO]: "bravo-pass", [CHARLIE]: "charlie-pass" };
-const keyring = new Map<string, string>();
-/** Every sign-in Rust was asked for: where to, with which password, under which saved connection. */
-const connects: { url: string; password: string; saved: string }[] = [];
-/** The connections Rust holds, by the attempt that opened each. */
-const held = new Map<string, { url: string; saved: string; pipe: Pipe }>();
-const notices: { title: string; body: string; tag?: string; deny?: boolean }[] = [];
-/** A sign-in that waits until the test lets it go, by URL. */
-const held_back: Record<string, Promise<void>> = {};
-/** What the tray was told needs the owner, in order. */
-const trayCounts: number[] = [];
-
-const holding = (attempt: unknown) => {
-  const h = held.get(attempt as string);
-  if (!h) throw "The connection is closed.";
-  return h.pipe;
-};
+const rust = liveRust(servers, passwords);
+const { keyring, connects, held, notices, heldBack: held_back, trayCounts } = rust;
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage?: (e: PipeEvent) => void;
   },
-  invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
-    const slot = `${cmd.split("_")[0]}:${(args.connection as string | null) ?? "legacy"}`;
-    switch (cmd) {
-      case "hermes_connect": {
-        const url = (args.target as { url: string }).url;
-        const saved = args.savedConnection as string;
-        const { password } = args.credential as { password: string };
-        await held_back[url];
-        const limit = (args.liveLimit as number | null) ?? 1;
-        // src-tauri live.rs `Slots::evict_for`.
-        const others = [...held.entries()].filter(([, h]) => h.saved !== saved);
-        if (limit > 1 && others.length >= limit) throw `Highwing already has ${limit} connections open, the most it keeps open. Disconnect one first.`;
-        for (const [a, h] of held) if (limit <= 1 || h.saved === saved) (held.delete(a), h.pipe.close());
-        connects.push({ url, password, saved });
-        if (passwords[url] !== password) throw "Wrong username or password.";
-        const channel = args.onEvent as { onmessage: (e: PipeEvent) => void };
-        const pipe = await servers[url].openPipe((e) => channel.onmessage(e), args.profile as string);
-        held.set(args.attempt as string, { url, saved, pipe });
-        return { kind: "url", url, addresses: [] };
-      }
-      case "hermes_probe": {
-        const url = (args.target as { url: string }).url;
-        if (passwords[url] !== (args.credential as { password: string }).password) throw { stage: "sign-in", message: "Wrong username or password." };
-        return {
-          route: { kind: "url", url, addresses: [] },
-          status: '{"version":"0.22.5","auth_required":true,"auth_providers":["basic"]}',
-          ready: JSON.stringify({ jsonrpc: "2.0", method: "event", params: { type: "gateway.ready", payload: servers[url].readyPayload } }),
-        };
-      }
-      case "hermes_send":
-        return holding(args.attempt).send(args.frame as string);
-      case "hermes_request":
-        return holding(args.attempt).request(args.method as "GET", args.path as string, args.body as string | undefined);
-      case "hermes_disconnect": {
-        const h = held.get(args.attempt as string);
-        held.delete(args.attempt as string);
-        return h?.pipe.close();
-      }
-      case "tray_inbox":
-        return void trayCounts.push(args.count as number);
-      case "notify_desktop":
-        return void notices.push(args as (typeof notices)[number]);
-      case "password_load":
-      case "headers_load":
-        return keyring.get(slot) ?? null;
-      case "password_save":
-        return void keyring.set(slot, args.password as string);
-      case "headers_save":
-        return void keyring.set(slot, args.headers as string);
-      case "password_delete":
-      case "headers_delete":
-        return void keyring.delete(slot);
-      default:
-        return undefined;
-    }
-  },
+  invoke: (cmd: string, args?: Record<string, unknown>) => rust.invoke(cmd, args),
 }));
 
 beforeAll(() => {

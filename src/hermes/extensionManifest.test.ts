@@ -178,6 +178,7 @@ describe("parseManifest", () => {
         "subagents",
         "subagentRoster",
         "modelUsage",
+        "chatSearch",
       ]);
     });
   });

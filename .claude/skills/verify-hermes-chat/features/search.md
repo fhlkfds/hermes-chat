@@ -31,6 +31,17 @@ Preconditions:
 - **Rail and list entries.** Run `$S/wd.mjs click button "Search all chats (Ctrl+K)"` and, after Escape, `$S/wd.mjs click button "Search chatsCtrl K"`. Each opens the same dialog.
 - **Proof.** Keep the hit shot and the opened chat's shot. `bridge.log` shows `GET /api/sessions/search`.
 
+## Everywhere (issue #608)
+
+The scope switch **This profile** / **Everywhere** beside the words searches every profile of every live connection. Rows name `server · bot` in `.hit-where`. Proof needs two live connections, so this recipe runs a second stand-in by hand.
+
+- **Two servers.** Start `hv up` with `HV_EVERYWHERE=1 HV_LIST=120`: `default` holds 120 extra chats that all say "Nothing", `work` holds "Offsite copy" and a third profile `ops` holds "Snapshot schedule", both about the backup. Bundle a second stand-in with `npx rolldown "$S/bridge.ts" --platform node -o <dir>/bridge.mjs` (the entry path must be absolute), start it with `setsid node <dir>/bridge.mjs <free port> <dir>/state.json &` and keep its PID: `hv down` doesn't stop it. Sign in to the first as `Alpha` (see [sign-in.md](sign-in.md), filling `input "Name"` after the route test), then in Settings set `select "Live at once"` to 2, **Add connection** and sign in to the second as `Bravo`. Bravo becomes the target and the rail reads "1 more live".
+- **Merged rows.** `Control+k`, `click button Everywhere`, `keys backup`, then `wait .hit-where "Alpha · ops"`. Four rows: Bravo · default, Alpha · default, Alpha · work and Alpha · ops, each with its snippet.
+- **Cap.** `fill input "Words to search for" -- nothing`, then `wait .palette-note "hit that"`: 100 rows and "default on Alpha hit that, so more chats may match there".
+- **Filters.** `click button Filters` shows only Bot, Model, Active from and Until. A model in `input Model` adds the note "The model and the dates are checked here, after Hermes has picked its best 100 chats for each bot".
+- **Opening.** `click .hit-row "Offsite copy"` (Alpha, in the background) makes Alpha the target, switches to `work` and opens find-in-chat on "backup" with `mark.current` in the assistant message. Then a row on Alpha's other profile, then one in the profile on screen (`keys MTU`, `click .hit-row "Alpha · default"`), land the same way.
+- **Four at once.** Run both stand-ins with `HV_DELAY_MS=1500`. In the two `bridge.log`s, the search's two `GET /api/profiles` arrive together, then four `GET /api/sessions/search`, and the fifth only 1.5 s later, when one of the four answers.
+
 ## Gotchas
 
 - Results come from the server after a short delay. Wait for `.hit-row` or "No matches", not a fixed time.
