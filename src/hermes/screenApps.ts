@@ -72,8 +72,11 @@ export type InstallSystem = (password?: string) => Promise<SystemOutcome>;
 
 export type AppState =
   | { kind: "installing" }
-  /** The server couldn't be asked (a Hermes without `shell.exec`), so nothing is installed and nothing relies on it. */
-  | { kind: "unknown" }
+  /**
+   * The server couldn't be asked (a Hermes without `shell.exec`), so nothing is installed and nothing relies on it.
+   * `carried`: a run cut off may have added it, so the dock is still owed once a check can tell.
+   */
+  | { kind: "unknown"; carried?: true }
   /** The owner put off the password: not now. */
   | { kind: "skipped" }
   | { kind: "added" }
@@ -105,7 +108,10 @@ export function unfinished(s: AppsSetup): readonly ScreenAppId[] {
   if (s.kind === "checking") return s.carried;
   if (s.kind === "unchecked") return [];
   const dockDone = s.dock.kind === "current" || s.dock.kind === "restart";
-  return (Object.keys(s.apps) as ScreenAppId[]).filter((id) => s.apps[id]?.kind === "installing" || (s.apps[id]?.kind === "added" && !dockDone));
+  return (Object.keys(s.apps) as ScreenAppId[]).filter((id) => {
+    const app = s.apps[id];
+    return app?.kind === "installing" || (app?.kind === "unknown" && app.carried) || (app?.kind === "added" && !dockDone);
+  });
 }
 
 /** Whether the apps can go on this screen: Hermes's own on a Linux server, installed. One in the sandbox brings its own. */
@@ -164,7 +170,7 @@ export async function setUpApps(deps: SetupDeps, status: DisplayStatus, skipped:
     ...(browser ? [["browser", { kind: "installing" }]] : []),
     ...(system ?? []).map((id) => [id, { kind: "installing" }]),
     ...(missing ?? []).filter((id) => skipped.includes(id)).map((id) => [id, { kind: "skipped" }]),
-    ...(missing ? [] : SYSTEM_APPS.map((a) => [a.id, { kind: "unknown" }])),
+    ...(missing ? [] : SYSTEM_APPS.map((a) => [a.id, carried.includes(a.id) ? { kind: "unknown", carried: true } : { kind: "unknown" }])),
     ...landed.map((id) => [id, { kind: "added" }]),
   ]);
   deps.update(() => ({ kind: "checked", apps, dock: { kind: "current" } }));

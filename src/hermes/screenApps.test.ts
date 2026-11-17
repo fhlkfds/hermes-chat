@@ -15,6 +15,7 @@ import {
   pasteCommand,
   setUpApps,
   shellQuote,
+  unfinished,
   type AppsSetup,
   type InstallSystem,
   type SetupDeps,
@@ -204,6 +205,20 @@ describe("Adding the apps", () => {
     await setUpApps(run.deps, await run.deps.api.status(), ["terminal", "editor"]);
     expect(run.state()).toEqual({ kind: "checked", apps: { terminal: { kind: "skipped" }, editor: { kind: "skipped" } }, dock: { kind: "current" } });
     expect(run.passwords).toEqual([undefined]);
+  });
+
+  it("still writes the dock once a check can tell, when the check after a cut-off install couldn't reach the server", async () => {
+    const s = server();
+    s.display!.status.browser = "/usr/bin/chromium";
+    const machine = s.machine!;
+    machine.programs = new Set(["xclip", "xfce4-terminal", "mousepad"]);
+    s.machine = undefined;
+    const run = await setUp(s, () => ({ kind: "installed" }));
+    await setUpApps(run.deps, await run.deps.api.status(), [], ["terminal", "editor"]);
+    s.machine = machine;
+    await setUpApps(run.deps, await run.deps.api.status(), [], unfinished(run.state()));
+    expect(run.state()).toEqual({ kind: "checked", apps: { terminal: { kind: "added" }, editor: { kind: "added" } }, dock: { kind: "current" } });
+    expect(machine.files.has(DOCK)).toBe(false);
   });
 
   it("does nothing when all three are there", async () => {
