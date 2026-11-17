@@ -393,6 +393,39 @@ describe("The apps the Screen adds", () => {
     expect(restart.parentElement!.textContent).toContain("a sign-in made on the screen in the last half minute may be lost");
   });
 
+  it("stops when the profile changes, so a late install touches nothing on the next profile's screen", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    let installed!: () => void;
+    const { unmount } = showWith(api, () => new Promise((done) => (installed = () => done({ kind: "installed" }))));
+    await screen.findByText(/Adding a terminal and a text editor to the screen/);
+    // App.tsx keys the tab by profile, so switching remounts it; the same api then answers for the other profile.
+    unmount();
+    api.state = { ...api.state, profile_key: "/home/liam/.hermes/profiles/work" };
+    await act(async () => installed());
+    await act(async () => new Promise((d) => setTimeout(d, 0)));
+    expect(api.calls).toEqual([]);
+  });
+
+  it("checks the server again after a reconnect when the first check couldn't reach it", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    const findPrograms = api.findPrograms;
+    let checks = 0;
+    api.findPrograms = async (names) => {
+      if (checks++ === 0) throw new Error("the connection to Hermes closed");
+      return findPrograms(names);
+    };
+    const ssh = sudo("hunter2");
+    const { rerender } = showWith(api, ssh.install);
+    await waitFor(() => expect(checks).toBe(1));
+    const tab = (connected: boolean) => <ScreenTab api={api} shown connected={connected} loadRfb={async () => FakeRfb as unknown as RfbConstructor} system={ssh.install} />;
+    rerender(tab(false));
+    rerender(tab(true));
+    expect(await screen.findByText("Adding a terminal and a text editor needs the server's sudo password")).toBeTruthy();
+    expect(checks).toBe(2);
+  });
+
   it("adds nothing to a screen in the terminal's sandbox, which brings its own", async () => {
     const api = bare();
     api.state.placement = "terminal:docker";

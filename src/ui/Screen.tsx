@@ -118,6 +118,10 @@ export function ScreenTab({
   const viewerRef = useRef(viewer);
   viewerRef.current = viewer;
   const [bridge] = useState(() => new ClipboardBridge(clipboard));
+  // Bumped when the connection drops and when the tab goes (switching profile remounts it). A setup run from before
+  // then stops: `api` would answer for the new connection or profile.
+  const setupRun = useRef(0);
+  useEffect(() => () => void setupRun.current++, []);
 
   const held = heldBy(lease, viewer?.hash);
   // Viewers this tab held the screen as on connections since gone. Hermes keeps such a hold when a connection drops,
@@ -226,22 +230,30 @@ export function ScreenTab({
       setConn((c) => (c.kind === "lost" ? { kind: "idle" } : c));
       void refresh();
     }
-    // A viewer id is good only on the connection that minted it.
-    else setViewer(undefined);
+    else {
+      // A viewer id is good only on the connection that minted it.
+      setViewer(undefined);
+      setupRun.current++;
+    }
   }, [connected, refresh]);
 
   useEffect(() => api.onLease((key, l) => key === status?.profile_key && noteLease(l)), [api, status?.profile_key, noteLease]);
 
-  const setupDeps: SetupDeps = { api, system, update: setSetup, onStatus: noteStatus };
+  /** For a setup run that starts now. */
+  const setupDeps = (): SetupDeps => {
+    const run = setupRun.current;
+    return { api, system, update: setSetup, onStatus: noteStatus, alive: () => run === setupRun.current };
+  };
   const depsRef = useRef(setupDeps);
   depsRef.current = setupDeps;
-  // Once per profile and connection, the first time the tab is shown on a screen they can go on.
-  const setUpStarted = useRef(false);
+  // The first time the tab is shown on a screen they can go on, and once more on each later connection while the last
+  // run was cut off or couldn't tell what the server has.
+  const setUpOn = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!shown || !connected || !status || setUpStarted.current || !canSetUp(status)) return;
-    setUpStarted.current = true;
-    void setUpApps(depsRef.current, status);
-  }, [shown, connected, status]);
+    if (!shown || !connected || !status || !canSetUp(status) || setUpOn.current === setupRun.current) return;
+    setUpOn.current = setupRun.current;
+    if (unsettled(setup)) void setUpApps(depsRef.current(), status, setup.kind === "checked" ? idsIn(setup, "skipped") : []);
+  }, [shown, connected, status, setup]);
 
   // A running screen is watched as soon as it can be.
   useEffect(() => {
@@ -292,7 +304,7 @@ export function ScreenTab({
     act(async () => {
       setFound(undefined);
       // Once the Screen has tried to add the browser, one found now is added, and the dock is written again.
-      const s = setup.kind === "checked" ? await recheckBrowser(setupDeps) : await refresh();
+      const s = setup.kind === "checked" ? await recheckBrowser(setupDeps()) : await refresh();
       const b = s && browserOf(s);
       setFound(b?.kind === "found" ? b.path : undefined);
     });
@@ -449,8 +461,8 @@ export function ScreenTab({
           setup={setup}
           busy={busy}
           connected={connected}
-          onPassword={(password) => void installSystem(setupDeps, idsIn(setup, "needs-password"), password)}
-          onAgain={(ids) => void installSystem(setupDeps, ids)}
+          onPassword={(password) => void installSystem(setupDeps(), idsIn(setup, "needs-password"), password)}
+          onAgain={(ids) => void installSystem(setupDeps(), ids)}
           onSkip={(ids) => setSetup(skip(ids))}
           onRestart={() => void restart()}
         />
@@ -513,6 +525,9 @@ const COPIED: Record<CopyOutcome, string> = {
 
 const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["kind"]) =>
   (Object.keys(setup.apps) as ScreenAppId[]).filter((id) => setup.apps[id]?.kind === kind);
+
+/** Not run, cut off, or not able to tell what the server has. */
+const unsettled = (setup: AppsSetup) => setup.kind !== "checked" || idsIn(setup, "unknown").length + idsIn(setup, "installing").length > 0;
 
 /**
  * What the Screen is adding to the screen (screenApps.ts), the terminal and editor's password, and what to do when

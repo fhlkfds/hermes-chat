@@ -101,7 +101,18 @@ export type SetupDeps = {
   update: (change: (s: AppsSetup) => AppsSetup) => void;
   /** Each `display.status` read along the way. */
   onStatus: (s: DisplayStatus) => void;
+  /** False once the profile or the connection changed: `api` then answers for another screen. */
+  alive: () => boolean;
 };
+
+/** `p`, while the run is alive. After that it never settles, so the run makes no more Hermes calls or updates. */
+const whileAlive = <T>(deps: SetupDeps, p: Promise<T>): Promise<T> =>
+  new Promise((resolve, reject) =>
+    p.then(
+      (v) => deps.alive() && resolve(v),
+      (e: unknown) => deps.alive() && reject(e),
+    ),
+  );
 
 const withApps =
   (ids: readonly ScreenAppId[], state: AppState) =>
@@ -116,20 +127,25 @@ const withDock =
 export const skip = (ids: readonly ScreenAppId[]) => withApps(ids, { kind: "skipped" });
 
 /** The system apps whose program the server lacks, or undefined when it can't be told (a Hermes without `shell.exec`). */
-async function missingSystemApps(api: ScreenApi): Promise<ScreenAppId[] | undefined> {
-  const found = await api.findPrograms(SYSTEM_PROGRAMS).catch(() => undefined);
+async function missingSystemApps(deps: SetupDeps): Promise<ScreenAppId[] | undefined> {
+  const found = await whileAlive(deps, deps.api.findPrograms(SYSTEM_PROGRAMS)).catch(() => undefined);
   return found && SYSTEM_APPS.filter((a) => !found.includes(a.program)).map((a) => a.id);
 }
 
-/** Checks what is missing from the screen in `status` and adds it, browser and system apps at once. */
-export async function setUpApps(deps: SetupDeps, status: DisplayStatus): Promise<void> {
+/**
+ * Checks what is missing from the screen in `status` and adds it, browser and system apps at once. Those in `skipped`,
+ * which the owner put off, stay put off.
+ */
+export async function setUpApps(deps: SetupDeps, status: DisplayStatus, skipped: readonly ScreenAppId[] = []): Promise<void> {
   deps.update(() => ({ kind: "checking" }));
   const browser = browserOf(status).kind === "missing";
-  const system = await missingSystemApps(deps.api);
+  const missing = await missingSystemApps(deps);
+  const system = missing?.filter((id) => !skipped.includes(id));
   const apps: Partial<Record<ScreenAppId, AppState>> = Object.fromEntries([
     ...(browser ? [["browser", { kind: "installing" }]] : []),
     ...(system ?? []).map((id) => [id, { kind: "installing" }]),
-    ...(system ? [] : SYSTEM_APPS.map((a) => [a.id, { kind: "unknown" }])),
+    ...(missing ?? []).filter((id) => skipped.includes(id)).map((id) => [id, { kind: "skipped" }]),
+    ...(missing ? [] : SYSTEM_APPS.map((a) => [a.id, { kind: "unknown" }])),
   ]);
   deps.update(() => ({ kind: "checked", apps, dock: { kind: "current" } }));
   await Promise.all([browser && installBrowser(deps), !!system?.length && addSystem(deps, system)]);
@@ -139,7 +155,7 @@ export async function setUpApps(deps: SetupDeps, status: DisplayStatus): Promise
 async function installBrowser(deps: SetupDeps): Promise<void> {
   let why: string | undefined;
   try {
-    const r = await deps.api.installBrowser();
+    const r = await whileAlive(deps, deps.api.installBrowser());
     if (r.blocked) why = r.hint || "Hermes wouldn't run it.";
     else if (r.code !== 0) why = lastLines(r.output) || `It ended with exit status ${r.code}.`;
   } catch (e) {
@@ -153,7 +169,7 @@ async function installBrowser(deps: SetupDeps): Promise<void> {
 export async function recheckBrowser(deps: SetupDeps, why?: string): Promise<DisplayStatus | undefined> {
   let s: DisplayStatus;
   try {
-    s = await deps.api.status();
+    s = await whileAlive(deps, deps.api.status());
   } catch (e) {
     deps.update(withApps(["browser"], { kind: "failed", why: errorText(e) }));
     return;
@@ -173,7 +189,7 @@ export async function recheckBrowser(deps: SetupDeps, why?: string): Promise<Dis
 export async function installSystem(deps: SetupDeps, ids: readonly ScreenAppId[], password?: string): Promise<void> {
   deps.update(withApps(ids, { kind: "installing" }));
   if (password !== undefined) return addSystem(deps, ids, password);
-  const still = (await missingSystemApps(deps.api)) ?? ids;
+  const still = (await missingSystemApps(deps)) ?? ids;
   const found = ids.filter((id) => !still.includes(id));
   if (found.length) deps.update(withApps(found, { kind: "added" }));
   await addSystem(deps, still.filter((id) => ids.includes(id)), undefined, found);
@@ -191,7 +207,10 @@ async function runSystem(deps: SetupDeps, missing: readonly ScreenAppId[], passw
     deps.update(withApps(missing, { kind: "no-ssh", command: pasteCommand() }));
     return [];
   }
-  const outcome = await deps.system(password).catch((e: unknown): SystemOutcome => ({ kind: "error", message: errorText(e) }));
+  const outcome = await whileAlive(
+    deps,
+    deps.system(password).catch((e: unknown): SystemOutcome => ({ kind: "error", message: errorText(e) })),
+  );
   const state = stateOf(outcome);
   deps.update(withApps(missing, state));
   return state.kind === "added" ? missing : [];
@@ -218,7 +237,7 @@ function stateOf(o: SystemOutcome): AppState {
 
 async function refreshDockNow(deps: SetupDeps) {
   try {
-    const s = await deps.api.status();
+    const s = await whileAlive(deps, deps.api.status());
     deps.onStatus(s);
     await refreshDock(deps, s);
   } catch (e) {
@@ -230,7 +249,7 @@ async function refreshDockNow(deps: SetupDeps) {
 async function refreshDock(deps: SetupDeps, s: DisplayStatus) {
   if (s.running) return deps.update(withDock({ kind: "restart" }));
   try {
-    await deps.api.resetDock(s.profile_key);
+    await whileAlive(deps, deps.api.resetDock(s.profile_key));
     deps.update(withDock({ kind: "current" }));
   } catch (e) {
     deps.update(withDock({ kind: "failed", why: isUnavailable(e) ? "this Hermes can't change it from here." : errorText(e) }));

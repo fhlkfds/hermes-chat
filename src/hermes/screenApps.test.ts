@@ -93,7 +93,7 @@ async function setUp(s: FakeHermes, outcomes: (password?: string) => SystemOutco
     return o;
   };
   let state: AppsSetup = { kind: "unchecked" };
-  const deps: SetupDeps = { api: hermes.screen, system: ssh ? system : undefined, update: (f) => (state = f(state)), onStatus: () => {} };
+  const deps: SetupDeps = { api: hermes.screen, system: ssh ? system : undefined, update: (f) => (state = f(state)), onStatus: () => {}, alive: () => true };
   await setUpApps(deps, await hermes.screen.status());
   return { deps, passwords, state: () => state, asked: (method: string) => s.requests.filter((r) => r.method === method).map((r) => r.params) };
 }
@@ -195,6 +195,15 @@ describe("Adding the apps", () => {
     expect(new Set(deleted.map((p) => p.command))).toEqual(new Set([`rm -f -- '${DOCK}'`]));
     expect(JSON.stringify(run.asked("shell.exec"))).not.toContain("browser-profile");
     expect(s.machine!.files).toEqual(new Set([PROFILE]));
+  });
+
+  it("leaves what the owner put off alone when it runs again", async () => {
+    const s = server();
+    s.display!.status.browser = "/usr/bin/chromium";
+    const run = await setUp(s, () => ({ kind: "needs-password" }));
+    await setUpApps(run.deps, await run.deps.api.status(), ["terminal", "editor"]);
+    expect(run.state()).toEqual({ kind: "checked", apps: { terminal: { kind: "skipped" }, editor: { kind: "skipped" } }, dock: { kind: "current" } });
+    expect(run.passwords).toEqual([undefined]);
   });
 
   it("does nothing when all three are there", async () => {
