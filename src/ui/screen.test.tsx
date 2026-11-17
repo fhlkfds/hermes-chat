@@ -426,6 +426,26 @@ describe("The apps the Screen adds", () => {
     expect(checks).toBe(2);
   });
 
+  it("keeps the password put off across reconnects, even when one cuts off the check after another", async () => {
+    const api = bare();
+    api.installBrowser = () => new Promise(() => {});
+    const findPrograms = api.findPrograms;
+    let checks = 0;
+    api.findPrograms = (names) => (checks++ === 1 ? new Promise(() => {}) : findPrograms(names));
+    const ssh = sudo("hunter2");
+    const { rerender } = showWith(api, ssh.install);
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    const tab = (connected: boolean) => <ScreenTab api={api} shown connected={connected} loadRfb={async () => FakeRfb as unknown as RfbConstructor} system={ssh.install} />;
+    for (const check of [2, 3]) {
+      rerender(tab(false));
+      rerender(tab(true));
+      await waitFor(() => expect(checks).toBe(check));
+    }
+    await act(async () => new Promise((d) => setTimeout(d, 0)));
+    expect(screen.queryByText(/needs the server's sudo password/)).toBeNull();
+    expect(ssh.given).toEqual([undefined]);
+  });
+
   it("adds nothing to a screen in the terminal's sandbox, which brings its own", async () => {
     const api = bare();
     api.state.placement = "terminal:docker";

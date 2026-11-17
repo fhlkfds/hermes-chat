@@ -249,10 +249,12 @@ export function ScreenTab({
   // The first time the tab is shown on a screen they can go on, and once more on each later connection while the last
   // run was cut off or couldn't tell what the server has.
   const setUpOn = useRef<number | undefined>(undefined);
+  // Apart from the setup, which a later run replaces before it knows what is missing.
+  const skipped = useRef(new Set<ScreenAppId>());
   useEffect(() => {
     if (!shown || !connected || !status || !canSetUp(status) || setUpOn.current === setupRun.current) return;
     setUpOn.current = setupRun.current;
-    if (unsettled(setup)) void setUpApps(depsRef.current(), status, setup.kind === "checked" ? idsIn(setup, "skipped") : []);
+    if (unsettled(setup)) void setUpApps(depsRef.current(), status, [...skipped.current]);
   }, [shown, connected, status, setup]);
 
   // A running screen is watched as soon as it can be.
@@ -475,7 +477,10 @@ export function ScreenTab({
           connected={connected}
           onPassword={(password) => void installSystem(setupDeps(), idsIn(setup, "needs-password"), password)}
           onAgain={(ids) => void installSystem(setupDeps(), ids)}
-          onSkip={(ids) => setSetup(skip(ids))}
+          onSkip={(ids) => {
+            for (const id of ids) skipped.current.add(id);
+            setSetup(skip(ids));
+          }}
           onRestart={() => void restart()}
         />
       )}
