@@ -27,6 +27,7 @@ import {
   recheckBrowser,
   setUpApps,
   skip,
+  unfinished,
   type AppState,
   type AppsSetup,
   type InstallSystem,
@@ -254,7 +255,7 @@ export function ScreenTab({
   useEffect(() => {
     if (!shown || !connected || !status || !canSetUp(status) || setUpOn.current === setupRun.current) return;
     setUpOn.current = setupRun.current;
-    if (unsettled(setup)) void setUpApps(depsRef.current(), status, [...skipped.current]);
+    if (unsettled(setup)) void setUpApps(depsRef.current(), status, [...skipped.current], unfinished(setup));
   }, [shown, connected, status, setup]);
 
   // A running screen is watched as soon as it can be.
@@ -544,7 +545,7 @@ const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["k
   (Object.keys(setup.apps) as ScreenAppId[]).filter((id) => setup.apps[id]?.kind === kind);
 
 /** Not run, cut off, or not able to tell what the server has. */
-const unsettled = (setup: AppsSetup) => setup.kind !== "checked" || idsIn(setup, "unknown").length + idsIn(setup, "installing").length > 0;
+const unsettled = (setup: AppsSetup) => setup.kind !== "checked" || idsIn(setup, "unknown").length > 0 || unfinished(setup).length > 0;
 
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
 
@@ -640,6 +641,7 @@ function AppsNote({
         <div className="attach-note screen-apps screen-found" role="status">
           <Check size={14} aria-hidden />
           {others.length > 0 && <> Added {namesOf(others)}.</>}
+          {dockApps.length > 0 && setup.dock.kind === "pending" && <> Added {namesOf(dockApps)} to the screen.</>}
           {dockApps.length > 0 && setup.dock.kind === "current" && <> Added {namesOf(dockApps)} to the screen's dock.</>}
           {dockApps.length > 0 && setup.dock.kind === "restart" && (
             <>

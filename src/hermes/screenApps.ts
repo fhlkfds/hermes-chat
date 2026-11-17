@@ -84,12 +84,29 @@ export type AppState =
 /**
  * The dock, once something was added. `current`: deleted while the screen was stopped, so its next start writes it
  * with the new apps. `restart`: the screen runs on a dock from before them; only the owner restarts it, since the agent
- * may be in the middle of something there.
+ * may be in the middle of something there. `pending`: on its way to one of those.
  */
-export type Dock = { kind: "current" } | { kind: "restart" } | { kind: "failed"; why: string };
+export type Dock = { kind: "current" } | { kind: "restart" } | { kind: "pending" } | { kind: "failed"; why: string };
 
-/** Each app that was missing or can't be told, by id; one that was there has no entry. */
-export type AppsSetup = { kind: "unchecked" } | { kind: "checking" } | { kind: "checked"; apps: Partial<Record<ScreenAppId, AppState>>; dock: Dock };
+/**
+ * Each app that was missing or can't be told, by id; one that was there has no entry. `carried`: what the run before
+ * may have added without writing the dock again (`unfinished`).
+ */
+export type AppsSetup =
+  | { kind: "unchecked" }
+  | { kind: "checking"; carried: readonly ScreenAppId[] }
+  | { kind: "checked"; apps: Partial<Record<ScreenAppId, AppState>>; dock: Dock };
+
+/**
+ * What a run cut off may have added since, so the next run writes the dock again for it: apps installing, or added
+ * before the dock was written.
+ */
+export function unfinished(s: AppsSetup): readonly ScreenAppId[] {
+  if (s.kind === "checking") return s.carried;
+  if (s.kind === "unchecked") return [];
+  const dockDone = s.dock.kind === "current" || s.dock.kind === "restart";
+  return (Object.keys(s.apps) as ScreenAppId[]).filter((id) => s.apps[id]?.kind === "installing" || (s.apps[id]?.kind === "added" && !dockDone));
+}
 
 /** Whether the apps can go on this screen: Hermes's own on a Linux server, installed. One in the sandbox brings its own. */
 export const canSetUp = (s: DisplayStatus) => s.supported && s.installed && !s.placement?.startsWith("terminal:");
@@ -134,21 +151,24 @@ async function missingSystemApps(deps: SetupDeps): Promise<ScreenAppId[] | undef
 
 /**
  * Checks what is missing from the screen in `status` and adds it, browser and system apps at once. Those in `skipped`,
- * which the owner put off, stay put off.
+ * which the owner put off, stay put off. Those in `carried` that are there now were added, so the dock is written
+ * again.
  */
-export async function setUpApps(deps: SetupDeps, status: DisplayStatus, skipped: readonly ScreenAppId[] = []): Promise<void> {
-  deps.update(() => ({ kind: "checking" }));
+export async function setUpApps(deps: SetupDeps, status: DisplayStatus, skipped: readonly ScreenAppId[] = [], carried: readonly ScreenAppId[] = []): Promise<void> {
+  deps.update(() => ({ kind: "checking", carried }));
   const browser = browserOf(status).kind === "missing";
   const missing = await missingSystemApps(deps);
   const system = missing?.filter((id) => !skipped.includes(id));
+  const landed = carried.filter((id) => (id === "browser" ? browserOf(status).kind === "found" : missing && !missing.includes(id)));
   const apps: Partial<Record<ScreenAppId, AppState>> = Object.fromEntries([
     ...(browser ? [["browser", { kind: "installing" }]] : []),
     ...(system ?? []).map((id) => [id, { kind: "installing" }]),
     ...(missing ?? []).filter((id) => skipped.includes(id)).map((id) => [id, { kind: "skipped" }]),
     ...(missing ? [] : SYSTEM_APPS.map((a) => [a.id, { kind: "unknown" }])),
+    ...landed.map((id) => [id, { kind: "added" }]),
   ]);
   deps.update(() => ({ kind: "checked", apps, dock: { kind: "current" } }));
-  await Promise.all([browser && installBrowser(deps), !!system?.length && addSystem(deps, system)]);
+  await Promise.all([browser && installBrowser(deps), (!!system?.length || inDock(landed).length > 0) && addSystem(deps, system ?? [], undefined, landed)]);
 }
 
 /** `hermes pm install chromium`, then whether Hermes now finds a browser for the profile. */
@@ -236,6 +256,7 @@ function stateOf(o: SystemOutcome): AppState {
 }
 
 async function refreshDockNow(deps: SetupDeps) {
+  deps.update(withDock({ kind: "pending" }));
   try {
     const s = await whileAlive(deps, deps.api.status());
     deps.onStatus(s);
@@ -247,6 +268,7 @@ async function refreshDockNow(deps: SetupDeps) {
 
 /** Deletes the dock while the screen is stopped; a running Xfce panel could write the old one back as it exits. */
 async function refreshDock(deps: SetupDeps, s: DisplayStatus) {
+  deps.update(withDock({ kind: "pending" }));
   if (s.running) return deps.update(withDock({ kind: "restart" }));
   try {
     await whileAlive(deps, deps.api.resetDock(s.profile_key));

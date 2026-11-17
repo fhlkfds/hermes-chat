@@ -446,6 +446,46 @@ describe("The apps the Screen adds", () => {
     expect(ssh.given).toEqual([undefined]);
   });
 
+  it("writes the dock again when the install finished while the connection was down, though a reconnect cut off the next check", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    const findPrograms = api.findPrograms;
+    let checks = 0;
+    api.findPrograms = (names) => (++checks === 2 ? new Promise(() => {}) : findPrograms(names));
+    let installed!: () => void;
+    const slow: InstallSystem = () => new Promise((done) => (installed = () => done({ kind: "installed" })));
+    const { rerender } = showWith(api, slow);
+    await screen.findByText(/Adding a terminal and a text editor to the screen/);
+    const tab = (connected: boolean) => <ScreenTab api={api} shown connected={connected} loadRfb={async () => FakeRfb as unknown as RfbConstructor} system={slow} />;
+    rerender(tab(false));
+    api.programs.add("xfce4-terminal").add("mousepad");
+    await act(async () => installed());
+    rerender(tab(true));
+    await waitFor(() => expect(checks).toBe(2));
+    rerender(tab(false));
+    rerender(tab(true));
+    expect(await screen.findByText("Added a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(api.calls).toEqual(["resetDock /home/liam/.hermes"]);
+  });
+
+  it("writes the dock again after a reconnect that cut off writing it", async () => {
+    const api = bare();
+    api.state.browser = "/usr/bin/chromium";
+    const status = api.status;
+    let reads = 0;
+    let cut!: () => void;
+    // The read before the dock is written: the connection drops while it is out.
+    api.status = () => (++reads === 2 ? new Promise((_, fail) => (cut = () => fail(new Error("the connection to Hermes closed")))) : status());
+    const { rerender } = showWith(api, sudo().install);
+    await waitFor(() => expect(cut).toBeDefined());
+    const tab = (connected: boolean) => <ScreenTab api={api} shown connected={connected} loadRfb={async () => FakeRfb as unknown as RfbConstructor} system={sudo().install} />;
+    rerender(tab(false));
+    await act(async () => cut());
+    rerender(tab(true));
+    expect(await screen.findByText("Added a terminal and a text editor to the screen's dock.")).toBeTruthy();
+    expect(api.calls).toEqual(["resetDock /home/liam/.hermes"]);
+  });
+
   it("adds nothing to a screen in the terminal's sandbox, which brings its own", async () => {
     const api = bare();
     api.state.placement = "terminal:docker";
