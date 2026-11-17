@@ -230,11 +230,11 @@ describe("The Screen tab", () => {
 });
 
 describe("The apps the Screen adds", () => {
-  /** A stopped screen on a server with no browser, terminal or text editor. */
+  /** A stopped screen on a server with no browser, terminal or text editor, but xclip. */
   function bare() {
     const api = new FakeScreen();
     api.state = { ...api.state, browser: null, placement: "gateway" };
-    api.programs.clear();
+    api.programs = new Set(["xclip"]);
     return api;
   }
   /** The install over ssh: sudo with `password`, or none needed. Records what it was given. */
@@ -355,6 +355,29 @@ describe("The apps the Screen adds", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Restart the screen/ }));
     expect(await screen.findByText("a human holds this screen; pass force: true to stop it anyway")).toBeTruthy();
     expect(api.calls).toEqual(["installBrowser", "stop"]);
+  });
+
+  it("adds xclip for copying out without touching the dock, even on a running screen", async () => {
+    const api = bare();
+    api.state = { ...api.state, running: true, browser: "/usr/bin/chromium" };
+    api.programs = new Set(["xfce4-terminal", "mousepad"]);
+    showWith(api, sudo("hunter2").install);
+    await connected();
+    fireEvent.change(await screen.findByLabelText("Sudo password on the server"), { target: { value: "hunter2" } });
+    expect(screen.getByText("Adding xclip (for copying out) needs the server's sudo password")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(await screen.findByText("Added xclip (for copying out).")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Restart the screen/ })).toBeNull();
+    expect(api.calls).toEqual([]);
+  });
+
+  it("says a recent sign-in may be lost next to Restart the screen", async () => {
+    const api = bare();
+    api.state.running = true;
+    showWith(api, sudo().install);
+    await connected();
+    const restart = await screen.findByRole("button", { name: /Restart the screen/ });
+    expect(restart.parentElement!.textContent).toContain("a sign-in made on the screen in the last half minute may be lost");
   });
 
   it("adds nothing to a screen in the terminal's sandbox, which brings its own", async () => {

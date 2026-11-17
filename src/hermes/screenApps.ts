@@ -1,7 +1,8 @@
 // What the Screen puts on Hermes's Bot Desktop by itself (ADR 0193): a web browser, a terminal and a text editor, so
-// they are in the screen's dock without the owner installing anything. Hermes's launcher writes the dock once, with a
-// launcher only for each program it finds then (tools/bot_desktop/launcher.sh at bf0203a), so after adding one the
-// dock file is deleted while the screen is stopped, and the next start writes it again with the new apps.
+// they are in the screen's dock without the owner installing anything, and xclip, which reads the screen's clipboard
+// for copying out of it (screenClipboard.ts). Hermes's launcher writes the dock once, with a launcher only for each
+// program it finds then (tools/bot_desktop/launcher.sh at bf0203a), so after adding one of those the dock file is
+// deleted while the screen is stopped, and the next start writes it again with the new apps.
 //
 // The browser is pm's Chromium, the one Hermes runs, installed by Hermes itself (`hermes pm install chromium` over
 // `cli.exec`, no root). The terminal and the editor are distribution packages that need root, which Hermes can't
@@ -10,18 +11,22 @@ import SCRIPT from "../../src-tauri/src/screen_apps.sh?raw";
 import { browserOf, isUnavailable, type DisplayStatus, type ScreenApi } from "./screen";
 import { errorText } from "./values";
 
-export type ScreenAppId = "browser" | "terminal" | "editor";
+export type ScreenAppId = "browser" | "terminal" | "editor" | "clipboard";
 
-type ScreenApp = { id: ScreenAppId; name: string } & ({ install: "pm" } | { install: "system"; program: string });
+/** `inDock`: the launcher gives it a place in the dock, so adding it means writing the dock again. */
+type ScreenApp = { id: ScreenAppId; name: string; inDock: boolean } & ({ install: "pm" } | { install: "system"; program: string });
 
 export const SCREEN_APPS: readonly ScreenApp[] = [
-  { id: "browser", name: "a web browser", install: "pm" },
-  { id: "terminal", name: "a terminal", install: "system", program: "xfce4-terminal" },
-  { id: "editor", name: "a text editor", install: "system", program: "mousepad" },
+  { id: "browser", name: "a web browser", inDock: true, install: "pm" },
+  { id: "terminal", name: "a terminal", inDock: true, install: "system", program: "xfce4-terminal" },
+  { id: "editor", name: "a text editor", inDock: true, install: "system", program: "mousepad" },
+  { id: "clipboard", name: "xclip (for copying out)", inDock: false, install: "system", program: "xclip" },
 ];
 
+const inDock = (ids: readonly ScreenAppId[]) => ids.filter((id) => SCREEN_APPS.find((a) => a.id === id)?.inDock);
+
 const SYSTEM_APPS = SCREEN_APPS.flatMap((a) => (a.install === "system" ? [a] : []));
-/** The packages screen_apps.sh installs, which are also the programs the launcher looks for. */
+/** The packages screen_apps.sh installs, which are also the programs the launcher and the clipboard look for. */
 export const SYSTEM_PROGRAMS = SYSTEM_APPS.map((a) => a.program);
 
 /** The apps named in prose, in the table's order: "a terminal and a text editor". */
@@ -67,6 +72,10 @@ export type InstallSystem = (password?: string) => Promise<SystemOutcome>;
 
 export type AppState =
   | { kind: "installing" }
+  /** The server couldn't be asked (a Hermes without `shell.exec`), so nothing is installed and nothing relies on it. */
+  | { kind: "unknown" }
+  /** The owner put off the password: not now. */
+  | { kind: "skipped" }
   | { kind: "added" }
   | { kind: "needs-password"; wrong: boolean }
   | { kind: "no-ssh"; command: string }
@@ -79,7 +88,7 @@ export type AppState =
  */
 export type Dock = { kind: "current" } | { kind: "restart" } | { kind: "failed"; why: string };
 
-/** Each app that was missing, by id; one that was there, or can't be told, has no entry. */
+/** Each app that was missing or can't be told, by id; one that was there has no entry. */
 export type AppsSetup = { kind: "unchecked" } | { kind: "checking" } | { kind: "checked"; apps: Partial<Record<ScreenAppId, AppState>>; dock: Dock };
 
 /** Whether the apps can go on this screen: Hermes's own on a Linux server, installed. One in the sandbox brings its own. */
@@ -103,16 +112,13 @@ const withDock =
   (s: AppsSetup): AppsSetup =>
     s.kind === "checked" ? { ...s, dock } : s;
 
-/** Drops apps from the setup: the owner said not now. */
-export const without =
-  (ids: readonly ScreenAppId[]) =>
-  (s: AppsSetup): AppsSetup =>
-    s.kind === "checked" ? { ...s, apps: Object.fromEntries(Object.entries(s.apps).filter(([id]) => !ids.includes(id as ScreenAppId))) } : s;
+/** The owner said not now. */
+export const skip = (ids: readonly ScreenAppId[]) => withApps(ids, { kind: "skipped" });
 
-/** The system apps whose program the server lacks. None when it can't be told (a Hermes without `shell.exec`). */
-async function missingSystemApps(api: ScreenApi): Promise<ScreenAppId[]> {
-  const found = await api.findPrograms(SYSTEM_PROGRAMS).catch(() => SYSTEM_PROGRAMS);
-  return SYSTEM_APPS.filter((a) => !found.includes(a.program)).map((a) => a.id);
+/** The system apps whose program the server lacks, or undefined when it can't be told (a Hermes without `shell.exec`). */
+async function missingSystemApps(api: ScreenApi): Promise<ScreenAppId[] | undefined> {
+  const found = await api.findPrograms(SYSTEM_PROGRAMS).catch(() => undefined);
+  return found && SYSTEM_APPS.filter((a) => !found.includes(a.program)).map((a) => a.id);
 }
 
 /** Checks what is missing from the screen in `status` and adds it, browser and system apps at once. */
@@ -120,9 +126,13 @@ export async function setUpApps(deps: SetupDeps, status: DisplayStatus): Promise
   deps.update(() => ({ kind: "checking" }));
   const browser = browserOf(status).kind === "missing";
   const system = await missingSystemApps(deps.api);
-  const missing: ScreenAppId[] = [...(browser ? (["browser"] as const) : []), ...system];
-  deps.update(() => ({ kind: "checked", apps: Object.fromEntries(missing.map((id) => [id, { kind: "installing" }])), dock: { kind: "current" } }));
-  await Promise.all([browser && installBrowser(deps), system.length > 0 && runSystem(deps, system)]);
+  const apps: Partial<Record<ScreenAppId, AppState>> = Object.fromEntries([
+    ...(browser ? [["browser", { kind: "installing" }]] : []),
+    ...(system ?? []).map((id) => [id, { kind: "installing" }]),
+    ...(system ? [] : SYSTEM_APPS.map((a) => [a.id, { kind: "unknown" }])),
+  ]);
+  deps.update(() => ({ kind: "checked", apps, dock: { kind: "current" } }));
+  await Promise.all([browser && installBrowser(deps), !!system?.length && addSystem(deps, system)]);
 }
 
 /** `hermes pm install chromium`, then whether Hermes now finds a browser for the profile. */
@@ -162,25 +172,29 @@ export async function recheckBrowser(deps: SetupDeps, why?: string): Promise<Dis
  */
 export async function installSystem(deps: SetupDeps, ids: readonly ScreenAppId[], password?: string): Promise<void> {
   deps.update(withApps(ids, { kind: "installing" }));
-  let missing = ids;
-  if (password === undefined) {
-    const still = await missingSystemApps(deps.api);
-    const found = ids.filter((id) => !still.includes(id));
-    missing = ids.filter((id) => still.includes(id));
-    if (found.length) {
-      deps.update(withApps(found, { kind: "added" }));
-      if (!missing.length) return refreshDockNow(deps);
-    }
-  }
-  await runSystem(deps, missing, password);
+  if (password !== undefined) return addSystem(deps, ids, password);
+  const still = (await missingSystemApps(deps.api)) ?? ids;
+  const found = ids.filter((id) => !still.includes(id));
+  if (found.length) deps.update(withApps(found, { kind: "added" }));
+  await addSystem(deps, still.filter((id) => ids.includes(id)), undefined, found);
 }
 
-async function runSystem(deps: SetupDeps, missing: readonly ScreenAppId[], password?: string): Promise<void> {
-  if (!deps.system) return deps.update(withApps(missing, { kind: "no-ssh", command: pasteCommand() }));
+/** Installs `missing` over ssh, then lets the dock be written again if it gained an app, here or in `found`. */
+async function addSystem(deps: SetupDeps, missing: readonly ScreenAppId[], password?: string, found: readonly ScreenAppId[] = []): Promise<void> {
+  const added = missing.length ? await runSystem(deps, missing, password) : [];
+  if (inDock([...found, ...added]).length) await refreshDockNow(deps);
+}
+
+/** The install over ssh, or the command to paste without it. Returns what it added. */
+async function runSystem(deps: SetupDeps, missing: readonly ScreenAppId[], password?: string): Promise<readonly ScreenAppId[]> {
+  if (!deps.system) {
+    deps.update(withApps(missing, { kind: "no-ssh", command: pasteCommand() }));
+    return [];
+  }
   const outcome = await deps.system(password).catch((e: unknown): SystemOutcome => ({ kind: "error", message: errorText(e) }));
   const state = stateOf(outcome);
   deps.update(withApps(missing, state));
-  if (state.kind === "added") await refreshDockNow(deps);
+  return state.kind === "added" ? missing : [];
 }
 
 function stateOf(o: SystemOutcome): AppState {

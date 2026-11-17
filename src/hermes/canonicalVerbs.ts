@@ -361,7 +361,7 @@ export const APP_VERBS: AppVerb[] = [
   {
     method: "shell.exec",
     shape: "check",
-    params: () => ({ command: "command -v xfce4-terminal; command -v mousepad" }),
+    params: () => ({ command: "command -v xfce4-terminal; command -v mousepad; command -v xclip" }),
     route: "authority",
     answer: { code: 4001, message: "invalid_params" },
     canonical: "Nothing: the authority's shell.exec {session_id, command} runs only for a local session, in its launch cwd. An adapter would need another way to run a command on the server.",

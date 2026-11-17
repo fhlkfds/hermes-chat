@@ -1,6 +1,7 @@
-//! Puts a terminal and a text editor on the Screen's Bot Desktop (ADR 0193). Hermes installs neither `mousepad` nor,
-//! on a server where its own desktop install wasn't used, `xfce4-terminal`, and both need root. So the app installs
-//! them through the owner's own `ssh`, as the Repository screen reaches the server (ADR 0110).
+//! Puts a terminal and a text editor on the Screen's Bot Desktop, and `xclip` for copying out of it (ADR 0193). Hermes
+//! installs neither `mousepad`, `xclip` nor, on a server where its own desktop install wasn't used, `xfce4-terminal`,
+//! and they need root. So the app installs them through the owner's own `ssh`, as the Repository screen reaches the
+//! server (ADR 0110).
 //!
 //! The remote command is a constant, `screen_apps.sh`: nothing in it comes from the webview. The only thing the owner
 //! types, a sudo password, goes on ssh's stdin, which `sudo -S` reads. It is never an argument, so it never shows in a
@@ -216,7 +217,7 @@ exit 2"#,
     async fn installs_as_root_without_asking() {
         let s = Server::new("root", &[APT, ("id", "echo 0")]);
         assert_eq!(s.install(None).await, Outcome::Installed);
-        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad as 0\n");
+        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad xclip as 0\n");
     }
 
     #[cfg(unix)]
@@ -224,7 +225,7 @@ exit 2"#,
     async fn installs_through_sudo_without_a_password_when_sudo_needs_none() {
         let s = Server::new("nopasswd", &[APT, USER, ("sudo", r#"[ "$1" = -n ] || exit 2; shift; [ "$1" = true ] && exit 0; AS=0 exec "$@""#)]);
         assert_eq!(s.install(None).await, Outcome::Installed);
-        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad as 0\n");
+        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad xclip as 0\n");
     }
 
     #[cfg(unix)]
@@ -236,7 +237,7 @@ exit 2"#,
         assert_eq!(s.install(Some("wrong")).await, Outcome::WrongPassword);
         assert_eq!(s.log(), "");
         assert_eq!(s.install(Some("hunter2")).await, Outcome::Installed);
-        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad as 0\n");
+        assert_eq!(s.log(), "apt-get install -y --no-install-recommends xfce4-terminal mousepad xclip as 0\n");
     }
 
     #[cfg(unix)]
@@ -251,9 +252,9 @@ exit 2"#,
         assert_eq!(
             s.log().lines().collect::<Vec<_>>(),
             [
-                "apt-get install -y --no-install-recommends xfce4-terminal mousepad",
+                "apt-get install -y --no-install-recommends xfce4-terminal mousepad xclip",
                 "apt-get update",
-                "apt-get install -y --no-install-recommends xfce4-terminal mousepad"
+                "apt-get install -y --no-install-recommends xfce4-terminal mousepad xclip"
             ]
         );
     }

@@ -1,5 +1,5 @@
 LC_ALL=C; export LC_ALL
-pkgs="xfce4-terminal mousepad"
+pkgs="xfce4-terminal mousepad xclip"
 if command -v apt-get >/dev/null 2>&1; then run="DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $pkgs || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $pkgs; }"
 elif command -v dnf >/dev/null 2>&1; then run="dnf install -y $pkgs"
 elif command -v pacman >/dev/null 2>&1; then run="pacman -S --needed --noconfirm $pkgs"

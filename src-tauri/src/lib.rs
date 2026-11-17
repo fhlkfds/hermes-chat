@@ -1872,7 +1872,7 @@ async fn repo_git(target: String, request: repo_git::Request) -> Result<serde_js
     repo_git::run_over_ssh(&target, &request).await
 }
 
-/// Installs a terminal and a text editor for the Screen's Bot Desktop on the server, through `ssh` to `target`
+/// Installs a terminal, a text editor and xclip for the Screen's Bot Desktop on the server, through `ssh` to `target`
 /// (screen_apps.rs, ADR 0193). `password`: the owner's sudo password, which goes only on ssh's stdin.
 #[tauri::command]
 async fn screen_apps_install(target: String, password: Option<String>) -> screen_apps::Outcome {

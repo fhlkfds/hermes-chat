@@ -24,6 +24,8 @@ import { connect } from "./transport";
 
 const HOME = "/home/liam/.hermes";
 const DOCK = dockFile(HOME);
+/** Hermes's one Chromium profile for the screen (tools/bot_desktop/browser.py `profile_dir`), where sign-ins last. */
+const PROFILE = `${HOME}/bot-desktop/browser-profile`;
 
 describe("What the server has", () => {
   it.each([
@@ -38,7 +40,7 @@ describe("What the server has", () => {
   });
 
   it("asks with one command -v each, since dash answers only for the first name it is given", () => {
-    expect(checkCommand(SYSTEM_PROGRAMS)).toBe("command -v xfce4-terminal; command -v mousepad");
+    expect(checkCommand(SYSTEM_PROGRAMS)).toBe("command -v xfce4-terminal; command -v mousepad; command -v xclip");
   });
 
   it("names the dock's layout file under the profile's Hermes home, quoted for the shell", () => {
@@ -64,11 +66,19 @@ describe("What the server has", () => {
   });
 });
 
-/** A Hermes whose screen and machine lack all three apps, with the dock written before they were installed. */
+/**
+ * A Hermes whose screen and machine lack all three apps, but have xclip, with the dock written before they were
+ * installed, and the browser's profile with the owner's sign-ins beside it.
+ */
 function server({ running = false } = {}) {
   const s = new FakeHermes();
   s.display = { status: { supported: true, installed: true, missing: [], running, placement: "gateway", browser: null }, lease: { holder: "agent", viewer_hash: null, since: 1, epoch: 0 }, minted: new Set() };
-  s.machine = { programs: new Set(), files: new Set([DOCK]), pmInstall: { code: 0, output: "Installed chromium 141" }, browser: `${HOME}/pm/chromium/chrome` };
+  s.machine = {
+    programs: new Set(["xclip"]),
+    files: new Set([DOCK, PROFILE]),
+    pmInstall: { code: 0, output: "Installed chromium 141" },
+    browser: `${HOME}/pm/chromium/chrome`,
+  };
   return s;
 }
 
@@ -100,7 +110,7 @@ describe("Adding the apps", () => {
     expect(run.state()).toEqual({ kind: "checked", apps: { browser: { kind: "added" }, terminal: { kind: "added" }, editor: { kind: "added" } }, dock: { kind: "current" } });
     expect(run.passwords).toEqual([undefined]);
     expect(run.asked("cli.exec")).toEqual([{ argv: ["pm", "install", "chromium"], timeout: 600 }]);
-    expect(run.asked("shell.exec")).toContainEqual({ command: "command -v xfce4-terminal; command -v mousepad" });
+    expect(run.asked("shell.exec")).toContainEqual({ command: "command -v xfce4-terminal; command -v mousepad; command -v xclip" });
     expect(run.asked("shell.exec")).toContainEqual({ command: `rm -f -- '${DOCK}'` });
     expect(s.machine!.files.has(DOCK)).toBe(false);
     expect(run.asked("display.stop")).toEqual([]);
@@ -154,12 +164,37 @@ describe("Adding the apps", () => {
     expect(run.asked("shell.exec").some((p) => String(p.command).startsWith("rm"))).toBe(false);
   });
 
-  it("skips the terminal and the editor quietly on a Hermes without shell.exec", async () => {
+  it("skips the terminal, the editor and xclip quietly on a Hermes without shell.exec, and doesn't count on them", async () => {
     const s = server();
     s.machine = undefined;
     const run = await setUp(s, () => ({ kind: "installed" }));
     expect(run.passwords).toEqual([]);
-    expect(run.state()).toEqual({ kind: "checked", apps: { browser: { kind: "failed", why: "This Hermes can't install it from the app." } }, dock: { kind: "current" } });
+    expect(run.state()).toEqual({
+      kind: "checked",
+      apps: { browser: { kind: "failed", why: "This Hermes can't install it from the app." }, terminal: { kind: "unknown" }, editor: { kind: "unknown" }, clipboard: { kind: "unknown" } },
+      dock: { kind: "current" },
+    });
+  });
+
+  it("adds xclip alone without writing the dock again, since it has no place there", async () => {
+    const s = server({ running: true });
+    s.display!.status.browser = "/usr/bin/chromium";
+    s.machine!.programs = new Set(["xfce4-terminal", "mousepad"]);
+    const run = await setUp(s, () => ({ kind: "installed" }));
+    expect(run.state()).toEqual({ kind: "checked", apps: { clipboard: { kind: "added" } }, dock: { kind: "current" } });
+    expect(s.machine!.files.has(DOCK)).toBe(true);
+    expect(run.asked("display.status")).toHaveLength(1);
+  });
+
+  it("deletes only the dock's layout, never the browser's profile with the owner's sign-ins", async () => {
+    const s = server();
+    const run = await setUp(s, () => ({ kind: "installed" }));
+    await run.deps.api.resetDock(String((await run.deps.api.status()).profile_key));
+    const deleted = run.asked("shell.exec").filter((p) => String(p.command).startsWith("rm"));
+    expect(deleted.length).toBeGreaterThan(1);
+    expect(new Set(deleted.map((p) => p.command))).toEqual(new Set([`rm -f -- '${DOCK}'`]));
+    expect(JSON.stringify(run.asked("shell.exec"))).not.toContain("browser-profile");
+    expect(s.machine!.files).toEqual(new Set([PROFILE]));
   });
 
   it("does nothing when all three are there", async () => {

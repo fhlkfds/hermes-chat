@@ -20,12 +20,13 @@ import {
   type ScreenApi,
 } from "../hermes/screen";
 import {
+  SCREEN_APPS,
   canSetUp,
   installSystem,
   namesOf,
   recheckBrowser,
   setUpApps,
-  without,
+  skip,
   type AppState,
   type AppsSetup,
   type InstallSystem,
@@ -464,6 +465,8 @@ function AppsNote({
   const noSsh = idsIn(setup, "no-ssh");
   const failed = idsIn(setup, "failed").filter((id) => id !== "browser");
   const added = idsIn(setup, "added");
+  const dockApps = added.filter((id) => SCREEN_APPS.find((a) => a.id === id)?.inDock);
+  const others = added.filter((id) => !dockApps.includes(id));
   const firstOf = <K extends AppState["kind"]>(ids: ScreenAppId[]) => setup.apps[ids[0]] as Extract<AppState, { kind: K }>;
   const send = (e: React.FormEvent) => {
     e.preventDefault();
@@ -525,21 +528,22 @@ function AppsNote({
       {added.length > 0 && (
         <div className="attach-note screen-apps screen-found" role="status">
           <Check size={14} aria-hidden />
-          {setup.dock.kind === "current" && <> Added {namesOf(added)} to the screen's dock.</>}
-          {setup.dock.kind === "restart" && (
+          {others.length > 0 && <> Added {namesOf(others)}.</>}
+          {dockApps.length > 0 && setup.dock.kind === "current" && <> Added {namesOf(dockApps)} to the screen's dock.</>}
+          {dockApps.length > 0 && setup.dock.kind === "restart" && (
             <>
               {" "}
-              Added {namesOf(added)} to the screen. It is running on its old dock, so they show in the dock after a restart. Restarting stops whatever the agent is
-              doing there.
+              Added {namesOf(dockApps)} to the screen. It is running on its old dock, so they show in the dock after a restart. Restarting stops whatever the agent
+              is doing there, and a sign-in made on the screen in the last half minute may be lost.
               <button className="btn" disabled={busy || !connected} onClick={onRestart}>
                 {busy ? <Spinner /> : <RefreshCw size={14} />} Restart the screen
               </button>
             </>
           )}
-          {setup.dock.kind === "failed" && (
+          {dockApps.length > 0 && setup.dock.kind === "failed" && (
             <>
               {" "}
-              Added {namesOf(added)} to the screen, but couldn't update its dock: {setup.dock.why}
+              Added {namesOf(dockApps)} to the screen, but couldn't update its dock: {setup.dock.why}
             </>
           )}
         </div>
