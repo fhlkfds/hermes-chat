@@ -99,7 +99,7 @@ import { FileBrowser } from "./ui/FileBrowser";
 import { UsageAnalytics, type UsageTab } from "./ui/UsageAnalytics";
 import { BudgetOpener, BudgetWatches, budgetShelves } from "./hermes/budgetWatch";
 import { Work } from "./ui/Work";
-import type { WorkFeature } from "./ui/WorkPlan";
+import { WORK_PARTS, type WorkFeature } from "./ui/WorkPlan";
 import { note, type RemoteLog } from "./hermes/logs";
 import { STATUS_LABEL, composing, routeLabel } from "./ui/bits";
 import { editStep, isTextField } from "./ui/editKeys";
@@ -1364,18 +1364,7 @@ export function Main({
   const [showProfile, setShowProfile] = useState<{ name: string; tab: "profiles" | "persona" }>();
   /** What the connected Hermes supports, for the menus that say what it lacks (capabilities.ts). */
   const caps = useCapabilities(hermes.capabilities);
-  // The Work page's planning parts, each hidden only once Hermes is found to lack its route (ADR 0179). Named in a
-  // string so the set changes only when one of them does.
-  const workLacking = (
-    [
-      ["links", "workLinks"],
-      ["pickers", "workPickers"],
-      ["estimate", "workEstimate"],
-      ["dispatch", "workDispatch"],
-    ] as const
-  )
-    .flatMap(([part, id]) => (caps.caps[id].state === "unsupported" ? [part] : []))
-    .join(" ");
+  const workLacking = (Object.keys(WORK_PARTS) as WorkFeature[]).filter((part) => caps.caps[WORK_PARTS[part]].state === "unsupported").join(" ");
   const workLacks = useMemo(() => new Set(workLacking.split(" ").filter(Boolean) as WorkFeature[]), [workLacking]);
   /** Set, each time anew, to open Settings on its Voice tab, from a voice conversation's "Change voice settings". */
   const [showVoice, setShowVoice] = useState<object>();

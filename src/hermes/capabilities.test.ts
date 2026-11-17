@@ -169,6 +169,8 @@ describe("a check of a new Hermes (upstream 74b2ed6)", () => {
       // Only Diagnostics' write checks, or a write, can learn these.
       workLinks: "unknown",
       workEstimate: "unknown",
+      workReclaim: "unknown",
+      workReassign: "unknown",
       botMode: "supported",
       // Only a chat's own subagent.list can learn this.
       subagents: "unknown",
@@ -743,6 +745,54 @@ describe("checking again", () => {
       await t.caps.checkWrites();
       expect([t.caps.get("workLinks").state, t.caps.get("workEstimate").state], `case ${i}`).toEqual([links, estimate]);
     }
+  });
+
+  it("reads the Work page's reclaim and reassign checks, which name a run and a card that don't exist", async () => {
+    const RECLAIM = "POST api/plugins/kanban/runs/0/terminate";
+    const REASSIGN = "POST api/plugins/kanban/tasks/__hermes_chat_probe__/reassign";
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ [RECLAIM]: answered(404, "run 0 not found"), [REASSIGN]: answered(409, "cannot reassign __hermes_chat_probe__") }, "supported", "supported"],
+      [{ [RECLAIM]: noRoute(), [REASSIGN]: answered(405, "Method Not Allowed") }, "unsupported", "unsupported"],
+      [{ [REASSIGN]: noRoute() }, "unsupported", "unsupported"],
+      [{ [RECLAIM]: { ok: true, run_id: 0 }, [REASSIGN]: { ok: true, assignee: null } }, "unknown", "unknown"],
+      [{ [RECLAIM]: answered(502, "bad gateway"), [REASSIGN]: answered(503, "busy") }, "unreachable", "unreachable"],
+    ];
+    for (const [i, [answers, reclaim, reassign]] of cases.entries()) {
+      const t = store({ ...NEW, ...answers });
+      await connectAndCheck(t);
+      await t.caps.checkWrites();
+      expect([t.caps.get("workReclaim").state, t.caps.get("workReassign").state], `case ${i}`).toEqual([reclaim, reassign]);
+    }
+  });
+
+  it("leaves each Work part's writes to that part's own capability, and the board's to the kanban capability", () => {
+    const sample: Record<string, string[]> = {
+      workLinks: ["api/plugins/kanban/links"],
+      workEstimate: ["api/plugins/kanban/estimate", "api/plugins/kanban/tasks/t_1/estimate"],
+      workReclaim: ["api/plugins/kanban/runs/14/terminate"],
+      workReassign: ["api/plugins/kanban/tasks/t_1/reassign"],
+    };
+    const board = CAPABILITIES.find((c) => c.id === "kanban")!.writeRoutes!;
+    const guards = (routes: RegExp[], path: string) => routes.some((r) => r.test(path));
+    for (const part of CAPABILITIES.filter((c) => c.anchor === "work" && c.id !== "kanban" && c.writeRoutes)) {
+      expect(sample[part.id]?.length, `${part.id} needs a sample path for each of its write routes`).toBe(part.writeRoutes!.length);
+      for (const [i, path] of sample[part.id].entries()) {
+        expect(part.writeRoutes![i].test(path), `${part.id} guards ${path}`).toBe(true);
+        expect(guards(board, path), `kanban doesn't guard ${path}`).toBe(false);
+      }
+    }
+    for (const path of ["api/plugins/kanban/tasks", "api/plugins/kanban/tasks/t_1", "api/plugins/kanban/tasks/t_1/comments", "api/plugins/kanban/runs/14/inspect", "api/plugins/kanban/tasks/t_1/reclaim"])
+      expect(guards(board, path), `kanban guards ${path}`).toBe(true);
+  });
+
+  it("refuses a reclaim on a plugin without its route, and still takes a reassign and the board's own writes", async () => {
+    const t = store(NEW);
+    await connectAndCheck(t);
+    t.caps.observeWrite(1, { route: "api/plugins/kanban/runs/14/terminate", verb: "POST" }, noRoute());
+    expect(t.caps.get("kanban").state).toBe("supported");
+    expect(t.caps.refuses({ rest: "POST", path: "api/plugins/kanban/runs/15/terminate" })).toBe("workReclaim");
+    expect(t.caps.refuses({ rest: "POST", path: "api/plugins/kanban/tasks/t_1/reassign" })).toBeUndefined();
+    expect(t.caps.refuses({ rest: "PATCH", path: "api/plugins/kanban/tasks/t_1" })).toBeUndefined();
   });
 
   it("finds the Work page's dispatch settings and pickers from their reads, and the plugin without them", async () => {

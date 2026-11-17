@@ -32,6 +32,9 @@ export type OpenGuide = (url: string) => void;
 
 export const useCapabilities = (store: CapabilityStore): CapabilitySnapshot => useSyncExternalStore(store.subscribe, store.getSnapshot);
 
+const WRITE_CHECKS = CAPABILITIES.flatMap((c) => (c.writeCheck ? [c.writeCheck.says] : []));
+const WRITE_CHECKS_LISTED = new Intl.ListFormat("en", { type: "conjunction" }).format(WRITE_CHECKS);
+
 const BADGE: Record<CapabilityState, string> = { supported: "cap-ok", unsupported: "cap-no", unknown: "cap-unknown", unreachable: "cap-unknown" };
 
 function StateBadge({ state }: { state: CapabilityState }) {
@@ -209,9 +212,9 @@ export function DiagnosticsSettings({
         }
         more={
           <p>
-            Checks only read, but for four that send a change Hermes refuses before changing anything: a switch for a toolset no toolset is named, an
-            answer to an Approval no chat has, a Work link from a card to itself, and a Work token guess with no title. Those four go only while this
-            page is open. Results are kept in memory for this sign-in, never on disk. The report holds no password, cookie, ticket or header value.
+            Checks only read, but for {WRITE_CHECKS.length} that send a change Hermes refuses before changing anything: {WRITE_CHECKS_LISTED}. Those
+            go only while this page is open. Results are kept in memory for this sign-in, never on disk. The report holds no password, cookie, ticket or
+            header value.
           </p>
         }
         action={

@@ -55,7 +55,7 @@ describe("a reply that dispatches a kanban task", () => {
     const { server, hermes, chat } = await signedIn();
     const { id, task } = await dispatched(server, hermes);
     task.started_at = Math.floor(Date.now() / 1000);
-    task.current_run_id = "run_1";
+    task.current_run_id = 1;
     task.status = "running";
     expect(chat(id).tasks![0]).toMatchObject({ status: "ready", picked: false });
     await vi.advanceTimersByTimeAsync(POLL_EVERY_MS - 1);
@@ -641,7 +641,7 @@ describe("planning on the Work page (issue #604)", () => {
     expect(await api.assignees()).toEqual(["researcher", "writer"]);
     expect(await api.profiles()).toEqual([{ name: "researcher", model: "claude-sonnet-5-5" }, { name: "writer" }]);
     expect((await api.modelOptions()).map((p) => p.label)).toEqual(["Anthropic", "OpenRouter"]);
-    expect(await api.orchestration()).toEqual({ autoDecompose: false, autoPromoteChildren: true });
+    expect(await api.orchestration()).toEqual({ autoDecompose: false, autoPromoteChildren: true, defaultAssignee: "" });
     expect(await api.reviewDispatch("default")).toBe(false);
     server.kanban.reviewDispatch = undefined;
     expect(await api.reviewDispatch("default")).toBe(true);

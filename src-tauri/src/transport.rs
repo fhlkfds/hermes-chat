@@ -2583,9 +2583,12 @@ pub fn gateway_write(method: &str, path: &str, body: Option<&str>) -> bool {
 /// sends: `api/plugins/kanban/tasks` creates a task with what New task sets, `api/plugins/kanban/tasks/{id}/comments`
 /// adds a comment with only its text, `api/plugins/kanban/links` links two tasks with exactly `parent_id` and `child_id`,
 /// and `api/plugins/kanban/estimate` (a `title` and an optional `body`) and `api/plugins/kanban/tasks/{id}/estimate`
-/// (no body, or `{}`) ask for a token guess, which writes nothing. A task id is one segment of letters, digits, `-` and
-/// `_`, as the plugin makes them, which Diagnostics' `__hermes_chat_probe__` also is. Edits, moves and removing a link
-/// are `PATCH`es and `DELETE`s, which the relay already takes.
+/// (no body, or `{}`) ask for a token guess, which writes nothing. For a running card's task run (ADR 0191),
+/// `api/plugins/kanban/runs/{id}/terminate` stops one run, with no fields or only a `reason`, and
+/// `api/plugins/kanban/tasks/{id}/reassign` gives the card to a `profile` (`""` for none) with `reclaim_first` and an
+/// optional `reason`. A task id is one segment of letters, digits, `-` and `_`, as the plugin makes them, which
+/// Diagnostics' `__hermes_chat_probe__` also is. A run id is the integer Hermes numbers runs with. Edits, moves and
+/// removing a link are `PATCH`es and `DELETE`s, which the relay already takes.
 fn kanban_write(path: &str, body: Option<&str>) -> bool {
     let Some(rest) = path.strip_prefix("api/plugins/kanban/") else { return false };
     let id_ok = |id: &str| (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
@@ -2595,7 +2598,16 @@ fn kanban_write(path: &str, body: Option<&str>) -> bool {
             f.keys().all(|k| keys.contains(&k.as_str())) && f.get(required).is_some_and(|v| v.is_string()) && f.values().all(|v| v.is_string() || v.is_number())
         })
     };
+    let run_ok = |id: &str| (1..=18).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit());
+    let text = |f: &serde_json::Map<String, serde_json::Value>, key: &str| f.get(key).is_none_or(|v| v.is_string());
     match rest.split('/').collect::<Vec<_>>().as_slice() {
+        ["runs", id, "terminate"] if run_ok(id) => fields().is_some_and(|f| f.keys().all(|k| k == "reason") && text(&f, "reason")),
+        ["tasks", id, "reassign"] if id_ok(id) => fields().is_some_and(|f| {
+            f.keys().all(|k| ["profile", "reclaim_first", "reason"].contains(&k.as_str()))
+                && f.get("profile").is_some_and(|v| v.is_string())
+                && f.get("reclaim_first").is_some_and(|v| v.is_boolean())
+                && text(&f, "reason")
+        }),
         ["tasks"] => only(&["title", "body", "assignee", "priority", "idempotency_key"], "title"),
         ["tasks", id, "comments"] if id_ok(id) => only(&["body"], "body"),
         ["tasks", id, "estimate"] if id_ok(id) => body.is_none() || fields().is_some_and(|f| f.is_empty()),
@@ -3725,6 +3737,12 @@ mod tests {
             ("api/plugins/kanban/estimate", r#"{"title":"Ship it","body":"All of it"}"#),
             ("api/plugins/kanban/estimate", r#"{"title":""}"#),
             ("api/plugins/kanban/tasks/t_0000001a/estimate", "{}"),
+            ("api/plugins/kanban/runs/14/terminate", r#"{"reason":"Reclaimed from Highwing"}"#),
+            ("api/plugins/kanban/runs/123456789012345678/terminate", "{}"),
+            ("api/plugins/kanban/tasks/t_0000001a/reassign", r#"{"profile":"writer","reclaim_first":true,"reason":"Reassigned from Highwing"}"#),
+            ("api/plugins/kanban/tasks/t_0000001a/reassign", r#"{"profile":"","reclaim_first":true,"reason":"wrong repo"}"#),
+            ("api/plugins/kanban/runs/0/terminate", "{}"),
+            ("api/plugins/kanban/tasks/__hermes_chat_probe__/reassign", r#"{"profile":"","reclaim_first":false}"#),
         ] {
             assert!(kanban_write(path, Some(body)), "{path} {body}");
         }
@@ -3759,12 +3777,32 @@ mod tests {
             ("api/plugins/kanban/tasks/../estimate", "{}"),
             ("api/plugins/kanban/dispatch", "{}"),
             ("api/plugins/kanban/orchestration", r#"{"auto_decompose":false}"#),
+            ("api/plugins/kanban/runs/run_1/terminate", "{}"),
+            ("api/plugins/kanban/runs/-1/terminate", "{}"),
+            ("api/plugins/kanban/runs/1234567890123456789/terminate", "{}"),
+            ("api/plugins/kanban/runs//terminate", "{}"),
+            ("api/plugins/kanban/runs/1/2/terminate", "{}"),
+            ("api/plugins/kanban/runs/1/terminate", r#"{"reason":3}"#),
+            ("api/plugins/kanban/runs/1/terminate", r#"{"reason":"x","signal":"KILL"}"#),
+            ("api/plugins/kanban/runs/1/terminate", "[]"),
+            ("api/plugins/kanban/runs/1/inspect", "{}"),
+            ("api/plugins/kanban/runs/1", "{}"),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer"}"#),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"reclaim_first":true}"#),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":"true"}"#),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":null,"reclaim_first":true}"#),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":true,"reason":1}"#),
+            ("api/plugins/kanban/tasks/t_1/reassign", r#"{"profile":"writer","reclaim_first":true,"board":"other"}"#),
+            ("api/plugins/kanban/tasks/../reassign", r#"{"profile":"writer","reclaim_first":true}"#),
+            ("api/plugins/kanban/tasks/t_1/reclaim", r#"{"reason":"x"}"#),
         ] {
             assert!(!kanban_write(path, Some(body)), "{path} {body}");
         }
         assert!(!kanban_write("api/plugins/kanban/tasks", None));
         assert!(!kanban_write("api/plugins/kanban/links", None));
         assert!(!kanban_write("api/plugins/kanban/estimate", None));
+        assert!(!kanban_write("api/plugins/kanban/runs/1/terminate", None));
+        assert!(!kanban_write("api/plugins/kanban/tasks/t_1/reassign", None));
     }
 
     #[test]

@@ -30,7 +30,7 @@ function held() {
   const loadTask = (id: string) =>
     new Promise<TaskDetail>((done) => {
       asked.push(id);
-      waiting.push({ id, answer: () => done({ task: card(id, 1), comments: [], links: { parents: [], children: id === "a" ? ["b"] : [] }, linked: [] }) });
+      waiting.push({ id, answer: () => done({ task: card(id, 1), comments: [], links: { parents: [], children: id === "a" ? ["b"] : [] }, linked: [], runs: [] }) });
     });
   const answer = async (id: string) => {
     const i = waiting.map((w) => w.id).lastIndexOf(id);
@@ -155,6 +155,7 @@ describe("the Graph view's cards", () => {
     comments: [],
     links: id === "a" ? { parents: [], children: ["b", "c"] } : { parents: ["a"], children: [] },
     linked: [],
+    runs: [],
   });
 
   it.each(UI_SIZES)("hold every row of text whole, one above another, at the %ipx interface size", async (px) => {

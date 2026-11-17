@@ -6,7 +6,6 @@ import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } fr
 import { ArrowLeft, CircleAlert, Cpu, Pencil, Plus, RefreshCw, SquareKanban, TriangleAlert, User, X } from "lucide-react";
 import {
   NoKanbanPlugin,
-  canMove,
   moveNeeds,
   moveSettled,
   refused,
@@ -20,6 +19,7 @@ import {
   type TaskDetail,
   type TaskFields,
   type TaskLinks,
+  type TaskRun,
   type Workflow,
 } from "../hermes/kanban";
 import { failureOf, stateOfFailure } from "../hermes/capabilities";
@@ -28,6 +28,7 @@ import { Spinner } from "./bits";
 import { useModal } from "./modal";
 import { BotModelSection, CardFace, DispatchLine, EstimateBox, LinksSection, PICKABLE, type DispatchRead, type WorkFeature } from "./WorkPlan";
 import { WorkGraph, opensOnKey } from "./WorkGraph";
+import { RunSection, manualMoves } from "./WorkRun";
 
 export type WorkApi = Pick<
   KanbanApi,
@@ -47,6 +48,8 @@ export type WorkApi = Pick<
   | "orchestration"
   | "estimate"
   | "estimateTask"
+  | "changeRun"
+  | "runChat"
 >;
 
 /** A move waiting on its summary or reason. */
@@ -68,12 +71,14 @@ export function Work({
   connected,
   onClose,
   pollMs = 10_000,
+  watchMs = 5_000,
   lacks = NONE,
 }: {
   api: WorkApi;
   connected: boolean;
   onClose: () => void;
   pollMs?: number;
+  watchMs?: number;
   lacks?: ReadonlySet<WorkFeature>;
 }) {
   const [board, setBoard] = useState<Board>();
@@ -172,7 +177,8 @@ export function Work({
     if (openId && board && !open) setOpenId(undefined);
   }, [openId, board, open]);
 
-  const allowed = (t: BoardTask, to: string) => !!workflow && canMove(workflow, t.status, to);
+  const moves = (t: BoardTask) => (workflow ? manualMoves(workflow, t, lacks) : []);
+  const allowed = (t: BoardTask, to: string) => moves(t).some((c) => c.key === to);
 
   const move = async (task: BoardTask, to: string, note = "") => {
     setSaving(true);
@@ -198,9 +204,9 @@ export function Work({
     if (!live.current) return;
     setSaving(false);
   };
-  const requestMove = (task: BoardTask, to: string) => {
+  const requestMove = (task: BoardTask, to: string, from = task.status) => {
     setMoveErr(undefined);
-    const need = moveNeeds(task.status, to);
+    const need = moveNeeds(from, to);
     if (need) setAsk({ task, to, need });
     else void move(task, to);
   };
@@ -333,7 +339,7 @@ export function Work({
                     role="button"
                     tabIndex={0}
                     title={t.body || t.title}
-                    draggable={!!workflow && !locked}
+                    draggable={!locked && moves(t).length > 0}
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/plain", t.id);
                       draggingNow.current = t;
@@ -363,9 +369,11 @@ export function Work({
           assignees={board?.assignees ?? []}
           board={tasks}
           lacks={lacks}
+          watchMs={watchMs}
+          defaultAssignee={dispatch.kind === "read" ? dispatch.o.defaultAssignee : undefined}
           onRefresh={() => void load(true)}
           onSaved={() => void load()}
-          onMove={(to) => requestMove(open, to)}
+          onMove={(to, from) => requestMove(open, to, from)}
           onWriting={(w) => (sheetWriting.current = w)}
           onClose={() => {
             sheetWriting.current = false;
@@ -442,6 +450,9 @@ function MovePrompt({ ask, busy, error, onSubmit, onClose }: { ask: Ask; busy: b
             placeholder={ask.need === "summary" ? "What got done?" : "Why is it blocked?"}
             aria-label={ask.need === "summary" ? "Summary" : "Reason"}
           />
+          {ask.task.status === "running" && ask.to === "blocked" && (
+            <p className="muted small">Blocking doesn't stop its bot, which works on to the end of its turn. The card stays blocked when the bot finishes.</p>
+          )}
           {error && <p className="work-err">{error}</p>}
           <div className="confirm-actions">
             <button type="button" className="btn" onClick={onClose}>
@@ -557,6 +568,8 @@ function TaskSheet({
   assignees,
   board,
   lacks,
+  watchMs,
+  defaultAssignee,
   onRefresh,
   onSaved,
   onMove,
@@ -573,9 +586,11 @@ function TaskSheet({
   /** The board's cards, which the task can be linked to. */
   board: BoardTask[];
   lacks: ReadonlySet<WorkFeature>;
+  watchMs: number;
+  defaultAssignee?: string;
   onRefresh: () => void;
   onSaved: () => void;
-  onMove: (to: string) => void;
+  onMove: (to: string, from: string) => void;
   /** Whether an edit or a comment is on its way, so the board isn't read under it. */
   onWriting: (writing: boolean) => void;
   onClose: () => void;
@@ -586,6 +601,7 @@ function TaskSheet({
   const [read, setRead] = useState<{ task: BoardTask; seen: string }>();
   // The links as last read: a link added or removed changes the board's counts, which reads them again.
   const [links, setLinks] = useState<{ links: TaskLinks; linked: LinkedTask[] }>();
+  const [runs, setRuns] = useState<TaskRun[]>();
   const [comments, setComments] = useState<TaskComment[]>();
   const [readErr, setReadErr] = useState<string>();
   const [rev, setRev] = useState(0);
@@ -611,6 +627,7 @@ function TaskSheet({
     setRead({ task: d.task, seen });
     setComments(d.comments);
     setLinks({ links: d.links, linked: d.linked });
+    setRuns(d.runs);
     setReadErr(undefined);
     const u = unsureNow.current;
     if (u && ours(d.comments, u.body) > u.had) {
@@ -627,9 +644,17 @@ function TaskSheet({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read again when the task, the board's values for it, its comment count or `rev` change; `api` is the same Hermes throughout
   }, [task.id, seen, task.comments, rev]);
+  const refresh = async () => {
+    const mine = gen.current;
+    const d = await api.loadTask(task.id);
+    if (!live.current || mine !== gen.current) return undefined;
+    show(d);
+    return d;
+  };
 
   const current = read && read.seen === seen ? read.task : task;
-  const targets = workflow.columns.filter((c) => canMove(workflow, task.status, c.key));
+  const targets = manualMoves(workflow, current, lacks);
+  const steered = current.status === "running" && !lacks.has("reassign");
   const can = (to: string) => targets.some((c) => c.key === to);
   const changes = form && base.current ? taskEdits(base.current, form) : {};
   const canSave = !!form && validFields(form) && Object.keys(changes).length > 0;
@@ -736,7 +761,7 @@ function TaskSheet({
               <>
                 <div className="work-meta">
                   <code>{task.id}</code>
-                  <span className="work-status">{task.status}</span>
+                  <span className="work-status">{current.status}</span>
                   {current.priority !== 0 && <span>P{current.priority}</span>}
                   {current.assignee && (
                     <span>
@@ -762,6 +787,24 @@ function TaskSheet({
                     <h3 className="work-sub">Result</h3>
                     <p className="work-text">{current.result}</p>
                   </>
+                )}
+                {!!runs?.length && (
+                  <RunSection
+                    task={current}
+                    api={api}
+                    runs={runs}
+                    assignees={assignees}
+                    can={{ reclaim: !lacks.has("reclaim"), reassign: !lacks.has("reassign") }}
+                    watchMs={watchMs}
+                    refresh={refresh}
+                    defaultAssignee={defaultAssignee}
+                    onRead={(d) => {
+                      gen.current++;
+                      show(d);
+                    }}
+                    onSaved={onSaved}
+                    onWriting={onWriting}
+                  />
                 )}
                 {PICKABLE.has(task.status) && !lacks.has("pickers") && (
                   <BotModelSection
@@ -862,6 +905,10 @@ function TaskSheet({
                   Save
                 </button>
               </>
+            ) : steered ? (
+              <p className="muted small">
+                A bot is working on this card. {lacks.has("reclaim") ? "Stop or Reassign" : "Stop, Reclaim or Reassign"} it above.
+              </p>
             ) : (
               <>
                 <select
@@ -870,7 +917,7 @@ function TaskSheet({
                   value=""
                   onChange={(e) => {
                     const to = e.target.value;
-                    if (to) onMove(to);
+                    if (to) onMove(to, current.status);
                   }}
                 >
                   <option value="">Move to…</option>
@@ -881,18 +928,18 @@ function TaskSheet({
                   ))}
                 </select>
                 <span className="work-spacer" />
-                {task.status === "blocked" && can("ready") && (
-                  <button className="btn" disabled={busy} onClick={() => onMove("ready")}>
+                {current.status === "blocked" && can("ready") && (
+                  <button className="btn" disabled={busy} onClick={() => onMove("ready", current.status)}>
                     Unblock
                   </button>
                 )}
                 {can("blocked") && (
-                  <button className="btn" disabled={busy} onClick={() => onMove("blocked")}>
+                  <button className="btn" disabled={busy} onClick={() => onMove("blocked", current.status)}>
                     Block…
                   </button>
                 )}
                 {can("done") && (
-                  <button className="btn primary" disabled={busy} onClick={() => onMove("done")}>
+                  <button className="btn primary" disabled={busy} onClick={() => onMove("done", current.status)}>
                     Complete
                   </button>
                 )}

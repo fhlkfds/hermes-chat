@@ -4402,6 +4402,13 @@ div.export-preview.export-page { height: auto; padding: 10px 12px; background: v
 .work-model-typed { display: flex; flex: 1 1 240px; align-items: flex-end; gap: 6px; }
 .work-estimate { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; }
 .work-estimate > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; }
+.work-run:focus { outline: none; }
+.work-run-meta { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.work-run-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.work-run-lines li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.work-run-role { margin-right: 8px; color: var(--faint); font-size: calc(12rem / 14); }
+.work-run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.work-run-actions select[aria-disabled="true"] { opacity: 0.45; }
 @media (max-width: 640px) {
   .work-inner { padding: 14px 16px 12px; }
   .settings section.work-column { flex-basis: 78vw; }

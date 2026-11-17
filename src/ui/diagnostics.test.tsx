@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeHermes, row } from "../hermes/fakeHermes";
-import { CapabilityStore, guideUrl, type CapabilityIO } from "../hermes/capabilities";
+import { CAPABILITIES, CapabilityStore, guideUrl, type CapabilityIO } from "../hermes/capabilities";
 import { RpcError, connect, type Hermes } from "../hermes/transport";
 import { Main } from "../App";
 import { CapabilityGate, DiagnosticsSettings } from "./Diagnostics";
@@ -319,11 +319,20 @@ describe("Diagnostics' layout (#174, ADR 0059)", () => {
     visible(within(row$("Skills")).getByText("Couldn't check"));
     visible(within(row$("Skills")).getByText(/Needs:/));
   });
+
+  it("names every check it sends that is shaped like a change, and how many there are", () => {
+    diagnostics(scriptedStore(NEW));
+    const said = help("Features").panel.textContent!;
+    const checks = CAPABILITIES.flatMap((c) => (c.writeCheck ? [c.writeCheck.says] : []));
+    expect(said).toContain(`Checks only read, but for ${checks.length} that send a change Hermes refuses before changing anything: `);
+    for (const check of checks) expect(said).toContain(check);
+    expect(said).toContain("a Work reclaim of run 0, which no card has, and a Work reassign of a card that doesn't exist. Those go only while this page is open.");
+  });
 });
 
 describe("Work dispatch (issue #604)", () => {
   const work = (orchestration: () => Promise<{ autoDecompose: boolean; autoPromoteChildren: boolean }>, review: () => Promise<boolean>) => ({
-    orchestration,
+    orchestration: async () => ({ ...(await orchestration()), defaultAssignee: "" }),
     reviewDispatch: vi.fn(review),
   });
   const value = (name: RegExp) => screen.getByText(name).closest<HTMLElement>(".diag-fact")!;

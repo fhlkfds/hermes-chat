@@ -291,12 +291,16 @@ describe("Diagnostics' write checks (ADR 0169)", () => {
     expect(hermes.capabilities.get("approvalAnswers").why).toMatch(/doesn't run turns in a process of their own/);
     expect(hermes.capabilities.get("workLinks")).toMatchObject({ state: "supported", source: "probed" });
     expect(hermes.capabilities.get("workEstimate")).toMatchObject({ state: "supported", source: "probed" });
+    expect(hermes.capabilities.get("workReclaim")).toMatchObject({ state: "supported", source: "probed" });
+    expect(hermes.capabilities.get("workReassign")).toMatchObject({ state: "supported", source: "probed" });
     // The one PUT names the toolset no toolset is, and FastAPI refused its body: no toolset changed. The link went from
     // a task to itself and the estimate had no title, which Hermes refuses before writing or asking a model.
     expect(writesSent(server).slice(writesBefore).map((r) => [r.method, r.path])).toEqual([
       ["PUT", "/api/tools/toolsets/__hermes_chat_probe__"],
       ["POST", "/api/plugins/kanban/links"],
       ["POST", "/api/plugins/kanban/estimate"],
+      ["POST", "/api/plugins/kanban/runs/0/terminate"],
+      ["POST", "/api/plugins/kanban/tasks/__hermes_chat_probe__/reassign"],
     ]);
     expect(server.toolsetWrites).toEqual([]);
     expect(server.kanban.links).toEqual([]);

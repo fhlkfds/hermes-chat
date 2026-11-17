@@ -451,13 +451,263 @@ describe("planning on the Work page (issue #604)", () => {
   });
 });
 
+function atWork() {
+  const s = new FakeHermes();
+  const k = s.kanban;
+  const task = k.add("default", { title: "Research the API", assignee: "researcher", status: "running" });
+  k.add("default", { title: "Notes", assignee: "writer", status: "todo" });
+  const run = task.current_run_id!;
+  const park = `POST ${task.id}/reassign {"profile":"","reclaim_first":true,"reason":"wrong repo"}`;
+  const stopped = [park, `PATCH ${task.id} {"status":"blocked","block_reason":"wrong repo"}`, `POST ${task.id}/comments {"body":"BLOCKED: wrong repo"}`, `PATCH ${task.id} {"assignee":"researcher"}`];
+  return { s, k, task, run, park, stopped };
+}
+
+async function fastPage(s: FakeHermes) {
+  const hermes = await connect(s.openPipe);
+  running.push(hermes);
+  render(<Work api={hermes.kanban} connected onClose={() => {}} pollMs={30} watchMs={30} />);
+  await screen.findByText("Dispatch");
+  return userEvent.setup();
+}
+
+async function runOf(user: ReturnType<typeof userEvent.setup>, title: string) {
+  const sheet = await sheetOf(user, title);
+  return { sheet, run: await within(sheet).findByRole("region", { name: "Bot run" }) };
+}
+
+async function confirmStop(user: ReturnType<typeof userEvent.setup>, run: HTMLElement) {
+  await user.click(within(run).getByRole("button", { name: "Stop…" }));
+  const confirm = within(run).getByRole("group", { name: "Confirm the change" });
+  await user.type(within(confirm).getByRole("textbox", { name: "Why stop it?" }), "wrong repo");
+  return confirm;
+}
+
+describe("a running card's bot (issue #604)", () => {
+  it("shows the run and its chat's tokens growing while the sheet is open, with the board still read, and reads nothing once it closes", async () => {
+    const { s, k, task, run: id } = atWork();
+    const user = await fastPage(s);
+    const { sheet, run } = await runOf(user, "Research the API");
+    expect(within(run).getByRole("heading", { name: "Bot at work" })).toBeTruthy();
+    await waitFor(() => expect(run.textContent).toContain("Tokens so far: 0 in · 0 out · 1 message"));
+    expect(run.textContent).toContain(`Run ${id} · researcher · started just now · no heartbeat yet`);
+    k.work(task.id, "Reading the RFC");
+    await waitFor(() => expect(run.textContent).toContain("Tokens so far: 1,000 in · 50 out · 2 messages"));
+    expect(run.textContent).toContain("heartbeat just now");
+    k.work(task.id, "Writing the notes");
+    await waitFor(() => expect(run.textContent).toContain("Tokens so far: 2,000 in · 100 out · 3 messages"));
+    expect([...within(run).getByRole("list", { name: "Latest in its chat" }).children].map((li) => li.textContent)).toEqual([
+      expect.stringMatching(/^Asked# Kanban task /),
+      "BotReading the RFC",
+      "BotWriting the notes",
+    ]);
+    const reads = (path: (p: string) => boolean) => s.restRequests.filter((r) => path(r.path)).length;
+    const board = (p: string) => p === "/api/plugins/kanban/board";
+    const watched = (p: string) => p === `/api/plugins/kanban/tasks/${task.id}` || p.startsWith("/api/sessions/local-kanban-");
+    const boardReads = reads(board);
+    await waitFor(() => expect(reads(board)).toBeGreaterThan(boardReads + 2));
+    await user.click(within(sheet).getByRole("button", { name: "Close" }));
+    await new Promise((r) => setTimeout(r, 150));
+    const after = reads(watched);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(reads(watched)).toBe(after);
+    expect(k.writes).toEqual([]);
+  });
+
+  it("stops a bot for good only after asking why and saying what Hermes does, and leaves the card blocked with its bot", async () => {
+    const { s, k, run: id, stopped } = atWork();
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    await user.click(within(run).getByRole("button", { name: "Stop…" }));
+    const confirm = within(run).getByRole("group", { name: "Confirm the change" });
+    expect(confirm.textContent).toContain(`researcher stops working on Research the API (run ${id}), and the card is blocked with your reason, so the dispatcher doesn't start it again.`);
+    expect(confirm.textContent).toContain("The app takes the card from researcher, which stops the run, then blocks the card, then gives it back to researcher.");
+    expect(confirm.textContent).toContain("This server sets no kanban.default_assignee, so nothing starts the card between those steps.");
+    expect(confirm.textContent).toContain("If this run was a review, the card goes back to Review with no bot instead, and isn't blocked");
+    expect((within(confirm).getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(within(confirm).getByRole("textbox", { name: "Why stop it?" }), "wrong repo");
+    expect(k.writes).toEqual([]);
+    await user.click(within(confirm).getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(within(column("blocked")).getByText("wrong repo")).toBeTruthy());
+    expect(k.writes).toEqual(stopped);
+    await waitFor(() => expect(run.textContent).toContain(`Run ${id} stopped, and the card is blocked.`));
+    expect(within(run).getByRole("heading", { name: "Last run" })).toBeTruthy();
+    expect(run.textContent).toContain("(reclaimed)");
+    expect(within(run).queryByRole("button", { name: "Stop…" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Research the API" }).contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("says so when the dispatcher starts a run that gets past the block, and that its bot may still be working", async () => {
+    const { s, k, task, stopped } = atWork();
+    k.defaultAssignee = "writer";
+    k.before = (w) => {
+      if (w === stopped[1]) k.tick();
+    };
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    const confirm = await confirmStop(user, run);
+    expect(confirm.textContent).toContain("This server gives a card with no bot to writer (kanban.default_assignee), so the dispatcher can start the card between those steps.");
+    await user.click(within(confirm).getByRole("button", { name: "Stop" }));
+    const stray = await waitFor(() => k.find(task.id)!.runs.find((r) => r.profile === "writer")!);
+    await waitFor(() =>
+      expect(within(run).getByRole("alert").textContent).toBe(
+        `The card is blocked, but the dispatcher started run ${stray.id} just before the block landed. Its bot works on to the end of its turn, and Hermes can't stop it now. The card stays blocked.`,
+      ),
+    );
+    expect(run.textContent).toContain(`Run ${stray.id} · writer`);
+    expect(run.textContent).toContain("Blocking a card doesn't stop its bot. This run's bot may still be working, to the end of its turn.");
+    expect(k.find(task.id)).toMatchObject({ status: "blocked", assignee: "researcher" });
+  });
+
+  it("sends nothing when the run ended after the confirm showed, and says the card changed", async () => {
+    const { s, k, task } = atWork();
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    await user.click(within(run).getByRole("button", { name: "Reclaim" }));
+    const confirm = within(run).getByRole("group", { name: "Confirm the change" });
+    expect(confirm.textContent).toContain("The card goes back to ready, or to review if this run was a review.");
+    k.move(task.id, "review");
+    await user.click(within(confirm).getByRole("button", { name: "Reclaim" }));
+    await waitFor(() => expect(within(run).getByRole("alert").textContent).toBe("This card changed since you confirmed, so nothing was sent. Here it is now."));
+    expect(k.writes).toEqual([]);
+  });
+
+  it("reclaims the run the owner saw with one write, and shows the run the dispatcher starts next", async () => {
+    const { s, k, run: id } = atWork();
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    await user.click(within(run).getByRole("button", { name: "Reclaim" }));
+    await user.click(within(within(run).getByRole("group", { name: "Confirm the change" })).getByRole("button", { name: "Reclaim" }));
+    await waitFor(() => expect(run.textContent).toContain(`Run ${id} stopped. The card is ready, and the dispatcher starts it again on its next tick (every 60 s by default).`));
+    expect(k.writes).toEqual([`POST runs/${id}/terminate {"reason":"Reclaimed from Highwing"}`]);
+    k.tick();
+    await waitFor(() => expect(within(run).getByRole("heading", { name: "Bot at work" })).toBeTruthy());
+    expect(run.textContent).toContain(`Run ${id + 1} · researcher`);
+  });
+
+  it("gives a running card to another bot, never to none, and settles a lost answer from the next read", async () => {
+    const { s, k, task } = atWork();
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    const to = within(run).getByRole("combobox", { name: "Reassign to" });
+    await waitFor(() => expect(within(to).getByRole("option", { name: "writer" })).toBeTruthy());
+    expect(within(to).getAllByRole("option").map((o) => o.textContent)).toEqual(["Reassign to…", "writer"]);
+    await user.selectOptions(to, "writer");
+    const confirm = within(run).getByRole("group", { name: "Confirm the change" });
+    expect(confirm.textContent).toContain("and the card goes to writer.");
+    expect(confirm.textContent).toContain("If this run was a review, the card goes back to Review with writer.");
+    k.failNext = "lost";
+    await user.click(within(confirm).getByRole("button", { name: "Reassign to writer" }));
+    await waitFor(() => expect(run.textContent).toContain("It's writer's. The dispatcher starts it on its next tick (every 60 s by default)."));
+    expect(k.writes).toEqual([`POST ${task.id}/reassign {"profile":"writer","reclaim_first":true,"reason":"Reassigned to writer from Highwing"}`]);
+    expect(within(run).queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("stays locked after a lost answer while the card is only parked, and Try again finishes without parking it twice", async () => {
+    const { s, k, park, stopped } = atWork();
+    const user = await fastPage(s);
+    const { run } = await runOf(user, "Research the API");
+    const confirm = await confirmStop(user, run);
+    k.failNext = "lost";
+    await user.click(within(confirm).getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(within(run).getByRole("alert").textContent).toMatch(/It may have gone through\. Try again reads the card first, and sends nothing twice\./));
+    expect(k.writes).toEqual([park]);
+    await waitFor(() => expect(within(column("ready")).getByText("Research the API")).toBeTruthy());
+    expect(within(run).getByRole("button", { name: "Try again" })).toBeTruthy();
+    await user.click(within(run).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(within(column("blocked")).getByText("wrong repo")).toBeTruthy());
+    expect(k.writes).toEqual(stopped);
+  });
+
+  it("offers a running card no moves, in its sheet or by dragging, and keeps them for a card no bot is on", async () => {
+    const { s, k } = atWork();
+    const user = await fastPage(s);
+    expect(card("Research the API").draggable).toBe(false);
+    expect(card("Notes").draggable).toBe(true);
+    dragTo(card("Research the API"), column("blocked"));
+    dragTo(card("Research the API"), column("done"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const { sheet } = await runOf(user, "Research the API");
+    expect(within(sheet).getByText("A bot is working on this card. Stop, Reclaim or Reassign it above.")).toBeTruthy();
+    expect(within(sheet).queryByRole("combobox", { name: "Move to" })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Block…" })).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: "Complete" })).toBeNull();
+    await user.click(within(sheet).getByRole("button", { name: "Close" }));
+    const notes = await sheetOf(user, "Notes");
+    expect(within(notes).getByRole("combobox", { name: "Move to" })).toBeTruthy();
+    expect(within(notes).queryByRole("region", { name: "Bot run" })).toBeNull();
+    expect(k.writes).toEqual([]);
+  });
+
+  it("gives the footer its moves back as soon as the sheet's own read shows the bot finished, before the board is read again", async () => {
+    const { s, k, task } = atWork();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    render(<Work api={hermes.kanban} connected onClose={() => {}} pollMs={60_000} watchMs={30} />);
+    await screen.findByText("Dispatch");
+    const user = userEvent.setup();
+    const { sheet, run } = await runOf(user, "Research the API");
+    expect(within(sheet).queryByRole("combobox", { name: "Move to" })).toBeNull();
+    k.move(task.id, "done");
+    await waitFor(() => expect(within(run).getByRole("heading", { name: "Last run" })).toBeTruthy());
+    expect(within(sheet).getByRole("combobox", { name: "Move to" })).toBeTruthy();
+    expect(within(sheet).queryByText(/A bot is working on this card/)).toBeNull();
+    expect(within(sheet).getByText("done", { selector: ".work-status" })).toBeTruthy();
+  });
+
+  it("completes a card its sheet already shows in Review the way Review is completed, though the board still shows it running", async () => {
+    const { s, k, task } = atWork();
+    const hermes = await connect(s.openPipe);
+    running.push(hermes);
+    render(<Work api={hermes.kanban} connected onClose={() => {}} pollMs={60_000} watchMs={30} />);
+    await screen.findByText("Dispatch");
+    const user = userEvent.setup();
+    const { sheet } = await runOf(user, "Research the API");
+    k.move(task.id, "review");
+    await waitFor(() => expect(within(sheet).getByText("review", { selector: ".work-status" })).toBeTruthy());
+    expect(within(column("running")).getByText("Research the API")).toBeTruthy();
+    await user.click(within(sheet).getByRole("button", { name: "Complete" }));
+    await waitFor(() => expect(k.writes).toEqual([`PATCH ${task.id} {"status":"done"}`]));
+    expect(screen.queryByRole("dialog", { name: /Complete|Summary/i })).toBeNull();
+  });
+
+  it("hides only Reclaim on a plugin without terminate, and only Stop and Reassign on one without reassign, where blocking says the bot works on", async () => {
+    const { s, k } = atWork();
+    k.without.add("terminate");
+    await signIn(s);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+    await screen.findByText("2 tasks on the current board");
+    const { sheet, run } = await runOf(user, "Research the API");
+    await user.click(within(run).getByRole("button", { name: "Reclaim" }));
+    await user.click(within(within(run).getByRole("group", { name: "Confirm the change" })).getByRole("button", { name: "Reclaim" }));
+    await waitFor(() => expect(within(run).queryByRole("button", { name: "Reclaim" })).toBeNull());
+    expect(within(run).getByRole("alert")).toBeTruthy();
+    expect(within(run).getByRole("button", { name: "Stop…" })).toBeTruthy();
+    expect(within(run).getByRole("combobox", { name: "Reassign to" })).toBeTruthy();
+    expect(within(sheet).getByText("A bot is working on this card. Stop or Reassign it above.")).toBeTruthy();
+
+    k.without.add("reassign");
+    const confirm = await confirmStop(user, run);
+    await user.click(within(confirm).getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(within(run).queryByRole("button", { name: "Stop…" })).toBeNull());
+    expect(within(run).queryByRole("combobox", { name: "Reassign to" })).toBeNull();
+    expect(within(run).getByRole("heading", { name: "Bot at work" })).toBeTruthy();
+    await user.click(within(sheet).getByRole("button", { name: "Block…" }));
+    const ask = await screen.findByRole("dialog", { name: "Block Research the API" });
+    expect(ask.textContent).toContain("Blocking doesn't stop its bot, which works on to the end of its turn. The card stays blocked when the bot finishes.");
+    expect(k.writes).toEqual([]);
+  });
+});
+
 describe("the Work page on its own", () => {
   const board: Board = { columns: [{ name: "ready", tasks: [{ id: "t_1", title: "Research", body: "", assignee: "", status: "ready", priority: 0, comments: 0, links: { parents: 0, children: 0 } }] }], assignees: [] };
   const workflow = { columns: [{ key: "ready", label: "Ready", dropTarget: true }], manual: {} };
   const stub = (over: Partial<WorkApi>): WorkApi => ({
     loadBoard: async () => board,
     loadWorkflow: async () => workflow,
-    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [] }),
+    loadTask: async () => ({ task: board.columns[0].tasks[0], comments: [], links: { parents: [], children: [] }, linked: [], runs: [] }),
     createTask: async () => ({}),
     editTask: async () => undefined,
     addComment: async () => {},
@@ -468,9 +718,11 @@ describe("the Work page on its own", () => {
     assignees: async () => [],
     profiles: async () => [],
     modelOptions: async () => [],
-    orchestration: async () => ({ autoDecompose: true, autoPromoteChildren: true }),
+    orchestration: async () => ({ autoDecompose: true, autoPromoteChildren: true, defaultAssignee: "" }),
     estimate: async () => ({ ok: false, reason: "no" }),
     estimateTask: async () => ({ ok: false, reason: "no" }),
+    changeRun: async (order) => ({ outcome: { kind: "done" }, order }),
+    runChat: async () => ({ messages: 0, latest: [], readAt: 0 }),
     ...over,
   });
 
