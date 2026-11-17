@@ -451,10 +451,12 @@ export class FakeHermes {
   };
   /**
    * The server's machine as `shell.exec` and `cli.exec` reach it (tui_gateway/methods_tools.py at bf0203a). Undefined:
-   * a Hermes without them. `shell.exec` runs only the commands the Screen sends, `command -v` and `rm -f --`.
-   * `pmInstall`: how `hermes pm install chromium` ends; on 0 Hermes then finds `browser` for every profile.
+   * a Hermes without them. `shell.exec` runs only the commands the Screen sends: `command -v`, `rm -f --`, and xclip
+   * reading the running screen's clipboard, `clipboard` (undefined: nothing owns it). It keeps the last 4000
+   * characters a command prints, as Hermes does. `pmInstall`: how `hermes pm install chromium` ends; on 0 Hermes then
+   * finds `browser` for every profile.
    */
-  machine?: { programs: Set<string>; files: Set<string>; pmInstall: { code: number; output: string }; browser: string };
+  machine?: { programs: Set<string>; files: Set<string>; pmInstall: { code: number; output: string }; browser: string; clipboard?: string };
   /** The server commands `commands.catalog` lists; undefined for a Hermes without the method. */
   commandCatalog: string[] | undefined = ["steer", "btw", "context", "compress", "help", "goal"];
   /** False: a Hermes with no `prompt.btw`, which answers "method not found". */
@@ -1023,6 +1025,21 @@ export class FakeHermes {
       const m = this.machine;
       if (!m) return this.fail(r.id, -32601, "unknown method: shell.exec");
       const command = String(r.params.command);
+      const xclip = /^DISPLAY=(\S+) XAUTHORITY=(\S+) xclip -selection clipboard -o \| tail -c \+(\d+) \| head -c (\d+) \| od -An -v -tx1 \| tr -d ' \\n'$/.exec(command);
+      if (xclip) {
+        const [display, xauthority] = [xclip[1], xclip[2]].map((w) => w.replace(/'([^']*)'|\\(.)/g, (_, quoted: string | undefined, escaped: string) => quoted ?? escaped));
+        const status = this.display?.status;
+        const stderr = !m.programs.has("xclip")
+          ? "sh: 1: xclip: not found\n"
+          : !status?.running || display !== status.display || xauthority !== "/home/liam/.hermes/bot-desktop/Xauthority"
+            ? `Error: Can't open display: ${display}\n`
+            : m.clipboard === undefined
+              ? "Error: target STRING not available\n"
+              : "";
+        const bytes = stderr ? new Uint8Array() : new TextEncoder().encode(m.clipboard).subarray(Number(xclip[3]) - 1).subarray(0, Number(xclip[4]));
+        const stdout = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        return this.respond(r.id, { stdout: stdout.slice(-4000), stderr, code: 0 });
+      }
       const rm = /^rm -f -- '([^']*)'$/.exec(command);
       if (rm) {
         m.files.delete(rm[1]);

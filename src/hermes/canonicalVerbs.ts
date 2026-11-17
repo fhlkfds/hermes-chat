@@ -376,4 +376,15 @@ export const APP_VERBS: AppVerb[] = [
     canonical: "As for the check: the authority has no shell.exec without a session.",
     unprobed: "it deletes the Bot Desktop's dock layout",
   },
+  {
+    method: "shell.exec",
+    shape: "clipboard",
+    params: () => ({
+      command: "DISPLAY=':42' XAUTHORITY='/home/liam/.hermes/bot-desktop/Xauthority' xclip -selection clipboard -o | tail -c +1 | head -c 1999 | od -An -v -tx1 | tr -d ' \\n'",
+    }),
+    route: "authority",
+    answer: { code: 4001, message: "invalid_params" },
+    canonical: "As for the check: the authority has no shell.exec without a session.",
+    unprobed: "added after the recording; its route and answer are from the source at bf0203a",
+  },
 ];

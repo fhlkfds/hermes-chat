@@ -3,7 +3,7 @@
 // (a sign-in, a 2FA code, a CAPTCHA) and hands back. Hermes keeps who may drive it (the lease): while the owner holds
 // it, Hermes's computer use waits, and only the holder's keys and pointer reach the screen. noVNC draws the stream.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, ClipboardCopy, ClipboardPaste, Hand, MonitorPlay, MousePointer2, Play, RefreshCw } from "lucide-react";
 import {
   BROWSER_FIX,
   CLOSE_CONTROL_TAKEN,
@@ -33,7 +33,9 @@ import {
   type ScreenAppId,
   type SetupDeps,
 } from "../hermes/screenApps";
+import { ClipboardBridge, copyOutFrom, MAX_TEXT_BYTES, type CopyOutcome, type LocalClipboard, type PasteOutcome } from "../hermes/screenClipboard";
 import { CopyCommand, Spinner } from "./bits";
+import { tauriClipboard } from "./tauriClipboard";
 import { errorText } from "../hermes/values";
 
 /** What the Screen needs of noVNC's RFB client. */
@@ -47,6 +49,8 @@ export type RfbClient = {
   addEventListener(type: "connect" | "disconnect", handler: (e: { detail?: { clean?: boolean } }) => void): void;
   disconnect(): void;
   focus(): void;
+  /** Sends `text` as the screen's clipboard; nothing while `viewOnly`. */
+  clipboardPasteFrom(text: string): void;
 };
 export type RfbConstructor = new (target: HTMLElement, channel: RelayedSocket, options: { shared: boolean }) => RfbClient;
 
@@ -80,6 +84,7 @@ export function ScreenTab({
   loadRfb = loadNoVnc,
   onHeld,
   system,
+  clipboard = tauriClipboard,
 }: {
   api: ScreenApi;
   shown: boolean;
@@ -89,6 +94,8 @@ export function ScreenTab({
   loadRfb?: () => Promise<RfbConstructor>;
   /** Whether the owner holds the screen, so the panel can say so while the tab isn't shown. */
   onHeld?: (held: boolean) => void;
+  /** This computer's clipboard, for copy and paste with the screen while the owner holds it. */
+  clipboard?: LocalClipboard;
 }) {
   const [status, setStatus] = useState<DisplayStatus>();
   const [lease, setLease] = useState<DisplayLease>();
@@ -101,6 +108,8 @@ export function ScreenTab({
   /** The browser a Check again found where there was none, said once until the next read. */
   const [found, setFound] = useState<string>();
   const [setup, setSetup] = useState<AppsSetup>({ kind: "unchecked" });
+  /** What Paste here or Copy out did, said until the next one. */
+  const [clipNote, setClipNote] = useState<{ text: string; bad?: boolean }>();
   const host = useRef<HTMLDivElement>(null);
   const rfb = useRef<RfbClient | null>(null);
   // Bumped by every attach and detach, so a late answer from an earlier one does nothing.
@@ -108,6 +117,7 @@ export function ScreenTab({
   const evictions = useRef({ count: 0, at: 0 });
   const viewerRef = useRef(viewer);
   viewerRef.current = viewer;
+  const [bridge] = useState(() => new ClipboardBridge(clipboard));
 
   const held = heldBy(lease, viewer?.hash);
   // Viewers this tab held the screen as on connections since gone. Hermes keeps such a hold when a connection drops,
@@ -157,6 +167,7 @@ export function ScreenTab({
 
   const attach = useCallback(async () => {
     detach();
+    bridge.forget();
     const gen = generation.current;
     setConn({ kind: "attaching" });
     try {
@@ -205,7 +216,7 @@ export function ScreenTab({
     } catch (e) {
       if (gen === generation.current) setConn({ kind: "lost", why: errorText(e) });
     }
-  }, [api, detach, loadRfb, noteStatus, refresh]);
+  }, [api, bridge, detach, loadRfb, noteStatus, refresh]);
 
   // What the screen is doing: asked on first show and after each reconnect to Hermes, which watches again a stream
   // the drop ended. The stream isn't let go here: a normal close would tell Hermes the owner left, and hand control
@@ -242,7 +253,22 @@ export function ScreenTab({
     if (!rfb.current) return;
     rfb.current.viewOnly = !held;
     if (held) rfb.current.focus();
+    else setClipNote(undefined);
   }, [held, conn.kind]);
+
+  const copyOut = copyOutFrom(status, setup);
+  const syncs = held && conn.kind === "live";
+  /** This computer's clipboard text into the screen's. `always`: even if it went in or came out last. */
+  const pasteIn = (always = false): Promise<PasteOutcome | undefined> => {
+    const client = rfb.current;
+    return client ? bridge.paste((text) => client.clipboardPasteFrom(text), always) : Promise.resolve(undefined);
+  };
+  /** The screen's clipboard text onto this computer's. */
+  const copyOutOf = (always = false): Promise<CopyOutcome | undefined> =>
+    copyOut ? bridge.copy(() => api.readClipboard(copyOut), always) : Promise.resolve(undefined);
+  // Each way only when it changed, and quietly: the buttons say what happened.
+  const syncIn = () => void (syncs && pasteIn().catch(() => {}));
+  const syncOut = () => void (syncs && copyOutOf().catch(() => {}));
 
   useEffect(() => () => detach(), [detach]);
 
@@ -279,6 +305,19 @@ export function ScreenTab({
       noteStatus(await api.start());
       setConn({ kind: "idle" });
       setSetup((s) => (s.kind === "checked" ? { ...s, dock: { kind: "current" } } : s));
+    });
+  const pasteHere = () =>
+    act(async () => {
+      setClipNote(undefined);
+      const outcome = await pasteIn(true).catch((e: unknown) => setClipNote({ text: errorText(e), bad: true }));
+      if (outcome) setClipNote({ text: PASTED[outcome], bad: outcome !== "pasted" });
+      rfb.current?.focus();
+    });
+  const copyOutNow = () =>
+    act(async () => {
+      setClipNote(undefined);
+      const outcome = await copyOutOf(true).catch((e: unknown) => setClipNote({ text: errorText(e), bad: true }));
+      if (outcome) setClipNote({ text: COPIED[outcome], bad: outcome === "empty" });
     });
   const takeOver = () => act(async () => viewer && noteLease(await api.takeOver(viewer.id)));
   const handBack = () => act(async () => viewer && noteLease(await api.handBack(viewer.id)));
@@ -351,6 +390,18 @@ export function ScreenTab({
                   : "Watching: Hermes is in control."}
         </span>
         <span className="terminal-spacer" />
+        {live && held && (
+          <>
+            <button className="btn" disabled={busy || !connected || conn.kind !== "live"} onClick={() => void pasteHere()} title="Puts this computer's copied text on the screen's clipboard, for Ctrl+V there">
+              <ClipboardPaste size={14} /> Paste here
+            </button>
+            {copyOut && (
+              <button className="btn" disabled={busy || !connected} onClick={() => void copyOutNow()} title="Puts the text copied on the screen on this computer's clipboard">
+                <ClipboardCopy size={14} /> Copy out
+              </button>
+            )}
+          </>
+        )}
         {live &&
           (held ? (
             <button className="btn primary" disabled={busy || !connected} onClick={() => void handBack()} title="Gives the screen back to Hermes">
@@ -368,6 +419,11 @@ export function ScreenTab({
       {error && status && (
         <div className="attach-note" role="alert">
           {error}
+        </div>
+      )}
+      {clipNote && (
+        <div className={`attach-note ${clipNote.bad ? "" : "screen-found"}`} role="status">
+          {clipNote.text}
         </div>
       )}
       {found && (
@@ -395,7 +451,7 @@ export function ScreenTab({
           connected={connected}
           onPassword={(password) => void installSystem(setupDeps, idsIn(setup, "needs-password"), password)}
           onAgain={(ids) => void installSystem(setupDeps, ids)}
-          onSkip={(ids) => setSetup(without(ids))}
+          onSkip={(ids) => setSetup(skip(ids))}
           onRestart={() => void restart()}
         />
       )}
@@ -405,7 +461,16 @@ export function ScreenTab({
         </div>
       )}
       {body}
-      <div className={`screen-view ${held ? "held" : ""}`} hidden={!live} role="region" aria-label="Hermes's screen">
+      <div
+        className={`screen-view ${held ? "held" : ""}`}
+        hidden={!live}
+        role="region"
+        aria-label="Hermes's screen"
+        onFocus={syncIn}
+        onPointerEnter={syncIn}
+        onBlur={syncOut}
+        onPointerLeave={syncOut}
+      >
         <div className="screen-canvas" ref={host} />
         {live && conn.kind !== "live" && (
           <div className="preview-state preview-loading" role={conn.kind === "lost" ? "alert" : "status"}>
@@ -433,6 +498,18 @@ export function ScreenTab({
     </div>
   );
 }
+
+const PASTED: Record<PasteOutcome, string> = {
+  pasted: "Pasted on the screen's clipboard. Press Ctrl+V on the screen to paste it there.",
+  same: "Pasted on the screen's clipboard. Press Ctrl+V on the screen to paste it there.",
+  empty: "This computer's clipboard has no text to paste.",
+  "too-long": `This computer's clipboard holds more than ${MAX_TEXT_BYTES / 1024} KiB of text, more than the screen takes.`,
+};
+const COPIED: Record<CopyOutcome, string> = {
+  copied: "Copied the screen's clipboard to this computer.",
+  same: "Copied the screen's clipboard to this computer.",
+  empty: "The screen's clipboard has no text to copy.",
+};
 
 const idsIn = (setup: Extract<AppsSetup, { kind: "checked" }>, kind: AppState["kind"]) =>
   (Object.keys(setup.apps) as ScreenAppId[]).filter((id) => setup.apps[id]?.kind === kind);

@@ -3,6 +3,8 @@ mod backlog;
 pub mod backup;
 #[cfg(target_os = "linux")]
 pub mod browser;
+#[cfg(target_os = "linux")]
+mod clipboard_text;
 pub mod connect_steps;
 pub mod connection_attempts;
 #[cfg(target_os = "linux")]
@@ -652,6 +654,36 @@ async fn read_selection(app: tauri::AppHandle) -> Result<selection::Selections, 
 async fn read_selection() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({}))
 }
+
+/// This computer's clipboard text, for pasting into the Screen's Bot Desktop (clipboard_text.rs, ADR 0193).
+#[tauri::command]
+#[cfg(target_os = "linux")]
+async fn clipboard_text(app: tauri::AppHandle) -> Result<String, String> {
+    clipboard_text::read(&app).await
+}
+
+/// Puts text copied out of the Screen's Bot Desktop on this computer's clipboard (clipboard_text.rs, ADR 0193).
+#[tauri::command]
+#[cfg(target_os = "linux")]
+async fn set_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    clipboard_text::write(&app, text).await
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+async fn clipboard_text() -> Result<String, String> {
+    Err(NO_CLIPBOARD.into())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+async fn set_clipboard_text(text: String) -> Result<(), String> {
+    let _ = text;
+    Err(NO_CLIPBOARD.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+const NO_CLIPBOARD: &str = "Copy and paste with the screen works only on Linux for now.";
 
 /// Attaches the files the owner copied in a file manager and pasted into the composer, by path, as a drop does (ADR
 /// 0143). `[]`: the clipboard holds no local files. Elsewhere than Linux the webview's paste event carries the files.
@@ -1999,6 +2031,8 @@ pub fn run(screenshot: bool, link: Option<String>) {
             attach_picked_files,
             attach_copied_files,
             read_selection,
+            clipboard_text,
+            set_clipboard_text,
             stage_clipboard_file,
             hermes_request,
             hermes_transcribe,

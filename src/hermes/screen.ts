@@ -5,6 +5,8 @@
 // `/api/display/ws` (src-tauri/src/display.rs). Wire shapes: `tui_gateway/methods_display.py` and
 // `hermes_cli/web_routers/display.py`, read at v2026.9.24.
 
+import type { ScreenDisplay } from "./screenClipboard";
+
 /** Who may drive the screen. The holder's viewer id never leaves Hermes; `viewer_hash` lets a holder know itself. */
 export type DisplayLease = { holder: "agent" | "human"; viewer_hash?: string | null; since: number; epoch: number; reason?: string };
 
@@ -21,6 +23,8 @@ export type DisplayStatus = {
   browser?: string | null;
   /** `gateway`, or `terminal:<backend>` for a screen in the terminal's sandbox. */
   placement?: string;
+  /** The X display the screen runs on (`:42`), while it runs. */
+  display?: string | null;
   lease: DisplayLease;
   profile_key: string;
 };
@@ -72,6 +76,8 @@ export interface ScreenApi {
   findPrograms(programs: readonly string[]): Promise<string[]>;
   /** Deletes the profile's dock layout, so the screen's next start writes it again with what is installed now. */
   resetDock(profileKey: string): Promise<void>;
+  /** The text on the screen's clipboard, through `xclip` over `shell.exec` (screenClipboard.ts). "" when it has none. */
+  readClipboard(where: ScreenDisplay): Promise<string>;
   /** `viewerId`: one this connection minted before, so a reconnect keeps the lease it holds. */
   observe(viewerId?: string): Promise<DisplayObserve>;
   takeOver(viewerId: string): Promise<DisplayLease>;

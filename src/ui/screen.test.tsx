@@ -7,12 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScreenTab, type RfbClient, type RfbConstructor } from "./Screen";
 import { BROWSER_FIX, viewerHash, type CliResult, type DisplayLease, type DisplayObserve, type DisplayStatus, type ScreenApi } from "../hermes/screen";
 import { pasteCommand, type InstallSystem, type SystemOutcome } from "../hermes/screenApps";
+import type { LocalClipboard, ScreenDisplay } from "../hermes/screenClipboard";
 
 afterEach(cleanup);
 
 class FakeRfb implements RfbClient {
   static made: FakeRfb[] = [];
   viewOnly = false;
+  /** What noVNC was given to send as the screen's clipboard. */
+  pasted: string[] = [];
   scaleViewport = false;
   resizeSession = true;
   focusOnClick = false;
@@ -36,6 +39,9 @@ class FakeRfb implements RfbClient {
     this.disconnected = true;
   }
   focus() {}
+  clipboardPasteFrom(text: string) {
+    if (!this.viewOnly) this.pasted.push(text);
+  }
 }
 
 const agent: DisplayLease = { holder: "agent", viewer_hash: null, since: 1, epoch: 0 };
@@ -71,6 +77,13 @@ class FakeScreen implements ScreenApi {
   };
   findPrograms = async (names: readonly string[]) => names.filter((n) => this.programs.has(n));
   resetDock = async (key: string) => void this.calls.push(`resetDock ${key}`);
+  /** The screen's clipboard, and where each read of it looked. */
+  clipboard = "";
+  clipboardReads: ScreenDisplay[] = [];
+  readClipboard = async (where: ScreenDisplay) => {
+    this.clipboardReads.push(where);
+    return this.clipboard;
+  };
   observe = async (viewerId?: string): Promise<DisplayObserve> => {
     this.observed.push(viewerId);
     return { ...this.state, ticket: `t${this.observed.length}`, viewer_id: viewerId ?? "viewer-1" };
@@ -388,6 +401,130 @@ describe("The apps the Screen adds", () => {
     await screen.findByRole("button", { name: /Start the screen/ });
     expect(api.calls).toEqual([]);
     expect(ssh.given).toEqual([]);
+  });
+});
+
+describe("Copy and paste with the screen", () => {
+  /** This computer's clipboard: its text, how often it was read, and what was written to it. */
+  function local(text = "") {
+    const c = { text, reads: 0, writes: [] as string[] };
+    const clipboard: LocalClipboard = {
+      read: async () => (c.reads++, c.text),
+      write: async (t) => void c.writes.push((c.text = t)),
+    };
+    return { c, clipboard };
+  }
+  /** A running screen on `:42` with xclip on the server, unless `programs` says otherwise. */
+  async function live(text = "", programs = ["xfce4-terminal", "mousepad", "xclip"], display: string | null = ":42") {
+    const api = new FakeScreen();
+    api.state = { ...api.state, running: true, display, placement: "gateway" };
+    api.programs = new Set(programs);
+    const l = local(text);
+    FakeRfb.made = [];
+    render(<ScreenTab api={api} shown connected loadRfb={async () => FakeRfb as unknown as RfbConstructor} clipboard={l.clipboard} system={async () => ({ kind: "needs-password" })} />);
+    await connected();
+    return { api, ...l, view: () => screen.getByRole("region", { name: "Hermes's screen" }) };
+  }
+  async function takeOver() {
+    fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
+    await screen.findByText(/You're in control/);
+    await waitFor(() => expect(FakeRfb.made[0].viewOnly).toBe(false));
+  }
+  const settle = () => act(async () => new Promise((d) => setTimeout(d, 0)));
+
+  it("does nothing while Hermes is in control", async () => {
+    const { api, c, view } = await live("from here");
+    api.clipboard = "from the screen";
+    fireEvent.pointerEnter(view());
+    fireEvent.focus(view());
+    fireEvent.pointerLeave(view());
+    await settle();
+    expect(c.reads).toBe(0);
+    expect(FakeRfb.made[0].pasted).toEqual([]);
+    expect(api.clipboardReads).toEqual([]);
+    expect(screen.queryByRole("button", { name: /Paste here/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy out/ })).toBeNull();
+  });
+
+  it("puts this computer's text on the screen's clipboard as the pointer or focus comes in, once per change", async () => {
+    const { c, view } = await live("https://example.com/sign-in");
+    await takeOver();
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual(["https://example.com/sign-in"]);
+    fireEvent.focus(view());
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual(["https://example.com/sign-in"]);
+    c.text = "a 2FA code: 123456";
+    fireEvent.focus(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual(["https://example.com/sign-in", "a 2FA code: 123456"]);
+  });
+
+  it("puts the screen's text on this computer's clipboard as the pointer or focus leaves, once per change", async () => {
+    const { api, c, view } = await live();
+    await takeOver();
+    api.clipboard = "Error: E_ACCESS at line 42";
+    fireEvent.pointerLeave(view());
+    await settle();
+    expect(c.writes).toEqual(["Error: E_ACCESS at line 42"]);
+    expect(api.clipboardReads).toEqual([{ display: ":42", profileKey: "/home/liam/.hermes" }]);
+    fireEvent.blur(view());
+    await settle();
+    expect(c.writes).toEqual(["Error: E_ACCESS at line 42"]);
+    // Coming back in doesn't paste the text that just came out.
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual([]);
+    api.clipboard = "";
+    fireEvent.pointerLeave(view());
+    await settle();
+    expect(c.writes).toEqual(["Error: E_ACCESS at line 42"]);
+  });
+
+  it("pastes and copies on a button press too, and says what happened", async () => {
+    const { api, c } = await live("");
+    await takeOver();
+    fireEvent.click(screen.getByRole("button", { name: /Paste here/ }));
+    expect(await screen.findByText("This computer's clipboard has no text to paste.")).toBeTruthy();
+    c.text = "hello";
+    fireEvent.click(screen.getByRole("button", { name: /Paste here/ }));
+    expect(await screen.findByText("Pasted on the screen's clipboard. Press Ctrl+V on the screen to paste it there.")).toBeTruthy();
+    expect(FakeRfb.made[0].pasted).toEqual(["hello"]);
+    fireEvent.click(screen.getByRole("button", { name: /Copy out/ }));
+    expect(await screen.findByText("The screen's clipboard has no text to copy.")).toBeTruthy();
+    api.clipboard = "copied on the screen";
+    fireEvent.click(screen.getByRole("button", { name: /Copy out/ }));
+    expect(await screen.findByText("Copied the screen's clipboard to this computer.")).toBeTruthy();
+    expect(c.writes).toEqual(["copied on the screen"]);
+  });
+
+  it("doesn't paste more than Hermes takes", async () => {
+    const { view } = await live("x".repeat(256 * 1024));
+    await takeOver();
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(FakeRfb.made[0].pasted).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: /Paste here/ }));
+    expect(await screen.findByText("This computer's clipboard holds more than 255 KiB of text, more than the screen takes.")).toBeTruthy();
+  });
+
+  it.each([
+    ["the server has no xclip", ["xfce4-terminal", "mousepad"], ":42"],
+    ["Hermes doesn't say which display the screen is on", ["xfce4-terminal", "mousepad", "xclip"], null],
+  ])("doesn't copy out when %s, and still pastes in", async (_, programs, display) => {
+    const { api, c, view } = await live("in", programs, display);
+    await takeOver();
+    api.clipboard = "out";
+    fireEvent.pointerLeave(view());
+    fireEvent.pointerEnter(view());
+    await settle();
+    expect(api.clipboardReads).toEqual([]);
+    expect(c.writes).toEqual([]);
+    expect(FakeRfb.made[0].pasted).toEqual(["in"]);
+    expect(screen.getByRole("button", { name: /Paste here/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Copy out/ })).toBeNull();
   });
 });
 
