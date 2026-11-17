@@ -43,6 +43,7 @@ import { ConversationPanel, StartConversationButton, conversationAway, startBloc
 import type { ConversationState, VoiceConversation } from "./conversation";
 import type { VoiceSetup } from "../hermes/pipe";
 import { ChatUsageButton, ReplyUsageLine } from "./Usage";
+import type { ReplyUsage } from "../hermes/usage";
 import { PathsIn, useLinkMenu, useOpenPreview, usePathsIn } from "./previewContext";
 import { FilesChip } from "./FileChanges";
 import { replyFiles } from "../hermes/fileChanges";
@@ -56,7 +57,7 @@ import { RunButton } from "./RunView";
 import { CopyButton, replyMarkdown } from "./CopyMessage";
 import { useSpellCheck } from "./SpellCheckSettings";
 import { turnsOf, type ReplayKind, type Variant } from "../hermes/replay";
-import type { FollowUp } from "../hermes/uiPrefs";
+import { getUIPrefs, showsDetail, subscribe as subscribeUIPrefs, type FollowUp, type MessageDetails } from "../hermes/uiPrefs";
 import { sttRoute } from "../hermes/sttRoute";
 import { errorText } from "../hermes/values";
 
@@ -1221,6 +1222,17 @@ export type Comparing = { refuse?: string; onStop: () => void };
 type Listen = { speaker: Speaker; blocked?: string };
 type OutgoingAction = "retry" | "edit" | "dismiss";
 
+/** The Settings choice of what shows under each message. Only a change to it re-renders the transcript's blocks. */
+const useMessageDetails = () => useSyncExternalStore(subscribeUIPrefs, () => getUIPrefs().messageDetails);
+
+/** A reply's usage as `level` shows it: none below tokens, and without how long it took below time. */
+const usageShown = (usage: ReplyUsage | undefined, level: MessageDetails): ReplyUsage | undefined => {
+  if (!usage || !showsDetail(level, "tokens")) return undefined;
+  if (showsDetail(level, "time")) return usage;
+  const { ms: _ms, ...counts } = usage;
+  return counts;
+};
+
 /**
  * One block of the transcript. Memoized, so a streamed delta re-renders only the block it changes. `live`: the reply
  * or thinking is still streaming. `offline` and `movedAt` are for a Question card; other blocks get `movedAt` 0, so
@@ -1274,6 +1286,9 @@ const BlockView = memo(
     filesChanged?: number;
     checkpointsOff?: boolean;
   }) {
+    const details = useMessageDetails();
+    const date = showsDetail(details, "date");
+    const run = onRun && showsDetail(details, "time") ? () => onRun(block.id) : undefined;
     const current = versions ? versions.findIndex((v) => v.chatId === chatId) : -1;
     const nav = versions && current >= 0 && turn !== undefined && (
       <VariantNav versions={versions} current={current} onPick={(id) => onPickVariant(id, turn)} />
@@ -1307,7 +1322,7 @@ const BlockView = memo(
             </div>
           )}
           {block.text && <div className="bubble-text">{highlight(block.text, query)}</div>}
-          <StoredTime at={block.at} />
+          {date && <StoredTime at={block.at} />}
           {isOutgoing(block) && block.outgoing.state !== "sending" && (
             <SendFailed item={block} canRetry={canRetry} act={(action) => onOutgoing(block.id, action)} />
           )}
@@ -1321,7 +1336,8 @@ const BlockView = memo(
           {nav}
         </div>
       );
-    if (block.kind === "assistant")
+    if (block.kind === "assistant") {
+      const usage = usageShown(block.usage, details);
       return (
         <div className="msg assistant" data-item={block.id} data-at={block.at}>
           <Markdown text={block.text} query={query} streaming={live} />
@@ -1334,30 +1350,33 @@ const BlockView = memo(
                 <CopyButton words={() => replyMarkdown(block.text)} what="reply" />
                 {onReplay && <RegenerateButton blocked={replayBlocked} onRegenerate={() => onReplay(block.id, "regenerate")} />}
                 {onBranch && <BranchButton blocked={branchBlocked} onBranch={() => onBranch(block.id)} />}
-                {onRun && <RunButton onOpen={() => onRun(block.id)} />}
+                {run && <RunButton onOpen={run} />}
               </div>
             </div>
           )}
           {!live && nav}
-          <StoredTime at={block.at} />
-          {block.usage && !live && <ReplyUsageLine usage={block.usage} />}
+          {date && <StoredTime at={block.at} />}
+          {usage && !live && <ReplyUsageLine usage={usage} />}
           {filesChanged !== undefined && !live && <FilesChip chatId={chatId} replyId={block.id} count={filesChanged} off={!!checkpointsOff} />}
         </div>
       );
-    if (block.kind === "error")
+    }
+    if (block.kind === "error") {
+      const usage = usageShown(block.usage, details);
       return (
         <div className="msg error" role="alert" data-item={block.id}>
           {block.text}
-          {block.usage && <ReplyUsageLine usage={block.usage} />}
-          {onRun && (
+          {usage && <ReplyUsageLine usage={usage} />}
+          {run && (
             <div className="msg-actions">
-              <RunButton onOpen={() => onRun(block.id)} />
+              <RunButton onOpen={run} />
             </div>
           )}
         </div>
       );
+    }
     if (block.kind === "thinking") return <Thought item={block} live={live} query={query} />;
-    if (block.kind === "returned") return <ReturnedCard item={block} query={query} />;
+    if (block.kind === "returned") return <ReturnedCard item={block} query={query} date={date} />;
     if (block.kind === "approval")
       return <ApprovalCard item={block} offline={offline} movedAt={movedAt} onAnswer={(c, confirmed) => onAnswer(block.id, c, confirmed)} />;
     if (block.kind === "clarify" || block.kind === "sudo" || block.kind === "secret")
@@ -1581,7 +1600,7 @@ function Thought({ item, live, query }: { item: ThinkingItem; live: boolean; que
  * A Returned result (ADR 0175): open from the start, so the owner sees what came back, and closed or opened again by its
  * header. A subagent's answer shows as a reply does; a process's output as a log.
  */
-function ReturnedCard({ item, query }: { item: Extract<Item, { kind: "returned" }>; query: string }) {
+function ReturnedCard({ item, query, date }: { item: Extract<Item, { kind: "returned" }>; query: string; date: boolean }) {
   const l = useLocale().chat.returned;
   const [open, setOpen] = useState(true);
   const Icon = item.process ? SquareTerminal : PackageCheck;
@@ -1600,7 +1619,7 @@ function ReturnedCard({ item, query }: { item: Extract<Item, { kind: "returned" 
             <Markdown text={item.body} query={query} />
           </div>
         ))}
-      <StoredTime at={item.at} />
+      {date && <StoredTime at={item.at} />}
     </div>
   );
 }

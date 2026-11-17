@@ -1,10 +1,11 @@
 // Settings, the Appearance tab: the interface language, then the color scheme, themes, contrast and chat width
 // (ThemePicker.tsx), then the interface and code fonts and sizes, and Word wrap, each with a preview of what it changes.
 // Changes apply at once and are kept on this computer only (appearance.ts). Last, whether the status bar shows
-// (StatusBar.tsx), so a bar hidden from its own menu can come back.
+// (StatusBar.tsx), so a bar hidden from its own menu can come back, and what shows under each message (uiPrefs.ts).
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { LANGUAGES, parseLanguageChoice, useLocale } from "../i18n/locale";
+import { MESSAGE_DETAILS, getUIPrefs, setUIPrefs, subscribe, type MessageDetails } from "../hermes/uiPrefs";
 import { DEFAULT_APPEARANCE, MONO_SIZES, UI_SIZES, type Appearance, type AppearanceStore, type Fonts } from "./appearance";
 import { Markdown } from "./Markdown";
 import { SettingRow, SettingsSection } from "./SettingRows";
@@ -121,6 +122,27 @@ function LanguageSetting({ store, a }: { store: AppearanceStore; a: Appearance }
   );
 }
 
+/** What shows under each message: off, the date, then tokens, then time and the Run button (uiPrefs.ts `messageDetails`). */
+function MessageDetailsSetting() {
+  const level = useSyncExternalStore(subscribe, () => getUIPrefs().messageDetails);
+  const t = useLocale().appearance.messageDetails;
+  return (
+    <SettingRow
+      name={t.name}
+      hint={t.hint}
+      control={
+        <select className="select" aria-label={t.name} value={level} onChange={(e) => setUIPrefs({ messageDetails: e.target.value as MessageDetails })}>
+          {MESSAGE_DETAILS.map((d) => (
+            <option key={d} value={d}>
+              {t[d]}
+            </option>
+          ))}
+        </select>
+      }
+    />
+  );
+}
+
 export function AppearanceSettings({ store, listFonts }: { store: AppearanceStore; listFonts: () => Promise<Fonts> }) {
   const a = useSyncExternalStore(store.subscribe, store.get);
   const { fonts: t, wordWrap: wrap } = useLocale().appearance;
@@ -199,6 +221,7 @@ export function AppearanceSettings({ store, listFonts }: { store: AppearanceStor
           }
         />
         <StatusBarSetting />
+        <MessageDetailsSetting />
       </SettingsSection>
     </>
   );

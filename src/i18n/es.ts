@@ -211,6 +211,14 @@ export const es: Catalogue = {
       hint: "Contexto, modelo y conexión bajo el chat.",
       more: "Haz clic derecho en la barra para elegir lo que muestra o para ocultarla. Activarla aquí vuelve a mostrar todos los elementos.",
     },
+    messageDetails: {
+      name: "Detalles de los mensajes",
+      hint: "Lo que se muestra bajo cada mensaje. El tiempo es lo que tardó una respuesta, y trae consigo el botón Run.",
+      off: "Desactivado",
+      date: "Fecha",
+      tokens: "Fecha y tokens",
+      time: "Fecha, tokens y tiempo",
+    },
   },
   bots: {
     title: "Bots",
